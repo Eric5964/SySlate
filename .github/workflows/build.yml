@@ -1,0 +1,50 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
+
+      - name: Build unsigned IPA
+        run: |
+          cd ios
+          xcodebuild -workspace SySlate.xcworkspace \
+            -scheme SySlate \
+            -configuration Release \
+            -archivePath $RUNNER_TEMP/SySlate.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/SySlate.xcarchive \
+            -exportPath $RUNNER_TEMP/SySlate \
+            -exportOptionsPlist ../exportOptions.plist
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SySlate-unsigned
+          path: ${{ runner.temp }}/SySlate/*.ipa
