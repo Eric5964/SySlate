@@ -32,19 +32,24 @@ jobs:
           xcodebuild -workspace SySlate.xcworkspace \
             -scheme SySlate \
             -configuration Release \
+            -sdk iphoneos \
             -archivePath $RUNNER_TEMP/SySlate.xcarchive \
             archive \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
-
-          xcodebuild -exportArchive \
-            -archivePath $RUNNER_TEMP/SySlate.xcarchive \
-            -exportPath $RUNNER_TEMP/SySlate \
-            -exportOptionsPlist ../exportOptions.plist
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE=""
+          
+          mkdir -p $RUNNER_TEMP/SySlate/Payload
+          cp -r $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app \
+            $RUNNER_TEMP/SySlate/Payload/SySlate.app
+          cd $RUNNER_TEMP/SySlate
+          zip -r ../SySlate.ipa Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: SySlate-unsigned
-          path: ${{ runner.temp }}/SySlate/*.ipa
+          path: ${{ runner.temp }}/SySlate.ipa
