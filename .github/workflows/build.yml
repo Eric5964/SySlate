@@ -29,6 +29,13 @@ jobs:
       - name: Build unsigned IPA
         run: |
           cd ios
+          
+          # Create a temporary keychain
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-keychain-settings build.keychain
+
           xcodebuild -workspace SySlate.xcworkspace \
             -scheme SySlate \
             -configuration Release \
@@ -40,13 +47,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE=""
-          
-          mkdir -p $RUNNER_TEMP/SySlate/Payload
+            PROVISIONING_PROFILE="" \
+            OTHER_CODE_SIGN_FLAGS="--keychain build.keychain"
+
+          # Manually package the IPA
+          mkdir -p $RUNNER_TEMP/Payload
           cp -r $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app \
-            $RUNNER_TEMP/SySlate/Payload/SySlate.app
-          cd $RUNNER_TEMP/SySlate
-          zip -r ../SySlate.ipa Payload
+            $RUNNER_TEMP/Payload/SySlate.app
+          cd $RUNNER_TEMP
+          zip -r SySlate.ipa Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
