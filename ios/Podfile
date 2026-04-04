@@ -22,26 +22,26 @@ target 'SySlate' do
     :hermes_enabled => true,
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
-end
 
-post_install do |installer|
-  react_native_post_install(
-    installer,
-    config[:reactNativePath],
-    :mac_catalyst_enabled => false
-  )
-  installer.pods_project.targets.each do |target|
-    target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
-    end
-  end
-  installer.aggregate_targets.each do |aggregate_target|
-    aggregate_target.user_project.targets.each do |target|
-      target.build_configurations.each do |config|
-        config.build_settings['SWIFT_INCLUDE_PATHS'] ||= ['$(inherited)']
-        config.build_settings['SWIFT_INCLUDE_PATHS'] << '$(SRCROOT)/build/generated/ios'
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false
+    )
+    installer.pods_project.targets.each do |pod_target|
+      pod_target.build_configurations.each do |build_config|
+        build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
       end
     end
-    aggregate_target.user_project.save
+    installer.aggregate_targets.each do |aggregate_target|
+      aggregate_target.user_project.targets.each do |user_target|
+        user_target.build_configurations.each do |build_config|
+          build_config.build_settings['SWIFT_INCLUDE_PATHS'] ||= ['$(inherited)']
+          build_config.build_settings['SWIFT_INCLUDE_PATHS'] << '$(SRCROOT)/build/generated/ios'
+        end
+      end
+      aggregate_target.user_project.save
+    end
   end
 end
