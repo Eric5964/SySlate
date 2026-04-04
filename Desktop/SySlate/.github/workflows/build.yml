@@ -1,0 +1,64 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          EXPO_USE_COMMUNITY_AUTOLINKING=1 pod install
+
+      - name: Build unsigned IPA
+        run: |
+          cd ios
+          
+          # Create a temporary keychain
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-keychain-settings build.keychain
+
+          xcodebuild -workspace SySlate.xcworkspace \
+            -scheme SySlate \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath $RUNNER_TEMP/SySlate.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            OTHER_CODE_SIGN_FLAGS="--keychain build.keychain"
+
+          # Manually package the IPA
+          mkdir -p $RUNNER_TEMP/Payload
+          cp -r $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app \
+            $RUNNER_TEMP/Payload/SySlate.app
+          cd $RUNNER_TEMP
+          zip -r SySlate.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SySlate-unsigned
+          path: ${{ runner.temp }}/SySlate.ipa
