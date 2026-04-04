@@ -14,7 +14,6 @@ prepare_react_native_project!
 
 target 'SySlate' do
   use_expo_modules!
-  pod 'Expo', :modular_headers => true
   config = use_native_modules!
 
   use_react_native!(
