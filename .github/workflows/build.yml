@@ -23,6 +23,7 @@ jobs:
 
       - name: Install CocoaPods
         run: |
+          npm install -g @react-native-community/cli
           cd ios
           pod install
 
