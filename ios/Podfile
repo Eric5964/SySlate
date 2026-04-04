@@ -4,18 +4,18 @@ require File.join(File.dirname(`node --print "require.resolve('react-native/pack
 require 'json'
 podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
 
-ENV['RCT_NEW_ARCH_ENABLED'] = '0'
 ENV['EX_DEV_CLIENT_NETWORK_INSPECTOR'] ||= podfile_properties['EX_DEV_CLIENT_NETWORK_INSPECTOR']
 
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 install! 'cocoapods', :deterministic_uuids => false
+
+use_modular_headers!
 
 prepare_react_native_project!
 
 target 'SySlate' do
   use_expo_modules!
   config = use_native_modules!
-  use_frameworks! :linkage => :static
 
   use_react_native!(
     :path => config[:reactNativePath],
@@ -33,9 +33,6 @@ target 'SySlate' do
       pod_target.build_configurations.each do |build_config|
         build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
       end
-    end
-    installer.aggregate_targets.each do |aggregate_target|
-      aggregate_target.user_project.save
     end
   end
 end
