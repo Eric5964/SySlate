@@ -2,7 +2,7 @@ name: Build iOS IPA
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -24,38 +24,35 @@ jobs:
       - name: Install CocoaPods
         run: |
           cd ios
-          EXPO_USE_COMMUNITY_AUTOLINKING=1 pod install
+          pod install
+
+      - name: Disable code signing in project
+        run: |
+          cd ios
+          sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
+          sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Distribution";/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
+          sed -i '' 's/DEVELOPMENT_TEAM = [A-Z0-9]*;/DEVELOPMENT_TEAM = "";/g' SySlate.xcodeproj/project.pbxproj
+          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = ".*";/PROVISIONING_PROFILE_SPECIFIER = "";/g' SySlate.xcodeproj/project.pbxproj
 
       - name: Build unsigned IPA
         run: |
           cd ios
-          
-          # Create a temporary keychain
-          security create-keychain -p "" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security set-keychain-settings build.keychain
-
-          xcodebuild -workspace SySlate.xcworkspace \
+          xcrun xcodebuild \
+            -workspace SySlate.xcworkspace \
             -scheme SySlate \
             -configuration Release \
-            -sdk iphoneos \
+            -destination generic/platform=iOS \
             -archivePath $RUNNER_TEMP/SySlate.xcarchive \
-            archive \
-            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE="" \
-            OTHER_CODE_SIGN_FLAGS="--keychain build.keychain"
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean archive
 
-          # Manually package the IPA
-          mkdir -p $RUNNER_TEMP/Payload
-          cp -r $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app \
-            $RUNNER_TEMP/Payload/SySlate.app
-          cd $RUNNER_TEMP
-          zip -r SySlate.ipa Payload
+          cd $RUNNER_TEMP/SySlate.xcarchive/Products
+          mv Applications Payload
+          zip -r $RUNNER_TEMP/SySlate.ipa Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
