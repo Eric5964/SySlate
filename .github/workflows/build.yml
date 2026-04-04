@@ -23,9 +23,8 @@ jobs:
 
       - name: Install CocoaPods
         run: |
-          npm install -g @react-native-community/cli
           cd ios
-          pod install
+          EXPO_USE_COMMUNITY_AUTOLINKING=1 pod install
 
       - name: Build unsigned IPA
         run: |
