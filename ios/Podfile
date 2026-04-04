@@ -32,6 +32,9 @@ target 'SySlate' do
       target.build_configurations.each do |config|
         config.build_settings['SWIFT_VERSION'] = '5.0'
         config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        if target.name == 'Expo' || target.name == 'ExpoModulesCore'
+          config.build_settings['DEFINES_MODULE'] = 'YES'
+        end
       end
     end
   end
