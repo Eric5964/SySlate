@@ -1,7 +1,10 @@
-import ExpoModulesCore
+import Foundation
+import UIKit
+import React
+import React_RCTAppDelegate
 
 @UIApplicationMain
-class AppDelegate: ExpoAppDelegate {
+class AppDelegate: RCTAppDelegate {
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil

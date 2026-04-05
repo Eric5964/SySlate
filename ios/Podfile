@@ -16,6 +16,8 @@ target 'SySlate' do
   use_expo_modules!
   config = use_native_modules!
 
+  pod 'React-RCTAppDelegate', :path => '../node_modules/react-native/Libraries/AppDelegate', :modular_headers => true
+
   use_react_native!(
     :path => config[:reactNativePath],
     :hermes_enabled => true,
@@ -31,10 +33,6 @@ target 'SySlate' do
     installer.pods_project.targets.each do |pod_target|
       pod_target.build_configurations.each do |build_config|
         build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
-        if pod_target.name == 'Expo' || pod_target.name == 'ExpoModulesCore'
-          build_config.build_settings['DEFINES_MODULE'] = 'YES'
-          build_config.build_settings['SWIFT_COMPILATION_MODE'] = 'wholemodule'
-        end
       end
     end
   end
