@@ -28,7 +28,7 @@ export default function MiniPlayer() {
 
   if (!track) return null;
 
-  const bottom = TAB_BAR_HEIGHT + insets.bottom;
+const bottom = TAB_BAR_HEIGHT + insets.bottom + 8;
 
   return (
     <TouchableOpacity
@@ -63,19 +63,24 @@ const HIT = { top: 10, bottom: 10, left: 10, right: 10 };
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute', left: 0, right: 0, height: 62,
-    backgroundColor: '#111', borderTopWidth: 1, borderTopColor: '#1c1c1c',
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
+    position: 'absolute', left: 12, right: 12,
+    height: 64, borderRadius: 16,
+    backgroundColor: '#111',
+    borderWidth: 1, borderColor: '#1a1a1a',
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4, shadowRadius: 12,
   },
   art: {
-    width: 38, height: 38, borderRadius: 6, marginRight: 12,
-    backgroundColor: '#1a1a1a', borderWidth: 1, borderColor: '#2a1f3d',
+    width: 40, height: 40, borderRadius: 10, marginRight: 12,
+    backgroundColor: '#0f0f0f', borderWidth: 1, borderColor: '#1e1535',
     justifyContent: 'center', alignItems: 'center',
   },
-  artIcon:  { fontSize: 16, color: '#2a1f3d' },
-  info:     { flex: 1, marginRight: 8 },
-  title:    { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },
-  artist:   { color: '#555', fontSize: 12, marginTop: 2 },
+  artIcon:  { fontSize: 16, color: '#1e1535' },
+  info:     { flex: 1, marginRight: 4 },
+  title:    { color: '#e5e5e5', fontSize: 13, fontWeight: '600', letterSpacing: -0.1 },
+  artist:   { color: '#444', fontSize: 11, marginTop: 2 },
   btn:      { padding: 8 },
-  btnText:  { color: '#e5e5e5', fontSize: 18 },
+  btnText:  { color: '#bbb', fontSize: 17 },
 });

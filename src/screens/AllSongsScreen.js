@@ -80,7 +80,7 @@ const s = StyleSheet.create({
   empty:     { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
   emptyTitle:{ color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
   emptyText: { color: '#555', fontSize: 14, textAlign: 'center' },
-  row:       { paddingVertical: 14, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#111' },
+  row:       { paddingVertical: 14, paddingHorizontal: 24, marginHorizontal: 16, marginVertical: 3, borderRadius: 12, backgroundColor: '#0d0d0d' },
   rowTitle:  { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
   rowSub:    { color: '#555', fontSize: 12, marginTop: 2 },
 });

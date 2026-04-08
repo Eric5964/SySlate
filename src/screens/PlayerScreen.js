@@ -150,6 +150,7 @@ export default function PlayerScreen() {
       <Modal visible={showEQ} transparent animationType="slide" onRequestClose={() => setShowEQ(false)}>
         <TouchableOpacity style={s.overlay} onPress={() => setShowEQ(false)} />
         <View style={s.sheet}>
+          <View style={s.sheetHandle} />
           <Text style={s.sheetTitle}>EQ Preset</Text>
           {EQ_PRESETS.map(p => (
             <TouchableOpacity
@@ -168,6 +169,7 @@ export default function PlayerScreen() {
       <Modal visible={showQueue} transparent animationType="slide" onRequestClose={() => setShowQueue(false)}>
         <TouchableOpacity style={s.overlay} onPress={() => setShowQueue(false)} />
         <View style={s.sheet}>
+          <View style={s.sheetHandle} />
           <Text style={s.sheetTitle}>Up Next</Text>
           {queue.length === 0
             ? <Text style={s.queueEmpty}>Nothing queued</Text>
@@ -194,42 +196,66 @@ export default function PlayerScreen() {
 
 const s = StyleSheet.create({
   container:     { flex: 1, backgroundColor: '#0a0a0a', paddingTop: 56 },
-  topBar:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 24 },
+  topBar:        { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 32 },
   topBtn:        { padding: 8 },
   topIcon:       { color: '#7c3aed', fontSize: 22 },
-  topTag:        { color: '#7c3aed', fontSize: 13, fontWeight: '700' },
-  topLabel:      { color: '#555', fontSize: 13, fontWeight: '500', flex: 1, textAlign: 'center' },
-  topRight:      { flexDirection: 'row' },
-  artWrap:       { alignItems: 'center', marginBottom: 28 },
-  art:           { width: width - 80, height: width - 80, backgroundColor: '#111', borderRadius: 14, borderWidth: 1, borderColor: '#2a1f3d', justifyContent: 'center', alignItems: 'center' },
-  artNote:       { fontSize: 72, color: '#2a1f3d' },
-  info:          { paddingHorizontal: 24, marginBottom: 20 },
-  trackTitle:    { color: '#e5e5e5', fontSize: 20, fontWeight: '700', marginBottom: 6 },
-  trackArtist:   { color: '#7c3aed', fontSize: 14, fontWeight: '500' },
-  progressSection: { paddingHorizontal: 24, marginBottom: 28 },
-  progressTouch: { height: 24, justifyContent: 'center' },
-  progressTrack: { height: 3, backgroundColor: '#1e1e1e', borderRadius: 2 },
+  topTag:        { color: '#7c3aed', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
+  topLabel:      { color: '#444', fontSize: 13, flex: 1, textAlign: 'center', letterSpacing: 0.3 },
+  topRight:      { flexDirection: 'row', gap: 4 },
+
+  artWrap:       { alignItems: 'center', marginBottom: 36 },
+  art:           {
+    width: width - 64, height: width - 64,
+    backgroundColor: '#0f0f0f',
+    borderRadius: 20,
+    borderWidth: 1, borderColor: '#1e1535',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#7c3aed', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18, shadowRadius: 24,
+  },
+  artNote:       { fontSize: 80, color: '#1e1535' },
+
+  info:          { paddingHorizontal: 28, marginBottom: 24 },
+  trackTitle:    { color: '#f0f0f0', fontSize: 22, fontWeight: '700', marginBottom: 4, letterSpacing: -0.3 },
+  trackArtist:   { color: '#7c3aed', fontSize: 14, fontWeight: '500', letterSpacing: 0.2 },
+
+  progressSection: { paddingHorizontal: 28, marginBottom: 32 },
+  progressTouch: { height: 28, justifyContent: 'center' },
+  progressTrack: { height: 3, backgroundColor: '#1a1a1a', borderRadius: 2 },
   progressFill:  { height: 3, backgroundColor: '#7c3aed', borderRadius: 2 },
-  times:         { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  time:          { color: '#444', fontSize: 12 },
-  controls:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24 },
-  sideBtn:       { width: 56, alignItems: 'center' },
-  sideTxt:       { color: '#444', fontSize: 11, fontWeight: '700' },
+  times:         { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  time:          { color: '#3a3a3a', fontSize: 11, letterSpacing: 0.5 },
+
+  controls:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 28 },
+  sideBtn:       { width: 52, alignItems: 'center' },
+  sideTxt:       { color: '#333', fontSize: 10, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   sideTxtActive: { color: '#7c3aed' },
-  skipBtn:       { padding: 12 },
-  skipIcon:      { color: '#e5e5e5', fontSize: 28 },
-  playBtn:       { width: 72, height: 72, borderRadius: 36, backgroundColor: '#7c3aed', justifyContent: 'center', alignItems: 'center' },
-  playIcon:      { color: '#fff', fontSize: 28 },
-  overlay:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)' },
-  sheet:         { backgroundColor: '#111', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 44 },
-  sheetTitle:    { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 16 },
-  presetRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-  presetName:    { color: '#888', fontSize: 15 },
-  presetActive:  { color: '#e5e5e5', fontWeight: '600' },
-  check:         { color: '#7c3aed', fontSize: 16 },
-  queueEmpty:    { color: '#555', fontSize: 14, textAlign: 'center', paddingVertical: 20 },
-  qRow:          { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-  qNum:          { color: '#444', fontSize: 13, width: 28 },
-  qTitle:        { color: '#e5e5e5', fontSize: 14, fontWeight: '500' },
-  qArtist:       { color: '#555', fontSize: 12, marginTop: 2 },
+  skipBtn:       { padding: 10 },
+  skipIcon:      { color: '#ccc', fontSize: 26 },
+  playBtn:       {
+    width: 68, height: 68, borderRadius: 34,
+    backgroundColor: '#7c3aed',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#7c3aed', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4, shadowRadius: 14,
+  },
+  playIcon:      { color: '#fff', fontSize: 26 },
+
+  overlay:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' },
+  sheet:         {
+    backgroundColor: '#0f0f0f',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 48,
+  },
+  sheetHandle:   { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  sheetTitle:    { color: '#666', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 16 },
+  presetRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16 },
+  presetName:    { color: '#555', fontSize: 16 },
+  presetActive:  { color: '#f0f0f0', fontWeight: '600' },
+  check:         { color: '#7c3aed', fontSize: 18 },
+  queueEmpty:    { color: '#333', fontSize: 14, textAlign: 'center', paddingVertical: 24 },
+  qRow:          { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
+  qNum:          { color: '#2a2a2a', fontSize: 13, width: 28 },
+  qTitle:        { color: '#d0d0d0', fontSize: 14, fontWeight: '500' },
+  qArtist:       { color: '#444', fontSize: 12, marginTop: 2 },
 });

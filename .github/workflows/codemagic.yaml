@@ -1,0 +1,49 @@
+workflows:
+  syslate-unsigned:
+    name: SySlate Unsigned IPA
+    max_build_duration: 60
+    environment:
+      node: 20
+      xcode: 15.4
+      cocoapods: default
+    scripts:
+      - name: Install dependencies
+        script: npm install --legacy-peer-deps
+
+      - name: Pod install
+        script: |
+          cd ios
+          pod install --repo-update
+
+      - name: Disable code signing
+        script: |
+          cd ios
+          sed -i '' 's/CODE_SIGN_IDENTITY = .*/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
+          sed -i '' 's/CODE_SIGNING_REQUIRED = .*/CODE_SIGNING_REQUIRED = NO;/g' SySlate.xcodeproj/project.pbxproj
+          sed -i '' 's/CODE_SIGNING_ALLOWED = .*/CODE_SIGNING_ALLOWED = NO;/g' SySlate.xcodeproj/project.pbxproj
+
+      - name: Build archive
+        script: |
+          cd ios
+          xcodebuild archive \
+            -workspace SySlate.xcworkspace \
+            -scheme SySlate \
+            -configuration Release \
+            -archivePath $CM_BUILD_DIR/SySlate.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            | xcpretty
+
+      - name: Package IPA
+        script: |
+          mkdir -p $CM_BUILD_DIR/Payload
+          cp -r $CM_BUILD_DIR/SySlate.xcarchive/Products/Applications/SySlate.app \
+            $CM_BUILD_DIR/Payload/
+          cd $CM_BUILD_DIR
+          zip -r SySlate.ipa Payload
+          rm -rf Payload
+
+    artifacts:
+      - $CM_BUILD_DIR/SySlate.ipa
