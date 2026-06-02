@@ -26,7 +26,7 @@ jobs:
           cd ios
           pod install --repo-update
 
-      - name: Disable code signing in project
+      - name: Disable code signing
         run: |
           cd ios
           sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
@@ -53,11 +53,18 @@ jobs:
           cd $RUNNER_TEMP/SySlate.xcarchive/Products
           mv Applications Payload
           zip -r $RUNNER_TEMP/SySlate.ipa Payload
+
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SySlate-unsigned
+          path: ${{ runner.temp }}/SySlate.ipa
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          files: SySlate.ipa
+          files: ${{ runner.temp }}/SySlate.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
