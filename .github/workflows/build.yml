@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: write
 
     steps:
       - name: Checkout code
