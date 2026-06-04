@@ -10,8 +10,6 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
-      packages: write
-      actions: write
 
     steps:
       - name: Checkout code
@@ -24,6 +22,17 @@ jobs:
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Bundle JavaScript
+        run: |
+          node node_modules/.bin/react-native bundle \
+            --platform ios \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle \
+            --assets-dest $RUNNER_TEMP/rn-assets
+        env:
+          NODE_ENV: production
 
       - name: Install CocoaPods
         run: |
@@ -52,8 +61,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            NODE_BINARY=$(which node) \
+            SKIP_BUNDLING=1 \
             clean archive
+
+          echo "=== Injecting JS bundle into archive ==="
+          cp $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle \
+            $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/
+          cp -r $RUNNER_TEMP/rn-assets \
+            $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/assets \
+            2>/dev/null || true
+
+          echo "=== Verifying bundle is present ==="
+          ls $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/ | grep jsbundle
 
           cd $RUNNER_TEMP/SySlate.xcarchive/Products
           mv Applications Payload
