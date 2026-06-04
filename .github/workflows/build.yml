@@ -52,6 +52,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            NODE_BINARY=$(which node) \
             clean archive
 
           cd $RUNNER_TEMP/SySlate.xcarchive/Products
