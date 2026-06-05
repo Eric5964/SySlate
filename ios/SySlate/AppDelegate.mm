@@ -16,7 +16,8 @@
 #if DEBUG
   return [[RCTBundleURLProvider sharedSettings] jsBundleURLForBundleRoot:@".expo/.virtual-metro-bundler"];
 #else
-  return [[NSBundle mainBundle] URLForResource:@"main" withExtension:@"jsbundle"];
+  NSString *bundlePath = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"main.jsbundle"];
+  return [NSURL fileURLWithPath:bundlePath];
 #endif
 }
 

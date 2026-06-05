@@ -16,8 +16,6 @@ target 'SySlate' do
   use_expo_modules!
   config = use_native_modules!
 
-  pod 'React-RCTAppDelegate', :path => '../node_modules/react-native/Libraries/AppDelegate', :modular_headers => true
-
   use_react_native!(
     :path => config[:reactNativePath],
     :hermes_enabled => true,
