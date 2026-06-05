@@ -1,5 +1,5 @@
 #import <UIKit/UIKit.h>
-#import <ExpoModulesCore/ExpoModulesCore.h>
 
-@interface AppDelegate : EXAppDelegateWrapper
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property(nonatomic, strong) UIWindow* window;
 @end
