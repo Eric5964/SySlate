@@ -12,6 +12,7 @@
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.mm */; };
 		A9B3C2D1E0F4A5B6C7D8E9F0 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = B9C3D2E1F0A5B6C7D8E9F1A2 /* main.m */; };
+		C3D4E5F6A7B8C9D0E1F2A3B4 /* main.jsbundle in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B4C5 /* main.jsbundle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,7 @@
 		F11748412D0307B40044C1D9 /* AppDelegate.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = AppDelegate.mm; path = SySlate/AppDelegate.mm; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* SySlate-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "SySlate-Bridging-Header.h"; path = "SySlate/SySlate-Bridging-Header.h"; sourceTree = "<group>"; };
 		B9C3D2E1F0A5B6C7D8E9F1A2 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = main.m; path = SySlate/main.m; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B4C5 /* main.jsbundle */ = {isa = PBXFileReference; lastKnownFileType = file; name = main.jsbundle; path = SySlate/main.jsbundle; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,6 +49,7 @@
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
+				D4E5F6A7B8C9D0E1F2A3B4C5 /* main.jsbundle */,
 			);
 			name = SySlate;
 			sourceTree = "<group>";
@@ -107,6 +110,7 @@
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
+				C3D4E5F6A7B8C9D0E1F2A3B4 /* main.jsbundle in Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
 			);
