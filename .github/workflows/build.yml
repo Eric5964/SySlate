@@ -25,14 +25,12 @@ jobs:
 
       - name: Bundle JavaScript
         run: |
-          node node_modules/.bin/react-native bundle \
+          NODE_ENV=production node node_modules/.bin/react-native bundle \
             --platform ios \
             --dev false \
             --entry-file index.js \
             --bundle-output ios/SySlate/main.jsbundle \
-            --assets-dest ios/SySlate
-            env:
-          NODE_ENV: production
+            --assets-dest $RUNNER_TEMP/rn-assets
 
       - name: Install CocoaPods
         run: |
