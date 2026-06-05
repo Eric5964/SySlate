@@ -62,6 +62,13 @@ jobs:
             SKIP_BUNDLING=1 \
             clean archive
 
+          echo "=== Copying JS bundle into app ==="
+          cp $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle \
+            $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/main.jsbundle
+
+          echo "=== Verifying ==="
+          ls -la $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/main.jsbundle
+
           cd $RUNNER_TEMP/SySlate.xcarchive/Products
           mv Applications Payload
           zip -r $RUNNER_TEMP/SySlate.ipa Payload
