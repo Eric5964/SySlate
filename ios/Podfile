@@ -22,7 +22,7 @@ target 'SySlate' do
     :app_path => "#{Pod::Config.instance.installation_root}/.."
   )
 
-  post_install do |installer|
+post_install do |installer|
     react_native_post_install(
       installer,
       config[:reactNativePath],
@@ -31,6 +31,10 @@ target 'SySlate' do
     installer.pods_project.targets.each do |pod_target|
       pod_target.build_configurations.each do |build_config|
         build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        if pod_target.name == 'Expo' || pod_target.name == 'ExpoModulesCore'
+          build_config.build_settings['DEFINES_MODULE'] = 'YES'
+          build_config.build_settings['SWIFT_COMPILATION_MODE'] = 'wholemodule'
+        end
       end
     end
   end
