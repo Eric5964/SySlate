@@ -1,4 +1,7 @@
 import React, { useEffect, useState, createContext } from 'react';
+import { enableScreens } from 'react-native-screens';
+enableScreens(false);
+
 import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
