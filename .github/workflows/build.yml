@@ -23,6 +23,13 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Patch react-native-screens iOS 26
+        run: |
+          grep -rl "usesNewAndroidHeaderHeightImplementation" node_modules/react-native-screens/ | while read f; do
+            sed -i '' "s/'usesNewAndroidHeaderHeightImplementation' in compatibilityFlags/'usesNewAndroidHeaderHeightImplementation' in (compatibilityFlags || {})/g" "$f"
+            echo "Patched: $f"
+          done
+
       - name: Bundle JavaScript
         run: |
           NODE_ENV=production node node_modules/.bin/react-native bundle \
