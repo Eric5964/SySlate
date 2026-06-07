@@ -16,8 +16,7 @@ import SettingsScreen  from './screens/SettingsScreen';
 import PlayerScreen    from './screens/PlayerScreen';
 import MiniPlayer      from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
-
-export const LibraryContext = createContext({ playlists: [], allSongs: [], reload: async () => {} });
+import { LibraryContext } from './context/LibraryContext';
 
 const Tab  = createBottomTabNavigator();
 const Root = createNativeStackNavigator();

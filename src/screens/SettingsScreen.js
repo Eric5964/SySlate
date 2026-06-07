@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { usePlayback } from '../context/PlaybackContext';
-import { LibraryContext } from '../App';
+import { LibraryContext } from '../context/LibraryContext';
 import {
   getCrossfade, setCrossfade,
   getSkipCrossfade, setSkipCrossfade,

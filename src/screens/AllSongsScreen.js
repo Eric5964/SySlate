@@ -4,7 +4,7 @@ import {
   TextInput, StyleSheet, StatusBar,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { LibraryContext } from '../App';
+import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 
 export default function AllSongsScreen() {

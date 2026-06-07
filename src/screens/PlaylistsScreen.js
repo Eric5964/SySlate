@@ -1,7 +1,7 @@
 import React, { useContext } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { LibraryContext } from '../App';
+import { LibraryContext } from '../context/LibraryContext';
 
 export default function PlaylistsScreen() {
   const { playlists, reload } = useContext(LibraryContext);
