@@ -39,6 +39,12 @@ jobs:
             --bundle-output ios/SySlate/main.jsbundle \
             --assets-dest $RUNNER_TEMP/rn-assets
 
+      - name: Patch bundle for iOS 26
+        run: |
+          sed -i '' -E "s/'usesNewAndroidHeaderHeightImplementation'in ([a-zA-Z_\$]+)\.compatibilityFlags/'usesNewAndroidHeaderHeightImplementation'in (\1.compatibilityFlags||{})/g" ios/SySlate/main.jsbundle
+          echo "Patch result:"
+          grep -n "compatibilityFlags" ios/SySlate/main.jsbundle | head -5
+
       - name: Install CocoaPods
         run: |
           cd ios
