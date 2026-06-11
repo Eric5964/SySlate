@@ -1,6 +1,4 @@
-import React, { useEffect, useState, createContext } from 'react';
-import { enableScreens } from 'react-native-screens';
-enableScreens(false);
+import React, { useEffect, useState } from 'react';
 
 import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
@@ -17,6 +15,9 @@ import PlayerScreen    from './screens/PlayerScreen';
 import MiniPlayer      from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
 import { LibraryContext } from './context/LibraryContext';
+
+import { enableScreens } from 'react-native-screens';
+enableScreens(false);
 
 const Tab  = createBottomTabNavigator();
 const Root = createNativeStackNavigator();
