@@ -3,7 +3,7 @@ import {
   View, Text, StyleSheet, ScrollView,
   Switch, TouchableOpacity, StatusBar,
 } from 'react-native';
-import { Slider } from '@react-native-community/slider';
+import Slider from '@react-native-community/slider';
 import { usePlayback } from '../context/PlaybackContext';
 import { LibraryContext } from '../context/LibraryContext';
 import {
