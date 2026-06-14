@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import ErrorBoundary from './ErrorBoundary';
 
 import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
@@ -85,9 +86,10 @@ export default function App() {
     })();
   }, []);
 
-  return (
-    <SafeAreaProvider>
-      <LibraryContext.Provider value={{ ...library, reload }}>
+    return (
+        <ErrorBoundary>
+            <SafeAreaProvider>
+                <LibraryContext.Provider value={{ ...library, reload }}>
         <PlaybackProvider>
           <NavigationContainer>
             <Root.Navigator screenOptions={{ headerShown: false }}>
@@ -101,6 +103,7 @@ export default function App() {
           </NavigationContainer>
         </PlaybackProvider>
       </LibraryContext.Provider>
-    </SafeAreaProvider>
-  );
+            </SafeAreaProvider>
+        </ErrorBoundary>
+    );
 }
