@@ -1,3 +1,4 @@
+import 'react-native-gesture-handler';
 import './polyfill';
 import { registerRootComponent } from 'expo';
 import TrackPlayer from 'react-native-track-player';

@@ -3,7 +3,7 @@ import ErrorBoundary from './ErrorBoundary';
 
 import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import TrackPlayer, { Capability } from 'react-native-track-player';
@@ -21,7 +21,7 @@ import { enableScreens } from 'react-native-screens';
 enableScreens(false);
 
 const Tab  = createBottomTabNavigator();
-const Root = createNativeStackNavigator();
+const Root = createStackNavigator();
 
 function Tabs() {
   return (
