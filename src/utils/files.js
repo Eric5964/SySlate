@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 
-const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac']);
+const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus']);
 
 function ext(name) {
     const i = name.lastIndexOf('.');
@@ -17,38 +17,46 @@ function parseFilename(filename, album) {
     };
 }
 
+function normPath(p) {
+    return p.endsWith('/') ? p : p + '/';
+}
+
 async function scanFolder(folderPath, folderName) {
     let items = [];
-    try {
-        items = await FileSystem.readDirectoryAsync(folderPath);
-    } catch (e) {
-        console.warn('scanFolder error:', folderPath, e?.message);
-        return [];
-    }
+    try { items = await FileSystem.readDirectoryAsync(folderPath); }
+    catch (e) { console.warn('scanFolder error:', folderPath, e?.message); return []; }
+
     const tracks = [];
     for (const item of items) {
         if (item.startsWith('.')) continue;
-        if (!AUDIO_EXT.has(ext(item))) continue;
-        const url = folderPath.endsWith('/') ? folderPath + item : `${folderPath}/${item}`;
-        tracks.push({
-            id: url, url, filename: item,
-            ...parseFilename(item, folderName),
-        });
+        const fullPath = normPath(folderPath) + item;
+
+        if (AUDIO_EXT.has(ext(item))) {
+            tracks.push({ id: fullPath, url: fullPath, filename: item, ...parseFilename(item, folderName) });
+        } else {
+            // Go one level deeper (handle album subfolders)
+            try {
+                const info = await FileSystem.getInfoAsync(fullPath);
+                if (info.isDirectory) {
+                    const subItems = await FileSystem.readDirectoryAsync(fullPath);
+                    for (const sub of subItems) {
+                        if (sub.startsWith('.') || !AUDIO_EXT.has(ext(sub))) continue;
+                        const subPath = normPath(fullPath) + sub;
+                        tracks.push({ id: subPath, url: subPath, filename: sub, ...parseFilename(sub, item) });
+                    }
+                }
+            } catch { }
+        }
     }
     return tracks.sort((a, b) => a.title.localeCompare(b.title));
 }
 
 export async function ensureMusicFolder() {
-    const base = FileSystem.documentDirectory;
-    const musicDir = base + 'Music/';
     try {
-        const info = await FileSystem.getInfoAsync(musicDir);
-        if (!info.exists) {
-            await FileSystem.makeDirectoryAsync(musicDir, { intermediates: true });
-        }
-    } catch (e) {
-        console.warn('ensureMusicFolder error:', e?.message);
-    }
+        const path = FileSystem.documentDirectory + 'Music/';
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) await FileSystem.makeDirectoryAsync(path, { intermediates: true });
+    } catch (e) { console.warn('ensureMusicFolder:', e?.message); }
 }
 
 export function getDocumentPath() {
@@ -57,49 +65,33 @@ export function getDocumentPath() {
 
 export async function scanLibrary() {
     const base = FileSystem.documentDirectory;
-    console.log('Scanning:', base);
-
-    // Ensure the Music folder exists
     await ensureMusicFolder();
 
     let items = [];
-    try {
-        items = await FileSystem.readDirectoryAsync(base);
-        console.log('Root items:', items);
-    } catch (e) {
-        console.error('scanLibrary root error:', e?.message);
-        return { playlists: [], allSongs: [], scanPath: base };
-    }
+    try { items = await FileSystem.readDirectoryAsync(base); }
+    catch (e) { return { playlists: [], allSongs: [], scanPath: base }; }
 
     const playlists = [];
     const allSongs = [];
 
     for (const item of items) {
         if (item.startsWith('.')) continue;
-        const path = base.endsWith('/') ? base + item : `${base}/${item}`;
-
+        const path = normPath(base) + item;
         let info;
-        try {
-            info = await FileSystem.getInfoAsync(path);
-        } catch { continue; }
+        try { info = await FileSystem.getInfoAsync(path); } catch { continue; }
 
         if (info.isDirectory) {
-            const songs = await scanFolder(path + '/', item);
+            const songs = await scanFolder(path, item);
             if (songs.length > 0) {
-                playlists.push({ name: item, path: path + '/', songs });
+                playlists.push({ name: item, path: normPath(path), songs });
                 allSongs.push(...songs);
             }
         } else if (AUDIO_EXT.has(ext(item))) {
-            allSongs.push({
-                id: path, url: path, filename: item,
-                ...parseFilename(item, 'Library'),
-            });
+            allSongs.push({ id: path, url: path, filename: item, ...parseFilename(item, 'Library') });
         }
     }
 
     playlists.sort((a, b) => a.name.localeCompare(b.name));
     allSongs.sort((a, b) => a.title.localeCompare(b.title));
-
-    console.log(`Found ${playlists.length} playlists, ${allSongs.length} songs`);
     return { playlists, allSongs, scanPath: base };
 }

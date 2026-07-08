@@ -8,6 +8,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import TrackPlayer, { Capability } from 'react-native-track-player';
 
+import { ThemeProvider } from './context/ThemeContext';
 import { PlaybackProvider } from './context/PlaybackContext';
 import AllSongsScreen  from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
@@ -88,22 +89,23 @@ export default function App() {
 
     return (
         <ErrorBoundary>
-            <SafeAreaProvider>
-                <LibraryContext.Provider value={{ ...library, reload }}>
-        <PlaybackProvider>
-          <NavigationContainer>
-            <Root.Navigator screenOptions={{ headerShown: false }}>
-              <Root.Screen name="Main" component={MainLayout} />
-              <Root.Screen
-                name="Player"
-                component={PlayerScreen}
-                options={{ presentation: 'modal' }}
-              />
-            </Root.Navigator>
-          </NavigationContainer>
-        </PlaybackProvider>
-      </LibraryContext.Provider>
-            </SafeAreaProvider>
+            <ThemeProvider>
+                <SafeAreaProvider>
+                    <LibraryContext.Provider value={{ ...library, reload }}>
+                        <PlaybackProvider>
+                            <NavigationContainer>
+                                <Root.Navigator screenOptions={{ headerShown: false }}>
+                                    <Root.Screen name="Main" component={MainLayout} />
+                                    <Root.Screen
+                                        name="Player"
+                                        component={PlayerScreen}
+                                        options={{ presentation: 'modal' }}
+                                    />
+                                </Root.Navigator>
+                            </NavigationContainer>
+                        </PlaybackProvider>
+                    </LibraryContext.Provider>
+                </SafeAreaProvider>
+            </ThemeProvider>
         </ErrorBoundary>
     );
-}

@@ -58,6 +58,42 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" ios/SySlate/Info.plist
           echo "Info.plist file sharing keys set"
 
+      - name: Generate app icons
+        run: |
+          ICON="$GITHUB_WORKSPACE/icon.jpg"
+          ICONSET="$GITHUB_WORKSPACE/ios/SySlate/Images.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICONSET"
+          sizes=(20 29 40 58 60 76 80 87 120 152 167 180 1024)
+          for s in "${sizes[@]}"; do
+            sips -z $s $s "$ICON" --out "$ICONSET/icon_${s}.png" 2>/dev/null
+          done
+          cat > "$ICONSET/Contents.json" << 'EOF'
+          {
+            "images": [
+              {"size":"20x20","idiom":"iphone","filename":"icon_40.png","scale":"2x"},
+              {"size":"20x20","idiom":"iphone","filename":"icon_60.png","scale":"3x"},
+              {"size":"29x29","idiom":"iphone","filename":"icon_58.png","scale":"2x"},
+              {"size":"29x29","idiom":"iphone","filename":"icon_87.png","scale":"3x"},
+              {"size":"40x40","idiom":"iphone","filename":"icon_80.png","scale":"2x"},
+              {"size":"40x40","idiom":"iphone","filename":"icon_120.png","scale":"3x"},
+              {"size":"60x60","idiom":"iphone","filename":"icon_120.png","scale":"2x"},
+              {"size":"60x60","idiom":"iphone","filename":"icon_180.png","scale":"3x"},
+              {"size":"20x20","idiom":"ipad","filename":"icon_20.png","scale":"1x"},
+              {"size":"20x20","idiom":"ipad","filename":"icon_40.png","scale":"2x"},
+              {"size":"29x29","idiom":"ipad","filename":"icon_29.png","scale":"1x"},
+              {"size":"29x29","idiom":"ipad","filename":"icon_58.png","scale":"2x"},
+              {"size":"40x40","idiom":"ipad","filename":"icon_40.png","scale":"1x"},
+              {"size":"40x40","idiom":"ipad","filename":"icon_80.png","scale":"2x"},
+              {"size":"76x76","idiom":"ipad","filename":"icon_76.png","scale":"1x"},
+              {"size":"76x76","idiom":"ipad","filename":"icon_152.png","scale":"2x"},
+              {"size":"83.5x83.5","idiom":"ipad","filename":"icon_167.png","scale":"2x"},
+              {"size":"1024x1024","idiom":"ios-marketing","filename":"icon_1024.png","scale":"1x"}
+            ],
+            "info":{"version":1,"author":"xcode"}
+          }
+          EOF
+          echo "Icons generated"
+
       - name: Disable code signing
         run: |
           cd ios

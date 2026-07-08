@@ -6,6 +6,7 @@ import {
 import Slider from '../components/PureSlider';
 import { usePlayback } from '../context/PlaybackContext';
 import { LibraryContext } from '../context/LibraryContext';
+import { useTheme, THEMES } from '../context/ThemeContext';
 import {
   getCrossfade, setCrossfade,
   getSkipCrossfade, setSkipCrossfade,
@@ -17,7 +18,8 @@ export default function SettingsScreen() {
   const { reload } = useContext(LibraryContext);
   const [cf,      setCf]      = useState(3.0);
   const [skipCf,  setSkipCf]  = useState(0.5);
-  const [volNorm, setVN]      = useState(true);
+  const [volNorm, setVN] = useState(true);
+  const { themeId, setTheme } = useTheme();
 
   useEffect(() => {
     (async () => {
@@ -100,6 +102,20 @@ export default function SettingsScreen() {
             thumbColor="#fff"
           />
         </View>
+          </Section>
+      <Section title="Accent Color">
+        <View style={s.colorGrid}>
+          {Object.entries(THEMES).map(([id, t]) => (
+            <TouchableOpacity
+                key={id}
+                onPress={() => setTheme(id)}
+                style={[s.colorSwatch, { backgroundColor: t.accent },
+                themeId === id && s.colorSwatchActive]}
+            >
+                {themeId === id && <Text style={s.colorCheck}>✓</Text>}
+              </TouchableOpacity>
+          ))}
+        </View>
       </Section>
     </ScrollView>
   );
@@ -145,5 +161,9 @@ const s = StyleSheet.create({
   sliderEnd:    { color: '#444', fontSize: 11 },
   toggleRow:    { flexDirection: 'row', alignItems: 'center', padding: 16, paddingHorizontal: 24 },
   toggleLabel:  { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
-  toggleSub:    { color: '#555', fontSize: 12, marginTop: 3 },
+  toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
+  colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 12 },
+  colorSwatch: { width: 44, height: 44, borderRadius: 22 },
+  colorSwatchActive: { borderWidth: 3, borderColor: '#fff' },
+  colorCheck: { color: '#fff', textAlign: 'center', lineHeight: 40, fontWeight: '700' },
 });

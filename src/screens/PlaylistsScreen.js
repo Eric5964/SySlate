@@ -20,9 +20,7 @@ export default function PlaylistsScreen() {
         <View style={s.empty}>
             <Text style={s.emptyTitle}>No playlists yet</Text>
             <Text style={s.emptyText}>
-                Add music folders to Files &rarr; On My iPhone &rarr; SySlate{'\n\n'}
-                Scan path:{'\n'}
-                <Text style={{ color: '#7c3ed', fontSize: 10 }}>{scanPath}</Text>
+                Add music folders to Files → On My iPhone → SySlate → Music
             </Text>
         </View>
     ) : (
