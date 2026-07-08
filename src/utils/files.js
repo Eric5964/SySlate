@@ -1,7 +1,9 @@
 import * as FileSystem from 'expo-file-system';
 
-const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus']);
-
+const AUDIO_EXT = new Set([
+    '.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac',
+    '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape',
+]);
 function ext(name) {
     const i = name.lastIndexOf('.');
     return i >= 0 ? name.slice(i).toLowerCase() : '';
