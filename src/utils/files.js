@@ -4,6 +4,7 @@ const AUDIO_EXT = new Set([
     '.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac',
     '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape',
 ]);
+
 function ext(name) {
     const i = name.lastIndexOf('.');
     return i >= 0 ? name.slice(i).toLowerCase() : '';
@@ -19,24 +20,20 @@ function parseFilename(filename, album) {
     };
 }
 
-function normPath(p) {
-    return p.endsWith('/') ? p : p + '/';
-}
+function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 
 async function scanFolder(folderPath, folderName) {
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(folderPath); }
-    catch (e) { console.warn('scanFolder error:', folderPath, e?.message); return []; }
+    catch { return []; }
 
     const tracks = [];
     for (const item of items) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
-
         if (AUDIO_EXT.has(ext(item))) {
             tracks.push({ id: fullPath, url: fullPath, filename: item, ...parseFilename(item, folderName) });
         } else {
-            // Go one level deeper (handle album subfolders)
             try {
                 const info = await FileSystem.getInfoAsync(fullPath);
                 if (info.isDirectory) {
@@ -58,11 +55,7 @@ export async function ensureMusicFolder() {
         const path = FileSystem.documentDirectory + 'Music/';
         const info = await FileSystem.getInfoAsync(path);
         if (!info.exists) await FileSystem.makeDirectoryAsync(path, { intermediates: true });
-    } catch (e) { console.warn('ensureMusicFolder:', e?.message); }
-}
-
-export function getDocumentPath() {
-    return FileSystem.documentDirectory ?? 'unknown';
+    } catch { }
 }
 
 export async function scanLibrary() {
@@ -71,10 +64,13 @@ export async function scanLibrary() {
 
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(base); }
-    catch (e) { return { playlists: [], allSongs: [], scanPath: base }; }
+    catch { return { playlists: [], allSongs: [], scanPath: base ?? '' }; }
 
     const playlists = [];
-    const allSongs = [];
+    const seenIds = new Set();
+
+    // Root-level audio files
+    const rootSongs = [];
 
     for (const item of items) {
         if (item.startsWith('.')) continue;
@@ -86,14 +82,21 @@ export async function scanLibrary() {
             const songs = await scanFolder(path, item);
             if (songs.length > 0) {
                 playlists.push({ name: item, path: normPath(path), songs });
-                allSongs.push(...songs);
+                songs.forEach(s => seenIds.add(s.id));
             }
-        } else if (AUDIO_EXT.has(ext(item))) {
-            allSongs.push({ id: path, url: path, filename: item, ...parseFilename(item, 'Library') });
+        } else if (AUDIO_EXT.has(ext(item)) && !seenIds.has(path)) {
+            rootSongs.push({ id: path, url: path, filename: item, ...parseFilename(item, 'Library') });
+            seenIds.add(path);
         }
     }
 
     playlists.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Deduplicated allSongs sorted by title
+    const allSongs = [];
+    for (const p of playlists) for (const s of p.songs) if (!allSongs.find(x => x.id === s.id)) allSongs.push(s);
+    for (const s of rootSongs) if (!allSongs.find(x => x.id === s.id)) allSongs.push(s);
     allSongs.sort((a, b) => a.title.localeCompare(b.title));
-    return { playlists, allSongs, scanPath: base };
+
+    return { playlists, allSongs, scanPath: base ?? '' };
 }

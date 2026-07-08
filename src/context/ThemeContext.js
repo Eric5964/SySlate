@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const THEMES = {
@@ -9,25 +9,22 @@ export const THEMES = {
     orange: { name: 'Orange', accent: '#ea580c', accentDim: '#3d2a1a' },
     pink: { name: 'Pink', accent: '#db2777', accentDim: '#3d1a2e' },
     mono: { name: 'Mono', accent: '#888888', accentDim: '#222222' },
+    white: { name: 'White', accent: '#f0f0f0', accentDim: '#2a2a2a' },
 };
 
-const ThemeContext = createContext({
-    theme: THEMES.purple,
-    themeId: 'purple',
-    setTheme: () => { },
-});
+const ThemeContext = createContext({ theme: THEMES.purple, themeId: 'purple', setTheme: () => { } });
 
 export function ThemeProvider({ children }) {
     const [themeId, setThemeId] = useState('purple');
 
-    const setTheme = useCallback(async (id) => {
-        setThemeId(id);
-        await AsyncStorage.setItem('theme_id', id);
-    }, []);
-
-    React.useEffect(() => {
+    useEffect(() => {
         AsyncStorage.getItem('theme_id').then(id => { if (id && THEMES[id]) setThemeId(id); });
     }, []);
+
+    const setTheme = async (id) => {
+        setThemeId(id);
+        await AsyncStorage.setItem('theme_id', id);
+    };
 
     return (
         <ThemeContext.Provider value={{ theme: THEMES[themeId], themeId, setTheme }}>
