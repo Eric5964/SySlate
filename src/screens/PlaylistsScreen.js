@@ -4,7 +4,7 @@ import { useNavigation } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 
 export default function PlaylistsScreen() {
-  const { playlists, reload } = useContext(LibraryContext);
+  const { playlists, reload, allSongs, scanPath } = useContext(LibraryContext);
   const navigation = useNavigation();
 
   return (
@@ -16,12 +16,16 @@ export default function PlaylistsScreen() {
           <Text style={s.btnText}>↻</Text>
         </TouchableOpacity>
       </View>
-      {playlists.length === 0 ? (
+    {playlists.length === 0 ? (
         <View style={s.empty}>
-          <Text style={s.emptyTitle}>No playlists yet</Text>
-          <Text style={s.emptyText}>Add music folders to{'\n'}Files → On My iPhone → SySlate</Text>
+            <Text style={s.emptyTitle}>No playlists yet</Text>
+            <Text style={s.emptyText}>
+                Add music folders to Files &rarr; On My iPhone &rarr; SySlate{'\n\n'}
+                Scan path:{'\n'}
+                <Text style={{ color: '#7c3ed', fontSize: 10 }}>{scanPath}</Text>
+            </Text>
         </View>
-      ) : (
+    ) : (
         <FlatList
           data={playlists}
           keyExtractor={item => item.path}

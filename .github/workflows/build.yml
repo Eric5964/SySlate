@@ -50,6 +50,14 @@ jobs:
           cd ios
           pod install --repo-update
 
+      - name: Ensure Info.plist file sharing keys
+        run: |
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" ios/SySlate/Info.plist 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" ios/SySlate/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" ios/SySlate/Info.plist 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" ios/SySlate/Info.plist
+          echo "Info.plist file sharing keys set"
+
       - name: Disable code signing
         run: |
           cd ios

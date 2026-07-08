@@ -56,12 +56,12 @@ function MainLayout() {
 }
 
 export default function App() {
-  const [library, setLibrary] = useState({ playlists: [], allSongs: [] });
+    const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '' });
 
   const reload = async () => {
     try {
       const lib = await scanLibrary();
-      setLibrary(lib);
+        setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath });
     } catch (e) {
       console.error('reload error:', e);
     }

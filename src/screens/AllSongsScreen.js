@@ -8,7 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 
 export default function AllSongsScreen() {
-  const { allSongs }            = useContext(LibraryContext);
+  const { allSongs, scanPath } = useContext(LibraryContext);
   const { playSongFromPlaylist } = usePlayback();
   const navigation              = useNavigation();
   const [search, setSearch]     = useState('');
@@ -48,12 +48,16 @@ export default function AllSongsScreen() {
           autoFocus
         />
       )}
-      {allSongs.length === 0 ? (
+    {allSongs.length === 0 ? (
         <View style={s.empty}>
-          <Text style={s.emptyTitle}>No songs found</Text>
-          <Text style={s.emptyText}>Add folders to Files → On My iPhone → SySlate</Text>
+            <Text style={s.emptyTitle}>No songs found</Text>
+            <Text style={s.emptyText}>
+                Add music folders to Files &rarr; On My iPhone &rarr; SySlate{'\n\n'}
+                Scan path:{'\n'}
+                <Text style={{ color: '#7c3ed', fontSize: 10 }}>{scanPath}</Text>
+            </Text>
         </View>
-      ) : (
+    ) : (
         <FlatList
           data={filtered}
           keyExtractor={item => item.id}

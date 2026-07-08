@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import { View, PanResponder, StyleSheet } from 'react-native';
 
 export default function PureSlider({
@@ -9,56 +9,71 @@ export default function PureSlider({
     thumbTintColor = '#7c3aed',
     style,
 }) {
-    const [trackWidth, setTrackWidth] = useState(0);
-    const current = useRef(value);
+    const containerRef = useRef(null);
+    const layout = useRef({ pageX: 0, width: 1 });
+    const val = useRef(value);
 
-    const snap = (v) => {
+    const clampSnap = (v) => {
         let c = Math.max(minimumValue, Math.min(maximumValue, v));
         if (step > 0) c = Math.round((c - minimumValue) / step) * step + minimumValue;
-        return Math.round(c * 100) / 100;
+        return Math.round(c * 1000) / 1000;
     };
 
-    const fromX = (x) => snap(minimumValue + (x / trackWidth) * (maximumValue - minimumValue));
+    const getVal = (pageX) => {
+        const ratio = (pageX - layout.current.pageX) / layout.current.width;
+        return clampSnap(minimumValue + ratio * (maximumValue - minimumValue));
+    };
+
+    const measure = () => {
+        containerRef.current?.measure((x, y, w, h, pageX) => {
+            layout.current = { pageX, width: w || 1 };
+        });
+    };
 
     const pan = useRef(PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (e) => {
-            if (!trackWidth) return;
-            const v = fromX(Math.max(0, Math.min(trackWidth, e.nativeEvent.locationX)));
-            current.current = v;
-            onValueChange?.(v);
+            measure();
+            val.current = getVal(e.nativeEvent.pageX);
+            onValueChange?.(val.current);
         },
         onPanResponderMove: (e) => {
-            if (!trackWidth) return;
-            const v = fromX(Math.max(0, Math.min(trackWidth, e.nativeEvent.locationX)));
-            current.current = v;
-            onValueChange?.(v);
+            val.current = getVal(e.nativeEvent.pageX);
+            onValueChange?.(val.current);
         },
-        onPanResponderRelease: () => onSlidingComplete?.(current.current),
+        onPanResponderRelease: () => onSlidingComplete?.(val.current),
     })).current;
 
-    const pct = trackWidth > 0
-        ? Math.max(0, Math.min(1, (value - minimumValue) / (maximumValue - minimumValue)))
-        : 0;
+    const pct = Math.max(0, Math.min(1,
+        (value - minimumValue) / (maximumValue - minimumValue)
+    ));
 
     return (
         <View
-            style={[styles.wrap, style]}
-            onLayout={e => setTrackWidth(e.nativeEvent.layout.width)}
+            ref={containerRef}
+            style={[styles.container, style]}
+            onLayout={measure}
             {...pan.panHandlers}
         >
             <View style={[styles.track, { backgroundColor: maximumTrackTintColor }]}>
-                <View style={[styles.fill, { width: `${pct * 100}%`, backgroundColor: minimumTrackTintColor }]} />
+                <View style={[styles.fill, {
+                    width: `${pct * 100}%`,
+                    backgroundColor: minimumTrackTintColor,
+                }]} />
             </View>
-            <View style={[styles.thumb, { marginLeft: pct * trackWidth - 10, backgroundColor: thumbTintColor }]} />
+            <View style={[styles.thumb, {
+                left: `${pct * 100}%`,
+                transform: [{ translateX: -10 }],
+                backgroundColor: thumbTintColor,
+            }]} />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    wrap: { height: 40, justifyContent: 'center' },
+    container: { height: 44, justifyContent: 'center', position: 'relative' },
     track: { height: 3, borderRadius: 2, overflow: 'hidden' },
     fill: { height: '100%', borderRadius: 2 },
-    thumb: { position: 'absolute', width: 20, height: 20, borderRadius: 10, top: 10 },
+    thumb: { position: 'absolute', width: 20, height: 20, borderRadius: 10, top: 12 },
 });
