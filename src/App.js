@@ -97,7 +97,7 @@ export default function App() {
               <Root.Screen
                 name="Player"
                 component={PlayerScreen}
-                options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                options={{ presentation: 'modal' }}
               />
             </Root.Navigator>
           </NavigationContainer>
