@@ -5,6 +5,7 @@ import {
     getShuffleMode, setShuffleMode,
     getEQPreset, setEQPreset,
     getSession, setSession,
+    setLastSession
 } from '../utils/storage';
 
 const Ctx = createContext(null);
@@ -104,7 +105,11 @@ export function PlaybackProvider({ children }) {
         if (!currentPlaylist?.path || !currentPlaylist?.queue) return;
         try {
             const index = await TrackPlayer.getCurrentTrack();
-            if (index !== null) await setSession(currentPlaylist.path, { queue: currentPlaylist.queue, index });
+            const progress = await TrackPlayer.getProgress();
+            if (index !== null) {
+                await setSession(currentPlaylist.path, { queue: currentPlaylist.queue, index });
+                await setLastSession({ playlist: currentPlaylist, index, position: progress?.position ?? 0 });
+            }
         } catch { }
     }, [currentPlaylist]);
 

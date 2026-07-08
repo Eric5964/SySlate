@@ -15,6 +15,8 @@ import {
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
 } from '../utils/storage';
+import { Share, Alert } from 'react-native';
+import { exportAllSettings, importAllSettings } from '../utils/storage';
 
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
@@ -180,6 +182,19 @@ export default function SettingsScreen() {
                 <TouchableOpacity style={s.row} onPress={reload}>
                     <Text style={s.rowLabel}>Rescan Music</Text>
                     <Text style={s.rowSub}>Re-reads Files → On My iPhone → SySlate</Text>
+                </TouchableOpacity>
+            </Section>
+
+            {/* 7. Export/Import Settings */}
+            <Section title="Sync & Backup">
+                <TouchableOpacity style={s.row} onPress={async () => {
+                    try {
+                        const json = await exportAllSettings();
+                        await Share.share({ message: json, title: 'SySlate Settings' });
+                    } catch (e) { Alert.alert('Export failed', e.message); }
+                }}>
+                    <Text style={s.rowLabel}>Export Settings</Text>
+                    <Text style={s.rowSub}>Share settings to use on another device</Text>
                 </TouchableOpacity>
             </Section>
 

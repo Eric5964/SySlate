@@ -18,6 +18,7 @@ import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
+import { getLastSession } from './utils/storage';
 
 enableScreens(false);
 
@@ -81,15 +82,13 @@ function AppInner() {
     useEffect(() => {
         (async () => {
             try {
-                await TrackPlayer.setupPlayer({ minBuffer: 15, maxBuffer: 60, waitForBuffer: true });
-                await TrackPlayer.updateOptions({
-                    capabilities: [
-                        Capability.Play, Capability.Pause,
-                        Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop,
-                    ],
-                    compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
-                    progressUpdateEventThrottle: 500,
-                });
+                const last = await getLastSession();
+                if (last?.playlist && last?.index !== undefined) {
+                    await TrackPlayer.reset();
+                    await TrackPlayer.add(last.playlist.songs ?? []);
+                    if (last.index > 0) await TrackPlayer.skip(last.index);
+                    if (last.position > 0) await TrackPlayer.seekTo(last.position);
+                }
             } catch { }
             reload();
         })();
