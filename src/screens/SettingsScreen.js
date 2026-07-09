@@ -2,8 +2,10 @@ import React, { useState, useEffect, useContext } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, Modal, TextInput,
+    Share, Alert,
 } from 'react-native';
 import { LibraryContext } from '../context/LibraryContext';
+import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES } from '../context/ThemeContext';
 import PureSlider from '../components/PureSlider';
@@ -14,12 +16,8 @@ import {
     getVolNorm, setVolNorm,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
+    exportAllSettings, importAllSettings,
 } from '../utils/storage';
-import { Share, Alert } from 'react-native';
-import { exportAllSettings, importAllSettings } from '../utils/storage';
-import { Share, Alert, Modal, TextInput } from 'react-native';
-import { useLibrary } from '../context/LibraryContext';
-import { exportAllSettings, importAllSettings } from '../utils/storage';
 
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
