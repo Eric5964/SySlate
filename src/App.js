@@ -44,17 +44,18 @@ function Tabs() {
             <Tab.Screen
                 name="All Songs"
                 component={AllSongsScreen}
-                options={{ tabBarIcon: ({ color }) => <TabIcon symbol="♪" color={color} /> }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 20 }}>{'♪'}</Text> }}
             />
             <Tab.Screen
                 name="Playlists"
                 component={PlaylistsScreen}
-                options={{ tabBarIcon: ({ color }) => <TabIcon symbol="▶" color={color} /> }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 20 }}>{'▶'}</Text> }}
             />
             <Tab.Screen
                 name="Settings"
                 component={SettingsScreen}
-                options={{ tabBarIcon: ({ color }) => <TabIcon symbol="⚙" color={color} /> }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 16 }}>{'\u2699\uFE0E'}</Text> }}
+            />
             />
         </Tab.Navigator>
     );
@@ -89,6 +90,18 @@ function AppInner() {
                     if (last.index > 0) await TrackPlayer.skip(last.index);
                     if (last.position > 0) await TrackPlayer.seekTo(last.position);
                 }
+            } catch { }
+            try {
+                await TrackPlayer.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
+                await TrackPlayer.setVolume(1);
+                await TrackPlayer.updateOptions({
+                    capabilities: [
+                        Capability.Play, Capability.Pause,
+                        Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop,
+                    ],
+                    compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
+                    progressUpdateEventThrottle: 500,
+                });
             } catch { }
             reload();
         })();

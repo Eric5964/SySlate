@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import TrackPlayer, { RepeatMode } from 'react-native-track-player';
+import TrackPlayer from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
 import {
     getShuffleMode, setShuffleMode,
     getEQPreset, setEQPreset,
     getSession, setSession,
-    setLastSession
+    setLastSession,
 } from '../utils/storage';
 
 const Ctx = createContext(null);
@@ -30,6 +30,7 @@ export function PlaybackProvider({ children }) {
         await TrackPlayer.reset();
         await TrackPlayer.add(queue);
         if (startIndex > 0) await TrackPlayer.skip(startIndex);
+        await TrackPlayer.setVolume(1);
         await TrackPlayer.play();
 
         setCurrentPlaylist({ ...playlist, queue });
@@ -45,7 +46,10 @@ export function PlaybackProvider({ children }) {
         const isOn = mode !== 'off';
 
         const song = playlist.songs.find(s => s.id === songId);
-        if (!song) return;
+        if (!song) {
+            console.warn('Song not found:', songId);
+            return;
+        }
 
         let queue;
         if (!isOn) {
@@ -60,6 +64,8 @@ export function PlaybackProvider({ children }) {
             await TrackPlayer.reset();
             await TrackPlayer.add(queue);
         }
+
+        await TrackPlayer.setVolume(1);
         await TrackPlayer.play();
 
         setCurrentPlaylist({ ...playlist, queue });
@@ -88,6 +94,7 @@ export function PlaybackProvider({ children }) {
         const next = modes[(modes.indexOf(repeatMode) + 1) % modes.length];
         setRepeatModeState(next);
         try {
+            const { RepeatMode } = require('react-native-track-player');
             await TrackPlayer.setRepeatMode(
                 next === 'one' ? RepeatMode.Track :
                     next === 'all' ? RepeatMode.Queue :
@@ -105,10 +112,11 @@ export function PlaybackProvider({ children }) {
         if (!currentPlaylist?.path || !currentPlaylist?.queue) return;
         try {
             const index = await TrackPlayer.getCurrentTrack();
-            const progress = await TrackPlayer.getProgress();
             if (index !== null) {
+                let position = 0;
+                try { const prog = await TrackPlayer.getProgress(); position = prog?.position ?? 0; } catch { }
                 await setSession(currentPlaylist.path, { queue: currentPlaylist.queue, index });
-                await setLastSession({ playlist: currentPlaylist, index, position: progress?.position ?? 0 });
+                await setLastSession({ playlist: currentPlaylist, index, position });
             }
         } catch { }
     }, [currentPlaylist]);

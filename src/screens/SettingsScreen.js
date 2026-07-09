@@ -17,6 +17,9 @@ import {
 } from '../utils/storage';
 import { Share, Alert } from 'react-native';
 import { exportAllSettings, importAllSettings } from '../utils/storage';
+import { Share, Alert, Modal, TextInput } from 'react-native';
+import { useLibrary } from '../context/LibraryContext';
+import { exportAllSettings, importAllSettings } from '../utils/storage';
 
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
@@ -31,6 +34,9 @@ export default function SettingsScreen() {
     const [showNewEQ, setShowNewEQ] = useState(false);
     const [newPresetName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
+    const { scanPath } = useLibrary();
+    const [showImport, setShowImport] = useState(false);
+    const [importText, setImportText] = useState('');
 
     useEffect(() => {
         (async () => {
@@ -177,24 +183,43 @@ export default function SettingsScreen() {
                 </View>
             </Section>
 
-            {/* 6. Rescan */}
+            {/* Music Path */}
+            <Section title="Music Location">
+                <View style={{ padding: 16, paddingHorizontal: 20 }}>
+                    <Text style={{ color: '#555', fontSize: 12, lineHeight: 18 }}>
+                        Put music files or folders at:
+                    </Text>
+                    <Text style={{ color: theme.accent, fontSize: 11, marginTop: 6, fontFamily: 'Courier' }}>
+                        {scanPath ? scanPath.replace('file://', '') : 'Loading...'}
+                    </Text>
+                    <Text style={{ color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 }}>
+                        Folders inside become playlists. Files in root appear in All Songs.
+                    </Text>
+                </View>
+            </Section>
+
+            {/* Rescan */}
             <Section title="Library">
                 <TouchableOpacity style={s.row} onPress={reload}>
                     <Text style={s.rowLabel}>Rescan Music</Text>
-                    <Text style={s.rowSub}>Re-reads Files → On My iPhone → SySlate</Text>
+                    <Text style={s.rowSub}>Re-reads music from the location above</Text>
                 </TouchableOpacity>
             </Section>
 
-            {/* 7. Export/Import Settings */}
-            <Section title="Sync & Backup">
+            {/* Export / Import */}
+            <Section title="Backup & Sync">
                 <TouchableOpacity style={s.row} onPress={async () => {
                     try {
                         const json = await exportAllSettings();
                         await Share.share({ message: json, title: 'SySlate Settings' });
-                    } catch (e) { Alert.alert('Export failed', e.message); }
+                    } catch (e) { Alert.alert('Export failed', String(e.message)); }
                 }}>
                     <Text style={s.rowLabel}>Export Settings</Text>
-                    <Text style={s.rowSub}>Share settings to use on another device</Text>
+                    <Text style={s.rowSub}>Share your EQ, crossfade, theme settings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
+                    <Text style={s.rowLabel}>Import Settings</Text>
+                    <Text style={s.rowSub}>Paste exported settings JSON here</Text>
                 </TouchableOpacity>
             </Section>
 
@@ -229,6 +254,42 @@ export default function SettingsScreen() {
                         onPress={saveNewPreset}
                     >
                         <Text style={s.saveBtnText}>Save Preset</Text>
+                    </TouchableOpacity>
+                </View>
+            </Modal>
+
+            {/* Import Settings Modal */}
+            <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
+                <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
+                <View style={s.sheet}>
+                    <View style={s.sheetHandle} />
+                    <Text style={s.sheetTitle}>Import Settings</Text>
+                    <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>
+                        Paste your exported settings JSON below:
+                    </Text>
+                    <TextInput
+                        style={[s.nameInput, { height: 140, textAlignVertical: 'top', borderColor: theme.accent }]}
+                        value={importText}
+                        onChangeText={setImportText}
+                        placeholder="Paste JSON here..."
+                        placeholderTextColor="#333"
+                        multiline
+                        autoCorrect={false}
+                        autoCapitalize="none"
+                    />
+                    <TouchableOpacity
+                        style={[s.saveBtn, { backgroundColor: theme.accent }]}
+                        onPress={async () => {
+                            try {
+                                await importAllSettings(importText);
+                                setShowImport(false);
+                                Alert.alert('Done', 'Settings imported. Restart the app to see all changes.');
+                            } catch (e) {
+                                Alert.alert('Import failed', 'Invalid JSON. Make sure you pasted the full exported text.');
+                            }
+                        }}
+                    >
+                        <Text style={s.saveBtnText}>Apply Settings</Text>
                     </TouchableOpacity>
                 </View>
             </Modal>

@@ -31,6 +31,7 @@ async function scanFolder(folderPath, folderName) {
     for (const item of items) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
+
         if (AUDIO_EXT.has(ext(item))) {
             tracks.push({ id: fullPath, url: fullPath, filename: item, ...parseFilename(item, folderName) });
         } else {
@@ -50,30 +51,25 @@ async function scanFolder(folderPath, folderName) {
     return tracks.sort((a, b) => a.title.localeCompare(b.title));
 }
 
-export async function ensureMusicFolder() {
-    try {
-        const path = FileSystem.documentDirectory + 'Music/';
-        const info = await FileSystem.getInfoAsync(path);
-        if (!info.exists) await FileSystem.makeDirectoryAsync(path, { intermediates: true });
-    } catch { }
-}
-
 export async function scanLibrary() {
     const base = FileSystem.documentDirectory;
-    await ensureMusicFolder();
+    if (!base) return { playlists: [], allSongs: [], scanPath: '' };
 
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(base); }
-    catch { return { playlists: [], allSongs: [], scanPath: base ?? '' }; }
+    catch { return { playlists: [], allSongs: [], scanPath: base }; }
 
     const playlists = [];
     const seenIds = new Set();
-
-    // Root-level audio files
     const rootSongs = [];
 
     for (const item of items) {
         if (item.startsWith('.')) continue;
+
+        // Skip system/app folders
+        if (['Application Support', 'Caches', 'Cookies', 'Preferences',
+            'Saved Application State', 'SystemData', 'tmp'].includes(item)) continue;
+
         const path = normPath(base) + item;
         let info;
         try { info = await FileSystem.getInfoAsync(path); } catch { continue; }
@@ -92,11 +88,10 @@ export async function scanLibrary() {
 
     playlists.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Deduplicated allSongs sorted by title
     const allSongs = [];
     for (const p of playlists) for (const s of p.songs) if (!allSongs.find(x => x.id === s.id)) allSongs.push(s);
-    for (const s of rootSongs) if (!allSongs.find(x => x.id === s.id)) allSongs.push(s);
+    for (const s of rootSongs) allSongs.push(s);
     allSongs.sort((a, b) => a.title.localeCompare(b.title));
 
-    return { playlists, allSongs, scanPath: base ?? '' };
+    return { playlists, allSongs, scanPath: base };
 }
