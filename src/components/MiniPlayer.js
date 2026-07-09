@@ -5,7 +5,6 @@ import TrackPlayer, { usePlaybackState, State, Event } from 'react-native-track-
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { skipWithCrossfade } from '../services/PlaybackService';
 import { skipWithCrossfade, playWithRamp } from '../services/PlaybackService';
 
 const TAB_BAR_HEIGHT = 49;
