@@ -13,9 +13,10 @@ function ext(name) {
 function parseFilename(filename, album) {
     const base = filename.slice(0, filename.lastIndexOf('.'));
     const parts = base.split(' - ');
+    // title is the first part, artist is everything after
     return {
-        title: parts.length >= 2 ? parts.slice(1).join(' - ').trim() : base,
-        artist: parts.length >= 2 ? parts[0].trim() : 'Unknown Artist',
+        title: parts[0].trim(),
+        artist: parts.length >= 2 ? parts.slice(1).join(' - ').trim() : '',
         album,
     };
 }
@@ -31,7 +32,6 @@ async function scanFolder(folderPath, folderName) {
     for (const item of items) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
-
         if (AUDIO_EXT.has(ext(item))) {
             tracks.push({ id: fullPath, url: fullPath, filename: item, ...parseFilename(item, folderName) });
         } else {
@@ -51,6 +51,11 @@ async function scanFolder(folderPath, folderName) {
     return tracks.sort((a, b) => a.title.localeCompare(b.title));
 }
 
+const SYSTEM_FOLDERS = new Set([
+    'Application Support', 'Caches', 'Cookies', 'Preferences',
+    'Saved Application State', 'SystemData', 'tmp', 'Library',
+]);
+
 export async function scanLibrary() {
     const base = FileSystem.documentDirectory;
     if (!base) return { playlists: [], allSongs: [], scanPath: '' };
@@ -64,11 +69,7 @@ export async function scanLibrary() {
     const rootSongs = [];
 
     for (const item of items) {
-        if (item.startsWith('.')) continue;
-
-        // Skip system/app folders
-        if (['Application Support', 'Caches', 'Cookies', 'Preferences',
-            'Saved Application State', 'SystemData', 'tmp'].includes(item)) continue;
+        if (item.startsWith('.') || SYSTEM_FOLDERS.has(item)) continue;
 
         const path = normPath(base) + item;
         let info;
@@ -89,8 +90,13 @@ export async function scanLibrary() {
     playlists.sort((a, b) => a.name.localeCompare(b.name));
 
     const allSongs = [];
-    for (const p of playlists) for (const s of p.songs) if (!allSongs.find(x => x.id === s.id)) allSongs.push(s);
-    for (const s of rootSongs) allSongs.push(s);
+    const seen2 = new Set();
+    for (const p of playlists) for (const s of p.songs) {
+        if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
+    }
+    for (const s of rootSongs) {
+        if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
+    }
     allSongs.sort((a, b) => a.title.localeCompare(b.title));
 
     return { playlists, allSongs, scanPath: base };

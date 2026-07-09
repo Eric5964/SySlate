@@ -6,6 +6,7 @@ import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade } from '../services/PlaybackService';
+import { skipWithCrossfade, playWithRamp } from '../services/PlaybackService';
 
 const TAB_BAR_HEIGHT = 49;
 
@@ -56,7 +57,7 @@ export default function MiniPlayer() {
                 <Text style={styles.btnText}>|◁</Text>
             </TouchableOpacity>
             <TouchableOpacity
-                onPress={() => isPlaying ? TrackPlayer.pause() : TrackPlayer.play()}
+                onPress={() => isPlaying ? TrackPlayer.pause() : playWithRamp()}
                 style={styles.btn} hitSlop={HIT}
             >
                 <Text style={[styles.btnText, { color: theme.accent }]}>

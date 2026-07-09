@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { View, PanResponder, StyleSheet } from 'react-native';
 
 export default function PureSlider({
@@ -10,43 +10,48 @@ export default function PureSlider({
     style,
 }) {
     const containerRef = useRef(null);
-    const layout = useRef({ pageX: 0, width: 1 });
-    const val = useRef(value);
-
-    const clampSnap = (v) => {
-        let c = Math.max(minimumValue, Math.min(maximumValue, v));
-        if (step > 0) c = Math.round((c - minimumValue) / step) * step + minimumValue;
-        return Math.round(c * 1000) / 1000;
-    };
-
-    const getVal = (pageX) => {
-        const ratio = (pageX - layout.current.pageX) / layout.current.width;
-        return clampSnap(minimumValue + ratio * (maximumValue - minimumValue));
-    };
+    const layoutRef = useRef({ pageX: 0, width: 1 });
+    const valRef = useRef(value);
+    // Keep ALL props fresh — avoids stale closure in PanResponder
+    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step });
+    useEffect(() => {
+        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step };
+    });
 
     const measure = () => {
-        containerRef.current?.measure((x, y, w, h, pageX) => {
-            layout.current = { pageX, width: w || 1 };
+        containerRef.current?.measure((_x, _y, w, _h, pageX) => {
+            layoutRef.current = { pageX: pageX ?? 0, width: w || 1 };
         });
     };
 
+    const computeVal = (pageX) => {
+        const { minimumValue: mn, maximumValue: mx, step: st } = propsRef.current;
+        const ratio = (pageX - layoutRef.current.pageX) / layoutRef.current.width;
+        let v = mn + ratio * (mx - mn);
+        v = Math.max(mn, Math.min(mx, v));
+        if (st > 0) v = Math.round((v - mn) / st) * st + mn;
+        return Math.round(v * 1000) / 1000;
+    };
+
     const pan = useRef(PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderGrant: (e) => {
             measure();
-            val.current = getVal(e.nativeEvent.pageX);
-            onValueChange?.(val.current);
+            valRef.current = computeVal(e.nativeEvent.pageX);
+            propsRef.current.onValueChange?.(valRef.current);
         },
         onPanResponderMove: (e) => {
-            val.current = getVal(e.nativeEvent.pageX);
-            onValueChange?.(val.current);
+            valRef.current = computeVal(e.nativeEvent.pageX);
+            propsRef.current.onValueChange?.(valRef.current);
         },
-        onPanResponderRelease: () => onSlidingComplete?.(val.current),
+        onPanResponderRelease: () => {
+            propsRef.current.onSlidingComplete?.(valRef.current);
+        },
     })).current;
 
     const pct = Math.max(0, Math.min(1,
-        (value - minimumValue) / (maximumValue - minimumValue)
+        (value - minimumValue) / ((maximumValue - minimumValue) || 1)
     ));
 
     return (
@@ -57,14 +62,11 @@ export default function PureSlider({
             {...pan.panHandlers}
         >
             <View style={[styles.track, { backgroundColor: maximumTrackTintColor }]}>
-                <View style={[styles.fill, {
-                    width: `${pct * 100}%`,
-                    backgroundColor: minimumTrackTintColor,
-                }]} />
+                <View style={[styles.fill, { width: `${pct * 100}%`, backgroundColor: minimumTrackTintColor }]} />
             </View>
             <View style={[styles.thumb, {
                 left: `${pct * 100}%`,
-                transform: [{ translateX: -10 }],
+                marginLeft: -14,
                 backgroundColor: thumbTintColor,
             }]} />
         </View>
@@ -72,8 +74,8 @@ export default function PureSlider({
 }
 
 const styles = StyleSheet.create({
-    container: { height: 44, justifyContent: 'center', position: 'relative' },
-    track: { height: 3, borderRadius: 2, overflow: 'hidden' },
+    container: { height: 52, justifyContent: 'center', position: 'relative' },
+    track: { height: 4, borderRadius: 2, overflow: 'hidden' },
     fill: { height: '100%', borderRadius: 2 },
-    thumb: { position: 'absolute', width: 20, height: 20, borderRadius: 10, top: 12 },
+    thumb: { position: 'absolute', width: 28, height: 28, borderRadius: 14, top: 12 },
 });

@@ -39,3 +39,5 @@ export const importAllSettings = async (jsonString) => {
     const pairs = Object.entries(obj).map(([k, v]) => [k, v]);
     await AsyncStorage.multiSet(pairs);
 };
+export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);

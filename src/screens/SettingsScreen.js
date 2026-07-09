@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, Modal, TextInput,
-    Share, Alert,
+    Share, Alert, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useLibrary } from '../context/LibraryContext';
@@ -14,10 +14,12 @@ import {
     getCrossfade, setCrossfade,
     getSkipCrossfade, setSkipCrossfade,
     getVolNorm, setVolNorm,
+    getAudioRamp, setAudioRamp,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
+
 
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
@@ -35,6 +37,7 @@ export default function SettingsScreen() {
     const { scanPath } = useLibrary();
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
+    const [ramp, setRamp] = useState(0);
 
     useEffect(() => {
         (async () => {
@@ -43,6 +46,7 @@ export default function SettingsScreen() {
             setVN(await getVolNorm());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
+            setRamp(await getAudioRamp());
         })();
     }, []);
 
@@ -133,7 +137,24 @@ export default function SettingsScreen() {
                 <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
             </Section>
 
-            {/* 3. Shuffle */}
+            {/* 4. Audio Ramp */}
+            <Section title="Audio Ramp on Play">
+                <Text style={s.sliderSub}>Volume fade-in when starting or resuming playback</Text>
+                <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
+                <PureSlider
+                    style={s.slider}
+                    minimumValue={0} maximumValue={2} step={0.1} value={ramp}
+                    onValueChange={setRamp}
+                    onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
+                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
+                />
+                <View style={s.sliderEnds}>
+                    <Text style={s.sliderEnd}>Off</Text>
+                    <Text style={s.sliderEnd}>2s</Text>
+                </View>
+            </Section>
+
+            {/* 5. Shuffle */}
             <Section title="Shuffle Mode">
                 {MODES.map(m => (
                     <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => changeShuffleMode(m.id)}>
@@ -146,7 +167,7 @@ export default function SettingsScreen() {
                 ))}
             </Section>
 
-            {/* 4. Volume normalization */}
+            {/* 6. Volume normalization */}
             <Section title="Audio">
                 <View style={s.toggleRow}>
                     <View style={{ flex: 1 }}>
@@ -162,7 +183,7 @@ export default function SettingsScreen() {
                 </View>
             </Section>
 
-            {/* 5. Color */}
+            {/* 7. Color */}
             <Section title="Accent Color">
                 <View style={s.colorGrid}>
                     {Object.entries(THEMES).map(([id, t]) => (
@@ -215,10 +236,42 @@ export default function SettingsScreen() {
                     <Text style={s.rowLabel}>Export Settings</Text>
                     <Text style={s.rowSub}>Share your EQ, crossfade, theme settings</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
-                    <Text style={s.rowLabel}>Import Settings</Text>
-                    <Text style={s.rowSub}>Paste exported settings JSON here</Text>
-                </TouchableOpacity>
+                <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
+                    <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
+                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                        <View style={s.sheet}>
+                            <View style={s.sheetHandle} />
+                            <Text style={s.sheetTitle}>Import Settings</Text>
+                            <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>
+                                Paste your exported settings JSON:
+                            </Text>
+                            <TextInput
+                                style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
+                                value={importText}
+                                onChangeText={setImportText}
+                                placeholder="Paste JSON here..."
+                                placeholderTextColor="#333"
+                                multiline
+                                autoCorrect={false}
+                                autoCapitalize="none"
+                            />
+                            <TouchableOpacity
+                                style={[s.saveBtn, { backgroundColor: theme.accent }]}
+                                onPress={async () => {
+                                    try {
+                                        await importAllSettings(importText);
+                                        setShowImport(false);
+                                        Alert.alert('Done', 'Settings imported. Restart the app to see changes.');
+                                    } catch {
+                                        Alert.alert('Import failed', 'Invalid JSON — make sure you pasted the full export.');
+                                    }
+                                }}
+                            >
+                                <Text style={s.saveBtnText}>Apply Settings</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </KeyboardAvoidingView>
+                </Modal>
             </Section>
 
             {/* New EQ Preset Modal */}

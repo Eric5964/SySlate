@@ -64,7 +64,7 @@ function Tabs() {
                 component={SettingsScreen}
                 options={{
                     tabBarIcon: ({ color }) => (
-                        <Text style={{ color, fontSize: 18 }}>⚙</Text>
+                        <Text style={{ color, fontSize: 22, letterSpacing: 2 }}>···</Text>
                     ),
                 }}
             />
@@ -115,7 +115,7 @@ function AppInner() {
                         Capability.Pause,
                         Capability.SkipToNext,
                     ],
-                    progressUpdateEventThrottle: 500,
+                    progressUpdateEventThrottle: 200,
                 });
             } catch { }
 
