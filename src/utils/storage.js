@@ -14,20 +14,39 @@ export const getSession = (path) => safe(() => AsyncStorage.getItem(`session:${p
 export const setSession = (path, data) => safe(() => AsyncStorage.setItem(`session:${path}`, JSON.stringify(data)), null);
 export const getVolNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
 export const setVolNorm = (v) => safe(() => AsyncStorage.setItem('vol_norm', String(v)), null);
+export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);
+export const getRampOnPause = () => safe(() => AsyncStorage.getItem('ramp_on_pause').then(v => v === 'true'), false);
+export const setRampOnPause = (v) => safe(() => AsyncStorage.setItem('ramp_on_pause', String(v)), null);
 export const getCustomPresets = () => safe(() => AsyncStorage.getItem('custom_eq_presets').then(v => v ? JSON.parse(v) : []), []);
 export const setCustomPresets = (p) => safe(() => AsyncStorage.setItem('custom_eq_presets', JSON.stringify(p)), null);
 export const getHiddenPresets = () => safe(() => AsyncStorage.getItem('hidden_eq_presets').then(v => v ? JSON.parse(v) : []), []);
 export const setHiddenPresets = (p) => safe(() => AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(p)), null);
 export const getPlaylistViewFormat = () => safe(() => AsyncStorage.getItem('playlist_view_format').then(v => v ?? 'list'), 'list');
 export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('playlist_view_format', f), null);
-
-// Resume playback
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
-export const setLastSession = (data) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(data)), null);
+export const setLastSession = (d) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(d)), null);
 
-// Settings export/import
+export const incrementPlayCount = async (songId) => {
+    if (!songId) return;
+    try {
+        const k = `pc:${songId}`;
+        const v = await AsyncStorage.getItem(k);
+        await AsyncStorage.setItem(k, String(v ? parseInt(v) + 1 : 1));
+    } catch { }
+};
+
+export const getPlayCounts = async (songIds) => {
+    try {
+        const pairs = await AsyncStorage.multiGet(songIds.map(id => `pc:${id}`));
+        const out = {};
+        pairs.forEach(([k, v]) => { out[k.replace('pc:', '')] = v ? parseInt(v) : 0; });
+        return out;
+    } catch { return {}; }
+};
+
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'shuffle_mode', 'crossfade', 'skip_crossfade', 'vol_norm', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format'];
+    const keys = ['theme_id', 'shuffle_mode', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -36,8 +55,5 @@ export const exportAllSettings = async () => {
 
 export const importAllSettings = async (jsonString) => {
     const obj = JSON.parse(jsonString);
-    const pairs = Object.entries(obj).map(([k, v]) => [k, v]);
-    await AsyncStorage.multiSet(pairs);
+    await AsyncStorage.multiSet(Object.entries(obj).map(([k, v]) => [k, v]));
 };
-export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 0), 0);
-export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);

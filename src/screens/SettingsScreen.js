@@ -15,67 +15,61 @@ import {
     getSkipCrossfade, setSkipCrossfade,
     getVolNorm, setVolNorm,
     getAudioRamp, setAudioRamp,
+    getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
-
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
-    const { reload } = useContext(LibraryContext);
+    const { reload, scanPath } = useLibrary();
     const { themeId, setTheme, theme } = useTheme();
 
     const [cf, setCf] = useState(3.0);
     const [skipCf, setSkipCf] = useState(0.5);
     const [volNorm, setVN] = useState(true);
+    const [ramp, setRamp] = useState(0);
+    const [rampPause, setRampPause] = useState(false);
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
     const [showNewEQ, setShowNewEQ] = useState(false);
-    const [newPresetName, setNewName] = useState('');
+    const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
-    const { scanPath } = useLibrary();
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const [ramp, setRamp] = useState(0);
 
     useEffect(() => {
         (async () => {
             setCf(await getCrossfade());
             setSkipCf(await getSkipCrossfade());
             setVN(await getVolNorm());
+            setRamp(await getAudioRamp());
+            setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
-            setRamp(await getAudioRamp());
         })();
     }, []);
 
-    const togglePresetVisible = async (id) => {
+    const togglePreset = async (id) => {
         const next = hiddenPresets.includes(id)
             ? hiddenPresets.filter(x => x !== id)
             : [...hiddenPresets, id];
-        setHP(next);
-        await setHiddenPresets(next);
+        setHP(next); await setHiddenPresets(next);
     };
 
-    const deleteCustomPreset = async (id) => {
+    const deletePreset = async (id) => {
         const next = customPresets.filter(p => p.id !== id);
-        setCP(next);
-        await setCustomPresets(next);
+        setCP(next); await setCustomPresets(next);
     };
 
     const saveNewPreset = async () => {
-        if (!newPresetName.trim()) return;
+        if (!newName.trim()) return;
         const id = 'custom_' + Date.now();
-        const next = [...customPresets, { id, name: newPresetName.trim(), bands: [...newBands] }];
-        setCP(next);
-        await setCustomPresets(next);
-        setShowNewEQ(false);
-        setNewName('');
-        setNewBands(new Array(BAND_COUNT).fill(0));
+        const next = [...customPresets, { id, name: newName.trim(), bands: [...newBands] }];
+        setCP(next); await setCustomPresets(next);
+        setShowNewEQ(false); setNewName(''); setNewBands(new Array(BAND_COUNT).fill(0));
     };
-
-    const allPresets = [...BUILT_IN_PRESETS, ...customPresets];
 
     const MODES = [
         { id: 'off', label: 'Off', sub: 'Play in order' },
@@ -85,76 +79,52 @@ export default function SettingsScreen() {
     ];
 
     return (
-        <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 140 }}>
+        <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 160 }}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
 
             {/* 1. EQ */}
             <Section title="EQ Presets">
-                <View style={s.eqNote}>
-                    <Text style={s.eqNoteText}>Audio processing coming in next update. Presets save and apply automatically.</Text>
-                </View>
-                {allPresets.map(p => (
+                {[...BUILT_IN_PRESETS, ...customPresets].map(p => (
                     <View key={p.id} style={s.eqRow}>
-                        <TouchableOpacity onPress={() => togglePresetVisible(p.id)} style={s.eqCheck}>
-                            <Text style={[s.eqCheckBox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                {!hiddenPresets.includes(p.id) ? '✓' : ''}
-                            </Text>
+                        <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
+                            <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 12, fontWeight: '700' }}>✓</Text>}
+                            </View>
                         </TouchableOpacity>
                         <Text style={s.eqName}>{p.name}</Text>
                         {customPresets.find(c => c.id === p.id) && (
-                            <TouchableOpacity onPress={() => deleteCustomPreset(p.id)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                                <Text style={s.eqDelete}>✕</Text>
+                            <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
+                                <Text style={s.eqDel}>✕</Text>
                             </TouchableOpacity>
                         )}
                     </View>
                 ))}
-                <TouchableOpacity style={[s.addPreset, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
-                    <Text style={[s.addPresetText, { color: theme.accent }]}>+ Add Custom Preset</Text>
+                <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
+                    <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                 </TouchableOpacity>
             </Section>
 
             {/* 2. Crossfade */}
             <Section title="Crossfade — Track End">
-                <Text style={s.sliderSub}>Fades out when a track naturally ends</Text>
+                <Text style={s.sliderSub}>Fade out when a track ends naturally</Text>
                 <Text style={[s.sliderVal, { color: theme.accent }]}>{cf.toFixed(1)}s</Text>
-                <PureSlider
-                    style={s.slider} minimumValue={0} maximumValue={12} step={0.5} value={cf}
+                <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={0.5} value={cf}
                     onValueChange={setCf} onSlidingComplete={v => { setCf(v); setCrossfade(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                />
+                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                 <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
             </Section>
 
             <Section title="Crossfade — Skip">
-                <Text style={s.sliderSub}>Softens the cut when you skip manually</Text>
+                <Text style={s.sliderSub}>Soften manual skips</Text>
                 <Text style={[s.sliderVal, { color: theme.accent }]}>{skipCf.toFixed(1)}s</Text>
-                <PureSlider
-                    style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
+                <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
                     onValueChange={setSkipCf} onSlidingComplete={v => { setSkipCf(v); setSkipCrossfade(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                />
+                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                 <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
             </Section>
 
-            {/* 4. Audio Ramp */}
-            <Section title="Audio Ramp on Play">
-                <Text style={s.sliderSub}>Volume fade-in when starting or resuming playback</Text>
-                <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
-                <PureSlider
-                    style={s.slider}
-                    minimumValue={0} maximumValue={2} step={0.1} value={ramp}
-                    onValueChange={setRamp}
-                    onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                />
-                <View style={s.sliderEnds}>
-                    <Text style={s.sliderEnd}>Off</Text>
-                    <Text style={s.sliderEnd}>2s</Text>
-                </View>
-            </Section>
-
-            {/* 5. Shuffle */}
+            {/* 3. Shuffle */}
             <Section title="Shuffle Mode">
                 {MODES.map(m => (
                     <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => changeShuffleMode(m.id)}>
@@ -167,182 +137,139 @@ export default function SettingsScreen() {
                 ))}
             </Section>
 
-            {/* 6. Volume normalization */}
+            {/* 4. Volume + Audio */}
             <Section title="Audio">
                 <View style={s.toggleRow}>
                     <View style={{ flex: 1 }}>
                         <Text style={s.toggleLabel}>Volume Normalization</Text>
                         <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
                     </View>
-                    <Switch
-                        value={volNorm}
-                        onValueChange={v => { setVN(v); setVolNorm(v); }}
-                        trackColor={{ false: '#222', true: theme.accent }}
-                        thumbColor="#fff"
-                    />
+                    <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
+                        trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                </View>
+                <Text style={s.sliderSub}>Audio ramp on play</Text>
+                <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
+                <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
+                    onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
+                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
+                <View style={s.toggleRow}>
+                    <View style={{ flex: 1 }}>
+                        <Text style={s.toggleLabel}>Ramp on Pause</Text>
+                        <Text style={s.toggleSub}>Fade out when pausing too</Text>
+                    </View>
+                    <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
+                        trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                 </View>
             </Section>
 
-            {/* 7. Color */}
+            {/* 5. Color */}
             <Section title="Accent Color">
                 <View style={s.colorGrid}>
                     {Object.entries(THEMES).map(([id, t]) => (
-                        <TouchableOpacity
-                            key={id}
-                            onPress={() => setTheme(id)}
-                            style={[
-                                s.colorSwatch,
-                                { backgroundColor: t.accent },
-                                themeId === id && s.colorSwatchActive,
-                            ]}
-                        >
-                            {themeId === id && <Text style={s.colorCheck}>✓</Text>}
+                        <TouchableOpacity key={id} onPress={() => setTheme(id)}
+                            style={[s.swatch, { backgroundColor: t.accent }, themeId === id && s.swatchActive,
+                            t.accent === '#e5e5e5' && { borderWidth: 1, borderColor: '#444' }]}>
+                            {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 14 }}>✓</Text>}
                         </TouchableOpacity>
                     ))}
                 </View>
             </Section>
 
-            {/* Music Path */}
+            {/* 6. Music location */}
             <Section title="Music Location">
                 <View style={{ padding: 16, paddingHorizontal: 20 }}>
-                    <Text style={{ color: '#555', fontSize: 12, lineHeight: 18 }}>
-                        Put music files or folders at:
-                    </Text>
-                    <Text style={{ color: theme.accent, fontSize: 11, marginTop: 6, fontFamily: 'Courier' }}>
-                        {scanPath ? scanPath.replace('file://', '') : 'Loading...'}
+                    <Text style={{ color: '#555', fontSize: 13, lineHeight: 20 }}>Put music files or folders at:</Text>
+                    <Text style={{ color: theme.accent, fontSize: 11, marginTop: 6, lineHeight: 16 }} selectable>
+                        {(scanPath ?? '').replace('file://', '')}
                     </Text>
                     <Text style={{ color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 }}>
-                        Folders inside become playlists. Files in root appear in All Songs.
+                        Folders become playlists. Files in root appear in All Songs.
                     </Text>
                 </View>
             </Section>
 
-            {/* Rescan */}
+            {/* 7. Rescan */}
             <Section title="Library">
                 <TouchableOpacity style={s.row} onPress={reload}>
                     <Text style={s.rowLabel}>Rescan Music</Text>
-                    <Text style={s.rowSub}>Re-reads music from the location above</Text>
+                    <Text style={s.rowSub}>Re-reads all folders</Text>
                 </TouchableOpacity>
             </Section>
 
-            {/* Export / Import */}
+            {/* 8. Export/Import */}
             <Section title="Backup & Sync">
                 <TouchableOpacity style={s.row} onPress={async () => {
-                    try {
-                        const json = await exportAllSettings();
-                        await Share.share({ message: json, title: 'SySlate Settings' });
-                    } catch (e) { Alert.alert('Export failed', String(e.message)); }
+                    try { const json = await exportAllSettings(); await Share.share({ message: json, title: 'SySlate Settings' }); }
+                    catch (e) { Alert.alert('Export failed', String(e?.message)); }
                 }}>
                     <Text style={s.rowLabel}>Export Settings</Text>
-                    <Text style={s.rowSub}>Share your EQ, crossfade, theme settings</Text>
+                    <Text style={s.rowSub}>Share EQ, crossfade, theme…</Text>
                 </TouchableOpacity>
-                <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
-                    <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
-                    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                        <View style={s.sheet}>
-                            <View style={s.sheetHandle} />
-                            <Text style={s.sheetTitle}>Import Settings</Text>
-                            <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>
-                                Paste your exported settings JSON:
-                            </Text>
-                            <TextInput
-                                style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
-                                value={importText}
-                                onChangeText={setImportText}
-                                placeholder="Paste JSON here..."
-                                placeholderTextColor="#333"
-                                multiline
-                                autoCorrect={false}
-                                autoCapitalize="none"
-                            />
-                            <TouchableOpacity
-                                style={[s.saveBtn, { backgroundColor: theme.accent }]}
-                                onPress={async () => {
-                                    try {
-                                        await importAllSettings(importText);
-                                        setShowImport(false);
-                                        Alert.alert('Done', 'Settings imported. Restart the app to see changes.');
-                                    } catch {
-                                        Alert.alert('Import failed', 'Invalid JSON — make sure you pasted the full export.');
-                                    }
-                                }}
-                            >
-                                <Text style={s.saveBtnText}>Apply Settings</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </KeyboardAvoidingView>
-                </Modal>
+                <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
+                    <Text style={s.rowLabel}>Import Settings</Text>
+                    <Text style={s.rowSub}>Paste exported JSON</Text>
+                </TouchableOpacity>
             </Section>
 
             {/* New EQ Preset Modal */}
             <Modal visible={showNewEQ} transparent animationType="slide" onRequestClose={() => setShowNewEQ(false)}>
                 <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowNewEQ(false)} />
-                <View style={s.sheet}>
-                    <View style={s.sheetHandle} />
-                    <Text style={s.sheetTitle}>New EQ Preset</Text>
-                    <TextInput
-                        style={[s.nameInput, { borderColor: theme.accent }]}
-                        value={newPresetName}
-                        onChangeText={setNewName}
-                        placeholder="Preset name..."
-                        placeholderTextColor="#444"
-                    />
-                    <Text style={s.bandLabel}>Bands (dB)</Text>
-                    {newBands.map((val, i) => (
-                        <View key={i} style={s.bandRow}>
-                            <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
-                            <PureSlider
-                                style={{ flex: 1, marginHorizontal: 8 }}
-                                minimumValue={-12} maximumValue={12} step={0.5} value={val}
-                                onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
-                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                            />
-                            <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
-                        </View>
-                    ))}
-                    <TouchableOpacity
-                        style={[s.saveBtn, { backgroundColor: theme.accent }]}
-                        onPress={saveNewPreset}
-                    >
-                        <Text style={s.saveBtnText}>Save Preset</Text>
-                    </TouchableOpacity>
-                </View>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                    <View style={s.sheet}>
+                        <View style={s.handle} />
+                        <Text style={s.sheetTitle}>New EQ Preset</Text>
+                        <TextInput
+                            style={[s.nameInput, { borderColor: theme.accent }]}
+                            value={newName} onChangeText={setNewName}
+                            placeholder="Preset name..." placeholderTextColor="#444"
+                        />
+                        <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                            {newBands.map((val, i) => (
+                                <View key={i} style={s.bandRow}>
+                                    <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
+                                    <PureSlider
+                                        style={{ flex: 1, marginHorizontal: 8 }}
+                                        minimumValue={-12} maximumValue={12} step={0.5} value={val}
+                                        onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
+                                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
+                                    />
+                                    <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
+                                </View>
+                            ))}
+                        </ScrollView>
+                        <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={saveNewPreset}>
+                            <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Save Preset</Text>
+                        </TouchableOpacity>
+                    </View>
+                </KeyboardAvoidingView>
             </Modal>
 
-            {/* Import Settings Modal */}
+            {/* Import Modal */}
             <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
                 <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
-                <View style={s.sheet}>
-                    <View style={s.sheetHandle} />
-                    <Text style={s.sheetTitle}>Import Settings</Text>
-                    <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>
-                        Paste your exported settings JSON below:
-                    </Text>
-                    <TextInput
-                        style={[s.nameInput, { height: 140, textAlignVertical: 'top', borderColor: theme.accent }]}
-                        value={importText}
-                        onChangeText={setImportText}
-                        placeholder="Paste JSON here..."
-                        placeholderTextColor="#333"
-                        multiline
-                        autoCorrect={false}
-                        autoCapitalize="none"
-                    />
-                    <TouchableOpacity
-                        style={[s.saveBtn, { backgroundColor: theme.accent }]}
-                        onPress={async () => {
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+                    <View style={s.sheet}>
+                        <View style={s.handle} />
+                        <Text style={s.sheetTitle}>Import Settings</Text>
+                        <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>Paste exported JSON:</Text>
+                        <TextInput
+                            style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
+                            value={importText} onChangeText={setImportText}
+                            placeholder="Paste JSON here..." placeholderTextColor="#333"
+                            multiline autoCorrect={false} autoCapitalize="none"
+                        />
+                        <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={async () => {
                             try {
                                 await importAllSettings(importText);
                                 setShowImport(false);
-                                Alert.alert('Done', 'Settings imported. Restart the app to see all changes.');
-                            } catch (e) {
-                                Alert.alert('Import failed', 'Invalid JSON. Make sure you pasted the full exported text.');
-                            }
-                        }}
-                    >
-                        <Text style={s.saveBtnText}>Apply Settings</Text>
-                    </TouchableOpacity>
-                </View>
+                                Alert.alert('Done', 'Settings imported. Restart to see all changes.');
+                            } catch { Alert.alert('Import failed', 'Invalid JSON.'); }
+                        }}>
+                            <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Apply Settings</Text>
+                        </TouchableOpacity>
+                    </View>
+                </KeyboardAvoidingView>
             </Modal>
         </ScrollView>
     );
@@ -356,6 +283,8 @@ function Section({ title, children }) {
         </View>
     );
 }
+
+const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
@@ -371,36 +300,32 @@ const s = StyleSheet.create({
     modeLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     modeSub: { color: '#555', fontSize: 12, marginTop: 2 },
     radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#333' },
-    sliderSub: { color: '#555', fontSize: 12, paddingHorizontal: 24, paddingTop: 12 },
-    sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 8 },
-    slider: { marginHorizontal: 16, marginTop: 4 },
+    sliderSub: { color: '#555', fontSize: 12, paddingHorizontal: 24, paddingTop: 14 },
+    sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 6 },
+    slider: { marginHorizontal: 16, marginTop: 2 },
     sliderEnds: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, paddingBottom: 12 },
     sliderEnd: { color: '#444', fontSize: 11 },
-    toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24 },
+    toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
-    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 18, gap: 14 },
-    colorSwatch: { width: 46, height: 46, borderRadius: 23 },
-    colorSwatchActive: { borderWidth: 3, borderColor: '#fff' },
-    colorCheck: { color: '#000', textAlign: 'center', lineHeight: 42, fontWeight: '700', fontSize: 16 },
-    eqNote: { padding: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
-    eqNoteText: { color: '#444', fontSize: 12, lineHeight: 18 },
+    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 12 },
+    swatch: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+    swatchActive: { borderWidth: 3, borderColor: '#fff' },
     eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
-    eqCheck: { marginRight: 14 },
-    eqCheckBox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, textAlign: 'center', lineHeight: 20, fontSize: 13, color: '#fff', fontWeight: '700' },
+    checkWrap: { marginRight: 14 },
+    checkbox: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
     eqName: { flex: 1, color: '#e5e5e5', fontSize: 15 },
-    eqDelete: { color: '#555', fontSize: 16 },
-    addPreset: { margin: 16, padding: 14, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
-    addPresetText: { fontSize: 15, fontWeight: '600' },
+    eqDel: { color: '#555', fontSize: 16 },
+    addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
+    addBtnText: { fontSize: 15, fontWeight: '600' },
     overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' },
-    sheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 52, maxHeight: '85%' },
-    sheetHandle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+    sheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
+    handle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
     sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 16 },
-    nameInput: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, color: '#e5e5e5', fontSize: 15, borderWidth: 1, marginBottom: 16 },
-    bandLabel: { color: '#555', fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 },
-    bandRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 },
-    bandHz: { color: '#555', fontSize: 11, width: 34, textAlign: 'right', marginRight: 4 },
-    bandVal: { color: '#888', fontSize: 11, width: 38, textAlign: 'right' },
-    saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 16 },
-    saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+    nameInput: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, color: '#e5e5e5', fontSize: 15, borderWidth: 1, marginBottom: 12 },
+    bandRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },
+    bandHz: { color: '#555', fontSize: 11, width: 36, textAlign: 'right', marginRight: 4 },
+    bandVal: { color: '#888', fontSize: 11, width: 40, textAlign: 'right' },
+    saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 14 },
+    saveBtnText: { fontSize: 16, fontWeight: '700' },
 });

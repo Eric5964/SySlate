@@ -1,36 +1,48 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
-import TrackPlayer from 'react-native-track-player';
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
+import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
 import { playWithRamp } from '../services/PlaybackService';
 import {
-    getShuffleMode, setShuffleMode,
-    getEQPreset, setEQPreset,
-    getSession, setSession,
-    setLastSession,
+    getShuffleMode, setShuffleMode, getEQPreset, setEQPreset,
+    getSession, setSession, setLastSession, incrementPlayCount,
 } from '../utils/storage';
 
 const Ctx = createContext(null);
 
-const setQueueRepeat = async () => {
-    try {
-        const { RepeatMode } = require('react-native-track-player');
-        await TrackPlayer.setRepeatMode(RepeatMode.Queue);
-    } catch { }
+const setQueueLoop = async () => {
+    try { const { RepeatMode } = require('react-native-track-player'); await TrackPlayer.setRepeatMode(RepeatMode.Queue); } catch { }
 };
 
 export function PlaybackProvider({ children }) {
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
+    const [currentTrack, setCurrentTrack] = useState(null);
     const [shuffleOn, setShuffleOn] = useState(false);
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
     const [eqPresetId, setEqPresetId] = useState('flat');
     const [singleLoop, setSingleLoop] = useState(false);
+
+    // Keep playlist ref so event listeners can access it without stale closures
+    const playlistRef = useRef(null);
+    useEffect(() => { playlistRef.current = currentPlaylist; }, [currentPlaylist]);
+
+    useEffect(() => {
+        const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
+            if (nextTrack === null || nextTrack === undefined) return;
+            const playlist = playlistRef.current;
+            if (playlist?.queue?.[nextTrack]) {
+                const song = playlist.queue[nextTrack];
+                setCurrentTrack(song);
+                await incrementPlayCount(song.id);
+            }
+        });
+        return () => sub.remove();
+    }, []);
 
     const loadPlaylist = useCallback(async (playlist, forceIndex = null) => {
         const mode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const session = await getSession(playlist.path);
         const isOn = mode !== 'off';
-
         let queue = session?.queue ?? (isOn ? buildQueue(playlist.songs, mode) : [...playlist.songs]);
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
@@ -38,10 +50,12 @@ export function PlaybackProvider({ children }) {
         await TrackPlayer.reset();
         await TrackPlayer.add(queue);
         if (startIndex > 0) await TrackPlayer.skip(startIndex);
-        await setQueueRepeat();
+        await setQueueLoop();
         await playWithRamp();
 
-        setCurrentPlaylist({ ...playlist, queue });
+        const pl = { ...playlist, queue };
+        setCurrentPlaylist(pl);
+        setCurrentTrack(queue[startIndex] ?? null);
         setShuffleModeState(mode);
         setShuffleOn(isOn);
         setEqPresetId(eq);
@@ -57,23 +71,23 @@ export function PlaybackProvider({ children }) {
         if (!song) { console.warn('Song not found:', songId); return; }
 
         let queue;
+        let startIdx = 0;
         if (!isOn) {
             queue = [...playlist.songs];
-            const idx = queue.findIndex(s => s.id === songId);
-            await TrackPlayer.reset();
-            await TrackPlayer.add(queue);
-            if (idx > 0) await TrackPlayer.skip(idx);
+            startIdx = queue.findIndex(s => s.id === songId);
         } else {
-            const others = playlist.songs.filter(s => s.id !== songId);
-            queue = [song, ...shuffleArray(others)];
-            await TrackPlayer.reset();
-            await TrackPlayer.add(queue);
+            queue = [song, ...shuffleArray(playlist.songs.filter(s => s.id !== songId))];
         }
 
-        await setQueueRepeat();
+        await TrackPlayer.reset();
+        await TrackPlayer.add(queue);
+        if (startIdx > 0) await TrackPlayer.skip(startIdx);
+        await setQueueLoop();
         await playWithRamp();
 
-        setCurrentPlaylist({ ...playlist, queue });
+        const pl = { ...playlist, queue };
+        setCurrentPlaylist(pl);
+        setCurrentTrack(queue[startIdx] ?? null);
         setShuffleModeState(mode);
         setShuffleOn(isOn);
         setEqPresetId(eq);
@@ -96,37 +110,37 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     const toggleSingleLoop = useCallback(async () => {
-        const newVal = !singleLoop;
-        setSingleLoop(newVal);
+        const next = !singleLoop;
+        setSingleLoop(next);
         try {
             const { RepeatMode } = require('react-native-track-player');
-            await TrackPlayer.setRepeatMode(newVal ? RepeatMode.Track : RepeatMode.Queue);
+            await TrackPlayer.setRepeatMode(next ? RepeatMode.Track : RepeatMode.Queue);
         } catch { }
     }, [singleLoop]);
 
-    const changeEQPreset = useCallback(async (presetId, playlistPath) => {
-        setEqPresetId(presetId);
-        await setEQPreset(presetId, playlistPath);
+    const changeEQPreset = useCallback(async (id, path) => {
+        setEqPresetId(id);
+        await setEQPreset(id, path);
     }, []);
 
     const saveSession = useCallback(async () => {
-        if (!currentPlaylist?.path || !currentPlaylist?.queue) return;
+        const pl = playlistRef.current;
+        if (!pl?.path || !pl?.queue) return;
         try {
             const index = await TrackPlayer.getCurrentTrack();
             if (index !== null) {
-                let position = 0;
-                try { const p = await TrackPlayer.getProgress(); position = p?.position ?? 0; } catch { }
-                await setSession(currentPlaylist.path, { queue: currentPlaylist.queue, index });
-                await setLastSession({ playlist: currentPlaylist, index, position });
+                let pos = 0;
+                try { const p = await TrackPlayer.getProgress(); pos = p?.position ?? 0; } catch { }
+                await setSession(pl.path, { queue: pl.queue, index });
+                await setLastSession({ playlist: pl, index, position: pos });
             }
         } catch { }
-    }, [currentPlaylist]);
+    }, []);
 
     return (
         <Ctx.Provider value={{
-            currentPlaylist, shuffleOn, shuffleMode, eqPresetId, singleLoop,
-            loadPlaylist, playSongFromPlaylist,
-            toggleShuffle, changeShuffleMode,
+            currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop,
+            loadPlaylist, playSongFromPlaylist, toggleShuffle, changeShuffleMode,
             toggleSingleLoop, changeEQPreset, saveSession,
         }}>
             {children}

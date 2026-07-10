@@ -11,8 +11,16 @@ const FORMATS = [
     { id: 'list', label: '☰', cols: 1 },
     { id: 'list_art', label: '⊟', cols: 1 },
     { id: 'grid2', label: '⊞', cols: 2 },
-    { id: 'grid3', label: '⊟³', cols: 3 },
+    { id: 'grid3', label: '⋮⋮', cols: 3 },
 ];
+
+// Deterministic color per playlist name
+const PALETTE = ['#7c3aed', '#2563eb', '#16a34a', '#dc2626', '#ea580c', '#f0047f', '#0891b2', '#d97706', '#4338ca'];
+function playlistColor(name) {
+    let h = 5381;
+    for (let i = 0; i < name.length; i++) h = ((h << 5) + h) ^ name.charCodeAt(i);
+    return PALETTE[Math.abs(h) % PALETTE.length];
+}
 
 export default function PlaylistsScreen() {
     const { playlists, reload } = useContext(LibraryContext);
@@ -32,21 +40,21 @@ export default function PlaylistsScreen() {
     const isGrid = format.startsWith('grid');
     const numCols = FORMATS.find(f => f.id === format)?.cols ?? 1;
     const fmtIcon = FORMATS.find(f => f.id === format)?.label ?? '☰';
+    const color = (name) => playlistColor(name);
+
+    const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item });
 
     const renderItem = ({ item }) => {
         if (isGrid) {
+            const bg = color(item.name);
             return (
                 <TouchableOpacity
-                    style={[
-                        s.gridItem,
-                        numCols === 3 ? s.gridItem3 : s.gridItem2,
-                        { borderColor: theme.accentDim },
-                    ]}
-                    onPress={() => navigation.navigate('Player', { playlist: item })}
+                    style={[s.gridItem, numCols === 3 ? s.gi3 : s.gi2]}
+                    onPress={() => openPlaylist(item)}
                     activeOpacity={0.75}
                 >
-                    <View style={[s.gridArt, { backgroundColor: theme.accentDim }]}>
-                        <Text style={{ color: '#0a0a0a', fontSize: numCols === 3 ? 24 : 36 }}>♪</Text>
+                    <View style={[s.gridArt, { backgroundColor: bg }]}>
+                        <Text style={{ fontSize: numCols === 3 ? 28 : 40, color: 'rgba(255,255,255,0.4)' }}>♪</Text>
                     </View>
                     <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
                     <Text style={s.gridCount}>{item.songs.length} tracks</Text>
@@ -54,14 +62,10 @@ export default function PlaylistsScreen() {
             );
         }
         return (
-            <TouchableOpacity
-                style={s.row}
-                onPress={() => navigation.navigate('Player', { playlist: item })}
-                activeOpacity={0.75}
-            >
+            <TouchableOpacity style={s.row} onPress={() => openPlaylist(item)} activeOpacity={0.75}>
                 {format === 'list_art' && (
-                    <View style={[s.listArt, { backgroundColor: theme.accentDim }]}>
-                        <Text style={{ color: '#0a0a0a', fontSize: 22 }}>♪</Text>
+                    <View style={[s.listArt, { backgroundColor: color(item.name) }]}>
+                        <Text style={{ fontSize: 22, color: 'rgba(255,255,255,0.5)' }}>♪</Text>
                     </View>
                 )}
                 <View style={{ flex: 1 }}>
@@ -98,11 +102,7 @@ export default function PlaylistsScreen() {
                     data={playlists}
                     keyExtractor={item => item.path}
                     numColumns={numCols}
-                    contentContainerStyle={{
-                        paddingBottom: 150,
-                        paddingHorizontal: isGrid ? 8 : 0,
-                        paddingTop: isGrid ? 8 : 0,
-                    }}
+                    contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? 8 : 0, paddingTop: isGrid ? 8 : 0 }}
                     renderItem={renderItem}
                 />
             )}
@@ -122,13 +122,13 @@ const s = StyleSheet.create({
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },
     row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 14, marginVertical: 3, paddingVertical: 16, paddingHorizontal: 16, backgroundColor: '#0f0f0f', borderRadius: 14, minHeight: 68 },
-    listArt: { width: 48, height: 48, borderRadius: 10, marginRight: 14, justifyContent: 'center', alignItems: 'center' },
+    listArt: { width: 50, height: 50, borderRadius: 10, marginRight: 14, justifyContent: 'center', alignItems: 'center' },
     rowName: { color: '#e5e5e5', fontSize: 16, fontWeight: '500' },
     rowCount: { color: '#555', fontSize: 12, marginTop: 3 },
     arrow: { color: '#333', fontSize: 22 },
-    gridItem: { flex: 1, margin: 5, borderRadius: 14, backgroundColor: '#0f0f0f', borderWidth: 1, padding: 10, alignItems: 'center', minHeight: 120 },
-    gridItem2: { maxWidth: '48%' },
-    gridItem3: { maxWidth: '31%' },
+    gridItem: { flex: 1, margin: 5, borderRadius: 14, backgroundColor: '#0f0f0f', padding: 8, alignItems: 'center' },
+    gi2: { maxWidth: '48%' },
+    gi3: { maxWidth: '31%' },
     gridArt: { width: '100%', aspectRatio: 1, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },

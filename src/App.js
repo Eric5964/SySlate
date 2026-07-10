@@ -14,6 +14,7 @@ import { LibraryContext } from './context/LibraryContext';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
+import PlaylistDetailScreen from './screens/PlaylistDetailScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
@@ -31,11 +32,7 @@ function Tabs() {
         <Tab.Navigator
             screenOptions={{
                 headerShown: false,
-                tabBarStyle: {
-                    backgroundColor: '#0d0d0d',
-                    borderTopColor: '#1c1c1c',
-                    borderTopWidth: 1,
-                },
+                tabBarStyle: { backgroundColor: '#0d0d0d', borderTopColor: '#1c1c1c', borderTopWidth: 1 },
                 tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: '#444',
                 tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 2 },
@@ -44,29 +41,17 @@ function Tabs() {
             <Tab.Screen
                 name="All Songs"
                 component={AllSongsScreen}
-                options={{
-                    tabBarIcon: ({ color }) => (
-                        <Text style={{ color, fontSize: 20 }}>♪</Text>
-                    ),
-                }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>♪</Text> }}
             />
             <Tab.Screen
                 name="Playlists"
                 component={PlaylistsScreen}
-                options={{
-                    tabBarIcon: ({ color }) => (
-                        <Text style={{ color, fontSize: 20 }}>▶</Text>
-                    ),
-                }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>▶</Text> }}
             />
             <Tab.Screen
                 name="Settings"
                 component={SettingsScreen}
-                options={{
-                    tabBarIcon: ({ color }) => (
-                        <Text style={{ color, fontSize: 22, letterSpacing: 2 }}>···</Text>
-                    ),
-                }}
+                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 18, letterSpacing: 1 }}>···</Text> }}
             />
         </Tab.Navigator>
     );
@@ -87,14 +72,8 @@ function AppInner() {
     const reload = async () => {
         try {
             const lib = await scanLibrary();
-            setLibrary({
-                playlists: lib.playlists,
-                allSongs: lib.allSongs,
-                scanPath: lib.scanPath ?? '',
-            });
-        } catch (e) {
-            console.error('reload error:', e);
-        }
+            setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '' });
+        } catch (e) { console.error('reload:', e); }
     };
 
     useEffect(() => {
@@ -103,24 +82,12 @@ function AppInner() {
                 await TrackPlayer.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
                 await TrackPlayer.setVolume(1);
                 await TrackPlayer.updateOptions({
-                    capabilities: [
-                        Capability.Play,
-                        Capability.Pause,
-                        Capability.SkipToNext,
-                        Capability.SkipToPrevious,
-                        Capability.Stop,
-                    ],
-                    compactCapabilities: [
-                        Capability.Play,
-                        Capability.Pause,
-                        Capability.SkipToNext,
-                    ],
+                    capabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop],
+                    compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
                     progressUpdateEventThrottle: 200,
                 });
             } catch { }
-
             await reload();
-
             try {
                 const last = await getLastSession();
                 if (last?.playlist?.songs?.length && last.index !== undefined) {
@@ -137,18 +104,10 @@ function AppInner() {
         <LibraryContext.Provider value={{ ...library, reload }}>
             <PlaybackProvider>
                 <NavigationContainer>
-                    <Root.Navigator
-                        screenOptions={{
-                            headerShown: false,
-                            cardStyle: { backgroundColor: '#0a0a0a' },
-                        }}
-                    >
+                    <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
                         <Root.Screen name="Main" component={MainLayout} />
-                        <Root.Screen
-                            name="Player"
-                            component={PlayerScreen}
-                            options={{ presentation: 'modal' }}
-                        />
+                        <Root.Screen name="Player" component={PlayerScreen} options={{ presentation: 'modal' }} />
+                        <Root.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
                     </Root.Navigator>
                 </NavigationContainer>
             </PlaybackProvider>
