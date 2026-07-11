@@ -7,10 +7,11 @@ import { useNavigation } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
+import SwipeableRow from '../components/SwipeableRow';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
-    const { playSongFromPlaylist } = usePlayback();
+    const { playSongFromPlaylist, addToQueue } = usePlayback();
     const { theme } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
@@ -28,7 +29,8 @@ export default function AllSongsScreen() {
         // Deduplicated allSongs already sorted by title
         const playlist = { name: 'All Songs', path: '__all__', songs: allSongs };
         await playSongFromPlaylist(playlist, song.id);
-        navigation.navigate('Player', {});
+        // No auto-navigate to the full player — the mini player appearing is
+        // enough; tap it if you want the full screen.
     };
 
     return (
@@ -60,10 +62,12 @@ export default function AllSongsScreen() {
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingBottom: 150 }}
                     renderItem={({ item }) => (
-                        <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
-                            <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
-                            <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
-                        </TouchableOpacity>
+                        <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
+                            <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
+                                <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
+                                <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
+                            </TouchableOpacity>
+                        </SwipeableRow>
                     )}
                 />
             )}

@@ -1,11 +1,18 @@
 import React, { useContext, useState, useEffect } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar,
+    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlaylistViewFormat, setPlaylistViewFormat } from '../utils/storage';
+import { usePlayback } from '../context/PlaybackContext';
+import { playlistColor } from '../utils/color';
+import {
+    getPlaylistViewFormat, setPlaylistViewFormat,
+    getPlaylistOrder, setPlaylistOrder,
+    getPlaylistCovers, setPlaylistCover,
+} from '../utils/storage';
 
 const FORMATS = [
     { id: 'list', label: '☰', cols: 1 },
@@ -14,21 +21,17 @@ const FORMATS = [
     { id: 'grid3', label: '⋮⋮', cols: 3 },
 ];
 
-// Deterministic color per playlist name
-const PALETTE = ['#7c3aed', '#2563eb', '#16a34a', '#dc2626', '#ea580c', '#f0047f', '#0891b2', '#d97706', '#4338ca'];
-function playlistColor(name) {
-    let h = 5381;
-    for (let i = 0; i < name.length; i++) h = ((h << 5) + h) ^ name.charCodeAt(i);
-    return PALETTE[Math.abs(h) % PALETTE.length];
-}
-
 export default function PlaylistsScreen() {
     const { playlists, reload } = useContext(LibraryContext);
     const { theme } = useTheme();
     const navigation = useNavigation();
+    const { loadPlaylist } = usePlayback();
     const [format, setFormat] = useState('list');
+    const [covers, setCovers] = useState({});
+    const [menuFor, setMenuFor] = useState(null); // playlist object or null
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
+    useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
 
     const cycleFormat = async () => {
         const idx = FORMATS.findIndex(f => f.id === format);
@@ -40,21 +43,75 @@ export default function PlaylistsScreen() {
     const isGrid = format.startsWith('grid');
     const numCols = FORMATS.find(f => f.id === format)?.cols ?? 1;
     const fmtIcon = FORMATS.find(f => f.id === format)?.label ?? '☰';
-    const color = (name) => playlistColor(name);
 
     const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item });
 
+    // --- Reordering (menu-based: predictable and doesn't depend on freeform
+    // drag physics we can't verify without a device in hand each iteration) ---
+    const persistOrder = async (newList) => {
+        await setPlaylistOrder(newList.map(p => p.path));
+        await reload();
+    };
+
+    const moveItem = async (item, action) => {
+        const list = [...playlists];
+        const idx = list.findIndex(p => p.path === item.path);
+        if (idx === -1) return;
+        list.splice(idx, 1);
+        let target;
+        if (action === 'top') target = 0;
+        else if (action === 'bottom') target = list.length;
+        else if (action === 'up') target = Math.max(0, idx - 1);
+        else if (action === 'down') target = Math.min(list.length, idx + 1);
+        list.splice(target, 0, item);
+        setMenuFor(null);
+        await persistOrder(list);
+    };
+
+    const changeCover = async (item) => {
+        setMenuFor(null);
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+            Alert.alert('Permission needed', 'Allow Photos access in Settings to set a playlist cover.');
+            return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        const next = await setPlaylistCover(item.path, result.assets[0].uri);
+        setCovers(next);
+    };
+
+    const removeCover = async (item) => {
+        setMenuFor(null);
+        const next = await setPlaylistCover(item.path, null);
+        setCovers(next);
+    };
+
+    const renderArt = (item, size, fontSize) => {
+        const cover = covers[item.path];
+        if (cover) {
+            return <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />;
+        }
+        return <Text style={{ fontSize, color: 'rgba(255,255,255,0.4)' }}>♪</Text>;
+    };
+
     const renderItem = ({ item }) => {
+        const bg = playlistColor(item.name);
         if (isGrid) {
-            const bg = color(item.name);
             return (
                 <TouchableOpacity
                     style={[s.gridItem, numCols === 3 ? s.gi3 : s.gi2]}
                     onPress={() => openPlaylist(item)}
+                    onLongPress={() => setMenuFor(item)}
                     activeOpacity={0.75}
                 >
                     <View style={[s.gridArt, { backgroundColor: bg }]}>
-                        <Text style={{ fontSize: numCols === 3 ? 28 : 40, color: 'rgba(255,255,255,0.4)' }}>♪</Text>
+                        {renderArt(item, numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
                     </View>
                     <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
                     <Text style={s.gridCount}>{item.songs.length} tracks</Text>
@@ -62,10 +119,10 @@ export default function PlaylistsScreen() {
             );
         }
         return (
-            <TouchableOpacity style={s.row} onPress={() => openPlaylist(item)} activeOpacity={0.75}>
+            <TouchableOpacity style={s.row} onPress={() => openPlaylist(item)} onLongPress={() => setMenuFor(item)} activeOpacity={0.75}>
                 {format === 'list_art' && (
-                    <View style={[s.listArt, { backgroundColor: color(item.name) }]}>
-                        <Text style={{ fontSize: 22, color: 'rgba(255,255,255,0.5)' }}>♪</Text>
+                    <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden' }]}>
+                        {renderArt(item, 22, 22)}
                     </View>
                 )}
                 <View style={{ flex: 1 }}>
@@ -106,7 +163,33 @@ export default function PlaylistsScreen() {
                     renderItem={renderItem}
                 />
             )}
+
+            {/* Long-press action sheet */}
+            {menuFor && (
+                <View style={s.menuOverlay}>
+                    <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setMenuFor(null)} />
+                    <View style={s.menuSheet}>
+                        <View style={s.menuHandle} />
+                        <Text style={s.menuTitle} numberOfLines={1}>{menuFor.name}</Text>
+                        <MenuRow label="Change Cover Image" onPress={() => changeCover(menuFor)} />
+                        {covers[menuFor.path] && <MenuRow label="Remove Cover Image" onPress={() => removeCover(menuFor)} />}
+                        <MenuRow label="Move to Top" onPress={() => moveItem(menuFor, 'top')} />
+                        <MenuRow label="Move Up" onPress={() => moveItem(menuFor, 'up')} />
+                        <MenuRow label="Move Down" onPress={() => moveItem(menuFor, 'down')} />
+                        <MenuRow label="Move to Bottom" onPress={() => moveItem(menuFor, 'bottom')} />
+                        <MenuRow label="Cancel" onPress={() => setMenuFor(null)} muted />
+                    </View>
+                </View>
+            )}
         </View>
+    );
+}
+
+function MenuRow({ label, onPress, muted }) {
+    return (
+        <TouchableOpacity style={s.menuRow} onPress={onPress}>
+            <Text style={[s.menuRowText, muted && { color: '#555' }]}>{label}</Text>
+        </TouchableOpacity>
     );
 }
 
@@ -129,7 +212,13 @@ const s = StyleSheet.create({
     gridItem: { flex: 1, margin: 5, borderRadius: 14, backgroundColor: '#0f0f0f', padding: 8, alignItems: 'center' },
     gi2: { maxWidth: '48%' },
     gi3: { maxWidth: '31%' },
-    gridArt: { width: '100%', aspectRatio: 1, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+    gridArt: { width: '100%', aspectRatio: 1, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },
+    menuOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
+    menuSheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
+    menuHandle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+    menuTitle: { color: '#555', fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 8 },
+    menuRow: { paddingVertical: 16, borderTopWidth: 1, borderTopColor: '#1a1a1a' },
+    menuRowText: { color: '#e5e5e5', fontSize: 16, textAlign: 'center' },
 });

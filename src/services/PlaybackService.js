@@ -4,7 +4,7 @@ import { getCrossfade, getSkipCrossfade, getAudioRamp, getRampOnPause } from '..
 let isFading = false;
 let naturalEndFade = false;
 let abortFade = false;
-let checker = null;
+let skipLock = false;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -19,26 +19,45 @@ async function fadeVol(from, to, sec) {
     }
 }
 
-function startChecker() {
-    if (checker) return;
-    checker = setInterval(async () => {
+// Wait for the player to actually be buffered and playing (instead of a fixed
+// sleep) before we start ramping volume in. This is what was causing the
+// "wavy"/stuttering start after a skip — the fade was running against a
+// track that hadn't finished buffering yet.
+async function waitForPlaying(timeoutMs = 2500) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const state = await TrackPlayer.getState();
+            if (state === State.Playing) return true;
+            if (state === State.Paused || state === State.Stopped) return false;
+        } catch { return false; }
+        await sleep(40);
+    }
+    return false;
+}
+
+// Event-driven end-of-track watcher — replaces the old setInterval + getProgress()
+// polling loop, which drifted enough near the end of a track to sometimes miss
+// the crossfade window entirely.
+let progressSub = null;
+function startWatcher() {
+    if (progressSub) return;
+    progressSub = TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, async ({ position, duration }) => {
         if (isFading) return;
         try {
             const cf = await getCrossfade();
-            if (cf <= 0) return;
-            const { position, duration } = await TrackPlayer.getProgress();
-            if (!duration || duration < 1) return;
+            if (cf <= 0 || !duration || duration < 1) return;
             const remaining = duration - position;
-            if (remaining > 0.2 && remaining <= cf) {
+            if (remaining > 0.15 && remaining <= cf) {
                 isFading = true; naturalEndFade = true; abortFade = false;
-                await fadeVol(1, 0, Math.max(0.2, remaining - 0.15));
+                await fadeVol(1, 0, Math.max(0.15, remaining - 0.1));
             }
         } catch { }
-    }, 250);
+    });
 }
 
-function stopChecker() {
-    if (checker) { clearInterval(checker); checker = null; }
+function stopWatcher() {
+    if (progressSub) { progressSub.remove(); progressSub = null; }
 }
 
 export async function playWithRamp() {
@@ -46,6 +65,7 @@ export async function playWithRamp() {
     if (ramp > 0.05) {
         try { await TrackPlayer.setVolume(0); } catch { }
         try { await TrackPlayer.play(); } catch { }
+        await waitForPlaying();
         abortFade = false;
         await fadeVol(0, 1, ramp);
     } else {
@@ -67,40 +87,51 @@ export async function pauseWithRamp() {
     }
 }
 
+// Skip with crossfade — fades the outgoing track out, waits for the new
+// track to actually be playing (not a fixed delay), then fades it in. A
+// short lock ignores rapid repeated taps so spamming skip can't stack
+// overlapping fade loops and glitch the audio.
 export async function skipWithCrossfade(direction = 'next') {
+    if (skipLock) return;
+    skipLock = true;
     abortFade = true;
     isFading = false;
     naturalEndFade = false;
-    const dur = await getSkipCrossfade();
-    try { await TrackPlayer.setVolume(1); } catch { }
-    if (dur > 0.05) {
-        abortFade = false;
-        await fadeVol(1, 0, dur);
-    }
     try {
-        if (direction === 'next') await TrackPlayer.skipToNext();
-        else await TrackPlayer.skipToPrevious();
-    } catch {
+        const dur = await getSkipCrossfade();
         try { await TrackPlayer.setVolume(1); } catch { }
+        if (dur > 0.05) {
+            abortFade = false;
+            await fadeVol(1, 0, dur);
+        }
+        try {
+            if (direction === 'next') await TrackPlayer.skipToNext();
+            else await TrackPlayer.skipToPrevious();
+        } catch {
+            try { await TrackPlayer.setVolume(1); } catch { }
+            abortFade = false;
+            return;
+        }
+        await waitForPlaying();
         abortFade = false;
-        return;
+        await playWithRamp();
+    } finally {
+        // small cooldown after the transition settles, not the whole fade duration
+        await sleep(180);
+        skipLock = false;
     }
-    // Wait briefly for new track to buffer before ramping in
-    await sleep(250);
-    abortFade = false;
-    await playWithRamp();
 }
 
 export async function PlaybackService() {
     TrackPlayer.addEventListener(Event.RemotePause, () => pauseWithRamp());
     TrackPlayer.addEventListener(Event.RemotePlay, () => playWithRamp());
-    TrackPlayer.addEventListener(Event.RemoteStop, () => { stopChecker(); TrackPlayer.stop(); });
+    TrackPlayer.addEventListener(Event.RemoteStop, () => { stopWatcher(); TrackPlayer.stop(); });
     TrackPlayer.addEventListener(Event.RemoteNext, () => skipWithCrossfade('next'));
     TrackPlayer.addEventListener(Event.RemotePrevious, () => skipWithCrossfade('prev'));
 
     TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
-        if (state === State.Playing) startChecker();
-        else if (state === State.Paused || state === State.Stopped) stopChecker();
+        if (state === State.Playing) startWatcher();
+        else if (state === State.Paused || state === State.Stopped) stopWatcher();
     });
 
     TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
@@ -110,13 +141,20 @@ export async function PlaybackService() {
             return;
         }
         if (naturalEndFade && !abortFade) {
+            // Both directions of the crossfade now happen back-to-back with no
+            // artificial gap: volume is already at (or heading to) 0 from the
+            // outgoing track's fade, so the incoming track's fade-in starts
+            // the instant this event fires.
             naturalEndFade = false; isFading = false;
             try { await TrackPlayer.setVolume(0); } catch { }
-            await sleep(60);
             const cf = await getCrossfade();
             abortFade = false;
-            if (cf > 0.05) await fadeVol(0, 1, Math.min(cf * 0.6, 1.4));
-            else try { await TrackPlayer.setVolume(1); } catch { }
+            if (cf > 0.05) {
+                await waitForPlaying(800);
+                await fadeVol(0, 1, Math.min(cf, 2.5));
+            } else {
+                try { await TrackPlayer.setVolume(1); } catch { }
+            }
         } else if (!isFading) {
             naturalEndFade = false;
             try { await TrackPlayer.setVolume(1); } catch { }

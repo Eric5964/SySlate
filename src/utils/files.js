@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import { getPlaylistOrder } from './storage';
 
 const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape']);
 
@@ -71,6 +72,16 @@ export async function scanLibrary() {
     }
 
     playlists.sort((a, b) => a.name.localeCompare(b.name));
+    const order = await getPlaylistOrder();
+    if (order.length) {
+        const pos = new Map(order.map((p, i) => [p, i]));
+        playlists.sort((a, b) => {
+            const ai = pos.has(a.path) ? pos.get(a.path) : Infinity;
+            const bi = pos.has(b.path) ? pos.get(b.path) : Infinity;
+            if (ai !== bi) return ai - bi;
+            return a.name.localeCompare(b.name); // new/unordered playlists fall back to alpha, appended after ordered ones
+        });
+    }
     const seen2 = new Set();
     const allSongs = [];
     for (const p of playlists) for (const s of p.songs) if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }

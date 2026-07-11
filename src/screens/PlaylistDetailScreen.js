@@ -1,12 +1,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
-    StyleSheet, TextInput, StatusBar,
+    StyleSheet, TextInput, StatusBar, Image,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts } from '../utils/storage';
+import { getPlayCounts, getPlaylistCovers } from '../utils/storage';
+import { playlistColor } from '../utils/color';
+import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
+import SwipeableRow from '../components/SwipeableRow';
+import MiniPlayer from '../components/MiniPlayer';
+import EQModal from '../components/EQModal';
+import QueueModal from '../components/QueueModal';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -19,17 +25,23 @@ export default function PlaylistDetailScreen() {
     const navigation = useNavigation();
     const route = useRoute();
     const { playlist } = route.params;
-    const { playSongFromPlaylist } = usePlayback();
+    const {
+        playSongFromPlaylist, loadPlaylist, addToQueue,
+        shuffleOn, shuffleMode, changeShuffleMode,
+    } = usePlayback();
     const { theme } = useTheme();
 
     const [search, setSearch] = useState('');
-    const [showSearch, setShowSearch] = useState(false);
     const [sortId, setSortId] = useState('alpha');
     const [playCounts, setPlayCounts] = useState({});
     const [showSort, setShowSort] = useState(false);
+    const [showEQ, setShowEQ] = useState(false);
+    const [showQueue, setShowQueue] = useState(false);
+    const [cover, setCover] = useState(null);
 
     useEffect(() => {
         getPlayCounts(playlist.songs.map(s => s.id)).then(setPlayCounts);
+        getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
     }, []);
 
     const sorted = useMemo(() => {
@@ -52,80 +64,122 @@ export default function PlaylistDetailScreen() {
         );
     }, [sorted, search]);
 
+    // Tapping a song no longer force-opens the full player — the mini player
+    // appearing at the bottom is the signal that something started playing.
     const play = async (song) => {
         await playSongFromPlaylist(playlist, song.id);
-        navigation.navigate('Player', {});
     };
+
+    const handlePlay = async () => {
+        await loadPlaylist(playlist, 0);
+    };
+
+    const handleShuffle = async () => {
+        if (!shuffleOn) {
+            await changeShuffleMode(shuffleMode === 'off' ? 'full_cycle' : shuffleMode);
+        }
+        await loadPlaylist(playlist, 0);
+    };
+
+    const bg = playlistColor(playlist.name);
+    const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
 
     return (
         <View style={s.container}>
             <StatusBar barStyle="light-content" />
 
-            {/* Header */}
-            <View style={s.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.backBtn}>
+            {/* Top bar: back, centered search, EQ + queue */}
+            <View style={s.topBar}>
+                <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
                 </TouchableOpacity>
-                <View style={s.headerCenter}>
-                    <Text style={s.title} numberOfLines={1}>{playlist.name}</Text>
-                    <Text style={s.subtitle}>{playlist.songs.length} tracks</Text>
-                </View>
-                <View style={{ flexDirection: 'row' }}>
-                    <TouchableOpacity onPress={() => { setShowSearch(v => !v); setSearch(''); }} style={s.topBtn} hitSlop={HIT}>
-                        <Text style={[s.topBtnText, { color: theme.accent }]}>⌕</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowSort(v => !v)} style={s.topBtn} hitSlop={HIT}>
-                        <Text style={[s.topBtnText, { color: theme.accent }]}>⇅</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
-
-            {/* Sort picker */}
-            {showSort && (
-                <View style={s.sortRow}>
-                    {SORTS.map(opt => (
-                        <TouchableOpacity
-                            key={opt.id}
-                            style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
-                            onPress={() => { setSortId(opt.id); setShowSort(false); }}
-                        >
-                            <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
-                                {opt.label}
-                            </Text>
-                        </TouchableOpacity>
-                    ))}
-                </View>
-            )}
-
-            {/* Search */}
-            {showSearch && (
                 <TextInput
-                    style={[s.search, { borderColor: theme.accentDim }]}
+                    style={s.searchBar}
                     value={search}
                     onChangeText={setSearch}
-                    placeholder="Search songs, artists..."
+                    placeholder="Search this playlist"
                     placeholderTextColor="#444"
-                    autoFocus
+                    textAlign="center"
                 />
-            )}
+                <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                    <MenuBarsIcon size={20} color={theme.accent} />
+                </TouchableOpacity>
+            </View>
 
-            {/* Songs */}
             <FlatList
                 data={filtered}
                 keyExtractor={item => item.id}
-                contentContainerStyle={{ paddingBottom: 150 }}
-                renderItem={({ item }) => (
-                    <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                            <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>
+                contentContainerStyle={{ paddingBottom: 160 }}
+                ListHeaderComponent={
+                    <View>
+                        <View style={s.coverWrap}>
+                            <View style={[s.cover, { backgroundColor: bg, overflow: 'hidden' }]}>
+                                {cover
+                                    ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                                    : <Text style={s.coverNote}>♪</Text>
+                                }
+                            </View>
                         </View>
-                        {playCounts[item.id] > 0 && (
-                            <Text style={s.playCount}>{playCounts[item.id]}×</Text>
+
+                        <View style={s.actionRow}>
+                            <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
+                                <PlayIcon size={16} color={theme.onAccent} />
+                                <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
+                                <ShuffleIcon size={16} color={theme.accent} />
+                                <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        <View style={s.titleRow}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.title} numberOfLines={1}>{playlist.name}</Text>
+                                <Text style={s.subtitle}>{playlist.songs.length} tracks</Text>
+                            </View>
+                            <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
+                                <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel} ⌄</Text>
+                            </TouchableOpacity>
+                        </View>
+
+                        {showSort && (
+                            <View style={s.sortRow}>
+                                {SORTS.map(opt => (
+                                    <TouchableOpacity
+                                        key={opt.id}
+                                        style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
+                                        onPress={() => { setSortId(opt.id); setShowSort(false); }}
+                                    >
+                                        <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
+                                            {opt.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </View>
                         )}
-                    </TouchableOpacity>
+                    </View>
+                }
+                renderItem={({ item }) => (
+                    <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
+                        <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
+                                <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>
+                            </View>
+                            {playCounts[item.id] > 0 && (
+                                <Text style={s.playCount}>{playCounts[item.id]}×</Text>
+                            )}
+                        </TouchableOpacity>
+                    </SwipeableRow>
                 )}
             />
+
+            <MiniPlayer withTabBar={false} />
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} />
+            <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>
     );
 }
@@ -134,18 +188,27 @@ const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    header: { flexDirection: 'row', alignItems: 'center', paddingTop: 60, paddingHorizontal: 16, paddingBottom: 12 },
-    backBtn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
-    backIcon: { fontSize: 26 },
-    headerCenter: { flex: 1, paddingHorizontal: 8 },
-    title: { color: '#e5e5e5', fontSize: 20, fontWeight: '700' },
-    subtitle: { color: '#555', fontSize: 13, marginTop: 2 },
-    topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
-    topBtnText: { fontSize: 22 },
-    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingBottom: 10, gap: 8 },
+    topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
+    topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    backIcon: { fontSize: 24 },
+    eqTag: { fontSize: 14, fontWeight: '700' },
+    searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, color: '#e5e5e5', fontSize: 14 },
+    coverWrap: { alignItems: 'center', marginTop: 8, marginBottom: 18 },
+    cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+    coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
+    actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
+    playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
+    playBtnText: { fontSize: 15, fontWeight: '700' },
+    shuffleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 24, borderWidth: 1.5 },
+    shuffleBtnText: { fontSize: 15, fontWeight: '700' },
+    titleRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 20, marginBottom: 10 },
+    title: { color: '#f0f0f0', fontSize: 22, fontWeight: '700', letterSpacing: -0.3 },
+    subtitle: { color: '#555', fontSize: 13, marginTop: 4 },
+    sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },
+    sortBtnText: { fontSize: 13, fontWeight: '600' },
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20, paddingBottom: 10, gap: 8 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
     sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
-    search: { marginHorizontal: 16, marginBottom: 8, backgroundColor: '#141414', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#e5e5e5', fontSize: 15, borderWidth: 1 },
     row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12, backgroundColor: '#0d0d0d' },
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },

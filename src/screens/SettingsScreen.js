@@ -78,139 +78,166 @@ export default function SettingsScreen() {
         { id: 'smart', label: 'Smart', sub: 'Avoids same artist back to back' },
     ];
 
+    // Best-effort detection of which sideload tool is running this build.
+    // LiveContainer runs apps inside its own virtualized container, which
+    // shows up in the sandboxed document path; SideStore installs the app
+    // as a normal standalone app. If we can't tell, show both.
+    const pathLower = (scanPath ?? '').toLowerCase();
+    const isLiveContainer = pathLower.includes('livecontainer');
+    const isSideStore = !isLiveContainer && !!scanPath;
+    const showBoth = !scanPath || (!isLiveContainer && !isSideStore);
+
     return (
-        <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 160 }}>
+        <View style={s.container}>
             <StatusBar barStyle="light-content" />
+            {/* Header stays fixed above the scroll, matching All Songs / Playlists */}
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
 
-            {/* 1. EQ */}
-            <Section title="EQ Presets">
-                {[...BUILT_IN_PRESETS, ...customPresets].map(p => (
-                    <View key={p.id} style={s.eqRow}>
-                        <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
-                            <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 12, fontWeight: '700' }}>✓</Text>}
-                            </View>
-                        </TouchableOpacity>
-                        <Text style={s.eqName}>{p.name}</Text>
-                        {customPresets.find(c => c.id === p.id) && (
-                            <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
-                                <Text style={s.eqDel}>✕</Text>
+            <ScrollView contentContainerStyle={{ paddingBottom: 160 }}>
+                {/* 1. EQ */}
+                <Section title="EQ Presets">
+                    {[...BUILT_IN_PRESETS, ...customPresets].map(p => (
+                        <View key={p.id} style={s.eqRow}>
+                            <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
+                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 12, fontWeight: '700' }}>✓</Text>}
+                                </View>
                             </TouchableOpacity>
-                        )}
-                    </View>
-                ))}
-                <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
-                    <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
-                </TouchableOpacity>
-            </Section>
-
-            {/* 2. Crossfade */}
-            <Section title="Crossfade — Track End">
-                <Text style={s.sliderSub}>Fade out when a track ends naturally</Text>
-                <Text style={[s.sliderVal, { color: theme.accent }]}>{cf.toFixed(1)}s</Text>
-                <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={0.5} value={cf}
-                    onValueChange={setCf} onSlidingComplete={v => { setCf(v); setCrossfade(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
-            </Section>
-
-            <Section title="Crossfade — Skip">
-                <Text style={s.sliderSub}>Soften manual skips</Text>
-                <Text style={[s.sliderVal, { color: theme.accent }]}>{skipCf.toFixed(1)}s</Text>
-                <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
-                    onValueChange={setSkipCf} onSlidingComplete={v => { setSkipCf(v); setSkipCrossfade(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
-            </Section>
-
-            {/* 3. Shuffle */}
-            <Section title="Shuffle Mode">
-                {MODES.map(m => (
-                    <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => changeShuffleMode(m.id)}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.modeLabel}>{m.label}</Text>
-                            <Text style={s.modeSub}>{m.sub}</Text>
+                            <Text style={s.eqName}>{p.name}</Text>
+                            {customPresets.find(c => c.id === p.id) && (
+                                <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
+                                    <Text style={s.eqDel}>✕</Text>
+                                </TouchableOpacity>
+                            )}
                         </View>
-                        <View style={[s.radio, shuffleMode === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
+                    ))}
+                    <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
+                        <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                     </TouchableOpacity>
-                ))}
-            </Section>
+                </Section>
 
-            {/* 4. Volume + Audio */}
-            <Section title="Audio">
-                <View style={s.toggleRow}>
-                    <View style={{ flex: 1 }}>
-                        <Text style={s.toggleLabel}>Volume Normalization</Text>
-                        <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
-                    </View>
-                    <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
-                        trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                </View>
-                <Text style={s.sliderSub}>Audio ramp on play</Text>
-                <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
-                <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
-                    onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
-                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
-                <View style={s.toggleRow}>
-                    <View style={{ flex: 1 }}>
-                        <Text style={s.toggleLabel}>Ramp on Pause</Text>
-                        <Text style={s.toggleSub}>Fade out when pausing too</Text>
-                    </View>
-                    <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
-                        trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                </View>
-            </Section>
+                {/* 2. Crossfade */}
+                <Section title="Crossfade — Track End">
+                    <Text style={s.sliderSub}>Fade out when a track ends naturally</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{cf.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={0.5} value={cf}
+                        onValueChange={setCf} onSlidingComplete={v => { setCf(v); setCrossfade(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
+                </Section>
 
-            {/* 5. Color */}
-            <Section title="Accent Color">
-                <View style={s.colorGrid}>
-                    {Object.entries(THEMES).map(([id, t]) => (
-                        <TouchableOpacity key={id} onPress={() => setTheme(id)}
-                            style={[s.swatch, { backgroundColor: t.accent }, themeId === id && s.swatchActive,
-                            t.accent === '#e5e5e5' && { borderWidth: 1, borderColor: '#444' }]}>
-                            {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 14 }}>✓</Text>}
+                <Section title="Crossfade — Skip">
+                    <Text style={s.sliderSub}>Soften manual skips</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{skipCf.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
+                        onValueChange={setSkipCf} onSlidingComplete={v => { setSkipCf(v); setSkipCrossfade(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                </Section>
+
+                {/* 3. Shuffle */}
+                <Section title="Shuffle Mode">
+                    {MODES.map(m => (
+                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => changeShuffleMode(m.id)}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.modeLabel}>{m.label}</Text>
+                                <Text style={s.modeSub}>{m.sub}</Text>
+                            </View>
+                            <View style={[s.radio, shuffleMode === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
                         </TouchableOpacity>
                     ))}
-                </View>
-            </Section>
+                </Section>
 
-            {/* 6. Music location */}
-            <Section title="Music Location">
-                <View style={{ padding: 16, paddingHorizontal: 20 }}>
-                    <Text style={{ color: '#555', fontSize: 13, lineHeight: 20 }}>Put music files or folders at:</Text>
-                    <Text style={{ color: theme.accent, fontSize: 11, marginTop: 6, lineHeight: 16 }} selectable>
-                        {(scanPath ?? '').replace('file://', '')}
-                    </Text>
-                    <Text style={{ color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 }}>
-                        Folders become playlists. Files in root appear in All Songs.
-                    </Text>
-                </View>
-            </Section>
+                {/* 4. Volume + Audio */}
+                <Section title="Audio">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Volume Normalization</Text>
+                            <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
+                        </View>
+                        <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <Text style={s.sliderSub}>Audio ramp on play</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
+                        onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Ramp on Pause</Text>
+                            <Text style={s.toggleSub}>Fade out when pausing too</Text>
+                        </View>
+                        <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
 
-            {/* 7. Rescan */}
-            <Section title="Library">
-                <TouchableOpacity style={s.row} onPress={reload}>
-                    <Text style={s.rowLabel}>Rescan Music</Text>
-                    <Text style={s.rowSub}>Re-reads all folders</Text>
-                </TouchableOpacity>
-            </Section>
+                {/* 5. Color — 10 accents, laid out to fill each row evenly with no leftover gap */}
+                <Section title="Accent Color">
+                    <View style={s.colorGrid}>
+                        {Object.entries(THEMES).map(([id, t]) => (
+                            <TouchableOpacity key={id} onPress={() => setTheme(id)}
+                                style={[s.swatch, { backgroundColor: t.accent }, themeId === id && s.swatchActive,
+                                id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
+                                {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 14 }}>✓</Text>}
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Section>
 
-            {/* 8. Export/Import */}
-            <Section title="Backup & Sync">
-                <TouchableOpacity style={s.row} onPress={async () => {
-                    try { const json = await exportAllSettings(); await Share.share({ message: json, title: 'SySlate Settings' }); }
-                    catch (e) { Alert.alert('Export failed', String(e?.message)); }
-                }}>
-                    <Text style={s.rowLabel}>Export Settings</Text>
-                    <Text style={s.rowSub}>Share EQ, crossfade, theme…</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
-                    <Text style={s.rowLabel}>Import Settings</Text>
-                    <Text style={s.rowSub}>Paste exported JSON</Text>
-                </TouchableOpacity>
-            </Section>
+                {/* 6. Music location — split by sideload tool, or just show the
+                     one that matches this actual install when we can tell */}
+                <Section title="Music Location">
+                    {(showBoth || isLiveContainer) && (
+                        <View style={s.locBlock}>
+                            <Text style={s.locHeading}>If using LiveContainer</Text>
+                            <Text style={s.locBody}>
+                                Files → On My iPhone → LiveContainer → SySlate's data folder. LiveContainer nests the app's Documents folder under its own entry rather than a top-level SySlate entry.
+                            </Text>
+                        </View>
+                    )}
+                    {(showBoth || isSideStore) && (
+                        <View style={s.locBlock}>
+                            <Text style={s.locHeading}>If using SideStore</Text>
+                            <Text style={s.locBody}>
+                                Files → On My iPhone → SySlate, appearing as its own top-level app folder.
+                            </Text>
+                        </View>
+                    )}
+                    <View style={[s.locBlock, { borderBottomWidth: 0 }]}>
+                        <Text style={s.locHeading}>This install's actual path</Text>
+                        <Text style={[s.locPath, { color: theme.accent }]} selectable>
+                            {(scanPath ?? '').replace('file://', '')}
+                        </Text>
+                        <Text style={s.locNote}>Folders become playlists. Files in the root appear in All Songs.</Text>
+                    </View>
+                </Section>
+
+                {/* 7. Rescan */}
+                <Section title="Library">
+                    <TouchableOpacity style={s.row} onPress={reload}>
+                        <Text style={s.rowLabel}>Rescan Music</Text>
+                        <Text style={s.rowSub}>Re-reads all folders</Text>
+                    </TouchableOpacity>
+                </Section>
+
+                {/* 8. Export/Import */}
+                <Section title="Backup & Sync">
+                    <TouchableOpacity style={s.row} onPress={async () => {
+                        try { const json = await exportAllSettings(); await Share.share({ message: json, title: 'SySlate Settings' }); }
+                        catch (e) { Alert.alert('Export failed', String(e?.message)); }
+                    }}>
+                        <Text style={s.rowLabel}>Export Settings</Text>
+                        <Text style={s.rowSub}>Share EQ, crossfade, theme…</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
+                        <Text style={s.rowLabel}>Import Settings</Text>
+                        <Text style={s.rowSub}>Paste exported JSON</Text>
+                    </TouchableOpacity>
+                </Section>
+            </ScrollView>
 
             {/* New EQ Preset Modal */}
             <Modal visible={showNewEQ} transparent animationType="slide" onRequestClose={() => setShowNewEQ(false)}>
@@ -271,7 +298,7 @@ export default function SettingsScreen() {
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
-        </ScrollView>
+        </View>
     );
 }
 
@@ -308,8 +335,10 @@ const s = StyleSheet.create({
     toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
-    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, gap: 12 },
-    swatch: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+    // 5 per row x 2 rows for 10 swatches, percentage-based so each row fills
+    // edge to edge with no leftover gap on the last row.
+    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, justifyContent: 'space-between' },
+    swatch: { width: '18%', aspectRatio: 1, borderRadius: 999, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
     swatchActive: { borderWidth: 3, borderColor: '#fff' },
     eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
     checkWrap: { marginRight: 14 },
@@ -318,6 +347,11 @@ const s = StyleSheet.create({
     eqDel: { color: '#555', fontSize: 16 },
     addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
     addBtnText: { fontSize: 15, fontWeight: '600' },
+    locBlock: { padding: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
+    locHeading: { color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 4 },
+    locBody: { color: '#555', fontSize: 13, lineHeight: 20 },
+    locPath: { fontSize: 11, marginTop: 4, lineHeight: 16 },
+    locNote: { color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 },
     overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' },
     sheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
     handle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },

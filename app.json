@@ -11,6 +11,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.david.syslate",
       "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "SySlate uses your photo library to let you pick a cover image for a playlist.",
         "UIBackgroundModes": [
           "audio"
         ],

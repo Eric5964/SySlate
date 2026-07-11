@@ -84,7 +84,7 @@ function AppInner() {
                 await TrackPlayer.updateOptions({
                     capabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop],
                     compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
-                    progressUpdateEventThrottle: 200,
+                    progressUpdateEventThrottle: 150,
                 });
             } catch { }
             await reload();

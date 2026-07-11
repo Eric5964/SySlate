@@ -27,6 +27,19 @@ export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('pla
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
 export const setLastSession = (d) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(d)), null);
 
+// Persisted playlist order — array of playlist paths, most-preferred first
+export const getPlaylistOrder = () => safe(() => AsyncStorage.getItem('playlist_order').then(v => v ? JSON.parse(v) : []), []);
+export const setPlaylistOrder = (order) => safe(() => AsyncStorage.setItem('playlist_order', JSON.stringify(order)), null);
+
+// Custom cover image per playlist, keyed by playlist path -> local image URI
+export const getPlaylistCovers = () => safe(() => AsyncStorage.getItem('playlist_covers').then(v => v ? JSON.parse(v) : {}), {});
+export const setPlaylistCover = async (path, uri) => {
+    const covers = await getPlaylistCovers();
+    if (uri) covers[path] = uri; else delete covers[path];
+    await safe(() => AsyncStorage.setItem('playlist_covers', JSON.stringify(covers)), null);
+    return covers;
+};
+
 export const incrementPlayCount = async (songId) => {
     if (!songId) return;
     try {
@@ -46,7 +59,7 @@ export const getPlayCounts = async (songIds) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'shuffle_mode', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format'];
+    const keys = ['theme_id', 'shuffle_mode', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
