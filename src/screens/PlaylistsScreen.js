@@ -1,18 +1,32 @@
-import React, { useContext, useState, useEffect } from 'react';
+import React, { useContext, useState, useEffect, useMemo, memo } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert,
+    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
-import { usePlayback } from '../context/PlaybackContext';
 import { playlistColor } from '../utils/color';
+import { squircle } from '../utils/squircle';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
     getPlaylistOrder, setPlaylistOrder,
     getPlaylistCovers, setPlaylistCover,
 } from '../utils/storage';
+
+const SCREEN_W = Dimensions.get('window').width;
+const GRID_PADDING = 8;
+const CELL_MARGIN = 5;
+
+// Fixed pixel math instead of percentage/aspectRatio-based sizing — that
+// combination was behaving unpredictably (only ever showing part of a grid),
+// so every sized element in this screen now computes its exact pixel size
+// up front from the screen width.
+function cellSize(cols) {
+    const usable = SCREEN_W - GRID_PADDING * 2 - CELL_MARGIN * 2 * cols;
+    return Math.floor(usable / cols);
+}
+const CELL_SIZES = { 2: cellSize(2), 3: cellSize(3) };
 
 const FORMATS = [
     { id: 'list', label: '☰', cols: 1 },
@@ -21,14 +35,54 @@ const FORMATS = [
     { id: 'grid3', label: '⋮⋮', cols: 3 },
 ];
 
+// Memoized so opening/closing the long-press menu (state lives in the parent)
+// doesn't force every visible row to re-render — that re-render of the whole
+// list was what made the long-press feel choppy.
+const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, onOpen, onLongPress }) {
+    const bg = playlistColor(item.name);
+
+    const renderArt = (size, fontSize) => cover
+        ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        : <Text style={{ fontSize, color: 'rgba(255,255,255,0.4)' }}>♪</Text>;
+
+    if (format.startsWith('grid')) {
+        const size = CELL_SIZES[numCols];
+        return (
+            <TouchableOpacity
+                style={[s.gridItem, { width: size, margin: CELL_MARGIN }]}
+                onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}
+            >
+                <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size) }]}>
+                    {renderArt(numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
+                </View>
+                <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
+                <Text style={s.gridCount}>{item.songs.length} tracks</Text>
+            </TouchableOpacity>
+        );
+    }
+    return (
+        <TouchableOpacity style={s.row} onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}>
+            {format === 'list_art' && (
+                <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(50) }]}>
+                    {renderArt(22, 22)}
+                </View>
+            )}
+            <View style={{ flex: 1 }}>
+                <Text style={s.rowName}>{item.name}</Text>
+                <Text style={s.rowCount}>{item.songs.length} tracks</Text>
+            </View>
+            <Text style={s.arrow}>›</Text>
+        </TouchableOpacity>
+    );
+});
+
 export default function PlaylistsScreen() {
     const { playlists, reload } = useContext(LibraryContext);
     const { theme } = useTheme();
     const navigation = useNavigation();
-    const { loadPlaylist } = usePlayback();
     const [format, setFormat] = useState('list');
     const [covers, setCovers] = useState({});
-    const [menuFor, setMenuFor] = useState(null); // playlist object or null
+    const [menuFor, setMenuFor] = useState(null);
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
@@ -46,8 +100,6 @@ export default function PlaylistsScreen() {
 
     const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item });
 
-    // --- Reordering (menu-based: predictable and doesn't depend on freeform
-    // drag physics we can't verify without a device in hand each iteration) ---
     const persistOrder = async (newList) => {
         await setPlaylistOrder(newList.map(p => p.path));
         await reload();
@@ -92,48 +144,6 @@ export default function PlaylistsScreen() {
         setCovers(next);
     };
 
-    const renderArt = (item, size, fontSize) => {
-        const cover = covers[item.path];
-        if (cover) {
-            return <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />;
-        }
-        return <Text style={{ fontSize, color: 'rgba(255,255,255,0.4)' }}>♪</Text>;
-    };
-
-    const renderItem = ({ item }) => {
-        const bg = playlistColor(item.name);
-        if (isGrid) {
-            return (
-                <TouchableOpacity
-                    style={[s.gridItem, numCols === 3 ? s.gi3 : s.gi2]}
-                    onPress={() => openPlaylist(item)}
-                    onLongPress={() => setMenuFor(item)}
-                    activeOpacity={0.75}
-                >
-                    <View style={[s.gridArt, { backgroundColor: bg }]}>
-                        {renderArt(item, numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
-                    </View>
-                    <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
-                    <Text style={s.gridCount}>{item.songs.length} tracks</Text>
-                </TouchableOpacity>
-            );
-        }
-        return (
-            <TouchableOpacity style={s.row} onPress={() => openPlaylist(item)} onLongPress={() => setMenuFor(item)} activeOpacity={0.75}>
-                {format === 'list_art' && (
-                    <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden' }]}>
-                        {renderArt(item, 22, 22)}
-                    </View>
-                )}
-                <View style={{ flex: 1 }}>
-                    <Text style={s.rowName}>{item.name}</Text>
-                    <Text style={s.rowCount}>{item.songs.length} tracks</Text>
-                </View>
-                <Text style={s.arrow}>›</Text>
-            </TouchableOpacity>
-        );
-    };
-
     return (
         <View style={s.container}>
             <StatusBar barStyle="light-content" />
@@ -159,12 +169,20 @@ export default function PlaylistsScreen() {
                     data={playlists}
                     keyExtractor={item => item.path}
                     numColumns={numCols}
-                    contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? 8 : 0, paddingTop: isGrid ? 8 : 0 }}
-                    renderItem={renderItem}
+                    contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0, paddingTop: isGrid ? 8 : 0 }}
+                    renderItem={({ item }) => (
+                        <PlaylistRow
+                            item={item}
+                            format={format}
+                            numCols={numCols}
+                            cover={covers[item.path]}
+                            onOpen={() => openPlaylist(item)}
+                            onLongPress={() => setMenuFor(item)}
+                        />
+                    )}
                 />
             )}
 
-            {/* Long-press action sheet */}
             {menuFor && (
                 <View style={s.menuOverlay}>
                     <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setMenuFor(null)} />
@@ -205,14 +223,12 @@ const s = StyleSheet.create({
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },
     row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 14, marginVertical: 3, paddingVertical: 16, paddingHorizontal: 16, backgroundColor: '#0f0f0f', borderRadius: 14, minHeight: 68 },
-    listArt: { width: 50, height: 50, borderRadius: 10, marginRight: 14, justifyContent: 'center', alignItems: 'center' },
+    listArt: { width: 50, height: 50, marginRight: 14, justifyContent: 'center', alignItems: 'center' },
     rowName: { color: '#e5e5e5', fontSize: 16, fontWeight: '500' },
     rowCount: { color: '#555', fontSize: 12, marginTop: 3 },
     arrow: { color: '#333', fontSize: 22 },
-    gridItem: { flex: 1, margin: 5, borderRadius: 14, backgroundColor: '#0f0f0f', padding: 8, alignItems: 'center' },
-    gi2: { maxWidth: '48%' },
-    gi3: { maxWidth: '31%' },
-    gridArt: { width: '100%', aspectRatio: 1, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
+    gridItem: { borderRadius: 14, backgroundColor: '#0f0f0f', padding: 8, alignItems: 'center' },
+    gridArt: { justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },
     menuOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },

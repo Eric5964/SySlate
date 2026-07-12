@@ -25,6 +25,19 @@ enableScreens(false);
 
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
+const PlaylistsStack = createStackNavigator();
+
+// Nesting these two inside their own stack (instead of PlaylistDetail living
+// at the top-level Root stack) keeps the tab bar visible while viewing a
+// playlist, since the tab bar chrome lives outside this nested navigator.
+function PlaylistsStackScreen() {
+    return (
+        <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
+            <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
+            <PlaylistsStack.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
+        </PlaylistsStack.Navigator>
+    );
+}
 
 function Tabs() {
     const { theme } = useTheme();
@@ -45,7 +58,7 @@ function Tabs() {
             />
             <Tab.Screen
                 name="Playlists"
-                component={PlaylistsScreen}
+                component={PlaylistsStackScreen}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>▶</Text> }}
             />
             <Tab.Screen
@@ -106,8 +119,11 @@ function AppInner() {
                 <NavigationContainer>
                     <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
                         <Root.Screen name="Main" component={MainLayout} />
-                        <Root.Screen name="Player" component={PlayerScreen} options={{ presentation: 'modal' }} />
-                        <Root.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
+                        <Root.Screen
+                            name="Player"
+                            component={PlayerScreen}
+                            options={{ presentation: 'modal', animationEnabled: false }}
+                        />
                     </Root.Navigator>
                 </NavigationContainer>
             </PlaybackProvider>

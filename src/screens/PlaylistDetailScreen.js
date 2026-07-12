@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
-    StyleSheet, TextInput, StatusBar, Image,
+    StyleSheet, TextInput, StatusBar, Image, Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts, getPlaylistCovers } from '../utils/storage';
+import { getPlayCounts, getPlaylistCovers, setPlaylistCover } from '../utils/storage';
 import { playlistColor } from '../utils/color';
+import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
-import MiniPlayer from '../components/MiniPlayer';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 
@@ -26,8 +27,7 @@ export default function PlaylistDetailScreen() {
     const route = useRoute();
     const { playlist } = route.params;
     const {
-        playSongFromPlaylist, loadPlaylist, addToQueue,
-        shuffleOn, shuffleMode, changeShuffleMode,
+        playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue,
     } = usePlayback();
     const { theme } = useTheme();
 
@@ -71,14 +71,28 @@ export default function PlaylistDetailScreen() {
     };
 
     const handlePlay = async () => {
-        await loadPlaylist(playlist, 0);
+        await playPlaylistOrdered(playlist, sorted);
     };
 
     const handleShuffle = async () => {
-        if (!shuffleOn) {
-            await changeShuffleMode(shuffleMode === 'off' ? 'full_cycle' : shuffleMode);
+        await playPlaylistShuffled(playlist);
+    };
+
+    const changeCover = async () => {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+            Alert.alert('Permission needed', 'Allow Photos access in Settings to set a playlist cover.');
+            return;
         }
-        await loadPlaylist(playlist, 0);
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        await setPlaylistCover(playlist.path, result.assets[0].uri);
+        setCover(result.assets[0].uri);
     };
 
     const bg = playlistColor(playlist.name);
@@ -116,12 +130,16 @@ export default function PlaylistDetailScreen() {
                 ListHeaderComponent={
                     <View>
                         <View style={s.coverWrap}>
-                            <View style={[s.cover, { backgroundColor: bg, overflow: 'hidden' }]}>
+                            <TouchableOpacity
+                                style={[s.cover, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(180) }]}
+                                onLongPress={changeCover}
+                                activeOpacity={0.85}
+                            >
                                 {cover
                                     ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                                     : <Text style={s.coverNote}>♪</Text>
                                 }
-                            </View>
+                            </TouchableOpacity>
                         </View>
 
                         <View style={s.actionRow}>
@@ -177,7 +195,6 @@ export default function PlaylistDetailScreen() {
                 )}
             />
 
-            <MiniPlayer withTabBar={false} />
             <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>

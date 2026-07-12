@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State } from 'react-native-track-player';
@@ -9,12 +9,12 @@ import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/Play
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { playlistColor } from '../utils/color';
+import { squircle } from '../utils/squircle';
+import { getPlaylistCovers } from '../utils/storage';
 
 const TAB_BAR_HEIGHT = 49;
+const ART_SIZE = 44;
 
-// withTabBar: pass false when rendering on a screen that has no tab bar
-// beneath it (e.g. PlaylistDetailScreen) so the bar sits close to the true
-// bottom instead of leaving a gap where a tab bar would have been.
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack, currentPlaylist } = usePlayback();
@@ -22,6 +22,12 @@ export default function MiniPlayer({ withTabBar = true }) {
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const insets = useSafeAreaInsets();
+    const [coverUri, setCoverUri] = useState(null);
+
+    useEffect(() => {
+        if (!currentPlaylist?.path) { setCoverUri(null); return; }
+        getPlaylistCovers().then(covers => setCoverUri(covers[currentPlaylist.path] ?? null));
+    }, [currentPlaylist?.path]);
 
     if (!currentTrack) return null;
 
@@ -38,8 +44,8 @@ export default function MiniPlayer({ withTabBar = true }) {
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >
-            <GradientCap color={tint} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
-            <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden' }]}>
+            <GradientCap color={tint} imageUri={coverUri} height={68} style={{ borderRadius: 16, opacity: coverUri ? 0.9 : 0.5 }} />
+            <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
                 {artwork
                     ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                     : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
@@ -69,7 +75,7 @@ const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 
 const styles = StyleSheet.create({
     container: { position: 'absolute', left: 10, right: 10, height: 68, borderRadius: 16, backgroundColor: '#111', borderWidth: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12, overflow: 'hidden' },
-    art: { width: 44, height: 44, borderRadius: 10, marginRight: 12, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
+    art: { width: ART_SIZE, height: ART_SIZE, marginRight: 12, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
     info: { flex: 1, marginRight: 4 },
     title: { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },
     artist: { color: '#555', fontSize: 12, marginTop: 2 },

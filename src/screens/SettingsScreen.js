@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, Modal, TextInput,
-    Share, Alert, KeyboardAvoidingView, Platform,
+    Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useLibrary } from '../context/LibraryContext';
@@ -22,6 +22,12 @@ import {
 } from '../utils/storage';
 
 export default function SettingsScreen() {
+    const SCREEN_W = Dimensions.get('window').width;
+    const SWATCH_COLS = 5;
+    const SWATCH_PADDING = 16;
+    const SWATCH_GAP = 12;
+    const SWATCH_SIZE = Math.floor((SCREEN_W - SWATCH_PADDING * 2 - SWATCH_GAP * (SWATCH_COLS - 1)) / SWATCH_COLS);
+
     const { shuffleMode, changeShuffleMode } = usePlayback();
     const { reload, scanPath } = useLibrary();
     const { themeId, setTheme, theme } = useTheme();
@@ -176,10 +182,13 @@ export default function SettingsScreen() {
 
                 {/* 5. Color — 10 accents, laid out to fill each row evenly with no leftover gap */}
                 <Section title="Accent Color">
-                    <View style={s.colorGrid}>
+                    <View style={[s.colorGrid, { gap: SWATCH_GAP }]}>
                         {Object.entries(THEMES).map(([id, t]) => (
                             <TouchableOpacity key={id} onPress={() => setTheme(id)}
-                                style={[s.swatch, { backgroundColor: t.accent }, themeId === id && s.swatchActive,
+                                style={[s.swatch, {
+                                    width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: SWATCH_SIZE / 2,
+                                    backgroundColor: t.accent,
+                                }, themeId === id && s.swatchActive,
                                 id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
                                 {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 14 }}>✓</Text>}
                             </TouchableOpacity>
@@ -337,8 +346,8 @@ const s = StyleSheet.create({
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
     // 5 per row x 2 rows for 10 swatches, percentage-based so each row fills
     // edge to edge with no leftover gap on the last row.
-    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16, justifyContent: 'space-between' },
-    swatch: { width: '18%', aspectRatio: 1, borderRadius: 999, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16 },
+    swatch: { justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
     swatchActive: { borderWidth: 3, borderColor: '#fff' },
     eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
     checkWrap: { marginRight: 14 },

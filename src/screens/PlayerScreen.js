@@ -10,6 +10,7 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
+import { squircle } from '../utils/squircle';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 
@@ -38,6 +39,8 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
+    const modalOpenRef = useRef(false);
+    useEffect(() => { modalOpenRef.current = showEQ || showQueue; }, [showEQ, showQueue]);
 
     // Progress bar — tracks the finger in real time instead of only reflecting
     // the throttled native progress value, and only calls seekTo a few times
@@ -76,7 +79,7 @@ export default function PlayerScreen() {
     // of only reacting on release.
     const translateY = useRef(new Animated.Value(0)).current;
     const swipePan = useRef(PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gs) => gs.dy > 6 && Math.abs(gs.dy) > Math.abs(gs.dx) * 1.5,
+        onMoveShouldSetPanResponder: (_, gs) => !modalOpenRef.current && gs.dy > 6 && Math.abs(gs.dy) > Math.abs(gs.dx) * 1.5,
         onPanResponderMove: (_, gs) => { if (gs.dy > 0) translateY.setValue(gs.dy); },
         onPanResponderRelease: (_, gs) => {
             if (gs.dy > 90 || gs.vy > 1.2) {
@@ -109,7 +112,7 @@ export default function PlayerScreen() {
     const skipIconColor = theme.accent === '#f2f2f2' ? '#333' : '#ccc';
 
     return (
-        <Animated.View style={[s.container, { paddingTop: insets.top + 6, transform: [{ translateY }] }]} {...swipePan.panHandlers}>
+        <Animated.View style={[s.container, { paddingTop: insets.top + 2, transform: [{ translateY }] }]} {...swipePan.panHandlers}>
             <View style={s.dragHandle} />
 
             {/* Top bar */}
@@ -118,20 +121,21 @@ export default function PlayerScreen() {
                     <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                 </TouchableOpacity>
                 <Text style={s.topLabel} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
-                <View style={{ flexDirection: 'row' }}>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topTag, { color: theme.accent }]}>EQ</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
-                        <MenuBarsIcon size={22} color={theme.accent} />
+                        <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
                 </View>
             </View>
 
-            {/* Middle content, vertically centered so leftover space is shared evenly */}
+            {/* Middle content, shoved up under the top bar with consistent spacing
+                rather than centered (which left uneven empty space above/below) */}
             <View style={s.middle}>
                 <View style={s.artWrap}>
-                    <View style={[s.art, { borderColor: theme.accentDim, shadowColor: theme.accent }]}>
+                    <View style={[s.art, { borderColor: theme.accentDim, shadowColor: theme.accent, borderRadius: squircle(width - 80) }]}>
                         {artwork
                             ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                             : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
@@ -202,18 +206,18 @@ const HIT = { top: 20, bottom: 20, left: 20, right: 20 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    dragHandle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 8 },
+    dragHandle: { width: '75%', height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 6 },
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
     topBtn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
     topIcon: { fontSize: 26 },
     topTag: { fontSize: 16, fontWeight: '700' },
     topLabel: { color: '#444', fontSize: 13, flex: 1, textAlign: 'center' },
-    middle: { flex: 1, justifyContent: 'center' },
-    artWrap: { alignItems: 'center', marginBottom: 18 },
-    art: { width: width - 64, height: width - 64, borderRadius: 20, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 20 },
+    middle: { flex: 1, justifyContent: 'flex-start', marginTop: 10 },
+    artWrap: { alignItems: 'center', marginBottom: 22 },
+    art: { width: width - 80, height: width - 80, borderRadius: 20, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 20 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
-    info: { paddingHorizontal: 28, marginBottom: 14 },
+    info: { paddingHorizontal: 28, marginBottom: 20 },
     trackTitle: { color: '#f0f0f0', fontSize: 22, fontWeight: '700', marginBottom: 4, letterSpacing: -0.3 },
     trackArtist: { fontSize: 15, fontWeight: '500' },
     progressSection: { paddingHorizontal: 28 },
