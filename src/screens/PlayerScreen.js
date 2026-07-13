@@ -1,8 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import {
-    View, Text, TouchableOpacity, StyleSheet,
-    Dimensions, Animated, PanResponder, Image,
-} from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { useProgress, usePlaybackState, State, Event } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -10,9 +7,13 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
-import { squircle } from '../utils/squircle';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
+import GradientCap from '../components/GradientCap';
+import { squircle } from '../utils/squircle';
+import { playlistColor } from '../utils/color';
+import { getAverageColor } from '../utils/coverColor';
+import { getPlaylistCovers } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -21,6 +22,13 @@ function fmt(sec) {
     return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 }
 
+// Note: the swipe-down-to-close gesture is now handled entirely by
+// React Navigation's built-in modal transition (see App.js — gestureEnabled +
+// TransitionPresets.ModalSlideFromBottomIOS) instead of a hand-rolled
+// PanResponder here. That hand-rolled version was fighting with the
+// navigator's own transition (causing the blank-flash-then-double-swipe bug)
+// and, being JS-thread-only, never felt as smooth as the library's own
+// gesture-handler-backed implementation.
 export default function PlayerScreen() {
     const navigation = useNavigation();
     const route = useRoute();
@@ -39,21 +47,28 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const modalOpenRef = useRef(false);
-    useEffect(() => { modalOpenRef.current = showEQ || showQueue; }, [showEQ, showQueue]);
+    const [gradientColor, setGradientColor] = useState(theme.accent);
+    const [gradientHeight, setGradientHeight] = useState(340);
 
-    // Progress bar — tracks the finger in real time instead of only reflecting
-    // the throttled native progress value, and only calls seekTo a few times
-    // a second (not every pixel) so dragging doesn't stutter the audio.
     const progressRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
     const lastSeekAt = useRef(0);
     const clearDragTimer = useRef(null);
+    const progressGroupRef = useRef(null);
 
     const measureProgress = () => {
         progressRef.current?.measure((_x, _y, w, _h, pageX) => {
             if (w > 0) progressLayout.current = { pageX, width: w };
+        });
+    };
+
+    // Measures where the progress bar section actually ends on THIS device/
+    // screen size, so the gradient cap reaches "slightly below the progress
+    // bar" precisely instead of a guessed fixed height.
+    const measureGradientHeight = () => {
+        progressGroupRef.current?.measure((_x, _y, _w, h, _pageX, pageY) => {
+            if (h > 0) setGradientHeight(pageY + h + 20);
         });
     };
 
@@ -75,25 +90,6 @@ export default function PlayerScreen() {
         }
     };
 
-    // Swipe down to close — the sheet now visually follows the finger instead
-    // of only reacting on release.
-    const translateY = useRef(new Animated.Value(0)).current;
-    const swipePan = useRef(PanResponder.create({
-        onMoveShouldSetPanResponder: (_, gs) => !modalOpenRef.current && gs.dy > 6 && Math.abs(gs.dy) > Math.abs(gs.dx) * 1.5,
-        onPanResponderMove: (_, gs) => { if (gs.dy > 0) translateY.setValue(gs.dy); },
-        onPanResponderRelease: (_, gs) => {
-            if (gs.dy > 90 || gs.vy > 1.2) {
-                Animated.timing(translateY, { toValue: height, duration: 200, useNativeDriver: true })
-                    .start(() => navigation.goBack());
-            } else {
-                Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start();
-            }
-        },
-        onPanResponderTerminate: () => {
-            Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start();
-        },
-    })).current;
-
     useEffect(() => {
         if (playlist && (!currentPlaylist || currentPlaylist.path !== playlist.path)) {
             loadPlaylist(playlist);
@@ -105,6 +101,20 @@ export default function PlayerScreen() {
         return () => sub.remove();
     }, [saveSession]);
 
+    // Gradient uses the cover's extracted average color, matching the mini
+    // player exactly (same GradientCap component, same source of truth).
+    useEffect(() => {
+        const fallback = playlistColor(currentPlaylist?.name ?? '');
+        if (!currentPlaylist?.path) { setGradientColor(fallback); return; }
+        let cancelled = false;
+        getPlaylistCovers().then(async covers => {
+            const uri = covers[currentPlaylist.path];
+            const color = uri ? await getAverageColor(uri, fallback) : fallback;
+            if (!cancelled) setGradientColor(color);
+        });
+        return () => { cancelled = true; };
+    }, [currentPlaylist?.path]);
+
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = currentTrack?.ourArtist ?? currentTrack?.artist ?? '';
     const artwork = currentTrack?.artwork;
@@ -112,10 +122,11 @@ export default function PlayerScreen() {
     const skipIconColor = theme.accent === '#f2f2f2' ? '#333' : '#ccc';
 
     return (
-        <Animated.View style={[s.container, { paddingTop: insets.top + 2, transform: [{ translateY }] }]} {...swipePan.panHandlers}>
+        <View style={[s.container, { paddingTop: insets.top + 6 }]}>
+            <GradientCap color={gradientColor} height={gradientHeight} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.55 }} />
+
             <View style={s.dragHandle} />
 
-            {/* Top bar */}
             <View style={s.topBar}>
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
@@ -131,8 +142,9 @@ export default function PlayerScreen() {
                 </View>
             </View>
 
-            {/* Middle content, shoved up under the top bar with consistent spacing
-                rather than centered (which left uneven empty space above/below) */}
+            {/* Art, then info+progress kept close together, then controls —
+                evenly spaced across whatever room is left so nothing bunches
+                up on a taller screen, instead of one big empty gap. */}
             <View style={s.middle}>
                 <View style={s.artWrap}>
                     <View style={[s.art, { borderColor: theme.accentDim, shadowColor: theme.accent, borderRadius: squircle(width - 80) }]}>
@@ -143,62 +155,59 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                <View style={s.info}>
-                    <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
-                    <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
-                </View>
+                <View ref={progressGroupRef} onLayout={measureGradientHeight} style={s.trackInfoGroup}>
+                    <View style={s.info}>
+                        <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
+                        <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
+                    </View>
 
-                <View style={s.progressSection}>
-                    <View
-                        ref={progressRef}
-                        style={s.progressTouch}
-                        onLayout={measureProgress}
-                        onStartShouldSetResponder={() => true}
-                        onResponderGrant={e => { measureProgress(); onScrub(e.nativeEvent.pageX, false); }}
-                        onResponderMove={e => onScrub(e.nativeEvent.pageX, false)}
-                        onResponderRelease={e => onScrub(e.nativeEvent.pageX, true)}
-                    >
-                        <View style={s.progressTrack}>
-                            <View style={[s.progressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                    <View style={s.progressSection}>
+                        <View
+                            ref={progressRef}
+                            style={s.progressTouch}
+                            onLayout={measureProgress}
+                            onStartShouldSetResponder={() => true}
+                            onResponderGrant={e => { measureProgress(); onScrub(e.nativeEvent.pageX, false); }}
+                            onResponderMove={e => onScrub(e.nativeEvent.pageX, false)}
+                            onResponderRelease={e => onScrub(e.nativeEvent.pageX, true)}
+                        >
+                            <View style={s.progressTrack}>
+                                <View style={[s.progressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                            </View>
+                            <View style={[s.progressThumb, { left: `${pct * 100}%`, marginLeft: -10, backgroundColor: theme.accent }]} />
                         </View>
-                        <View style={[s.progressThumb, {
-                            left: `${pct * 100}%`,
-                            marginLeft: -10,
-                            backgroundColor: theme.accent,
-                        }]} />
-                    </View>
-                    <View style={s.times}>
-                        <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : progress.position)}</Text>
-                        <Text style={s.time}>{fmt(progress.duration)}</Text>
+                        <View style={s.times}>
+                            <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : progress.position)}</Text>
+                            <Text style={s.time}>{fmt(progress.duration)}</Text>
+                        </View>
                     </View>
                 </View>
-            </View>
 
-            {/* Controls */}
-            <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
-                <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT}>
-                    <ShuffleIcon size={22} color={shuffleOn ? theme.accent : '#333'} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
-                    <SkipPrevIcon size={28} color={skipIconColor} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
-                    style={[s.playBtn, { backgroundColor: theme.accent, shadowColor: theme.accent }]}
-                >
-                    {isPlaying ? <PauseIcon size={26} color={theme.onAccent} /> : <PlayIcon size={26} color={theme.onAccent} />}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
-                    <SkipNextIcon size={28} color={skipIconColor} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT}>
-                    <Text style={[s.sideIcon, { color: singleLoop ? theme.accent : '#333' }]}>↺¹</Text>
-                </TouchableOpacity>
+                <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
+                    <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT}>
+                        <ShuffleIcon size={22} color={shuffleOn ? theme.accent : '#333'} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
+                        <SkipPrevIcon size={28} color={skipIconColor} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
+                        style={[s.playBtn, { backgroundColor: theme.accent, shadowColor: theme.accent }]}
+                    >
+                        {isPlaying ? <PauseIcon size={26} color={theme.onAccent} /> : <PlayIcon size={26} color={theme.onAccent} />}
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
+                        <SkipNextIcon size={28} color={skipIconColor} />
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT}>
+                        <Text style={[s.sideIcon, { color: singleLoop ? theme.accent : '#333' }]}>↺¹</Text>
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
-        </Animated.View>
+        </View>
     );
 }
 
@@ -206,18 +215,19 @@ const HIT = { top: 20, bottom: 20, left: 20, right: 20 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    dragHandle: { width: '75%', height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 6 },
+    dragHandle: { width: '50%', height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 6 },
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
-    topBtn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
+    topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     topIcon: { fontSize: 26 },
     topTag: { fontSize: 16, fontWeight: '700' },
     topLabel: { color: '#444', fontSize: 13, flex: 1, textAlign: 'center' },
-    middle: { flex: 1, justifyContent: 'flex-start', marginTop: 10 },
-    artWrap: { alignItems: 'center', marginBottom: 22 },
-    art: { width: width - 80, height: width - 80, borderRadius: 20, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 20 },
+    middle: { flex: 1, justifyContent: 'space-evenly' },
+    artWrap: { alignItems: 'center' },
+    art: { width: width - 80, height: width - 80, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 20 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
-    info: { paddingHorizontal: 28, marginBottom: 20 },
+    trackInfoGroup: {},
+    info: { paddingHorizontal: 28, marginBottom: 10 },
     trackTitle: { color: '#f0f0f0', fontSize: 22, fontWeight: '700', marginBottom: 4, letterSpacing: -0.3 },
     trackArtist: { fontSize: 15, fontWeight: '500' },
     progressSection: { paddingHorizontal: 28 },

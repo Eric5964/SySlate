@@ -1,8 +1,9 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
+import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
@@ -122,7 +123,10 @@ function AppInner() {
                         <Root.Screen
                             name="Player"
                             component={PlayerScreen}
-                            options={{ presentation: 'modal', animationEnabled: false }}
+                            options={{
+                                ...TransitionPresets.ModalSlideFromBottomIOS,
+                                gestureEnabled: true,
+                            }}
                         />
                     </Root.Navigator>
                 </NavigationContainer>
@@ -133,12 +137,14 @@ function AppInner() {
 
 export default function App() {
     return (
-        <ErrorBoundary>
-            <ThemeProvider>
-                <SafeAreaProvider>
-                    <AppInner />
-                </SafeAreaProvider>
-            </ThemeProvider>
-        </ErrorBoundary>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+            <ErrorBoundary>
+                <ThemeProvider>
+                    <SafeAreaProvider>
+                        <AppInner />
+                    </SafeAreaProvider>
+                </ThemeProvider>
+            </ErrorBoundary>
+        </GestureHandlerRootView>
     );
 }

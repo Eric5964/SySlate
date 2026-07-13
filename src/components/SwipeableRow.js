@@ -1,11 +1,16 @@
 import React, { useRef, useState } from 'react';
-import { View, Animated, PanResponder, StyleSheet, Text } from 'react-native';
+import { Animated, StyleSheet, Text, View } from 'react-native';
+import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { AddQueueIcon, TrashIcon } from './Icons';
 
-const START_THRESHOLD = 10;
 const COMMIT_DISTANCE = 72;
 const MAX_REVEAL = 96;
 
+// Rebuilt on react-native-gesture-handler instead of PanResponder — gesture
+// recognition (including negotiating with a parent ScrollView/FlatList over
+// who "owns" the touch) happens off the JS thread, which is what PanResponder
+// couldn't do and was the source of swipes feeling laggy/unreliable,
+// especially inside the queue's scroll view.
 export default function SwipeableRow({
     children,
     onSwipeRight,
@@ -13,78 +18,78 @@ export default function SwipeableRow({
     rightColor = '#7c3aed',
     leftColor = '#dc2626',
     disabled = false,
-    onGestureActive, // (bool) => void — lets a parent ScrollView/FlatList
-    // disable its own scrolling while a horizontal swipe is in progress, so
-    // gesture arbitration doesn't intermittently swallow the swipe.
 }) {
     const translateX = useRef(new Animated.Value(0)).current;
     const [revealSide, setRevealSide] = useState(null);
 
-    const pan = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => false,
-            onMoveShouldSetPanResponder: (_, gs) => {
-                if (disabled) return false;
-                if (!onSwipeRight && !onSwipeLeft) return false;
-                return Math.abs(gs.dx) > START_THRESHOLD && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.6;
-            },
-            onPanResponderGrant: () => {
-                translateX.setOffset(translateX._value);
-                translateX.setValue(0);
-                onGestureActive?.(true);
-            },
-            onPanResponderMove: (_, gs) => {
-                let dx = gs.dx;
-                if (dx > 0 && !onSwipeRight) dx = 0;
-                if (dx < 0 && !onSwipeLeft) dx = 0;
-                if (dx > MAX_REVEAL) dx = MAX_REVEAL + (dx - MAX_REVEAL) * 0.25;
-                if (dx < -MAX_REVEAL) dx = -MAX_REVEAL + (dx + MAX_REVEAL) * 0.25;
+    const onGestureEvent = Animated.event(
+        [{ nativeEvent: { translationX: translateX } }],
+        {
+            useNativeDriver: true,
+            listener: (e) => {
+                const dx = e.nativeEvent.translationX;
                 setRevealSide(dx > 4 ? 'right' : dx < -4 ? 'left' : null);
-                translateX.setValue(dx);
             },
-            onPanResponderRelease: (_, gs) => {
-                translateX.flattenOffset();
-                onGestureActive?.(false);
-                const dx = gs.dx;
-                if (dx > COMMIT_DISTANCE && onSwipeRight) {
-                    Animated.timing(translateX, { toValue: 0, duration: 180, useNativeDriver: true }).start();
-                    setRevealSide(null);
-                    onSwipeRight();
-                    return;
-                }
-                if (dx < -COMMIT_DISTANCE && onSwipeLeft) {
-                    Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true }).start(() => {
-                        onSwipeLeft();
-                    });
-                    return;
-                }
-                Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start(() => setRevealSide(null));
-            },
-            onPanResponderTerminate: () => {
-                translateX.flattenOffset();
-                onGestureActive?.(false);
-                Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start(() => setRevealSide(null));
-            },
-        })
-    ).current;
+        }
+    );
+
+    const onHandlerStateChange = (e) => {
+        if (e.nativeEvent.oldState !== State.ACTIVE) return;
+        const dx = e.nativeEvent.translationX;
+        if (dx > COMMIT_DISTANCE && onSwipeRight) {
+            Animated.timing(translateX, { toValue: 0, duration: 180, useNativeDriver: true }).start();
+            setRevealSide(null);
+            onSwipeRight();
+            return;
+        }
+        if (dx < -COMMIT_DISTANCE && onSwipeLeft) {
+            Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true }).start(() => {
+                onSwipeLeft();
+            });
+            return;
+        }
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start(() => setRevealSide(null));
+    };
+
+    // Clamp/rubber-band entirely via interpolation (stays on the native
+    // thread), and zero out whichever direction has no handler.
+    const displayX = translateX.interpolate({
+        inputRange: [-300, -MAX_REVEAL, 0, MAX_REVEAL, 300],
+        outputRange: [
+            onSwipeLeft ? -MAX_REVEAL - 40 : 0,
+            onSwipeLeft ? -MAX_REVEAL : 0,
+            0,
+            onSwipeRight ? MAX_REVEAL : 0,
+            onSwipeRight ? MAX_REVEAL + 40 : 0,
+        ],
+        extrapolate: 'clamp',
+    });
 
     return (
         <View style={styles.wrap}>
-            {revealSide === 'right' && (
+            {revealSide === 'right' && onSwipeRight && (
                 <View style={[styles.underlay, styles.underlayLeft, { backgroundColor: rightColor }]}>
                     <AddQueueIcon size={18} color="#fff" />
                     <Text style={styles.underlayText}>Play Next</Text>
                 </View>
             )}
-            {revealSide === 'left' && (
+            {revealSide === 'left' && onSwipeLeft && (
                 <View style={[styles.underlay, styles.underlayRight, { backgroundColor: leftColor }]}>
                     <Text style={styles.underlayText}>Remove</Text>
                     <TrashIcon size={18} color="#fff" />
                 </View>
             )}
-            <Animated.View style={{ transform: [{ translateX }] }} {...pan.panHandlers}>
-                {children}
-            </Animated.View>
+            <PanGestureHandler
+                enabled={!disabled && (!!onSwipeRight || !!onSwipeLeft)}
+                onGestureEvent={onGestureEvent}
+                onHandlerStateChange={onHandlerStateChange}
+                activeOffsetX={[-10, 10]}
+                failOffsetY={[-15, 15]}
+            >
+                <Animated.View style={{ transform: [{ translateX: displayX }] }}>
+                    {children}
+                </Animated.View>
+            </PanGestureHandler>
         </View>
     );
 }

@@ -8,6 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES } from '../context/ThemeContext';
+import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
 import {
@@ -26,7 +27,7 @@ export default function SettingsScreen() {
     const SWATCH_COLS = 5;
     const SWATCH_PADDING = 16;
     const SWATCH_GAP = 12;
-    const SWATCH_SIZE = Math.floor((SCREEN_W - SWATCH_PADDING * 2 - SWATCH_GAP * (SWATCH_COLS - 1)) / SWATCH_COLS);
+    const SWATCH_SIZE = Math.floor((SCREEN_W - SWATCH_PADDING * 2 - SWATCH_GAP * (SWATCH_COLS - 1)) / SWATCH_COLS * 0.78);
 
     const { shuffleMode, changeShuffleMode } = usePlayback();
     const { reload, scanPath } = useLibrary();
@@ -182,15 +183,15 @@ export default function SettingsScreen() {
 
                 {/* 5. Color — 10 accents, laid out to fill each row evenly with no leftover gap */}
                 <Section title="Accent Color">
-                    <View style={[s.colorGrid, { gap: SWATCH_GAP }]}>
+                    <View style={[s.colorGrid, { gap: SWATCH_GAP, justifyContent: 'center' }]}>
                         {Object.entries(THEMES).map(([id, t]) => (
                             <TouchableOpacity key={id} onPress={() => setTheme(id)}
                                 style={[s.swatch, {
-                                    width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: SWATCH_SIZE / 2,
+                                    width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: squircle(SWATCH_SIZE),
                                     backgroundColor: t.accent,
                                 }, themeId === id && s.swatchActive,
                                 id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
-                                {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 14 }}>✓</Text>}
+                                {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
                             </TouchableOpacity>
                         ))}
                     </View>

@@ -1,20 +1,32 @@
 import TrackPlayer, { Event, State } from 'react-native-track-player';
 import { getCrossfade, getSkipCrossfade, getAudioRamp, getRampOnPause } from '../utils/storage';
 
-let isFading = false;
-let naturalEndFade = false;
-let abortFade = false;
+// --- Fade ownership -----------------------------------------------------
+// Exactly one fade transition (natural end-of-track, or a manual skip) is
+// allowed to be "in control" at a time. Whichever claims the lock first runs
+// to completion untouched; anything else that would have started a
+// competing fade during that window backs off instead of fighting it —
+// that fighting (two things calling setVolume/state at once) was the source
+// of the glitchy/cut-short audio when skipping right as a natural crossfade
+// was starting, or seeking into the crossfade window.
+let fadeCounter = 0;
+let activeFadeId = null;
+let naturalEndFadeOwner = null;
 let skipLock = false;
 let rampLock = false;
 
+const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
+const isFadeOwner = (id) => activeFadeId === id;
+const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
+
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function fadeVol(from, to, sec) {
-    if (sec <= 0.05) { try { await TrackPlayer.setVolume(to); } catch { } return; }
+async function fadeVol(from, to, sec, ownerId) {
+    if (sec <= 0.05) { if (isFadeOwner(ownerId)) { try { await TrackPlayer.setVolume(to); } catch { } } return; }
     const STEPS = Math.max(8, Math.round(sec * 20));
     const dt = (sec * 1000) / STEPS;
     for (let i = 1; i <= STEPS; i++) {
-        if (abortFade) return;
+        if (!isFadeOwner(ownerId)) return; // invalidated — someone else owns the transition now
         try { await TrackPlayer.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))); } catch { return; }
         if (i < STEPS) await sleep(dt);
     }
@@ -34,22 +46,24 @@ async function waitForPlaying(timeoutMs = 2500) {
 }
 
 // --- End-of-track crossfade watcher -----------------------------------
-// Two layers, deliberately redundant, because relying on a single native
-// event turned out to miss the window sometimes (natural crossfade would
-// silently never fire): a tight event-driven listener for the common case,
-// plus a coarser interval-based safety net that double-checks independently.
 let progressSub = null;
 let fallbackTimer = null;
 
 async function checkCrossfadeWindow(position, duration) {
-    if (isFading) return;
+    if (activeFadeId !== null) return; // something already owns a fade transition
     try {
         const cf = await getCrossfade();
         if (cf <= 0 || !duration || duration < 1) return;
         const remaining = duration - position;
         if (remaining > 0.15 && remaining <= cf) {
-            isFading = true; naturalEndFade = true; abortFade = false;
-            await fadeVol(1, 0, Math.max(0.15, remaining - 0.1));
+            const id = claimFade();
+            naturalEndFadeOwner = id;
+            // Wider safety margin (was 0.1s) so our fade reliably finishes
+            // BEFORE native auto-advance fires — too tight a margin was the
+            // cause of the fade racing the actual track end and cutting the
+            // song short, especially right after a seek landed inside the
+            // crossfade window.
+            await fadeVol(1, 0, Math.max(0.15, remaining - 0.35), id);
         }
     } catch { }
 }
@@ -82,17 +96,18 @@ export async function playWithRamp() {
     rampLock = true;
     try {
         const ramp = await getAudioRamp();
-        if (ramp > 0.05) {
+        if (ramp > 0.05 && activeFadeId === null) {
+            const id = claimFade();
             try { await TrackPlayer.setVolume(0); } catch { }
             try { await TrackPlayer.play(); } catch { }
             await waitForPlaying();
-            abortFade = false;
-            await fadeVol(0, 1, ramp);
+            await fadeVol(0, 1, ramp, id);
+            releaseFade(id);
         } else {
             try { await TrackPlayer.setVolume(1); } catch { }
             try { await TrackPlayer.play(); } catch { }
         }
-        startWatcher(); // belt-and-suspenders: don't rely solely on the PlaybackState event
+        startWatcher();
     } finally {
         await sleep(60);
         rampLock = false;
@@ -105,9 +120,10 @@ export async function pauseWithRamp() {
     try {
         const useFade = await getRampOnPause();
         const ramp = await getAudioRamp();
-        if (useFade && ramp > 0.05) {
-            abortFade = false;
-            await fadeVol(1, 0, ramp * 0.5);
+        if (useFade && ramp > 0.05 && activeFadeId === null) {
+            const id = claimFade();
+            await fadeVol(1, 0, ramp * 0.5, id);
+            releaseFade(id);
             try { await TrackPlayer.pause(); } catch { }
             try { await TrackPlayer.setVolume(1); } catch { }
         } else {
@@ -119,43 +135,49 @@ export async function pauseWithRamp() {
     }
 }
 
-// Skip with crossfade — one duration setting now governs BOTH the fade-out
-// of the outgoing track and the fade-in of the incoming one (previously the
-// fade-in silently used the separate "Audio Ramp" setting instead, which is
-// why the start of a skipped-to song often didn't fade at all). Waits for
-// the new track to actually be playing before fading in, and a short lock
-// ignores rapid repeated taps so spamming skip can't stack overlapping fades.
+// Skip with crossfade. If a natural crossfade is already in flight when you
+// hit skip, we deliberately don't fight it — the skip goes through as a
+// plain, un-faded skip and lets the already-running fade own the transition,
+// since it claimed the lock first.
 export async function skipWithCrossfade(direction = 'next') {
     if (skipLock) return;
     skipLock = true;
-    abortFade = true;
-    isFading = false;
-    naturalEndFade = false;
     try {
+        if (activeFadeId !== null) {
+            try {
+                if (direction === 'next') await TrackPlayer.skipToNext();
+                else await TrackPlayer.skipToPrevious();
+            } catch { }
+            return;
+        }
+
+        const id = claimFade();
         const dur = await getSkipCrossfade();
         try { await TrackPlayer.setVolume(1); } catch { }
-        if (dur > 0.05) {
-            abortFade = false;
-            await fadeVol(1, 0, dur);
-        }
+        if (dur > 0.05) await fadeVol(1, 0, dur, id);
+        if (!isFadeOwner(id)) return;
+
         try {
             if (direction === 'next') await TrackPlayer.skipToNext();
             else await TrackPlayer.skipToPrevious();
         } catch {
             try { await TrackPlayer.setVolume(1); } catch { }
-            abortFade = false;
+            releaseFade(id);
             return;
         }
+
         await waitForPlaying();
-        abortFade = false;
+        if (!isFadeOwner(id)) return;
+
         if (dur > 0.05) {
             try { await TrackPlayer.setVolume(0); } catch { }
             try { await TrackPlayer.play(); } catch { }
-            await fadeVol(0, 1, dur);
+            await fadeVol(0, 1, dur, id);
         } else {
             try { await TrackPlayer.setVolume(1); } catch { }
             try { await TrackPlayer.play(); } catch { }
         }
+        releaseFade(id);
     } finally {
         await sleep(80);
         skipLock = false;
@@ -176,26 +198,25 @@ export async function PlaybackService() {
 
     TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
         if (nextTrack === null || nextTrack === undefined) {
-            isFading = false; naturalEndFade = false; abortFade = false;
+            if (naturalEndFadeOwner !== null) { releaseFade(naturalEndFadeOwner); naturalEndFadeOwner = null; }
             try { await TrackPlayer.setVolume(1); } catch { }
             return;
         }
-        if (naturalEndFade && !abortFade) {
-            naturalEndFade = false; isFading = false;
+        if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) {
+            const id = naturalEndFadeOwner;
+            naturalEndFadeOwner = null;
             try { await TrackPlayer.setVolume(0); } catch { }
             const cf = await getCrossfade();
-            abortFade = false;
             if (cf > 0.05) {
                 await waitForPlaying(800);
-                await fadeVol(0, 1, Math.min(cf, 2.5));
+                if (isFadeOwner(id)) await fadeVol(0, 1, Math.min(cf, 2.5), id);
             } else {
                 try { await TrackPlayer.setVolume(1); } catch { }
             }
-        } else if (!isFading) {
-            naturalEndFade = false;
+            releaseFade(id);
+        } else if (activeFadeId === null) {
             try { await TrackPlayer.setVolume(1); } catch { }
         }
-        isFading = false; abortFade = false;
         startWatcher();
     });
 }

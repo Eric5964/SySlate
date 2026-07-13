@@ -1,18 +1,13 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View, Animated, PanResponder, StyleSheet, Dimensions, Modal } from 'react-native';
+import { View, Animated, StyleSheet, Dimensions, Modal } from 'react-native';
+import { PanGestureHandler, State } from 'react-native-gesture-handler';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 
-// Shared bottom-sheet used by QueueModal and EQModal. Two things this exists
-// to fix, on top of just "a sheet":
-// 1. The backdrop dismiss uses a strict small-movement tap check instead of
-//    TouchableOpacity — a plain Touchable can fire onPress after a drag that
-//    moved through it, which was letting a swipe-down gesture that started
-//    inside the sheet "pass through" into whatever was behind it once the
-//    sheet closed mid-gesture.
-// 2. The handle has its own swipe-down-to-close / swipe-up-to-expand gesture,
-//    fully contained here, so it never depends on (or interferes with) the
-//    screen underneath.
+// Rebuilt on react-native-gesture-handler (see SwipeableRow for why) — the
+// handle's drag now runs on the native thread, which is what was needed for
+// this to feel smooth, especially since it can overlap with scrolling on
+// the content underneath it.
 export default function BottomSheet({ visible, onClose, children, collapsedHeight = 460, expandedHeight = SCREEN_H * 0.88 }) {
     const heightAnim = useRef(new Animated.Value(collapsedHeight)).current;
     const translateY = useRef(new Animated.Value(0)).current;
@@ -36,28 +31,22 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
         Animated.timing(translateY, { toValue: SCREEN_H, duration: 200, useNativeDriver: true }).start(() => onClose());
     };
 
-    const pan = useRef(
-        PanResponder.create({
-            onStartShouldSetPanResponder: () => false,
-            onMoveShouldSetPanResponder: (_, gs) => Math.abs(gs.dy) > 8 && Math.abs(gs.dy) > Math.abs(gs.dx) * 1.3,
-            onPanResponderMove: (_, gs) => {
-                if (gs.dy > 0) translateY.setValue(gs.dy);
-                else if (expanded) translateY.setValue(gs.dy * 0.25); // small rubber-band, already at max
-            },
-            onPanResponderRelease: (_, gs) => {
-                if (gs.dy > 70 || gs.vy > 1.1) { closeNow(); return; }
-                if (gs.dy < -50 && !expanded) {
-                    Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-                    expand();
-                    return;
-                }
-                Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-            },
-            onPanResponderTerminate: () => {
-                Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-            },
-        })
-    ).current;
+    const onGestureEvent = Animated.event(
+        [{ nativeEvent: { translationY: translateY } }],
+        { useNativeDriver: true }
+    );
+
+    const onHandlerStateChange = (e) => {
+        if (e.nativeEvent.oldState !== State.ACTIVE) return;
+        const { translationY, velocityY } = e.nativeEvent;
+        if (translationY > 70 || velocityY > 800) { closeNow(); return; }
+        if (translationY < -50 && !expanded) {
+            Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
+            expand();
+            return;
+        }
+        Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
+    };
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -72,9 +61,16 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
                 }}
             />
             <Animated.View style={[s.sheet, { height: heightAnim, transform: [{ translateY }] }]}>
-                <View {...pan.panHandlers} style={s.handleArea}>
-                    <View style={s.handle} />
-                </View>
+                <PanGestureHandler
+                    onGestureEvent={onGestureEvent}
+                    onHandlerStateChange={onHandlerStateChange}
+                    activeOffsetY={[-10, 10]}
+                    failOffsetX={[-15, 15]}
+                >
+                    <Animated.View style={s.handleArea}>
+                        <View style={s.handle} />
+                    </Animated.View>
+                </PanGestureHandler>
                 <View style={{ flex: 1 }}>
                     {children}
                 </View>

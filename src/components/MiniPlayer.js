@@ -9,6 +9,7 @@ import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/Play
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { playlistColor } from '../utils/color';
+import { getAverageColor } from '../utils/coverColor';
 import { squircle } from '../utils/squircle';
 import { getPlaylistCovers } from '../utils/storage';
 
@@ -22,11 +23,18 @@ export default function MiniPlayer({ withTabBar = true }) {
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const insets = useSafeAreaInsets();
-    const [coverUri, setCoverUri] = useState(null);
+    const [gradientColor, setGradientColor] = useState(theme.accent);
 
     useEffect(() => {
-        if (!currentPlaylist?.path) { setCoverUri(null); return; }
-        getPlaylistCovers().then(covers => setCoverUri(covers[currentPlaylist.path] ?? null));
+        const fallback = playlistColor(currentPlaylist?.name ?? currentTrack?.title ?? '');
+        if (!currentPlaylist?.path) { setGradientColor(fallback); return; }
+        let cancelled = false;
+        getPlaylistCovers().then(async covers => {
+            const uri = covers[currentPlaylist.path];
+            const color = uri ? await getAverageColor(uri, fallback) : fallback;
+            if (!cancelled) setGradientColor(color);
+        });
+        return () => { cancelled = true; };
     }, [currentPlaylist?.path]);
 
     if (!currentTrack) return null;
@@ -35,7 +43,6 @@ export default function MiniPlayer({ withTabBar = true }) {
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
     const artwork = currentTrack.artwork;
-    const tint = playlistColor(currentPlaylist?.name ?? title);
     const skipIconColor = theme.accent === '#f2f2f2' ? '#333' : '#bbb';
 
     return (
@@ -44,7 +51,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >
-            <GradientCap color={tint} imageUri={coverUri} height={68} style={{ borderRadius: 16, opacity: coverUri ? 0.9 : 0.5 }} />
+            <GradientCap color={gradientColor} height={68} style={{ borderRadius: 16, opacity: 0.55 }} />
             <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
                 {artwork
                     ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
