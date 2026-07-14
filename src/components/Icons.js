@@ -14,7 +14,7 @@ export function PlayIcon({ size = 22, color = '#fff', style }) {
             borderTopColor: 'transparent',
             borderBottomColor: 'transparent',
             borderLeftColor: color,
-            marginLeft: size * 0.08,
+            marginLeft: size * 0.14,
         }, style]} />
     );
 }

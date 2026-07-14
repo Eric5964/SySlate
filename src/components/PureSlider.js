@@ -77,5 +77,5 @@ const styles = StyleSheet.create({
     container: { height: 52, justifyContent: 'center', position: 'relative' },
     track: { height: 4, borderRadius: 2, overflow: 'hidden' },
     fill: { height: '100%', borderRadius: 2 },
-    thumb: { position: 'absolute', width: 28, height: 28, borderRadius: 14, top: 12 },
+    thumb: { position: 'absolute', width: 28, height: 28, borderRadius: 14, top: 12, borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.18)' },
 });

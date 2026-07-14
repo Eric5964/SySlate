@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State } from 'react-native-track-player';
@@ -8,34 +8,19 @@ import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
-import { playlistColor } from '../utils/color';
-import { getAverageColor } from '../utils/coverColor';
 import { squircle } from '../utils/squircle';
-import { getPlaylistCovers } from '../utils/storage';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = 44;
+const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
-    const { currentTrack, currentPlaylist } = usePlayback();
+    const { currentTrack } = usePlayback();
     const { theme } = useTheme();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const insets = useSafeAreaInsets();
-    const [gradientColor, setGradientColor] = useState(theme.accent);
-
-    useEffect(() => {
-        const fallback = playlistColor(currentPlaylist?.name ?? currentTrack?.title ?? '');
-        if (!currentPlaylist?.path) { setGradientColor(fallback); return; }
-        let cancelled = false;
-        getPlaylistCovers().then(async covers => {
-            const uri = covers[currentPlaylist.path];
-            const color = uri ? await getAverageColor(uri, fallback) : fallback;
-            if (!cancelled) setGradientColor(color);
-        });
-        return () => { cancelled = true; };
-    }, [currentPlaylist?.path]);
 
     if (!currentTrack) return null;
 
@@ -43,7 +28,6 @@ export default function MiniPlayer({ withTabBar = true }) {
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
     const artwork = currentTrack.artwork;
-    const skipIconColor = theme.accent === '#f2f2f2' ? '#333' : '#bbb';
 
     return (
         <TouchableOpacity
@@ -51,7 +35,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >
-            <GradientCap color={gradientColor} height={68} style={{ borderRadius: 16, opacity: 0.55 }} />
+            <GradientCap color={theme.accent} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
             <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
                 {artwork
                     ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
@@ -63,7 +47,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 <Text style={styles.artist} numberOfLines={1}>{artist}</Text>
             </View>
             <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={styles.btn} hitSlop={HIT}>
-                <SkipPrevIcon size={20} color={skipIconColor} />
+                <SkipPrevIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
             <TouchableOpacity
                 onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
@@ -72,7 +56,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 {isPlaying ? <PauseIcon size={20} color={theme.accent} /> : <PlayIcon size={18} color={theme.accent} />}
             </TouchableOpacity>
             <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={styles.btn} hitSlop={HIT}>
-                <SkipNextIcon size={20} color={skipIconColor} />
+                <SkipNextIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
         </TouchableOpacity>
     );

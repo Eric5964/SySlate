@@ -1,10 +1,9 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, Modal, TextInput,
     Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
-import { LibraryContext } from '../context/LibraryContext';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES } from '../context/ThemeContext';
@@ -22,13 +21,11 @@ import {
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
-export default function SettingsScreen() {
-    const SCREEN_W = Dimensions.get('window').width;
-    const SWATCH_COLS = 5;
-    const SWATCH_PADDING = 16;
-    const SWATCH_GAP = 12;
-    const SWATCH_SIZE = Math.floor((SCREEN_W - SWATCH_PADDING * 2 - SWATCH_GAP * (SWATCH_COLS - 1)) / SWATCH_COLS * 0.78);
+const SCREEN_W = Dimensions.get('window').width;
+const SWATCH_GAP = 12;
+const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5 * 0.78);
 
+export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
     const { reload, scanPath } = useLibrary();
     const { themeId, setTheme, theme } = useTheme();
@@ -81,29 +78,49 @@ export default function SettingsScreen() {
     const MODES = [
         { id: 'off', label: 'Off', sub: 'Play in order' },
         { id: 'full_cycle', label: 'Full Cycle', sub: 'All songs once before repeat' },
-        { id: 'true_random', label: 'True Random', sub: 'Completely random' },
+        { id: 'true_random', label: 'True Random', sub: 'Can repeat sooner, no fixed order' },
         { id: 'smart', label: 'Smart', sub: 'Avoids same artist back to back' },
     ];
 
     // Best-effort detection of which sideload tool is running this build.
-    // LiveContainer runs apps inside its own virtualized container, which
-    // shows up in the sandboxed document path; SideStore installs the app
-    // as a normal standalone app. If we can't tell, show both.
     const pathLower = (scanPath ?? '').toLowerCase();
     const isLiveContainer = pathLower.includes('livecontainer');
     const isSideStore = !isLiveContainer && !!scanPath;
     const showBoth = !scanPath || (!isLiveContainer && !isSideStore);
 
+    const themeEntries = Object.entries(THEMES);
+    const swatchRows = [themeEntries.slice(0, 5), themeEntries.slice(5, 10)];
+
+    const renderSwatch = ([id, t]) => (
+        <TouchableOpacity key={id} onPress={() => setTheme(id)}
+            style={[s.swatch, {
+                width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: squircle(SWATCH_SIZE),
+                backgroundColor: t.accent,
+            }, themeId === id && s.swatchActive,
+            id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
+            {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
+        </TouchableOpacity>
+    );
+
     return (
         <View style={s.container}>
             <StatusBar barStyle="light-content" />
-            {/* Header stays fixed above the scroll, matching All Songs / Playlists */}
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
 
             <ScrollView contentContainerStyle={{ paddingBottom: 160 }}>
-                {/* 1. EQ */}
+                {/* 1. EQ — built-in presets as a condensed 2-wide grid, custom ones as a list below */}
                 <Section title="EQ Presets">
-                    {[...BUILT_IN_PRESETS, ...customPresets].map(p => (
+                    <View style={s.eqGrid}>
+                        {BUILT_IN_PRESETS.map(p => (
+                            <TouchableOpacity key={p.id} style={s.eqChip} onPress={() => togglePreset(p.id)}>
+                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                                </View>
+                                <Text style={s.eqChipName} numberOfLines={1}>{p.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                    {customPresets.length > 0 && customPresets.map(p => (
                         <View key={p.id} style={s.eqRow}>
                             <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
                                 <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
@@ -111,11 +128,9 @@ export default function SettingsScreen() {
                                 </View>
                             </TouchableOpacity>
                             <Text style={s.eqName}>{p.name}</Text>
-                            {customPresets.find(c => c.id === p.id) && (
-                                <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
-                                    <Text style={s.eqDel}>✕</Text>
-                                </TouchableOpacity>
-                            )}
+                            <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
+                                <Text style={s.eqDel}>✕</Text>
+                            </TouchableOpacity>
                         </View>
                     ))}
                     <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
@@ -123,23 +138,51 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </Section>
 
-                {/* 2. Crossfade */}
-                <Section title="Crossfade — Track End">
-                    <Text style={s.sliderSub}>Fade out when a track ends naturally</Text>
+                {/* 2. Audio — everything that fades/ramps volume, plus normalization,
+                     all together under one heading in the spot Crossfade used to be.
+                     ("Crossfade" was a misnomer — nothing here overlaps two tracks,
+                     it's all fade/ramp, so it's named accordingly.) */}
+                <Section title="Audio">
+                    <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
+                    <Text style={s.sliderNote}>Fades out when a track ends naturally, fades the next one in</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{cf.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={0.5} value={cf}
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={cf}
                         onValueChange={setCf} onSlidingComplete={v => { setCf(v); setCrossfade(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
-                </Section>
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
-                <Section title="Crossfade — Skip">
-                    <Text style={s.sliderSub}>Soften manual skips</Text>
+                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
+                    <Text style={s.sliderNote}>Softens manual skips, both out and back in</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{skipCf.toFixed(1)}s</Text>
                     <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
                         onValueChange={setSkipCf} onSlidingComplete={v => { setSkipCf(v); setSkipCrossfade(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+
+                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Play</Text>
+                    <Text style={s.sliderNote}>Fade-in used any time playback starts fresh</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
+                        onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
+
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Ramp on Pause</Text>
+                            <Text style={s.toggleSub}>Fade out when pausing too</Text>
+                        </View>
+                        <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Volume Normalization</Text>
+                            <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
+                        </View>
+                        <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
                 </Section>
 
                 {/* 3. Shuffle */}
@@ -155,56 +198,25 @@ export default function SettingsScreen() {
                     ))}
                 </Section>
 
-                {/* 4. Volume + Audio */}
-                <Section title="Audio">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Volume Normalization</Text>
-                            <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
-                        </View>
-                        <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <Text style={s.sliderSub}>Audio ramp on play</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
-                        onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Ramp on Pause</Text>
-                            <Text style={s.toggleSub}>Fade out when pausing too</Text>
-                        </View>
-                        <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                </Section>
-
-                {/* 5. Color — 10 accents, laid out to fill each row evenly with no leftover gap */}
+                {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
+                     size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Accent Color">
-                    <View style={[s.colorGrid, { gap: SWATCH_GAP, justifyContent: 'center' }]}>
-                        {Object.entries(THEMES).map(([id, t]) => (
-                            <TouchableOpacity key={id} onPress={() => setTheme(id)}
-                                style={[s.swatch, {
-                                    width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: squircle(SWATCH_SIZE),
-                                    backgroundColor: t.accent,
-                                }, themeId === id && s.swatchActive,
-                                id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
-                                {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
-                            </TouchableOpacity>
+                    <View style={{ paddingVertical: 16 }}>
+                        {swatchRows.map((row, i) => (
+                            <View key={i} style={[s.swatchRow, i > 0 && { marginTop: 14 }]}>
+                                {row.map(renderSwatch)}
+                            </View>
                         ))}
                     </View>
                 </Section>
 
-                {/* 6. Music location — split by sideload tool, or just show the
-                     one that matches this actual install when we can tell */}
+                {/* 5. Music location */}
                 <Section title="Music Location">
                     {(showBoth || isLiveContainer) && (
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using LiveContainer</Text>
                             <Text style={s.locBody}>
-                                Files → On My iPhone → LiveContainer → SySlate's data folder. LiveContainer nests the app's Documents folder under its own entry rather than a top-level SySlate entry.
+                                Files → On My iPhone → LiveContainer → Data → Application → (SySlate's app ID) → Documents. LiveContainer identifies the app by its ID inside that folder, not by name.
                             </Text>
                         </View>
                     )}
@@ -225,7 +237,7 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                {/* 7. Rescan */}
+                {/* 6. Rescan */}
                 <Section title="Library">
                     <TouchableOpacity style={s.row} onPress={reload}>
                         <Text style={s.rowLabel}>Rescan Music</Text>
@@ -233,14 +245,14 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </Section>
 
-                {/* 8. Export/Import */}
+                {/* 7. Export/Import */}
                 <Section title="Backup & Sync">
                     <TouchableOpacity style={s.row} onPress={async () => {
                         try { const json = await exportAllSettings(); await Share.share({ message: json, title: 'SySlate Settings' }); }
                         catch (e) { Alert.alert('Export failed', String(e?.message)); }
                     }}>
                         <Text style={s.rowLabel}>Export Settings</Text>
-                        <Text style={s.rowSub}>Share EQ, crossfade, theme…</Text>
+                        <Text style={s.rowSub}>Share EQ, audio ramp, theme…</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
                         <Text style={s.rowLabel}>Import Settings</Text>
@@ -249,7 +261,6 @@ export default function SettingsScreen() {
                 </Section>
             </ScrollView>
 
-            {/* New EQ Preset Modal */}
             <Modal visible={showNewEQ} transparent animationType="slide" onRequestClose={() => setShowNewEQ(false)}>
                 <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowNewEQ(false)} />
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -282,7 +293,6 @@ export default function SettingsScreen() {
                 </KeyboardAvoidingView>
             </Modal>
 
-            {/* Import Modal */}
             <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
                 <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -337,7 +347,8 @@ const s = StyleSheet.create({
     modeLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     modeSub: { color: '#555', fontSize: 12, marginTop: 2 },
     radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#333' },
-    sliderSub: { color: '#555', fontSize: 12, paddingHorizontal: 24, paddingTop: 14 },
+    sliderSub: { color: '#888', fontSize: 13, fontWeight: '700', paddingHorizontal: 24, paddingTop: 14 },
+    sliderNote: { color: '#555', fontSize: 12, paddingHorizontal: 24, marginTop: 2 },
     sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 6 },
     slider: { marginHorizontal: 16, marginTop: 2 },
     sliderEnds: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, paddingBottom: 12 },
@@ -345,14 +356,15 @@ const s = StyleSheet.create({
     toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
-    // 5 per row x 2 rows for 10 swatches, percentage-based so each row fills
-    // edge to edge with no leftover gap on the last row.
-    colorGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 16 },
-    swatch: { justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+    swatchRow: { flexDirection: 'row', justifyContent: 'center', gap: SWATCH_GAP },
+    swatch: { justifyContent: 'center', alignItems: 'center' },
     swatchActive: { borderWidth: 3, borderColor: '#fff' },
-    eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
+    eqGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 8, paddingHorizontal: 8 },
+    eqChip: { width: '50%', flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12 },
+    eqChipName: { color: '#e5e5e5', fontSize: 14, marginLeft: 10, flexShrink: 1 },
+    eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: '#141414' },
     checkWrap: { marginRight: 14 },
-    checkbox: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
+    checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
     eqName: { flex: 1, color: '#e5e5e5', fontSize: 15 },
     eqDel: { color: '#555', fontSize: 16 },
     addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },

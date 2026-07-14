@@ -2,13 +2,11 @@ import TrackPlayer, { Event, State } from 'react-native-track-player';
 import { getCrossfade, getSkipCrossfade, getAudioRamp, getRampOnPause } from '../utils/storage';
 
 // --- Fade ownership -----------------------------------------------------
-// Exactly one fade transition (natural end-of-track, or a manual skip) is
-// allowed to be "in control" at a time. Whichever claims the lock first runs
-// to completion untouched; anything else that would have started a
-// competing fade during that window backs off instead of fighting it —
-// that fighting (two things calling setVolume/state at once) was the source
-// of the glitchy/cut-short audio when skipping right as a natural crossfade
-// was starting, or seeking into the crossfade window.
+// Exactly one fade transition is allowed to be "in control" at a time.
+// Whichever claims the lock first runs to completion; any other trigger
+// during that window is BLOCKED entirely (not run as a competing un-faded
+// fallback) — that fallback was itself a source of glitches, since it could
+// still race the in-flight fade's remaining volume-setting steps.
 let fadeCounter = 0;
 let activeFadeId = null;
 let naturalEndFadeOwner = null;
@@ -19,6 +17,13 @@ const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
 const isFadeOwner = (id) => activeFadeId === id;
 const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
 
+// Exposed so the UI layer (song taps, queue taps, playlist Play/Shuffle) can
+// ignore input for the brief window a fade/ramp is in flight, instead of
+// racing it.
+export function isTransitionLocked() {
+    return activeFadeId !== null || skipLock || rampLock;
+}
+
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fadeVol(from, to, sec, ownerId) {
@@ -26,7 +31,7 @@ async function fadeVol(from, to, sec, ownerId) {
     const STEPS = Math.max(8, Math.round(sec * 20));
     const dt = (sec * 1000) / STEPS;
     for (let i = 1; i <= STEPS; i++) {
-        if (!isFadeOwner(ownerId)) return; // invalidated — someone else owns the transition now
+        if (!isFadeOwner(ownerId)) return;
         try { await TrackPlayer.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))); } catch { return; }
         if (i < STEPS) await sleep(dt);
     }
@@ -50,19 +55,32 @@ let progressSub = null;
 let fallbackTimer = null;
 
 async function checkCrossfadeWindow(position, duration) {
-    if (activeFadeId !== null) return; // something already owns a fade transition
     try {
         const cf = await getCrossfade();
+
+        // If we currently own a natural end-of-track fade but a seek moved
+        // playback back OUT of the window (e.g. rewound), cancel it instead
+        // of letting it keep fading toward 0 and getting stuck silent —
+        // this was the "song goes silent but keeps playing" bug.
+        if (naturalEndFadeOwner !== null && activeFadeId === naturalEndFadeOwner) {
+            const remaining = duration ? duration - position : Infinity;
+            if (cf <= 0 || !duration || remaining > cf + 0.5) {
+                const id = naturalEndFadeOwner;
+                naturalEndFadeOwner = null;
+                releaseFade(id);
+                try { await TrackPlayer.setVolume(1); } catch { }
+            }
+            return;
+        }
+
+        if (activeFadeId !== null) return; // something else owns a fade right now
         if (cf <= 0 || !duration || duration < 1) return;
         const remaining = duration - position;
         if (remaining > 0.15 && remaining <= cf) {
             const id = claimFade();
             naturalEndFadeOwner = id;
-            // Wider safety margin (was 0.1s) so our fade reliably finishes
-            // BEFORE native auto-advance fires — too tight a margin was the
-            // cause of the fade racing the actual track end and cutting the
-            // song short, especially right after a seek landed inside the
-            // crossfade window.
+            // Wider safety margin so the fade reliably finishes BEFORE native
+            // auto-advance fires, avoiding the race that cut songs short.
             await fadeVol(1, 0, Math.max(0.15, remaining - 0.35), id);
         }
     } catch { }
@@ -135,19 +153,26 @@ export async function pauseWithRamp() {
     }
 }
 
-// Skip with crossfade. If a natural crossfade is already in flight when you
-// hit skip, we deliberately don't fight it — the skip goes through as a
-// plain, un-faded skip and lets the already-running fade own the transition,
-// since it claimed the lock first.
+// Skip. Two special cases beyond the normal fade-out/skip/fade-in:
+// - If a fade is already in flight (natural crossfade, or another skip),
+//   this call is ignored entirely rather than racing it.
+// - If playback is currently PAUSED, there's nothing to fade out — this now
+//   behaves like loading the new song and starting it with the Play ramp,
+//   not the Skip ramp (skipping while paused isn't really "crossfading"
+//   between two playing songs).
 export async function skipWithCrossfade(direction = 'next') {
     if (skipLock) return;
+    if (activeFadeId !== null) return;
     skipLock = true;
     try {
-        if (activeFadeId !== null) {
+        const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
+
+        if (!wasPlaying) {
             try {
                 if (direction === 'next') await TrackPlayer.skipToNext();
                 else await TrackPlayer.skipToPrevious();
-            } catch { }
+            } catch { return; }
+            await playWithRamp();
             return;
         }
 

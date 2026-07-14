@@ -7,6 +7,20 @@ export function shuffleArray(arr) {
   return a;
 }
 
+// Independent random pick per slot, WITH replacement — unlike shuffleArray's
+// Fisher-Yates shuffle (which guarantees every song plays exactly once
+// before any repeats), this can repeat a song sooner or skip one entirely in
+// a given pass. That's what actually distinguishes "True Random" from "Full
+// Cycle" — previously both modes called shuffleArray and were identical.
+export function trueRandomArray(arr) {
+  if (arr.length === 0) return [];
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    out.push(arr[Math.floor(Math.random() * arr.length)]);
+  }
+  return out;
+}
+
 export function smartShuffle(tracks) {
   const shuffled = shuffleArray(tracks);
   for (let i = 1; i < shuffled.length - 1; i++) {
@@ -24,7 +38,7 @@ export function smartShuffle(tracks) {
 
 export function buildQueue(tracks, mode) {
   switch (mode) {
-    case 'true_random': return shuffleArray(tracks);
+    case 'true_random': return trueRandomArray(tracks);
     case 'smart':       return smartShuffle(tracks);
     case 'off':         return [...tracks];
     default:            return shuffleArray(tracks); // full_cycle

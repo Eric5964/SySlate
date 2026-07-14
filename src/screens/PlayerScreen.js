@@ -11,9 +11,6 @@ import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
-import { playlistColor } from '../utils/color';
-import { getAverageColor } from '../utils/coverColor';
-import { getPlaylistCovers } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -47,28 +44,16 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const [gradientColor, setGradientColor] = useState(theme.accent);
-    const [gradientHeight, setGradientHeight] = useState(340);
 
     const progressRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
     const lastSeekAt = useRef(0);
     const clearDragTimer = useRef(null);
-    const progressGroupRef = useRef(null);
 
     const measureProgress = () => {
         progressRef.current?.measure((_x, _y, w, _h, pageX) => {
             if (w > 0) progressLayout.current = { pageX, width: w };
-        });
-    };
-
-    // Measures where the progress bar section actually ends on THIS device/
-    // screen size, so the gradient cap reaches "slightly below the progress
-    // bar" precisely instead of a guessed fixed height.
-    const measureGradientHeight = () => {
-        progressGroupRef.current?.measure((_x, _y, _w, h, _pageX, pageY) => {
-            if (h > 0) setGradientHeight(pageY + h + 20);
         });
     };
 
@@ -101,29 +86,15 @@ export default function PlayerScreen() {
         return () => sub.remove();
     }, [saveSession]);
 
-    // Gradient uses the cover's extracted average color, matching the mini
-    // player exactly (same GradientCap component, same source of truth).
-    useEffect(() => {
-        const fallback = playlistColor(currentPlaylist?.name ?? '');
-        if (!currentPlaylist?.path) { setGradientColor(fallback); return; }
-        let cancelled = false;
-        getPlaylistCovers().then(async covers => {
-            const uri = covers[currentPlaylist.path];
-            const color = uri ? await getAverageColor(uri, fallback) : fallback;
-            if (!cancelled) setGradientColor(color);
-        });
-        return () => { cancelled = true; };
-    }, [currentPlaylist?.path]);
-
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = currentTrack?.ourArtist ?? currentTrack?.artist ?? '';
     const artwork = currentTrack?.artwork;
     const pct = dragRatio !== null ? dragRatio : (progress.duration > 0 ? progress.position / progress.duration : 0);
-    const skipIconColor = theme.accent === '#f2f2f2' ? '#333' : '#ccc';
+    const skipIconColor = '#ccc'; // fixed regardless of accent, including white
 
     return (
         <View style={[s.container, { paddingTop: insets.top + 6 }]}>
-            <GradientCap color={gradientColor} height={gradientHeight} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.55 }} />
+            <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.dragHandle} />
 
@@ -155,7 +126,7 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                <View ref={progressGroupRef} onLayout={measureGradientHeight} style={s.trackInfoGroup}>
+                <View style={s.trackInfoGroup}>
                     <View style={s.info}>
                         <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
                         <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>

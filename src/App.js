@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Dimensions } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -126,6 +126,7 @@ function AppInner() {
                             options={{
                                 ...TransitionPresets.ModalSlideFromBottomIOS,
                                 gestureEnabled: true,
+                                gestureResponseDistance: Dimensions.get('window').height,
                             }}
                         />
                     </Root.Navigator>

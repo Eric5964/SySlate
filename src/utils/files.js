@@ -16,6 +16,18 @@ function parseFilename(filename, album) {
 
 function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 
+// The 'id' field stays as the raw filesystem path (readable, stable, used
+// for our own matching). The 'url' field — what TrackPlayer actually loads —
+// needs proper URI encoding, since a literal '#', '%', '?', or space in a
+// filename gets misinterpreted (a '#' in particular is read as a URL
+// fragment, silently truncating the path and breaking that one file).
+function encodeFileUrl(path) {
+    const m = path.match(/^(file:\/\/)(.*)$/);
+    const scheme = m ? m[1] : '';
+    const rest = m ? m[2] : path;
+    return scheme + rest.split('/').map(encodeURIComponent).join('/');
+}
+
 async function scanFolder(folderPath, folderName) {
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(folderPath); } catch { return []; }
@@ -24,7 +36,7 @@ async function scanFolder(folderPath, folderName) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
         if (AUDIO_EXT.has(ext(item))) {
-            tracks.push({ id: fullPath, url: fullPath, filename: item, ...parseFilename(item, folderName) });
+            tracks.push({ id: fullPath, url: encodeFileUrl(fullPath), filename: item, ...parseFilename(item, folderName) });
         } else {
             try {
                 const info = await FileSystem.getInfoAsync(fullPath);
@@ -33,7 +45,7 @@ async function scanFolder(folderPath, folderName) {
                     for (const sub of subs) {
                         if (sub.startsWith('.') || !AUDIO_EXT.has(ext(sub))) continue;
                         const sp = normPath(fullPath) + sub;
-                        tracks.push({ id: sp, url: sp, filename: sub, ...parseFilename(sub, item) });
+                        tracks.push({ id: sp, url: encodeFileUrl(sp), filename: sub, ...parseFilename(sub, item) });
                     }
                 }
             } catch { }
@@ -66,7 +78,7 @@ export async function scanLibrary() {
                 songs.forEach(s => seenIds.add(s.id));
             }
         } else if (AUDIO_EXT.has(ext(item)) && !seenIds.has(path)) {
-            rootSongs.push({ id: path, url: path, filename: item, ...parseFilename(item, 'Library') });
+            rootSongs.push({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') });
             seenIds.add(path);
         }
     }

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp } from '../services/PlaybackService';
+import { playWithRamp, isTransitionLocked } from '../services/PlaybackService';
 import {
     getShuffleMode, setShuffleMode, getEQPreset, setEQPreset,
     getSession, setSession, setLastSession, incrementPlayCount,
@@ -35,6 +35,17 @@ export function PlaybackProvider({ children }) {
     const lastActiveModeRef = useRef('full_cycle');
     useEffect(() => { if (shuffleMode !== 'off') lastActiveModeRef.current = shuffleMode; }, [shuffleMode]);
 
+    // Without this, shuffleMode/shuffleOn sit at their hardcoded defaults
+    // until the user actually starts playback, so re-opening the app and
+    // checking Settings (or toggling shuffle) before playing anything showed
+    // the wrong persisted mode.
+    useEffect(() => {
+        getShuffleMode().then(mode => {
+            setShuffleModeState(mode);
+            setShuffleOn(mode !== 'off');
+        });
+    }, []);
+
     // Now-playing always comes from the REAL native queue (TrackPlayer.getTrack),
     // never from a JS-side cached copy — a cached copy goes stale the moment
     // addToQueue/removeFromQueue/jumpToQueueIndex mutate the real queue, which
@@ -43,7 +54,11 @@ export function PlaybackProvider({ children }) {
         const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             if (nextTrack === null || nextTrack === undefined) return;
             try {
-                const track = await TrackPlayer.getTrack(nextTrack);
+                let track = await TrackPlayer.getTrack(nextTrack);
+                if (!track) {
+                    await new Promise(r => setTimeout(r, 80));
+                    track = await TrackPlayer.getTrack(nextTrack);
+                }
                 if (!track) return;
                 setCurrentTrack(track);
                 await incrementPlayCount(track.id);
@@ -119,6 +134,7 @@ export function PlaybackProvider({ children }) {
     // tapped song are relocated to right after the tapped song instead of
     // being skipped over and stranded until the next full loop.
     const jumpToQueueIndex = useCallback(async (realIndex) => {
+        if (isTransitionLocked()) return;
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
@@ -145,6 +161,7 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     const loadPlaylist = useCallback(async (playlist, forceIndex = null) => {
+        if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const session = await getSession(playlist.path);
@@ -176,6 +193,7 @@ export function PlaybackProvider({ children }) {
     // the currently-applied sort, instead of sometimes resuming a stale
     // shuffled session from a previous visit.
     const playPlaylistOrdered = useCallback(async (playlist, orderedSongs) => {
+        if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
         await TrackPlayer.reset();
@@ -199,6 +217,7 @@ export function PlaybackProvider({ children }) {
     // the queue itself is shuffled, is effectively "a random song") — also
     // bypasses any cached session.
     const playPlaylistShuffled = useCallback(async (playlist) => {
+        if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const useMode = mode === 'off' ? (lastActiveModeRef.current === 'off' ? 'full_cycle' : lastActiveModeRef.current) : mode;
@@ -222,6 +241,7 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     const playSongFromPlaylist = useCallback(async (playlist, songId) => {
+        if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const isOn = mode !== 'off';
