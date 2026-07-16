@@ -1,5 +1,6 @@
 import TrackPlayer, { Event, State } from 'react-native-track-player';
 import { getCrossfade, getSkipCrossfade, getAudioRamp, getRampOnPause } from '../utils/storage';
+import { withTimeout } from '../utils/withTimeout';
 
 // --- Fade ownership -----------------------------------------------------
 // Exactly one fade transition is allowed to be "in control" at a time.
@@ -22,6 +23,14 @@ const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
 // racing it.
 export function isTransitionLocked() {
     return activeFadeId !== null || skipLock || rampLock;
+}
+
+// Used right before starting a totally fresh playback session (new playlist,
+// new song tap, session restore) to guarantee no leftover/stuck fade lock
+// from a previous interaction can interfere with this one's ramp-in.
+export function forceReleaseFade() {
+    activeFadeId = null;
+    naturalEndFadeOwner = null;
 }
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -119,6 +128,7 @@ export async function playWithRamp() {
             try { await TrackPlayer.setVolume(0); } catch { }
             try { await TrackPlayer.play(); } catch { }
             await waitForPlaying();
+            await sleep(50); // let the audio pipeline settle before ramping — was causing a small blip at the very start
             await fadeVol(0, 1, ramp, id);
             releaseFade(id);
         } else {
@@ -169,8 +179,8 @@ export async function skipWithCrossfade(direction = 'next') {
 
         if (!wasPlaying) {
             try {
-                if (direction === 'next') await TrackPlayer.skipToNext();
-                else await TrackPlayer.skipToPrevious();
+                if (direction === 'next') await withTimeout(TrackPlayer.skipToNext(), 5000);
+                else await withTimeout(TrackPlayer.skipToPrevious(), 5000);
             } catch { return; }
             await playWithRamp();
             return;
@@ -183,8 +193,8 @@ export async function skipWithCrossfade(direction = 'next') {
         if (!isFadeOwner(id)) return;
 
         try {
-            if (direction === 'next') await TrackPlayer.skipToNext();
-            else await TrackPlayer.skipToPrevious();
+            if (direction === 'next') await withTimeout(TrackPlayer.skipToNext(), 5000);
+            else await withTimeout(TrackPlayer.skipToPrevious(), 5000);
         } catch {
             try { await TrackPlayer.setVolume(1); } catch { }
             releaseFade(id);

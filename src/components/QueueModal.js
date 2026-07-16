@@ -11,15 +11,16 @@ export default function QueueModal({ visible, onClose }) {
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority }]
 
-    const refresh = useCallback(async () => {
+    const refresh = useCallback(async (priorityOverride) => {
         try {
             const queue = await TrackPlayer.getQueue();
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
+            const activePriority = priorityOverride ?? priorityQueue;
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => ({
                 realIndex: currentIndex + 1 + i,
                 song,
-                isPriority: priorityQueue.includes(song.id),
+                isPriority: activePriority.includes(song.id),
             }));
             setRows(upcoming);
         } catch { setRows([]); }
@@ -31,8 +32,8 @@ export default function QueueModal({ visible, onClose }) {
     const upNextRows = rows.filter(r => !r.isPriority);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
-    const remove = async (song) => { await removeFromQueue(song.id); await refresh(); };
-    const promote = async (song) => { await promoteToQueue(song.id); await refresh(); };
+    const remove = async (song) => { const next = await removeFromQueue(song.id); await refresh(next); };
+    const promote = async (song) => { const next = await promoteToQueue(song.id); await refresh(next); };
 
     const renderRow = ({ song, realIndex, isPriority }) => (
         <SwipeableRow
@@ -53,7 +54,7 @@ export default function QueueModal({ visible, onClose }) {
 
     return (
         <BottomSheet visible={visible} onClose={onClose}>
-            <Text style={s.sheetTitle}>Up Next</Text>
+            <Text style={s.sheetTitle}>Queue</Text>
             {rows.length === 0 ? (
                 <Text style={s.empty}>Nothing up next</Text>
             ) : (

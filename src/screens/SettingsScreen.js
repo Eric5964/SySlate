@@ -76,7 +76,6 @@ export default function SettingsScreen() {
     };
 
     const MODES = [
-        { id: 'off', label: 'Off', sub: 'Play in order' },
         { id: 'full_cycle', label: 'Full Cycle', sub: 'All songs once before repeat' },
         { id: 'true_random', label: 'True Random', sub: 'Can repeat sooner, no fixed order' },
         { id: 'smart', label: 'Smart', sub: 'Avoids same artist back to back' },

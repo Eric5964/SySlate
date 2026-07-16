@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State } from 'react-native-track-player';
@@ -9,6 +9,7 @@ import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/Play
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
+import { getPlaylistCovers } from '../utils/storage';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = 44;
@@ -16,18 +17,32 @@ const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
-    const { currentTrack } = usePlayback();
+    const { currentTrack, currentPlaylist } = usePlayback();
     const { theme } = useTheme();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const insets = useSafeAreaInsets();
+    const [fallbackArt, setFallbackArt] = useState(null);
+
+    // No per-song embedded artwork (ID3/FLAC picture tag) extraction exists
+    // yet — currentTrack.artwork is never actually populated, so covers were
+    // always silently falling back to the note glyph. This falls back to the
+    // playlist's cover image instead, which is real data we already have.
+    useEffect(() => {
+        if (!currentPlaylist?.path) { setFallbackArt(null); return; }
+        let cancelled = false;
+        getPlaylistCovers().then(covers => {
+            if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);
+        });
+        return () => { cancelled = true; };
+    }, [currentPlaylist?.path]);
 
     if (!currentTrack) return null;
 
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
-    const artwork = currentTrack.artwork;
+    const artwork = currentTrack.artwork ?? fallbackArt;
 
     return (
         <TouchableOpacity

@@ -13,6 +13,7 @@ import {
     getPlaylistOrder, setPlaylistOrder,
     getPlaylistCovers, setPlaylistCover,
 } from '../utils/storage';
+import BottomSheet from '../components/BottomSheet';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GRID_PADDING = 8;
@@ -83,6 +84,8 @@ export default function PlaylistsScreen() {
     const [format, setFormat] = useState('list');
     const [covers, setCovers] = useState({});
     const [menuFor, setMenuFor] = useState(null);
+    const [displayedMenuFor, setDisplayedMenuFor] = useState(null);
+    useEffect(() => { if (menuFor) setDisplayedMenuFor(menuFor); }, [menuFor]);
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
@@ -183,22 +186,20 @@ export default function PlaylistsScreen() {
                 />
             )}
 
-            {menuFor && (
-                <View style={s.menuOverlay}>
-                    <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setMenuFor(null)} />
-                    <View style={s.menuSheet}>
-                        <View style={s.menuHandle} />
-                        <Text style={s.menuTitle} numberOfLines={1}>{menuFor.name}</Text>
-                        <MenuRow label="Change Cover Image" onPress={() => changeCover(menuFor)} />
-                        {covers[menuFor.path] && <MenuRow label="Remove Cover Image" onPress={() => removeCover(menuFor)} />}
-                        <MenuRow label="Move to Top" onPress={() => moveItem(menuFor, 'top')} />
-                        <MenuRow label="Move Up" onPress={() => moveItem(menuFor, 'up')} />
-                        <MenuRow label="Move Down" onPress={() => moveItem(menuFor, 'down')} />
-                        <MenuRow label="Move to Bottom" onPress={() => moveItem(menuFor, 'bottom')} />
+            <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)} collapsedHeight={380}>
+                {displayedMenuFor && (
+                    <>
+                        <Text style={s.menuTitle} numberOfLines={1}>{displayedMenuFor.name}</Text>
+                        <MenuRow label="Change Cover Image" onPress={() => changeCover(displayedMenuFor)} />
+                        {covers[displayedMenuFor.path] && <MenuRow label="Remove Cover Image" onPress={() => removeCover(displayedMenuFor)} />}
+                        <MenuRow label="Move to Top" onPress={() => moveItem(displayedMenuFor, 'top')} />
+                        <MenuRow label="Move Up" onPress={() => moveItem(displayedMenuFor, 'up')} />
+                        <MenuRow label="Move Down" onPress={() => moveItem(displayedMenuFor, 'down')} />
+                        <MenuRow label="Move to Bottom" onPress={() => moveItem(displayedMenuFor, 'bottom')} />
                         <MenuRow label="Cancel" onPress={() => setMenuFor(null)} muted />
-                    </View>
-                </View>
-            )}
+                    </>
+                )}
+            </BottomSheet>
         </View>
     );
 }
@@ -231,10 +232,7 @@ const s = StyleSheet.create({
     gridArt: { justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },
-    menuOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
-    menuSheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
-    menuHandle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
-    menuTitle: { color: '#555', fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 8 },
-    menuRow: { paddingVertical: 16, borderTopWidth: 1, borderTopColor: '#1a1a1a' },
+    menuTitle: { color: '#555', fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 8, paddingHorizontal: 20 },
+    menuRow: { paddingVertical: 16, borderTopWidth: 1, borderTopColor: '#1a1a1a', paddingHorizontal: 20 },
     menuRowText: { color: '#e5e5e5', fontSize: 16, textAlign: 'center' },
 });

@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp, isTransitionLocked } from '../services/PlaybackService';
+import { playWithRamp, isTransitionLocked, forceReleaseFade } from '../services/PlaybackService';
+import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getEQPreset, setEQPreset,
-    getSession, setSession, setLastSession, incrementPlayCount,
+    getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
 } from '../utils/storage';
 
 const Ctx = createContext(null);
@@ -20,8 +21,6 @@ export function PlaybackProvider({ children }) {
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
     const [eqPresetId, setEqPresetId] = useState('flat');
     const [singleLoop, setSingleLoop] = useState(false);
-    // Songs added via swipe-to-queue, or promoted from up-next. Always sit
-    // immediately after the currently playing track, ahead of the rest.
     const [priorityQueue, setPriorityQueue] = useState([]); // array of song ids, in insertion order
 
     const playlistRef = useRef(null);
@@ -30,15 +29,9 @@ export function PlaybackProvider({ children }) {
     const priorityRef = useRef([]);
     useEffect(() => { priorityRef.current = priorityQueue; }, [priorityQueue]);
 
-    // Remembers the last non-off shuffle mode so turning shuffle off and back
-    // on restores what you had, instead of always resetting to Full Cycle.
     const lastActiveModeRef = useRef('full_cycle');
     useEffect(() => { if (shuffleMode !== 'off') lastActiveModeRef.current = shuffleMode; }, [shuffleMode]);
 
-    // Without this, shuffleMode/shuffleOn sit at their hardcoded defaults
-    // until the user actually starts playback, so re-opening the app and
-    // checking Settings (or toggling shuffle) before playing anything showed
-    // the wrong persisted mode.
     useEffect(() => {
         getShuffleMode().then(mode => {
             setShuffleModeState(mode);
@@ -46,10 +39,6 @@ export function PlaybackProvider({ children }) {
         });
     }, []);
 
-    // Now-playing always comes from the REAL native queue (TrackPlayer.getTrack),
-    // never from a JS-side cached copy — a cached copy goes stale the moment
-    // addToQueue/removeFromQueue/jumpToQueueIndex mutate the real queue, which
-    // was the cause of the wrong song sometimes showing as "playing."
     useEffect(() => {
         const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             if (nextTrack === null || nextTrack === undefined) return;
@@ -75,11 +64,12 @@ export function PlaybackProvider({ children }) {
     // Insert a song right after the current track, after any songs already
     // priority-queued. If this exact song already exists later in the queue,
     // that occurrence is removed first so "play next" doesn't create a
-    // duplicate entry.
+    // duplicate entry. Returns the updated priority list so callers (like
+    // QueueModal) can refresh immediately without racing this state update.
     const addToQueue = useCallback(async (song) => {
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return;
+            if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
             const queue = await TrackPlayer.getQueue();
             const dupeIdx = queue.findIndex((t, i) => t.id === song.id && i > currentIndex);
             let priority = priorityRef.current;
@@ -92,18 +82,23 @@ export function PlaybackProvider({ children }) {
             priority = [...priority, song.id];
             priorityRef.current = priority;
             setPriorityQueue(priority);
-        } catch (e) { console.error('addToQueue:', e); }
+            return priority;
+        } catch (e) { console.error('addToQueue:', e); return priorityRef.current; }
     }, []);
 
     // Promote an existing up-next song to the priority section (swipe-right
-    // on a non-priority row inside the queue view).
+    // on a non-priority row inside the queue view). Returns the updated
+    // priority list for the same reason as addToQueue above — the caller
+    // was showing the promoted song still under "Up Next" because it was
+    // reading the pre-update priority list before this component's state
+    // had actually re-rendered.
     const promoteToQueue = useCallback(async (songId) => {
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return;
+            if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
             const queue = await TrackPlayer.getQueue();
             const idx = queue.findIndex(t => t.id === songId);
-            if (idx === -1 || idx <= currentIndex) return;
+            if (idx === -1 || idx <= currentIndex) return priorityRef.current;
             const track = queue[idx];
             await TrackPlayer.remove(idx);
             const insertAt = currentIndex + 1 + priorityRef.current.length;
@@ -111,28 +106,23 @@ export function PlaybackProvider({ children }) {
             const next = [...priorityRef.current, songId];
             priorityRef.current = next;
             setPriorityQueue(next);
-        } catch (e) { console.error('promoteToQueue:', e); }
+            return next;
+        } catch (e) { console.error('promoteToQueue:', e); return priorityRef.current; }
     }, []);
 
-    // Remove a song from wherever it currently sits in the real queue —
-    // looked up by id at call time rather than trusting a numeric index that
-    // may have gone stale between render and tap. Does not touch any files.
     const removeFromQueue = useCallback(async (songId) => {
         try {
             const queue = await TrackPlayer.getQueue();
             const idx = queue.findIndex(t => t.id === songId);
-            if (idx === -1) return;
+            if (idx === -1) return priorityRef.current;
             await TrackPlayer.remove(idx);
             const next = priorityRef.current.filter(id => id !== songId);
             priorityRef.current = next;
             setPriorityQueue(next);
-        } catch (e) { console.error('removeFromQueue:', e); }
+            return next;
+        } catch (e) { console.error('removeFromQueue:', e); return priorityRef.current; }
     }, []);
 
-    // Jump playback directly to a song elsewhere in the queue (tap in the
-    // queue list). Any priority-queued songs sitting between "now" and the
-    // tapped song are relocated to right after the tapped song instead of
-    // being skipped over and stranded until the next full loop.
     const jumpToQueueIndex = useCallback(async (realIndex) => {
         if (isTransitionLocked()) return;
         try {
@@ -171,9 +161,10 @@ export function PlaybackProvider({ children }) {
         if (startIndex >= queue.length) startIndex = 0;
 
         await TrackPlayer.reset();
-        await TrackPlayer.add(queue);
+        await withTimeout(TrackPlayer.add(queue), 6000);
         if (startIndex > 0) await TrackPlayer.skip(startIndex);
         await setQueueLoop();
+        forceReleaseFade();
         await playWithRamp();
 
         const pl = { ...playlist, queue };
@@ -188,17 +179,14 @@ export function PlaybackProvider({ children }) {
         await setSession(playlist.path, { queue, index: startIndex });
     }, []);
 
-    // Always builds a fresh queue in the given order and starts at index 0 —
-    // bypasses any cached session so "Play" reliably starts at the top of
-    // the currently-applied sort, instead of sometimes resuming a stale
-    // shuffled session from a previous visit.
     const playPlaylistOrdered = useCallback(async (playlist, orderedSongs) => {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
         await TrackPlayer.reset();
-        await TrackPlayer.add(queue);
+        await withTimeout(TrackPlayer.add(queue), 6000);
         await setQueueLoop();
+        forceReleaseFade();
         await playWithRamp();
 
         const pl = { ...playlist, queue };
@@ -213,9 +201,6 @@ export function PlaybackProvider({ children }) {
         await setSession(playlist.path, { queue, index: 0 });
     }, []);
 
-    // Always builds a fresh shuffled queue and starts at index 0 (which, since
-    // the queue itself is shuffled, is effectively "a random song") — also
-    // bypasses any cached session.
     const playPlaylistShuffled = useCallback(async (playlist) => {
         if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
@@ -223,8 +208,9 @@ export function PlaybackProvider({ children }) {
         const useMode = mode === 'off' ? (lastActiveModeRef.current === 'off' ? 'full_cycle' : lastActiveModeRef.current) : mode;
         const queue = buildQueue(playlist.songs, useMode);
         await TrackPlayer.reset();
-        await TrackPlayer.add(queue);
+        await withTimeout(TrackPlayer.add(queue), 6000);
         await setQueueLoop();
+        forceReleaseFade();
         await playWithRamp();
 
         const pl = { ...playlist, queue };
@@ -248,10 +234,6 @@ export function PlaybackProvider({ children }) {
         const song = playlist.songs.find(s => s.id === songId);
         if (!song) { console.warn('Song not found:', songId); return; }
 
-        // Switching to a different song WITHIN the same already-loaded playlist
-        // preserves the existing priority queue (splicing it back in right
-        // after the new starting song) instead of wiping it out. Switching to
-        // a genuinely different playlist still starts clean.
         const isSamePlaylist = currentPlaylist?.path === playlist.path;
         const keepIds = isSamePlaylist ? priorityRef.current : [];
         const keepSet = new Set(keepIds);
@@ -265,8 +247,9 @@ export function PlaybackProvider({ children }) {
         const queue = [song, ...prioritySongs, ...rest];
 
         await TrackPlayer.reset();
-        await TrackPlayer.add(queue);
+        await withTimeout(TrackPlayer.add(queue), 6000);
         await setQueueLoop();
+        forceReleaseFade();
         await playWithRamp();
 
         const pl = { ...playlist, queue };
@@ -282,6 +265,43 @@ export function PlaybackProvider({ children }) {
         }
         await setSession(playlist.path, { queue, index: 0 });
     }, [currentPlaylist]);
+
+    // Restores playback after a cold app launch. Uses the actual last-playing
+    // queue (last.playlist.queue) rather than the playlist's original scan
+    // order (last.playlist.songs) — using .songs was the cause of "up next
+    // saves, but not the queue I actually had." This also now runs through
+    // PlaybackContext properly (called from a component inside the provider),
+    // so currentPlaylist/shuffleMode end up correctly populated after a
+    // restore instead of the app restoring TrackPlayer directly and leaving
+    // this context none the wiser.
+    const restoreSession = useCallback(async (last) => {
+        try {
+            const queue = last?.playlist?.queue;
+            if (!queue?.length || last.index === undefined) return;
+            const mode = await getShuffleMode();
+            await TrackPlayer.reset();
+            await withTimeout(TrackPlayer.add(queue), 6000);
+            if (last.index > 0) await TrackPlayer.skip(last.index);
+            if (last.position > 2) await TrackPlayer.seekTo(last.position);
+            await setQueueLoop();
+
+            setCurrentPlaylist({ ...last.playlist, queue });
+            setCurrentTrack(queue[last.index] ?? null);
+            setShuffleModeState(mode);
+            setShuffleOn(mode !== 'off');
+            setPriorityQueue([]);
+            priorityRef.current = [];
+        } catch (e) { console.error('restoreSession:', e); }
+    }, []);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const last = await getLastSession();
+                await restoreSession(last);
+            } catch { }
+        })();
+    }, [restoreSession]);
 
     const toggleShuffle = useCallback(async () => {
         const newOn = !shuffleOn;
@@ -329,7 +349,7 @@ export function PlaybackProvider({ children }) {
     return (
         <Ctx.Provider value={{
             currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
-            loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled,
+            loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
             toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
             addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
         }}>

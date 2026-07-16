@@ -4,21 +4,24 @@ import { PanGestureHandler, State } from 'react-native-gesture-handler';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 
-// IMPORTANT: translateY (native-driven, via the gesture handler) and
-// heightAnim (JS-driven, since 'height' can't be natively animated) must
-// live on TWO SEPARATE Animated.Views, not combined into one style object —
-// mixing a native-driven and non-native-driven Animated.Value in the same
-// style is what was throwing "Style property 'height' is not supported by
-// native animated module" and crashing the queue/EQ sheet on open.
+// IMPORTANT: onGestureEvent/onHandlerStateChange must be referentially STABLE
+// across re-renders (created once via useRef, not recreated every render) —
+// this component re-renders mid-interaction (expand() flips state right as a
+// gesture ends), and handing gesture-handler a brand new event-handler
+// reference while it's reconciling was throwing "expected
+// 'onGestureHandlerEvent' listener to be a function, instead got a value of
+// 'object' type" and crashing on swipe-up-to-expand.
 export default function BottomSheet({ visible, onClose, children, collapsedHeight = 460, expandedHeight = SCREEN_H * 0.88 }) {
     const heightAnim = useRef(new Animated.Value(collapsedHeight)).current;
     const translateY = useRef(new Animated.Value(0)).current;
     const [expanded, setExpanded] = useState(false);
+    const expandedRef = useRef(false);
     const backdropStart = useRef({ x: 0, y: 0 });
 
     useEffect(() => {
         if (visible) {
             setExpanded(false);
+            expandedRef.current = false;
             heightAnim.setValue(collapsedHeight);
             translateY.setValue(0);
         }
@@ -26,6 +29,7 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
 
     const expand = () => {
         setExpanded(true);
+        expandedRef.current = true;
         Animated.spring(heightAnim, { toValue: expandedHeight, useNativeDriver: false, friction: 9 }).start();
     };
 
@@ -33,22 +37,24 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
         Animated.timing(translateY, { toValue: SCREEN_H, duration: 200, useNativeDriver: true }).start(() => onClose());
     };
 
-    const onGestureEvent = Animated.event(
-        [{ nativeEvent: { translationY: translateY } }],
-        { useNativeDriver: true }
-    );
+    const onGestureEvent = useRef(
+        Animated.event(
+            [{ nativeEvent: { translationY: translateY } }],
+            { useNativeDriver: true }
+        )
+    ).current;
 
-    const onHandlerStateChange = (e) => {
+    const onHandlerStateChange = useRef((e) => {
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const { translationY, velocityY } = e.nativeEvent;
         if (translationY > 70 || velocityY > 800) { closeNow(); return; }
-        if (translationY < -50 && !expanded) {
+        if (translationY < -50 && !expandedRef.current) {
             Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
             expand();
             return;
         }
         Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8 }).start();
-    };
+    }).current;
 
     return (
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -62,9 +68,7 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
                     if (dx < 10 && dy < 10) onClose();
                 }}
             />
-            {/* Outer: position + native-driven translateY only */}
             <Animated.View style={[s.sheetOuter, { transform: [{ translateY }] }]}>
-                {/* Inner: JS-driven height only */}
                 <Animated.View style={[s.sheet, { height: heightAnim }]}>
                     <PanGestureHandler
                         onGestureEvent={onGestureEvent}
@@ -72,9 +76,7 @@ export default function BottomSheet({ visible, onClose, children, collapsedHeigh
                         activeOffsetY={[-10, 10]}
                         failOffsetX={[-15, 15]}
                     >
-                        <View style={s.handleArea}>
-                            <View style={s.handle} />
-                        </View>
+                        <View style={s.handleArea} />
                     </PanGestureHandler>
                     <View style={{ flex: 1 }}>
                         {children}
@@ -89,6 +91,5 @@ const s = StyleSheet.create({
     overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.65)' },
     sheetOuter: { position: 'absolute', left: 0, right: 0, bottom: 0 },
     sheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 34, overflow: 'hidden' },
-    handleArea: { paddingVertical: 14, alignItems: 'center' },
-    handle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2 },
+    handleArea: { height: 22 },
 });

@@ -1,8 +1,8 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useState } from 'react';
-import { View, Text, Dimensions } from 'react-native';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { View, Text, Dimensions, Animated } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useFocusEffect } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -20,9 +20,36 @@ import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
-import { getLastSession } from './utils/storage';
 
 enableScreens(false);
+
+// Bottom-tabs doesn't have a built-in slide transition between tabs the way
+// stack screens do (that's a stack-specific feature). A subtle fade on focus
+// is the safe, low-risk way to add *some* transition polish without touching
+// gesture/animation internals that are already fragile on this iOS 26 setup.
+function FadeScreen({ children }) {
+    const opacity = useRef(new Animated.Value(1)).current;
+    useFocusEffect(
+        useCallback(() => {
+            opacity.setValue(0);
+            Animated.timing(opacity, { toValue: 1, duration: 160, useNativeDriver: true }).start();
+        }, [])
+    );
+    return <Animated.View style={{ flex: 1, opacity }}>{children}</Animated.View>;
+}
+
+function withFade(Component) {
+    return function Wrapped(props) {
+        return (
+            <FadeScreen>
+                <Component {...props} />
+            </FadeScreen>
+        );
+    };
+}
+
+const AllSongsFaded = withFade(AllSongsScreen);
+const SettingsFaded = withFade(SettingsScreen);
 
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
@@ -39,6 +66,7 @@ function PlaylistsStackScreen() {
         </PlaylistsStack.Navigator>
     );
 }
+const PlaylistsStackFaded = withFade(PlaylistsStackScreen);
 
 function Tabs() {
     const { theme } = useTheme();
@@ -54,17 +82,17 @@ function Tabs() {
         >
             <Tab.Screen
                 name="All Songs"
-                component={AllSongsScreen}
+                component={AllSongsFaded}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>♪</Text> }}
             />
             <Tab.Screen
                 name="Playlists"
-                component={PlaylistsStackScreen}
+                component={PlaylistsStackFaded}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>▶</Text> }}
             />
             <Tab.Screen
                 name="Settings"
-                component={SettingsScreen}
+                component={SettingsFaded}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 18, letterSpacing: 1 }}>···</Text> }}
             />
         </Tab.Navigator>
@@ -82,6 +110,7 @@ function MainLayout() {
 
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '' });
+    const [playerReady, setPlayerReady] = useState(false);
 
     const reload = async () => {
         try {
@@ -102,17 +131,18 @@ function AppInner() {
                 });
             } catch { }
             await reload();
-            try {
-                const last = await getLastSession();
-                if (last?.playlist?.songs?.length && last.index !== undefined) {
-                    await TrackPlayer.reset();
-                    await TrackPlayer.add(last.playlist.songs);
-                    if (last.index > 0) await TrackPlayer.skip(last.index);
-                    if (last.position > 2) await TrackPlayer.seekTo(last.position);
-                }
-            } catch { }
+            // Deliberately gate rendering on this instead of restoring inside
+            // PlaybackProvider's own mount effect — child effects fire BEFORE
+            // parent effects on initial mount, so a restore effect living
+            // inside PlaybackProvider (a child of AppInner) would have run
+            // before TrackPlayer.setupPlayer() above ever finished.
+            setPlayerReady(true);
         })();
     }, []);
+
+    if (!playerReady) {
+        return <View style={{ flex: 1, backgroundColor: '#0a0a0a' }} />;
+    }
 
     return (
         <LibraryContext.Provider value={{ ...library, reload }}>

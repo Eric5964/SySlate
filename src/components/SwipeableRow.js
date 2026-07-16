@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { AddQueueIcon, TrashIcon } from './Icons';
@@ -21,35 +21,40 @@ export default function SwipeableRow({
 }) {
     const translateX = useRef(new Animated.Value(0)).current;
     const [revealSide, setRevealSide] = useState(null);
+    const onSwipeRightRef = useRef(onSwipeRight);
+    const onSwipeLeftRef = useRef(onSwipeLeft);
+    useEffect(() => { onSwipeRightRef.current = onSwipeRight; onSwipeLeftRef.current = onSwipeLeft; });
 
-    const onGestureEvent = Animated.event(
-        [{ nativeEvent: { translationX: translateX } }],
-        {
-            useNativeDriver: true,
-            listener: (e) => {
-                const dx = e.nativeEvent.translationX;
-                setRevealSide(dx > 4 ? 'right' : dx < -4 ? 'left' : null);
-            },
-        }
-    );
+    const onGestureEvent = useRef(
+        Animated.event(
+            [{ nativeEvent: { translationX: translateX } }],
+            {
+                useNativeDriver: true,
+                listener: (e) => {
+                    const dx = e.nativeEvent.translationX;
+                    setRevealSide(dx > 4 ? 'right' : dx < -4 ? 'left' : null);
+                },
+            }
+        )
+    ).current;
 
-    const onHandlerStateChange = (e) => {
+    const onHandlerStateChange = useRef((e) => {
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const dx = e.nativeEvent.translationX;
-        if (dx > COMMIT_DISTANCE && onSwipeRight) {
+        if (dx > COMMIT_DISTANCE && onSwipeRightRef.current) {
             Animated.timing(translateX, { toValue: 0, duration: 180, useNativeDriver: true }).start();
             setRevealSide(null);
-            onSwipeRight();
+            onSwipeRightRef.current();
             return;
         }
-        if (dx < -COMMIT_DISTANCE && onSwipeLeft) {
+        if (dx < -COMMIT_DISTANCE && onSwipeLeftRef.current) {
             Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true }).start(() => {
-                onSwipeLeft();
+                onSwipeLeftRef.current();
             });
             return;
         }
         Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start(() => setRevealSide(null));
-    };
+    }).current;
 
     // Clamp/rubber-band entirely via interpolation (stays on the native
     // thread), and zero out whichever direction has no handler.

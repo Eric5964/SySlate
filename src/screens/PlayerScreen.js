@@ -7,10 +7,12 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
+import { PanGestureHandler, State as GHState } from 'react-native-gesture-handler';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
+import { getPlaylistCovers } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -44,6 +46,16 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
+    const [fallbackArt, setFallbackArt] = useState(null);
+
+    useEffect(() => {
+        if (!currentPlaylist?.path) { setFallbackArt(null); return; }
+        let cancelled = false;
+        getPlaylistCovers().then(covers => {
+            if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);
+        });
+        return () => { cancelled = true; };
+    }, [currentPlaylist?.path]);
 
     const progressRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
@@ -61,8 +73,8 @@ export default function PlayerScreen() {
         (pageX - progressLayout.current.pageX) / progressLayout.current.width
     ));
 
-    const onScrub = (pageX, commit) => {
-        const ratio = touchToRatio(pageX);
+    const onScrub = (absoluteX, commit) => {
+        const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
         const now = Date.now();
         if (progress.duration > 0 && (commit || now - lastSeekAt.current > 110)) {
@@ -74,6 +86,26 @@ export default function PlayerScreen() {
             clearDragTimer.current = setTimeout(() => setDragRatio(null), 250);
         }
     };
+
+    // The whole screen now has its own active vertical swipe-to-close gesture
+    // (via React Navigation), which was winning gesture arbitration against
+    // the progress bar's old plain-Responder touch handling for any drag with
+    // even a slight vertical component — "only tap works now, not swipe."
+    // Rebuilt on gesture-handler with activeOffsetX so a horizontal drag on
+    // the bar correctly claims priority over the screen's vertical gesture.
+    const onProgressGestureEvent = useRef((e) => {
+        onScrub(e.nativeEvent.absoluteX, false);
+    }).current;
+
+    const onProgressStateChange = useRef((e) => {
+        if (e.nativeEvent.state === GHState.BEGAN) {
+            measureProgress();
+            onScrub(e.nativeEvent.absoluteX, false);
+        }
+        if (e.nativeEvent.oldState === GHState.ACTIVE) {
+            onScrub(e.nativeEvent.absoluteX, true);
+        }
+    }).current;
 
     useEffect(() => {
         if (playlist && (!currentPlaylist || currentPlaylist.path !== playlist.path)) {
@@ -88,15 +120,20 @@ export default function PlayerScreen() {
 
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = currentTrack?.ourArtist ?? currentTrack?.artist ?? '';
-    const artwork = currentTrack?.artwork;
+    // No per-song embedded-artwork (ID3/FLAC picture tag) extraction exists
+    // anywhere in this codebase yet — currentTrack.artwork is never actually
+    // populated, so "song covers" were always silently falling back to the
+    // note glyph. This falls back to the PLAYLIST's cover image instead,
+    // which is real data we already have. True per-file embedded artwork
+    // would need a native module or a metadata-parsing library — a separate,
+    // bigger feature if you want it.
+    const artwork = currentTrack?.artwork ?? fallbackArt;
     const pct = dragRatio !== null ? dragRatio : (progress.duration > 0 ? progress.position / progress.duration : 0);
     const skipIconColor = '#ccc'; // fixed regardless of accent, including white
 
     return (
         <View style={[s.container, { paddingTop: insets.top + 6 }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
-
-            <View style={s.dragHandle} />
 
             <View style={s.topBar}>
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
@@ -133,20 +170,23 @@ export default function PlayerScreen() {
                     </View>
 
                     <View style={s.progressSection}>
-                        <View
-                            ref={progressRef}
-                            style={s.progressTouch}
-                            onLayout={measureProgress}
-                            onStartShouldSetResponder={() => true}
-                            onResponderGrant={e => { measureProgress(); onScrub(e.nativeEvent.pageX, false); }}
-                            onResponderMove={e => onScrub(e.nativeEvent.pageX, false)}
-                            onResponderRelease={e => onScrub(e.nativeEvent.pageX, true)}
+                        <PanGestureHandler
+                            onGestureEvent={onProgressGestureEvent}
+                            onHandlerStateChange={onProgressStateChange}
+                            activeOffsetX={[-6, 6]}
+                            failOffsetY={[-14, 14]}
                         >
-                            <View style={s.progressTrack}>
-                                <View style={[s.progressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                            <View
+                                ref={progressRef}
+                                style={s.progressTouch}
+                                onLayout={measureProgress}
+                            >
+                                <View style={s.progressTrack}>
+                                    <View style={[s.progressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                                </View>
+                                <View style={[s.progressThumb, { left: `${pct * 100}%`, marginLeft: -10, backgroundColor: theme.accent }]} />
                             </View>
-                            <View style={[s.progressThumb, { left: `${pct * 100}%`, marginLeft: -10, backgroundColor: theme.accent }]} />
-                        </View>
+                        </PanGestureHandler>
                         <View style={s.times}>
                             <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : progress.position)}</Text>
                             <Text style={s.time}>{fmt(progress.duration)}</Text>
@@ -186,7 +226,6 @@ const HIT = { top: 20, bottom: 20, left: 20, right: 20 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    dragHandle: { width: '50%', height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 6 },
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
     topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     topIcon: { fontSize: 26 },
