@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
-    TouchableOpacity, StatusBar, Modal, TextInput,
+    TouchableOpacity, StatusBar, TextInput,
     Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
+import BottomSheet from '../components/BottomSheet';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES } from '../context/ThemeContext';
@@ -18,6 +19,7 @@ import {
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
+    getShowPlayCount, setShowPlayCount,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -42,6 +44,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
+    const [showPlayCount, setSPC] = useState(true);
 
     useEffect(() => {
         (async () => {
@@ -52,6 +55,7 @@ export default function SettingsScreen() {
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
+            setSPC(await getShowPlayCount());
         })();
     }, []);
 
@@ -161,10 +165,10 @@ export default function SettingsScreen() {
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Play</Text>
                     <Text style={s.sliderNote}>Fade-in used any time playback starts fresh</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={2} step={0.1} value={ramp}
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={ramp}
                         onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>2s</Text></View>
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>3s</Text></View>
 
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -197,6 +201,20 @@ export default function SettingsScreen() {
                     ))}
                 </Section>
 
+                {/* Between Shuffle and Accent Color, per request. Play counts are
+                     always tracked regardless of this setting — it only controls
+                     whether the number is shown. */}
+                <Section title="Play Count">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Show Play Count</Text>
+                            <Text style={s.toggleSub}>Next to songs in a playlist, and on the player</Text>
+                        </View>
+                        <Switch value={showPlayCount} onValueChange={v => { setSPC(v); setShowPlayCount(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Accent Color">
@@ -215,7 +233,7 @@ export default function SettingsScreen() {
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using LiveContainer</Text>
                             <Text style={s.locBody}>
-                                Files → On My iPhone → LiveContainer → Data → Application → (SySlate's app ID) → Documents. LiveContainer identifies the app by its ID inside that folder, not by name.
+                                Files → On My iPhone → LiveContainer → Data → Application → (SySlate's app ID) → Documents
                             </Text>
                         </View>
                     )}
@@ -260,63 +278,55 @@ export default function SettingsScreen() {
                 </Section>
             </ScrollView>
 
-            <Modal visible={showNewEQ} transparent animationType="slide" onRequestClose={() => setShowNewEQ(false)}>
-                <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowNewEQ(false)} />
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                    <View style={s.sheet}>
-                        <View style={s.handle} />
-                        <Text style={s.sheetTitle}>New EQ Preset</Text>
-                        <TextInput
-                            style={[s.nameInput, { borderColor: theme.accent }]}
-                            value={newName} onChangeText={setNewName}
-                            placeholder="Preset name..." placeholderTextColor="#444"
-                        />
-                        <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                            {newBands.map((val, i) => (
-                                <View key={i} style={s.bandRow}>
-                                    <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
-                                    <PureSlider
-                                        style={{ flex: 1, marginHorizontal: 8 }}
-                                        minimumValue={-12} maximumValue={12} step={0.5} value={val}
-                                        onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
-                                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                                    />
-                                    <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
-                                </View>
-                            ))}
-                        </ScrollView>
-                        <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={saveNewPreset}>
-                            <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Save Preset</Text>
-                        </TouchableOpacity>
-                    </View>
+            <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
+                    <Text style={s.sheetTitle}>New EQ Preset</Text>
+                    <TextInput
+                        style={[s.nameInput, { borderColor: theme.accent }]}
+                        value={newName} onChangeText={setNewName}
+                        placeholder="Preset name..." placeholderTextColor="#444"
+                    />
+                    <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                        {newBands.map((val, i) => (
+                            <View key={i} style={s.bandRow}>
+                                <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
+                                <PureSlider
+                                    style={{ flex: 1, marginHorizontal: 8 }}
+                                    minimumValue={-12} maximumValue={12} step={0.5} value={val}
+                                    onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
+                                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
+                                />
+                                <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
+                            </View>
+                        ))}
+                    </ScrollView>
+                    <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={saveNewPreset}>
+                        <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Save Preset</Text>
+                    </TouchableOpacity>
                 </KeyboardAvoidingView>
-            </Modal>
+            </BottomSheet>
 
-            <Modal visible={showImport} transparent animationType="slide" onRequestClose={() => setShowImport(false)}>
-                <TouchableOpacity style={s.overlay} activeOpacity={1} onPress={() => setShowImport(false)} />
-                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-                    <View style={s.sheet}>
-                        <View style={s.handle} />
-                        <Text style={s.sheetTitle}>Import Settings</Text>
-                        <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>Paste exported JSON:</Text>
-                        <TextInput
-                            style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
-                            value={importText} onChangeText={setImportText}
-                            placeholder="Paste JSON here..." placeholderTextColor="#333"
-                            multiline autoCorrect={false} autoCapitalize="none"
-                        />
-                        <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={async () => {
-                            try {
-                                await importAllSettings(importText);
-                                setShowImport(false);
-                                Alert.alert('Done', 'Settings imported. Restart to see all changes.');
-                            } catch { Alert.alert('Import failed', 'Invalid JSON.'); }
-                        }}>
-                            <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Apply Settings</Text>
-                        </TouchableOpacity>
-                    </View>
+            <BottomSheet visible={showImport} onClose={() => setShowImport(false)}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
+                    <Text style={s.sheetTitle}>Import Settings</Text>
+                    <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>Paste exported JSON:</Text>
+                    <TextInput
+                        style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
+                        value={importText} onChangeText={setImportText}
+                        placeholder="Paste JSON here..." placeholderTextColor="#333"
+                        multiline autoCorrect={false} autoCapitalize="none"
+                    />
+                    <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={async () => {
+                        try {
+                            await importAllSettings(importText);
+                            setShowImport(false);
+                            Alert.alert('Done', 'Settings imported. Restart to see all changes.');
+                        } catch { Alert.alert('Import failed', 'Invalid JSON.'); }
+                    }}>
+                        <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Apply Settings</Text>
+                    </TouchableOpacity>
                 </KeyboardAvoidingView>
-            </Modal>
+            </BottomSheet>
         </View>
     );
 }
@@ -373,9 +383,6 @@ const s = StyleSheet.create({
     locBody: { color: '#555', fontSize: 13, lineHeight: 20 },
     locPath: { fontSize: 11, marginTop: 4, lineHeight: 16 },
     locNote: { color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 },
-    overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)' },
-    sheet: { backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: 40 },
-    handle: { width: 36, height: 4, backgroundColor: '#222', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
     sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 16 },
     nameInput: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, color: '#e5e5e5', fontSize: 15, borderWidth: 1, marginBottom: 12 },
     bandRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },

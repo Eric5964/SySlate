@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
@@ -38,6 +39,27 @@ export const setPlaylistCover = async (path, uri) => {
     if (uri) covers[path] = uri; else delete covers[path];
     await safe(() => AsyncStorage.setItem('playlist_covers', JSON.stringify(covers)), null);
     return covers;
+};
+
+export const getShowPlayCount = () => safe(() => AsyncStorage.getItem('show_play_count').then(v => v !== 'false'), true);
+export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_play_count', String(v)), null);
+
+// expo-image-picker's result URI lives in a CACHE directory, which iOS can
+// clear at any time and which was also the likely cause of covers flashing
+// on re-render (the cache file wasn't being decoded/served consistently).
+// Copying it into Documents gives it a permanent, stable path.
+export const persistCoverImage = async (pickerUri) => {
+    try {
+        const dir = FileSystem.documentDirectory + '.covers/';
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => { });
+        const ext = pickerUri.split('.').pop().split('?')[0] || 'jpg';
+        const dest = dir + 'cover_' + Date.now() + '_' + Math.floor(Math.random() * 10000) + '.' + ext;
+        await FileSystem.copyAsync({ from: pickerUri, to: dest });
+        return dest;
+    } catch (e) {
+        console.error('persistCoverImage:', e);
+        return pickerUri; // fall back to the original (volatile) URI rather than losing the pick entirely
+    }
 };
 
 export const incrementPlayCount = async (songId) => {

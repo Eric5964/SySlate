@@ -1,8 +1,8 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { View, Text, Dimensions, Animated } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, Dimensions } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { NavigationContainer, useFocusEffect } from '@react-navigation/native';
+import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -23,34 +23,6 @@ import { scanLibrary } from './utils/files';
 
 enableScreens(false);
 
-// Bottom-tabs doesn't have a built-in slide transition between tabs the way
-// stack screens do (that's a stack-specific feature). A subtle fade on focus
-// is the safe, low-risk way to add *some* transition polish without touching
-// gesture/animation internals that are already fragile on this iOS 26 setup.
-function FadeScreen({ children }) {
-    const opacity = useRef(new Animated.Value(1)).current;
-    useFocusEffect(
-        useCallback(() => {
-            opacity.setValue(0);
-            Animated.timing(opacity, { toValue: 1, duration: 160, useNativeDriver: true }).start();
-        }, [])
-    );
-    return <Animated.View style={{ flex: 1, opacity }}>{children}</Animated.View>;
-}
-
-function withFade(Component) {
-    return function Wrapped(props) {
-        return (
-            <FadeScreen>
-                <Component {...props} />
-            </FadeScreen>
-        );
-    };
-}
-
-const AllSongsFaded = withFade(AllSongsScreen);
-const SettingsFaded = withFade(SettingsScreen);
-
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
 const PlaylistsStack = createStackNavigator();
@@ -66,7 +38,6 @@ function PlaylistsStackScreen() {
         </PlaylistsStack.Navigator>
     );
 }
-const PlaylistsStackFaded = withFade(PlaylistsStackScreen);
 
 function Tabs() {
     const { theme } = useTheme();
@@ -82,17 +53,17 @@ function Tabs() {
         >
             <Tab.Screen
                 name="All Songs"
-                component={AllSongsFaded}
+                component={AllSongsScreen}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>♪</Text> }}
             />
             <Tab.Screen
                 name="Playlists"
-                component={PlaylistsStackFaded}
+                component={PlaylistsStackScreen}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>▶</Text> }}
             />
             <Tab.Screen
                 name="Settings"
-                component={SettingsFaded}
+                component={SettingsScreen}
                 options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 18, letterSpacing: 1 }}>···</Text> }}
             />
         </Tab.Navigator>

@@ -39,6 +39,8 @@ export function PlaybackProvider({ children }) {
         });
     }, []);
 
+    const saveSessionRef = useRef(() => {});
+
     useEffect(() => {
         const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             if (nextTrack === null || nextTrack === undefined) return;
@@ -56,6 +58,12 @@ export function PlaybackProvider({ children }) {
                     priorityRef.current = next;
                     setPriorityQueue(next);
                 }
+                // Session save now lives HERE (always active) instead of in a
+                // listener inside PlayerScreen — that one only ran while the
+                // full player happened to be mounted, so most listening (via
+                // the mini player) never updated the saved session at all,
+                // which is why closing the app resumed a stale song/queue.
+                saveSessionRef.current?.();
             } catch { }
         });
         return () => sub.remove();
@@ -303,19 +311,46 @@ export function PlaybackProvider({ children }) {
         })();
     }, [restoreSession]);
 
+    // Rebuilds everything AFTER the current track + priority queue using the
+    // new mode, leaving what's already playing/priority-queued untouched.
+    // Without this, changing shuffle mode only ever affected the NEXT
+    // playlist you loaded — the queue you were already listening to just
+    // kept its original order, which read as "shuffle doesn't do anything."
+    const reshuffleUpcoming = useCallback(async (mode) => {
+        const pl = playlistRef.current;
+        if (!pl?.songs?.length) return;
+        try {
+            const currentIndex = await TrackPlayer.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return;
+            const queue = await TrackPlayer.getQueue();
+            const keepEnd = currentIndex + 1 + priorityRef.current.length;
+            const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
+            let rest = pl.songs.filter(s => !usedIds.has(s.id));
+            rest = mode === 'off' ? rest : buildQueue(rest, mode);
+            for (let i = queue.length - 1; i >= keepEnd; i--) {
+                await TrackPlayer.remove(i);
+            }
+            if (rest.length) await withTimeout(TrackPlayer.add(rest), 6000);
+            const newQueue = [...queue.slice(0, keepEnd), ...rest];
+            setCurrentPlaylist({ ...pl, queue: newQueue });
+        } catch (e) { console.error('reshuffleUpcoming:', e); }
+    }, []);
+
     const toggleShuffle = useCallback(async () => {
         const newOn = !shuffleOn;
         setShuffleOn(newOn);
         const mode = newOn ? (lastActiveModeRef.current === 'off' ? 'full_cycle' : lastActiveModeRef.current) : 'off';
         setShuffleModeState(mode);
         await setShuffleMode(mode);
-    }, [shuffleOn]);
+        await reshuffleUpcoming(mode);
+    }, [shuffleOn, reshuffleUpcoming]);
 
     const changeShuffleMode = useCallback(async (mode) => {
         setShuffleModeState(mode);
         setShuffleOn(mode !== 'off');
         await setShuffleMode(mode);
-    }, []);
+        await reshuffleUpcoming(mode);
+    }, [reshuffleUpcoming]);
 
     const toggleSingleLoop = useCallback(async () => {
         const next = !singleLoop;
@@ -345,6 +380,8 @@ export function PlaybackProvider({ children }) {
             }
         } catch { }
     }, []);
+
+    useEffect(() => { saveSessionRef.current = saveSession; });
 
     return (
         <Ctx.Provider value={{

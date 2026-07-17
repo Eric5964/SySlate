@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { usePlaybackState, State } from 'react-native-track-player';
+import { usePlaybackState, State, useProgress } from 'react-native-track-player';
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -21,6 +21,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const { theme } = useTheme();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
+    const progress = useProgress(500);
     const insets = useSafeAreaInsets();
     const [fallbackArt, setFallbackArt] = useState(null);
 
@@ -43,6 +44,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
     const artwork = currentTrack.artwork ?? fallbackArt;
+    const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
 
     return (
         <TouchableOpacity
@@ -51,6 +53,9 @@ export default function MiniPlayer({ withTabBar = true }) {
             activeOpacity={0.9}
         >
             <GradientCap color={theme.accent} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
+            <View pointerEvents="none" style={styles.miniProgressTrack}>
+                <View style={[styles.miniProgressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+            </View>
             <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
                 {artwork
                     ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
@@ -86,4 +91,6 @@ const styles = StyleSheet.create({
     title: { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },
     artist: { color: '#555', fontSize: 12, marginTop: 2 },
     btn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    miniProgressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, backgroundColor: 'transparent' },
+    miniProgressFill: { height: 6, borderRadius: 0 },
 });

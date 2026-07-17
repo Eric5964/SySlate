@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import TrackPlayer, { useProgress, usePlaybackState, State, Event } from 'react-native-track-player';
+import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -12,7 +12,7 @@ import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
-import { getPlaylistCovers } from '../utils/storage';
+import { getPlaylistCovers, getPlayCounts, getShowPlayCount } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -37,7 +37,7 @@ export default function PlayerScreen() {
 
     const {
         currentPlaylist, currentTrack, eqPresetId, shuffleOn, singleLoop,
-        loadPlaylist, toggleShuffle, toggleSingleLoop, saveSession,
+        loadPlaylist, toggleShuffle, toggleSingleLoop,
     } = usePlayback();
 
     const progress = useProgress(150);
@@ -47,6 +47,15 @@ export default function PlayerScreen() {
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
     const [fallbackArt, setFallbackArt] = useState(null);
+    const [playCount, setPlayCount] = useState(0);
+    const [showPlayCount, setShowPlayCountState] = useState(true);
+
+    useEffect(() => { getShowPlayCount().then(setShowPlayCountState); }, []);
+
+    useEffect(() => {
+        if (!currentTrack?.id) { setPlayCount(0); return; }
+        getPlayCounts([currentTrack.id]).then(counts => setPlayCount(counts[currentTrack.id] ?? 0));
+    }, [currentTrack?.id]);
 
     useEffect(() => {
         if (!currentPlaylist?.path) { setFallbackArt(null); return; }
@@ -93,17 +102,26 @@ export default function PlayerScreen() {
     // even a slight vertical component — "only tap works now, not swipe."
     // Rebuilt on gesture-handler with activeOffsetX so a horizontal drag on
     // the bar correctly claims priority over the screen's vertical gesture.
+    const onScrubRef = useRef(onScrub);
+    useEffect(() => { onScrubRef.current = onScrub; });
+
+    // These MUST stay referentially stable across renders (recreating them
+    // mid-gesture is what caused the earlier RNGH crash), so they delegate
+    // through onScrubRef instead of closing over onScrub directly — closing
+    // directly would freeze `progress` at whatever it was on the very first
+    // render (duration likely still 0), which is why dragging updated the
+    // visual position but never actually called seekTo.
     const onProgressGestureEvent = useRef((e) => {
-        onScrub(e.nativeEvent.absoluteX, false);
+        onScrubRef.current(e.nativeEvent.absoluteX, false);
     }).current;
 
     const onProgressStateChange = useRef((e) => {
         if (e.nativeEvent.state === GHState.BEGAN) {
             measureProgress();
-            onScrub(e.nativeEvent.absoluteX, false);
+            onScrubRef.current(e.nativeEvent.absoluteX, false);
         }
         if (e.nativeEvent.oldState === GHState.ACTIVE) {
-            onScrub(e.nativeEvent.absoluteX, true);
+            onScrubRef.current(e.nativeEvent.absoluteX, true);
         }
     }).current;
 
@@ -112,11 +130,6 @@ export default function PlayerScreen() {
             loadPlaylist(playlist);
         }
     }, []);
-
-    useEffect(() => {
-        const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, () => saveSession());
-        return () => sub.remove();
-    }, [saveSession]);
 
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = currentTrack?.ourArtist ?? currentTrack?.artist ?? '';
@@ -165,8 +178,13 @@ export default function PlayerScreen() {
 
                 <View style={s.trackInfoGroup}>
                     <View style={s.info}>
-                        <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
-                        <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
+                            <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
+                        </View>
+                        {showPlayCount && playCount > 0 && (
+                            <Text style={s.playCount}>{playCount}×</Text>
+                        )}
                     </View>
 
                     <View style={s.progressSection}>
@@ -237,7 +255,8 @@ const s = StyleSheet.create({
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     trackInfoGroup: {},
-    info: { paddingHorizontal: 28, marginBottom: 10 },
+    info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
+    playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },
     trackTitle: { color: '#f0f0f0', fontSize: 22, fontWeight: '700', marginBottom: 4, letterSpacing: -0.3 },
     trackArtist: { fontSize: 15, fontWeight: '500' },
     progressSection: { paddingHorizontal: 28 },

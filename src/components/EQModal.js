@@ -21,7 +21,7 @@ export default function EQModal({ visible, onClose, playlistPath }) {
     }, [visible]);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} collapsedHeight={420}>
+        <BottomSheet visible={visible} onClose={onClose}>
             <Text style={s.sheetTitle}>EQ Preset</Text>
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {eqPresets.length === 0

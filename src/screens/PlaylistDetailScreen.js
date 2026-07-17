@@ -7,7 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts, getPlaylistCovers, setPlaylistCover } from '../utils/storage';
+import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount } from '../utils/storage';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
@@ -38,10 +38,12 @@ export default function PlaylistDetailScreen() {
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
     const [cover, setCover] = useState(null);
+    const [showPlayCount, setShowPlayCount] = useState(true);
 
     useEffect(() => {
         getPlayCounts(playlist.songs.map(s => s.id)).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
+        getShowPlayCount().then(setShowPlayCount);
     }, []);
 
     const sorted = useMemo(() => {
@@ -91,8 +93,9 @@ export default function PlaylistDetailScreen() {
             quality: 0.8,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
-        await setPlaylistCover(playlist.path, result.assets[0].uri);
-        setCover(result.assets[0].uri);
+        const permanentUri = await persistCoverImage(result.assets[0].uri);
+        await setPlaylistCover(playlist.path, permanentUri);
+        setCover(permanentUri);
     };
 
     const bg = playlistColor(playlist.name);
@@ -187,7 +190,7 @@ export default function PlaylistDetailScreen() {
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
                                 <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>
                             </View>
-                            {playCounts[item.id] > 0 && (
+                            {showPlayCount && playCounts[item.id] > 0 && (
                                 <Text style={s.playCount}>{playCounts[item.id]}×</Text>
                             )}
                         </TouchableOpacity>

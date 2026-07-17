@@ -65,6 +65,13 @@ let fallbackTimer = null;
 
 async function checkCrossfadeWindow(position, duration) {
     try {
+        // Duration reported in the first couple seconds of a track can be a
+        // provisional/incorrect value while metadata is still loading, which
+        // was causing a false "we're near the end" trigger a few seconds
+        // into a fresh song (heard as a sudden volume dip that "fixed
+        // itself" once the real duration came through and cancelled it).
+        if (position < 3) return;
+
         const cf = await getCrossfade();
 
         // If we currently own a natural end-of-track fade but a seek moved

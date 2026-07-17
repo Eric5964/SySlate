@@ -11,7 +11,7 @@ import { squircle } from '../utils/squircle';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
     getPlaylistOrder, setPlaylistOrder,
-    getPlaylistCovers, setPlaylistCover,
+    getPlaylistCovers, setPlaylistCover, persistCoverImage,
 } from '../utils/storage';
 import BottomSheet from '../components/BottomSheet';
 
@@ -137,7 +137,8 @@ export default function PlaylistsScreen() {
             quality: 0.8,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
-        const next = await setPlaylistCover(item.path, result.assets[0].uri);
+        const permanentUri = await persistCoverImage(result.assets[0].uri);
+        const next = await setPlaylistCover(item.path, permanentUri);
         setCovers(next);
     };
 
@@ -186,7 +187,7 @@ export default function PlaylistsScreen() {
                 />
             )}
 
-            <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)} collapsedHeight={380}>
+            <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)}>
                 {displayedMenuFor && (
                     <>
                         <Text style={s.menuTitle} numberOfLines={1}>{displayedMenuFor.name}</Text>
