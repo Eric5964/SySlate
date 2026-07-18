@@ -125,6 +125,7 @@ export default function PlaylistsScreen() {
 
     const changeCover = async (item) => {
         setMenuFor(null);
+        await new Promise(r => setTimeout(r, 320));
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
             Alert.alert('Permission needed', 'Allow Photos access in Settings to set a playlist cover.');

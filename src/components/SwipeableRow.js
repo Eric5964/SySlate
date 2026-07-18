@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { AddQueueIcon, TrashIcon } from './Icons';
@@ -6,11 +6,6 @@ import { AddQueueIcon, TrashIcon } from './Icons';
 const COMMIT_DISTANCE = 72;
 const MAX_REVEAL = 96;
 
-// Rebuilt on react-native-gesture-handler instead of PanResponder — gesture
-// recognition (including negotiating with a parent ScrollView/FlatList over
-// who "owns" the touch) happens off the JS thread, which is what PanResponder
-// couldn't do and was the source of swipes feeling laggy/unreliable,
-// especially inside the queue's scroll view.
 export default function SwipeableRow({
     children,
     onSwipeRight,
@@ -20,7 +15,6 @@ export default function SwipeableRow({
     disabled = false,
 }) {
     const translateX = useRef(new Animated.Value(0)).current;
-    const [revealSide, setRevealSide] = useState(null);
     const onSwipeRightRef = useRef(onSwipeRight);
     const onSwipeLeftRef = useRef(onSwipeLeft);
     useEffect(() => { onSwipeRightRef.current = onSwipeRight; onSwipeLeftRef.current = onSwipeLeft; });
@@ -28,13 +22,7 @@ export default function SwipeableRow({
     const onGestureEvent = useRef(
         Animated.event(
             [{ nativeEvent: { translationX: translateX } }],
-            {
-                useNativeDriver: true,
-                listener: (e) => {
-                    const dx = e.nativeEvent.translationX;
-                    setRevealSide(dx > 4 ? 'right' : dx < -4 ? 'left' : null);
-                },
-            }
+            { useNativeDriver: true }
         )
     ).current;
 
@@ -42,22 +30,22 @@ export default function SwipeableRow({
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const dx = e.nativeEvent.translationX;
         if (dx > COMMIT_DISTANCE && onSwipeRightRef.current) {
-            Animated.timing(translateX, { toValue: 0, duration: 180, useNativeDriver: true }).start();
-            setRevealSide(null);
+            // Immediate — snap back right away and fire, rather than waiting
+            // out an animation before the action registers.
+            translateX.setValue(0);
             onSwipeRightRef.current();
             return;
         }
         if (dx < -COMMIT_DISTANCE && onSwipeLeftRef.current) {
-            Animated.timing(translateX, { toValue: -400, duration: 180, useNativeDriver: true }).start(() => {
+            Animated.timing(translateX, { toValue: -400, duration: 100, useNativeDriver: true }).start(() => {
                 onSwipeLeftRef.current();
             });
             return;
         }
-        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 8, tension: 60 }).start(() => setRevealSide(null));
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
     }).current;
 
-    // Clamp/rubber-band entirely via interpolation (stays on the native
-    // thread), and zero out whichever direction has no handler.
+    // Clamp/rubber-band via interpolation (native thread).
     const displayX = translateX.interpolate({
         inputRange: [-300, -MAX_REVEAL, 0, MAX_REVEAL, 300],
         outputRange: [
@@ -70,19 +58,27 @@ export default function SwipeableRow({
         extrapolate: 'clamp',
     });
 
+    // Both underlays are always mounted, with opacity interpolated DIRECTLY
+    // from translateX (native thread) instead of a JS state variable set
+    // from the gesture listener. The JS-state version lagged a frame or two
+    // behind the actual native position, which is what showed the wrong
+    // side's color for a moment when reversing direction mid-swipe.
+    const rightOpacity = translateX.interpolate({ inputRange: [0, 12], outputRange: [0, 1], extrapolate: 'clamp' });
+    const leftOpacity = translateX.interpolate({ inputRange: [-12, 0], outputRange: [1, 0], extrapolate: 'clamp' });
+
     return (
         <View style={styles.wrap}>
-            {revealSide === 'right' && onSwipeRight && (
-                <View style={[styles.underlay, styles.underlayLeft, { backgroundColor: rightColor }]}>
+            {onSwipeRight && (
+                <Animated.View style={[styles.underlay, styles.underlayLeft, { backgroundColor: rightColor, opacity: rightOpacity }]}>
                     <AddQueueIcon size={18} color="#fff" />
                     <Text style={styles.underlayText}>Play Next</Text>
-                </View>
+                </Animated.View>
             )}
-            {revealSide === 'left' && onSwipeLeft && (
-                <View style={[styles.underlay, styles.underlayRight, { backgroundColor: leftColor }]}>
+            {onSwipeLeft && (
+                <Animated.View style={[styles.underlay, styles.underlayRight, { backgroundColor: leftColor, opacity: leftOpacity }]}>
                     <Text style={styles.underlayText}>Remove</Text>
                     <TrashIcon size={18} color="#fff" />
-                </View>
+                </Animated.View>
             )}
             <PanGestureHandler
                 enabled={!disabled && (!!onSwipeRight || !!onSwipeLeft)}

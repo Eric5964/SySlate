@@ -56,18 +56,21 @@ export default function QueueModal({ visible, onClose }) {
         <BottomSheet visible={visible} onClose={onClose}>
             <Text style={s.sheetTitle}>Queue</Text>
             {rows.length === 0 ? (
-                <Text style={s.empty}>Nothing up next</Text>
+                <View style={{ flex: 1, justifyContent: 'center' }}>
+                    <Text style={s.empty}>Nothing up next</Text>
+                </View>
             ) : (
                 <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
                     {priorityRows.length > 0 && (
                         <>
-                            <Text style={s.groupLabel}>Priority</Text>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
                             {priorityRows.map(renderRow)}
                         </>
                     )}
+                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={s.divider} />}
                     {upNextRows.length > 0 && (
                         <>
-                            <Text style={s.groupLabel}>Up Next</Text>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
                             {upNextRows.map(renderRow)}
                         </>
                     )}
@@ -79,8 +82,10 @@ export default function QueueModal({ visible, onClose }) {
 
 const s = StyleSheet.create({
     sheetTitle: { color: '#555', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 16, paddingHorizontal: 24 },
-    groupLabel: { color: '#888', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', marginTop: 10, marginBottom: 4, paddingHorizontal: 24 },
-    empty: { color: '#333', fontSize: 14, textAlign: 'center', paddingVertical: 24 },
+    groupPill: { marginHorizontal: 24, marginTop: 14, marginBottom: 6, alignSelf: 'flex-start', backgroundColor: '#1a1a1a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+    groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+    divider: { height: 1, backgroundColor: '#1e1e1e', marginHorizontal: 24, marginTop: 8 },
+    empty: { color: '#333', fontSize: 14, textAlign: 'center' },
     qRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#1a1a1a', backgroundColor: '#0f0f0f' },
     qTitle: { color: '#d0d0d0', fontSize: 14, fontWeight: '500' },
     qArtist: { color: '#444', fontSize: 12, marginTop: 2 },

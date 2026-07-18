@@ -69,7 +69,7 @@ export default function PlaylistDetailScreen() {
     // Tapping a song no longer force-opens the full player — the mini player
     // appearing at the bottom is the signal that something started playing.
     const play = async (song) => {
-        await playSongFromPlaylist(playlist, song.id);
+        await playSongFromPlaylist({ ...playlist, songs: sorted }, song.id);
     };
 
     const handlePlay = async () => {

@@ -6,7 +6,7 @@ const { height: SCREEN_H } = Dimensions.get('window');
 // One shared height for every half-screen pop-up in the app (Queue, EQ,
 // New EQ Preset, Import Settings, the playlist long-press menu) so they all
 // feel like the same component family.
-export const SHEET_HEIGHT = 440;
+export const SHEET_HEIGHT = Math.round(SCREEN_H * (2 / 3));
 
 // Simplified on purpose: no more drag-to-expand/drag-to-close gesture on the
 // handle. That PanGestureHandler was the source of a real, repeated crash

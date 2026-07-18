@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -40,7 +40,13 @@ export default function PlayerScreen() {
         loadPlaylist, toggleShuffle, toggleSingleLoop,
     } = usePlayback();
 
-    const progress = useProgress(150);
+    const progress = useProgress(500);
+    const [justSwitched, setJustSwitched] = useState(false);
+    useEffect(() => {
+        setJustSwitched(true);
+        const t = setTimeout(() => setJustSwitched(false), 400);
+        return () => clearTimeout(t);
+    }, [currentTrack?.id]);
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
 
@@ -141,7 +147,17 @@ export default function PlayerScreen() {
     // would need a native module or a metadata-parsing library — a separate,
     // bigger feature if you want it.
     const artwork = currentTrack?.artwork ?? fallbackArt;
-    const pct = dragRatio !== null ? dragRatio : (progress.duration > 0 ? progress.position / progress.duration : 0);
+    const pct = dragRatio !== null ? dragRatio : (justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0));
+    const animPct = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        if (dragRatio !== null) {
+            animPct.setValue(pct); // instant while actively dragging — no lag behind the finger
+        } else {
+            Animated.timing(animPct, { toValue: pct, duration: 480, useNativeDriver: false }).start();
+        }
+    }, [pct, dragRatio !== null]);
+    const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+    const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const skipIconColor = '#ccc'; // fixed regardless of accent, including white
 
     return (
@@ -200,14 +216,14 @@ export default function PlayerScreen() {
                                 onLayout={measureProgress}
                             >
                                 <View style={s.progressTrack}>
-                                    <View style={[s.progressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                                    <Animated.View style={[s.progressFill, { width: animWidth, backgroundColor: theme.accent }]} />
                                 </View>
-                                <View style={[s.progressThumb, { left: `${pct * 100}%`, marginLeft: -10, backgroundColor: theme.accent }]} />
+                                <Animated.View style={[s.progressThumb, { left: animLeft, marginLeft: -10, backgroundColor: theme.accent }]} />
                             </View>
                         </PanGestureHandler>
                         <View style={s.times}>
-                            <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : progress.position)}</Text>
-                            <Text style={s.time}>{fmt(progress.duration)}</Text>
+                            <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? 0 : progress.position))}</Text>
+                            <Text style={s.time}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
                         </View>
                     </View>
                 </View>

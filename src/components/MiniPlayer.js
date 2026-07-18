@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Animated } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State, useProgress } from 'react-native-track-player';
 import { useNavigation } from '@react-navigation/native';
@@ -38,6 +38,13 @@ export default function MiniPlayer({ withTabBar = true }) {
         return () => { cancelled = true; };
     }, [currentPlaylist?.path]);
 
+    const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
+    const animPct = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        Animated.timing(animPct, { toValue: pct, duration: 480, useNativeDriver: false }).start();
+    }, [pct]);
+    const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+
     if (!currentTrack) return null;
 
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
@@ -54,7 +61,7 @@ export default function MiniPlayer({ withTabBar = true }) {
         >
             <GradientCap color={theme.accent} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
             <View pointerEvents="none" style={styles.miniProgressTrack}>
-                <View style={[styles.miniProgressFill, { width: `${pct * 100}%`, backgroundColor: theme.accent }]} />
+                <Animated.View style={[styles.miniProgressFill, { width: animWidth, backgroundColor: theme.accent }]} />
             </View>
             <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
                 {artwork

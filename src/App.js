@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
-import { View, Text, Dimensions } from 'react-native';
+import { View, Text, Dimensions, Image } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -20,6 +20,7 @@ import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
+import { getPlaylistCovers } from './utils/storage';
 
 enableScreens(false);
 
@@ -87,6 +88,10 @@ function AppInner() {
         try {
             const lib = await scanLibrary();
             setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '' });
+            try {
+                const covers = await getPlaylistCovers();
+                Object.values(covers).forEach(uri => { if (uri) Image.prefetch(uri).catch(() => { }); });
+            } catch { }
         } catch (e) { console.error('reload:', e); }
     };
 

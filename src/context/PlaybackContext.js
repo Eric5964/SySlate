@@ -249,8 +249,18 @@ export function PlaybackProvider({ children }) {
             .map(id => playlist.songs.find(s => s.id === id))
             .filter(Boolean);
 
-        let rest = playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id));
-        if (isOn) rest = shuffleArray(rest);
+        let rest;
+        if (isOn) {
+            rest = shuffleArray(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)));
+        } else {
+            // Continue through the list in order starting right AFTER the
+            // tapped song, wrapping back around — not just "everything else
+            // in whatever order it happened to be in," which read as
+            // "always restarts from the top of the playlist."
+            const idx = playlist.songs.findIndex(s => s.id === songId);
+            const wrapped = idx === -1 ? playlist.songs : [...playlist.songs.slice(idx + 1), ...playlist.songs.slice(0, idx)];
+            rest = wrapped.filter(s => !keepSet.has(s.id));
+        }
 
         const queue = [song, ...prioritySongs, ...rest];
 
@@ -289,8 +299,15 @@ export function PlaybackProvider({ children }) {
             const mode = await getShuffleMode();
             await TrackPlayer.reset();
             await withTimeout(TrackPlayer.add(queue), 6000);
-            if (last.index > 0) await TrackPlayer.skip(last.index);
-            if (last.position > 2) await TrackPlayer.seekTo(last.position);
+            if (last.index > 0) await withTimeout(TrackPlayer.skip(last.index), 4000);
+            if (last.position > 2) {
+                // Seeking immediately after skip was silently getting ignored —
+                // the native player hadn't finished preparing the track yet.
+                await new Promise(r => setTimeout(r, 300));
+                try { await TrackPlayer.seekTo(last.position); } catch { }
+                await new Promise(r => setTimeout(r, 150));
+                try { await TrackPlayer.seekTo(last.position); } catch { } // retry once, cheap insurance
+            }
             await setQueueLoop();
 
             setCurrentPlaylist({ ...last.playlist, queue });
