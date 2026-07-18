@@ -51,7 +51,6 @@ export default function MiniPlayer({ withTabBar = true }) {
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
     const artwork = currentTrack.artwork ?? fallbackArt;
-    const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
 
     return (
         <TouchableOpacity
