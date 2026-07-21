@@ -4,6 +4,7 @@ export const LibraryContext = createContext({
     playlists: [],
     allSongs: [],
     scanPath: '',
+    scanError: null,
     reload: async () => { },
 });
 

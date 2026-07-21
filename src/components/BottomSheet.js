@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Animated, StyleSheet, Dimensions, Modal } from 'react-native';
+import { useTheme } from '../context/ThemeContext';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 
@@ -17,6 +18,7 @@ export const SHEET_HEIGHT = Math.round(SCREEN_H * (2 / 3));
 // — matching the same "fade the background, slide up the sheet" language
 // used for the playlist long-press menu.
 export default function BottomSheet({ visible, onClose, children, height = SHEET_HEIGHT }) {
+    const { base } = useTheme();
     const backdropOpacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(height)).current;
     const [mounted, setMounted] = useState(visible);
@@ -54,7 +56,7 @@ export default function BottomSheet({ visible, onClose, children, height = SHEET
                     if (dx < 10 && dy < 10) onClose();
                 }}
             />
-            <Animated.View style={[s.sheet, { height, transform: [{ translateY }] }]}>
+            <Animated.View style={[s.sheet, { height, backgroundColor: base.surface, transform: [{ translateY }] }]}>
                 <View style={{ flex: 1 }}>
                     {children}
                 </View>

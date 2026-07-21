@@ -12,7 +12,7 @@ import SwipeableRow from '../components/SwipeableRow';
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
     const { playSongFromPlaylist, addToQueue } = usePlayback();
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
     const [showSearch, setShowSearch] = useState(false);
@@ -34,7 +34,7 @@ export default function AllSongsScreen() {
     };
 
     return (
-        <View style={s.container}>
+        <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}>
                 <Text style={s.title}>All Songs</Text>
@@ -44,7 +44,7 @@ export default function AllSongsScreen() {
             </View>
             {showSearch && (
                 <TextInput
-                    style={[s.search, { borderColor: theme.accentDim }]}
+                    style={[s.search, { backgroundColor: base.surface, borderColor: theme.accentDim }]}
                     value={search} onChangeText={setSearch}
                     placeholder="Search songs, artists..."
                     placeholderTextColor="#444"
@@ -63,7 +63,7 @@ export default function AllSongsScreen() {
                     contentContainerStyle={{ paddingBottom: 150 }}
                     renderItem={({ item }) => (
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
-                            <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
+                            <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
                                 <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
                             </TouchableOpacity>

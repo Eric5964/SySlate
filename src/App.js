@@ -35,18 +35,32 @@ function PlaylistsStackScreen() {
     return (
         <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
             <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
-            <PlaylistsStack.Screen name="PlaylistDetail" component={PlaylistDetailScreen} />
+            <PlaylistsStack.Screen
+                name="PlaylistDetail"
+                component={PlaylistDetailScreen}
+                options={{
+                    gestureEnabled: true,
+                    gestureDirection: 'horizontal',
+                    // Narrow on purpose — SwipeableRow's swipe-to-queue gesture
+                    // on song rows uses the rest of the row's width, so this
+                    // back-gesture only claims a thin strip at the very edge
+                    // (matching iOS's own edge-swipe convention) to leave room
+                    // for both to coexist.
+                    gestureResponseDistance: 24,
+                }}
+            />
         </PlaylistsStack.Navigator>
     );
 }
 
 function Tabs() {
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     return (
         <Tab.Navigator
+            initialRouteName="Playlists"
             screenOptions={{
                 headerShown: false,
-                tabBarStyle: { backgroundColor: '#0d0d0d', borderTopColor: '#1c1c1c', borderTopWidth: 1 },
+                tabBarStyle: { backgroundColor: base.surface, borderTopColor: base.border, borderTopWidth: 1 },
                 tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: '#444',
                 tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 2 },
@@ -81,16 +95,22 @@ function MainLayout() {
 }
 
 function AppInner() {
-    const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '' });
+    const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
 
     const reload = async () => {
         try {
             const lib = await scanLibrary();
-            setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '' });
+            setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null });
             try {
                 const covers = await getPlaylistCovers();
-                Object.values(covers).forEach(uri => { if (uri) Image.prefetch(uri).catch(() => { }); });
+                // Actually WAIT for these instead of firing-and-forgetting —
+                // the whole point is the UI doesn't render until images are
+                // already in RN's cache, otherwise this preload step does
+                // nothing to prevent the first-render flash it's meant to fix.
+                await Promise.all(
+                    Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
+                );
             } catch { }
         } catch (e) { console.error('reload:', e); }
     };

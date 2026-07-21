@@ -58,9 +58,16 @@ const SKIP = new Set(['Application Support', 'Caches', 'Cookies', 'Preferences',
 
 export async function scanLibrary() {
     const base = FileSystem.documentDirectory;
-    if (!base) return { playlists: [], allSongs: [], scanPath: '' };
+    if (!base) return { playlists: [], allSongs: [], scanPath: '', scanError: 'FileSystem.documentDirectory was empty/undefined.' };
     let items = [];
-    try { items = await FileSystem.readDirectoryAsync(base); } catch { return { playlists: [], allSongs: [], scanPath: base }; }
+    try {
+        items = await FileSystem.readDirectoryAsync(base);
+    } catch (e) {
+        return { playlists: [], allSongs: [], scanPath: base, scanError: `readDirectoryAsync failed: ${e?.message ?? e}` };
+    }
+    if (items.length === 0) {
+        return { playlists: [], allSongs: [], scanPath: base, scanError: 'Documents folder is readable but empty — no files/folders found there at all.' };
+    }
 
     const playlists = [];
     const seenIds = new Set();
@@ -99,5 +106,8 @@ export async function scanLibrary() {
     for (const p of playlists) for (const s of p.songs) if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
     for (const s of rootSongs) if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
     allSongs.sort((a, b) => a.ourTitle.localeCompare(b.ourTitle));
-    return { playlists, allSongs, scanPath: base };
+    const scanError = (playlists.length === 0 && allSongs.length === 0)
+        ? `Found ${items.length} item(s) in Documents (${items.slice(0, 5).join(', ')}${items.length > 5 ? '...' : ''}), but none were recognized as audio files or folders containing audio files.`
+        : null;
+    return { playlists, allSongs, scanPath: base, scanError };
 }

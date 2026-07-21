@@ -29,7 +29,7 @@ export default function PlaylistDetailScreen() {
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue,
     } = usePlayback();
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
 
     const [search, setSearch] = useState('');
     const [sortId, setSortId] = useState('alpha');
@@ -102,7 +102,7 @@ export default function PlaylistDetailScreen() {
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
 
     return (
-        <View style={s.container}>
+        <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
@@ -111,7 +111,7 @@ export default function PlaylistDetailScreen() {
                     <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
                 </TouchableOpacity>
                 <TextInput
-                    style={s.searchBar}
+                    style={[s.searchBar, { backgroundColor: base.surface }]}
                     value={search}
                     onChangeText={setSearch}
                     placeholder="Search this playlist"
@@ -185,7 +185,7 @@ export default function PlaylistDetailScreen() {
                 }
                 renderItem={({ item }) => (
                     <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
-                        <TouchableOpacity style={s.row} onPress={() => play(item)} activeOpacity={0.7}>
+                        <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
                             <View style={{ flex: 1 }}>
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
                                 <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>

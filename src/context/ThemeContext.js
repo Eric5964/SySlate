@@ -17,20 +17,44 @@ export const THEMES = {
     white: { name: 'White', accent: '#f2f2f2', accentDim: '#2a2a2a', onAccent: '#000' },
 };
 
-const ThemeContext = createContext({ theme: THEMES.purple, themeId: 'purple', setTheme: () => { } });
+// The app's neutral/background palette, independent of accent color.
+// "dark_gray" matches the app's original hardcoded look, so existing
+// installs default to looking exactly the same as before this existed.
+export const BASE_COLORS = {
+    light_gray: { name: 'Light Gray', bg: '#2c2c2e', surface: '#363638', border: '#48484a' },
+    gray: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
+    dark_gray: { name: 'Dark Gray', bg: '#0a0a0a', surface: '#0f0f0f', border: '#1a1a1a' },
+    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
+};
+
+const ThemeContext = createContext({
+    theme: THEMES.purple, themeId: 'purple', setTheme: () => { },
+    base: BASE_COLORS.dark_gray, baseId: 'dark_gray', setBase: () => { },
+});
 
 export function ThemeProvider({ children }) {
     const [themeId, setThemeId] = useState('purple');
+    const [baseId, setBaseId] = useState('dark_gray');
+
     useEffect(() => {
         AsyncStorage.getItem('theme_id').then(id => {
             if (id && THEMES[id]) { setThemeId(id); return; }
             const migrate = { indigo: 'blue', lime: 'green', amber: 'orange', pink: 'rose' };
             if (id && migrate[id]) setThemeId(migrate[id]);
         });
+        AsyncStorage.getItem('base_color_id').then(id => {
+            if (id && BASE_COLORS[id]) setBaseId(id);
+        });
     }, []);
+
     const setTheme = async (id) => { setThemeId(id); await AsyncStorage.setItem('theme_id', id); };
+    const setBase = async (id) => { setBaseId(id); await AsyncStorage.setItem('base_color_id', id); };
+
     return (
-        <ThemeContext.Provider value={{ theme: THEMES[themeId], themeId, setTheme }}>
+        <ThemeContext.Provider value={{
+            theme: THEMES[themeId], themeId, setTheme,
+            base: BASE_COLORS[baseId], baseId, setBase,
+        }}>
             {children}
         </ThemeContext.Provider>
     );

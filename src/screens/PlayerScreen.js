@@ -32,7 +32,7 @@ export default function PlayerScreen() {
     const navigation = useNavigation();
     const route = useRoute();
     const { playlist } = route.params ?? {};
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const insets = useSafeAreaInsets();
 
     const {
@@ -148,20 +148,33 @@ export default function PlayerScreen() {
     // bigger feature if you want it.
     const artwork = currentTrack?.artwork ?? fallbackArt;
     const pct = dragRatio !== null ? dragRatio : (justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0));
-    const animPct = useRef(new Animated.Value(0)).current;
+    // Lazily initialized to the CURRENT position, not 0 — starting at 0 meant
+    // every time you opened the player it visibly animated a "catch-up" from
+    // the far left to wherever the song actually was.
+    const animPct = useRef(new Animated.Value(pct)).current;
+    const lastTickAt = useRef(Date.now());
     useEffect(() => {
         if (dragRatio !== null) {
+            lastTickAt.current = Date.now();
             animPct.setValue(pct); // instant while actively dragging — no lag behind the finger
-        } else {
-            Animated.timing(animPct, { toValue: pct, duration: 480, useNativeDriver: false }).start();
+            return;
         }
+        const now = Date.now();
+        // Match the animation's duration to how much real time actually
+        // passed since the last update, instead of a fixed guess — a fixed
+        // duration against a variable real gap is what made the fill look
+        // like it sped up and slowed down between refreshes.
+        const elapsed = now - lastTickAt.current;
+        lastTickAt.current = now;
+        const dur = Math.min(1000, Math.max(150, elapsed || 500));
+        Animated.timing(animPct, { toValue: pct, duration: dur, useNativeDriver: false }).start();
     }, [pct, dragRatio !== null]);
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const skipIconColor = '#ccc'; // fixed regardless of accent, including white
 
     return (
-        <View style={[s.container, { paddingTop: insets.top + 6 }]}>
+        <View style={[s.container, { paddingTop: insets.top + 6, backgroundColor: base.bg }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>
@@ -267,7 +280,7 @@ const s = StyleSheet.create({
     topLabel: { color: '#444', fontSize: 13, flex: 1, textAlign: 'center' },
     middle: { flex: 1, justifyContent: 'space-evenly' },
     artWrap: { alignItems: 'center' },
-    art: { width: width - 80, height: width - 80, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.3, shadowRadius: 20 },
+    art: { width: width - 80, height: width - 80, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     trackInfoGroup: {},
@@ -286,5 +299,5 @@ const s = StyleSheet.create({
     sideBtn: { width: 60, height: 60, alignItems: 'center', justifyContent: 'center' },
     sideIcon: { fontSize: 26 },
     skipBtn: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center' },
-    playBtn: { width: 84, height: 84, borderRadius: 42, justifyContent: 'center', alignItems: 'center', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.45, shadowRadius: 16 },
+    playBtn: { width: 84, height: 84, borderRadius: 42, justifyContent: 'center', alignItems: 'center', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8 },
 });

@@ -1,9 +1,9 @@
-import React, { useContext, useState, useEffect, useMemo, memo } from 'react';
+import React, { useContext, useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { playlistColor } from '../utils/color';
@@ -39,7 +39,7 @@ const FORMATS = [
 // Memoized so opening/closing the long-press menu (state lives in the parent)
 // doesn't force every visible row to re-render — that re-render of the whole
 // list was what made the long-press feel choppy.
-const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, onOpen, onLongPress }) {
+const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, onOpen, onLongPress }) {
     const bg = playlistColor(item.name);
 
     const renderArt = (size, fontSize) => cover
@@ -50,7 +50,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, on
         const size = CELL_SIZES[numCols];
         return (
             <TouchableOpacity
-                style={[s.gridItem, { width: size, margin: CELL_MARGIN }]}
+                style={[s.gridItem, { width: size, margin: CELL_MARGIN, backgroundColor: base.surface }]}
                 onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}
             >
                 <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size) }]}>
@@ -62,7 +62,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, on
         );
     }
     return (
-        <TouchableOpacity style={s.row} onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}>
+        <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}>
             {format === 'list_art' && (
                 <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(50) }]}>
                     {renderArt(22, 22)}
@@ -79,7 +79,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, on
 
 export default function PlaylistsScreen() {
     const { playlists, reload } = useContext(LibraryContext);
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
     const [covers, setCovers] = useState({});
@@ -89,6 +89,7 @@ export default function PlaylistsScreen() {
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
+    useFocusEffect(useCallback(() => { getPlaylistCovers().then(setCovers); }, []));
 
     const cycleFormat = async () => {
         const idx = FORMATS.findIndex(f => f.id === format);
@@ -150,7 +151,7 @@ export default function PlaylistsScreen() {
     };
 
     return (
-        <View style={s.container}>
+        <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}>
                 <Text style={s.title}>Playlists</Text>
@@ -181,6 +182,7 @@ export default function PlaylistsScreen() {
                             format={format}
                             numCols={numCols}
                             cover={covers[item.path]}
+                            base={base}
                             onOpen={() => openPlaylist(item)}
                             onLongPress={() => setMenuFor(item)}
                         />

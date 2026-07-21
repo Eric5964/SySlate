@@ -33,6 +33,24 @@ export function forceReleaseFade() {
     naturalEndFadeOwner = null;
 }
 
+// Instead of silently dropping a play/pause/skip that arrives while a ramp
+// is mid-flight, the LATEST one is remembered (overwriting whatever was
+// queued before — never a combination, just the most recent request) and
+// run automatically the moment the ramp finishes.
+let pendingAction = null; // { run: () => void }
+
+function queueAction(run) {
+    pendingAction = { run };
+}
+
+function drainPending() {
+    if (isTransitionLocked()) return;
+    const action = pendingAction;
+    if (!action) return;
+    pendingAction = null;
+    setTimeout(() => action.run(), 20);
+}
+
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fadeVol(from, to, sec, ownerId) {
@@ -85,6 +103,7 @@ async function checkCrossfadeWindow(position, duration) {
                 naturalEndFadeOwner = null;
                 releaseFade(id);
                 try { await TrackPlayer.setVolume(1); } catch { }
+                drainPending();
             }
             return;
         }
@@ -126,7 +145,7 @@ function stopWatcher() {
 }
 
 export async function playWithRamp() {
-    if (rampLock) return;
+    if (isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;
     try {
         const ramp = await getAudioRamp();
@@ -146,11 +165,12 @@ export async function playWithRamp() {
     } finally {
         await sleep(60);
         rampLock = false;
+        drainPending();
     }
 }
 
 export async function pauseWithRamp() {
-    if (rampLock) return;
+    if (isTransitionLocked()) { queueAction(() => pauseWithRamp()); return; }
     rampLock = true;
     try {
         const useFade = await getRampOnPause();
@@ -167,6 +187,7 @@ export async function pauseWithRamp() {
     } finally {
         await sleep(60);
         rampLock = false;
+        drainPending();
     }
 }
 
@@ -178,8 +199,7 @@ export async function pauseWithRamp() {
 //   not the Skip ramp (skipping while paused isn't really "crossfading"
 //   between two playing songs).
 export async function skipWithCrossfade(direction = 'next') {
-    if (skipLock) return;
-    if (activeFadeId !== null) return;
+    if (isTransitionLocked()) { queueAction(() => skipWithCrossfade(direction)); return; }
     skipLock = true;
     try {
         const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
@@ -223,6 +243,7 @@ export async function skipWithCrossfade(direction = 'next') {
     } finally {
         await sleep(80);
         skipLock = false;
+        drainPending();
     }
 }
 
@@ -260,5 +281,6 @@ export async function PlaybackService() {
             try { await TrackPlayer.setVolume(1); } catch { }
         }
         startWatcher();
+        drainPending();
     });
 }

@@ -18,7 +18,7 @@ const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack, currentPlaylist } = usePlayback();
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
@@ -39,9 +39,14 @@ export default function MiniPlayer({ withTabBar = true }) {
     }, [currentPlaylist?.path]);
 
     const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
-    const animPct = useRef(new Animated.Value(0)).current;
+    const animPct = useRef(new Animated.Value(pct)).current;
+    const lastTickAt = useRef(Date.now());
     useEffect(() => {
-        Animated.timing(animPct, { toValue: pct, duration: 480, useNativeDriver: false }).start();
+        const now = Date.now();
+        const elapsed = now - lastTickAt.current;
+        lastTickAt.current = now;
+        const dur = Math.min(1000, Math.max(150, elapsed || 500));
+        Animated.timing(animPct, { toValue: pct, duration: dur, useNativeDriver: false }).start();
     }, [pct]);
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
@@ -54,7 +59,7 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     return (
         <TouchableOpacity
-            style={[styles.container, { bottom, borderColor: theme.accentDim }]}
+            style={[styles.container, { bottom, borderColor: theme.accentDim, backgroundColor: base.surface }]}
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >

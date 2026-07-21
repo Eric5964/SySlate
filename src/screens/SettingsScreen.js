@@ -7,7 +7,7 @@ import {
 import BottomSheet from '../components/BottomSheet';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
-import { useTheme, THEMES } from '../context/ThemeContext';
+import { useTheme, THEMES, BASE_COLORS } from '../context/ThemeContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
@@ -25,12 +25,16 @@ import {
 
 const SCREEN_W = Dimensions.get('window').width;
 const SWATCH_GAP = 12;
-const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5 * 0.78);
+// Fills the row edge-to-edge (space-between) instead of a smaller centered
+// cluster with empty margin on the sides — matches the EQ preset grid's
+// full-width feel.
+const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
+const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 3) / 4);
 
 export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
-    const { reload, scanPath } = useLibrary();
-    const { themeId, setTheme, theme } = useTheme();
+    const { reload, scanPath, scanError } = useLibrary();
+    const { themeId, setTheme, theme, baseId, setBase, base } = useTheme();
 
     const [cf, setCf] = useState(3.0);
     const [skipCf, setSkipCf] = useState(0.5);
@@ -46,6 +50,8 @@ export default function SettingsScreen() {
     const [importText, setImportText] = useState('');
     const [showPlayCount, setSPC] = useState(true);
 
+    const [loaded, setLoaded] = useState(false);
+
     useEffect(() => {
         (async () => {
             setCf(await getCrossfade());
@@ -56,6 +62,7 @@ export default function SettingsScreen() {
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
             setSPC(await getShowPlayCount());
+            setLoaded(true);
         })();
     }, []);
 
@@ -93,6 +100,7 @@ export default function SettingsScreen() {
 
     const themeEntries = Object.entries(THEMES);
     const swatchRows = [themeEntries.slice(0, 5), themeEntries.slice(5, 10)];
+    const baseEntries = Object.entries(BASE_COLORS);
 
     const renderSwatch = ([id, t]) => (
         <TouchableOpacity key={id} onPress={() => setTheme(id)}
@@ -105,11 +113,22 @@ export default function SettingsScreen() {
         </TouchableOpacity>
     );
 
+    const renderBaseSwatch = ([id, b]) => (
+        <TouchableOpacity key={id} onPress={() => setBase(id)}
+            style={[s.swatch, {
+                width: BASE_SWATCH_SIZE, height: BASE_SWATCH_SIZE, borderRadius: squircle(BASE_SWATCH_SIZE),
+                backgroundColor: b.bg, borderWidth: 1, borderColor: b.border,
+            }, baseId === id && s.swatchActive]}>
+            {baseId === id && <Text style={{ color: theme.accent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
+        </TouchableOpacity>
+    );
+
     return (
-        <View style={s.container}>
+        <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
-
+            {!loaded ? null : (
+                <>
             <ScrollView contentContainerStyle={{ paddingBottom: 160 }}>
                 {/* 1. EQ — built-in presets as a condensed 2-wide grid, custom ones as a list below */}
                 <Section title="EQ Presets">
@@ -218,12 +237,20 @@ export default function SettingsScreen() {
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Accent Color">
-                    <View style={{ paddingVertical: 16 }}>
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
                         {swatchRows.map((row, i) => (
                             <View key={i} style={[s.swatchRow, i > 0 && { marginTop: 14 }]}>
                                 {row.map(renderSwatch)}
                             </View>
                         ))}
+                    </View>
+                </Section>
+
+                <Section title="Base Color">
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
+                        <View style={s.swatchRow}>
+                            {baseEntries.map(renderBaseSwatch)}
+                        </View>
                     </View>
                 </Section>
 
@@ -251,6 +278,11 @@ export default function SettingsScreen() {
                             {(scanPath ?? '').replace('file://', '')}
                         </Text>
                         <Text style={s.locNote}>Folders become playlists. Files in the root appear in All Songs.</Text>
+                        {scanError && (
+                            <Text style={[s.locNote, { color: '#dc6262', marginTop: 10 }]} selectable>
+                                Scan diagnostic: {scanError}
+                            </Text>
+                        )}
                     </View>
                 </Section>
 
@@ -277,6 +309,8 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </Section>
             </ScrollView>
+                </>
+            )}
 
             <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
@@ -332,10 +366,11 @@ export default function SettingsScreen() {
 }
 
 function Section({ title, children }) {
+    const { base } = useTheme();
     return (
         <View style={s.section}>
             <Text style={s.sectionLabel}>{title}</Text>
-            <View style={s.sectionBody}>{children}</View>
+            <View style={[s.sectionBody, { backgroundColor: base.surface, borderColor: base.border }]}>{children}</View>
         </View>
     );
 }
@@ -365,7 +400,7 @@ const s = StyleSheet.create({
     toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
-    swatchRow: { flexDirection: 'row', justifyContent: 'center', gap: SWATCH_GAP },
+    swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
     swatch: { justifyContent: 'center', alignItems: 'center' },
     swatchActive: { borderWidth: 3, borderColor: '#fff' },
     eqGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 8, paddingHorizontal: 8 },
