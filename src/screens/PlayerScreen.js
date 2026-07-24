@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -78,6 +78,35 @@ export default function PlayerScreen() {
     const lastSeekAt = useRef(0);
     const clearDragTimer = useRef(null);
 
+    // One continuous animation running at the song's actual real-time rate,
+    // instead of a new mini-animation restarted on every progress hook tick.
+    // Restarting on every tick was the real source of both the choppiness
+    // and the post-release jump: a fixed-duration animation racing a
+    // variable real-time gap between ticks necessarily drifts, and canceling
+    // an in-flight animation to start another one is visually a stutter.
+    const animPct = useRef(new Animated.Value(
+        progress.duration > 0 ? progress.position / progress.duration : 0
+    )).current;
+    const animRunRef = useRef(null);
+    const animPctValueRef = useRef(progress.duration > 0 ? progress.position / progress.duration : 0); // tracks the animation's own last-set value, since Animated.Value has no public getter
+    useEffect(() => {
+        const id = animPct.addListener(({ value }) => { animPctValueRef.current = value; });
+        return () => animPct.removeListener(id);
+    }, []);
+
+    const stopAnim = () => { animRunRef.current?.stop(); animRunRef.current = null; };
+
+    const startRealTimeAnim = (fromPct) => {
+        stopAnim();
+        animPct.setValue(fromPct);
+        animPctValueRef.current = fromPct;
+        if (!isPlaying || progress.duration <= 0 || fromPct >= 1) return;
+        const remainingMs = Math.max(0, (1 - fromPct) * progress.duration * 1000);
+        const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
+        animRunRef.current = anim;
+        anim.start();
+    };
+
     const measureProgress = () => {
         progressRef.current?.measure((_x, _y, w, _h, pageX) => {
             if (w > 0) progressLayout.current = { pageX, width: w };
@@ -91,14 +120,23 @@ export default function PlayerScreen() {
     const onScrub = (absoluteX, commit) => {
         const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
+        stopAnim();
+        animPct.setValue(ratio);
+        animPctValueRef.current = ratio;
         const now = Date.now();
         if (progress.duration > 0 && (commit || now - lastSeekAt.current > 110)) {
             lastSeekAt.current = now;
             TrackPlayer.seekTo(ratio * progress.duration);
         }
         if (commit) {
+            // Hand off directly to the real-time animation from this exact
+            // ratio right now — waiting for the drag-clear timer and the
+            // next progress hook tick (which can be stale for up to another
+            // update cycle) was the cause of the visible jump right after
+            // letting go.
+            startRealTimeAnim(ratio);
             clearTimeout(clearDragTimer.current);
-            clearDragTimer.current = setTimeout(() => setDragRatio(null), 250);
+            clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
         }
     };
 
@@ -147,28 +185,26 @@ export default function PlayerScreen() {
     // would need a native module or a metadata-parsing library — a separate,
     // bigger feature if you want it.
     const artwork = currentTrack?.artwork ?? fallbackArt;
-    const pct = dragRatio !== null ? dragRatio : (justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0));
-    // Lazily initialized to the CURRENT position, not 0 — starting at 0 meant
-    // every time you opened the player it visibly animated a "catch-up" from
-    // the far left to wherever the song actually was.
-    const animPct = useRef(new Animated.Value(pct)).current;
-    const lastTickAt = useRef(Date.now());
+    const pct = justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0);
+
+    // Re-sync only when needed: on mount, on play/pause toggling, on a track
+    // switch, or if the running animation has drifted noticeably from what
+    // the real progress hook reports (e.g. after a system hiccup). Anything
+    // else, the animation just keeps running uninterrupted at real-time speed
+    // — no restart, no stutter.
     useEffect(() => {
-        if (dragRatio !== null) {
-            lastTickAt.current = Date.now();
-            animPct.setValue(pct); // instant while actively dragging — no lag behind the finger
-            return;
+        if (dragRatio !== null) return; // scrubbing owns the value right now
+        const drift = Math.abs(animPctValueRef.current - pct);
+        if (!animRunRef.current || drift > 0.02) {
+            startRealTimeAnim(pct);
         }
-        const now = Date.now();
-        // Match the animation's duration to how much real time actually
-        // passed since the last update, instead of a fixed guess — a fixed
-        // duration against a variable real gap is what made the fill look
-        // like it sped up and slowed down between refreshes.
-        const elapsed = now - lastTickAt.current;
-        lastTickAt.current = now;
-        const dur = Math.min(1000, Math.max(150, elapsed || 500));
-        Animated.timing(animPct, { toValue: pct, duration: dur, useNativeDriver: false }).start();
-    }, [pct, dragRatio !== null]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
+
+    useEffect(() => {
+        return () => stopAnim();
+    }, []);
+
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const skipIconColor = '#ccc'; // fixed regardless of accent, including white

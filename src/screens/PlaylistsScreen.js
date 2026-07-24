@@ -1,6 +1,6 @@
-import React, { useContext, useState, useEffect, useCallback, useMemo, memo } from 'react';
+import React, { useContext, useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions,
+    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -91,11 +91,18 @@ export default function PlaylistsScreen() {
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
     useFocusEffect(useCallback(() => { getPlaylistCovers().then(setCovers); }, []));
 
+    const listOpacity = useRef(new Animated.Value(1)).current;
+
     const cycleFormat = async () => {
         const idx = FORMATS.findIndex(f => f.id === format);
         const next = FORMATS[(idx + 1) % FORMATS.length];
-        setFormat(next.id);
-        await setPlaylistViewFormat(next.id);
+        Animated.timing(listOpacity, { toValue: 0, duration: 90, useNativeDriver: true }).start(() => {
+            setFormat(next.id);
+            setPlaylistViewFormat(next.id);
+            requestAnimationFrame(() => {
+                Animated.timing(listOpacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
+            });
+        });
     };
 
     const isGrid = format.startsWith('grid');
@@ -170,24 +177,26 @@ export default function PlaylistsScreen() {
                     <Text style={s.emptyText}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
                 </View>
             ) : (
-                <FlatList
-                    key={numCols}
-                    data={playlists}
-                    keyExtractor={item => item.path}
-                    numColumns={numCols}
-                    contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0, paddingTop: isGrid ? 8 : 0 }}
-                    renderItem={({ item }) => (
-                        <PlaylistRow
-                            item={item}
-                            format={format}
-                            numCols={numCols}
-                            cover={covers[item.path]}
-                            base={base}
-                            onOpen={() => openPlaylist(item)}
-                            onLongPress={() => setMenuFor(item)}
-                        />
-                    )}
-                />
+                <Animated.View style={{ flex: 1, opacity: listOpacity }}>
+                    <FlatList
+                        key={numCols}
+                        data={playlists}
+                        keyExtractor={item => item.path}
+                        numColumns={numCols}
+                        contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0, paddingTop: isGrid ? 8 : 0 }}
+                        renderItem={({ item }) => (
+                            <PlaylistRow
+                                item={item}
+                                format={format}
+                                numCols={numCols}
+                                cover={covers[item.path]}
+                                base={base}
+                                onOpen={() => openPlaylist(item)}
+                                onLongPress={() => setMenuFor(item)}
+                            />
+                        )}
+                    />
+                </Animated.View>
             )}
 
             <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)}>

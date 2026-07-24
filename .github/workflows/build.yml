@@ -116,9 +116,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            GENERATE_INFOPLIST_FILE=NO \
             SKIP_BUNDLING=1 \
             clean archive
-
+            
           echo "=== Copying JS bundle into app ==="
           cp $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle \
             $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/main.jsbundle
