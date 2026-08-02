@@ -1,5 +1,5 @@
 import React from 'react';
-import { View } from 'react-native';
+import { View, Animated } from 'react-native';
 
 // Pure-CSS/View icons — no emoji, no SVG library dependency.
 // Sizes are the visual bounding box; colors passed as `color`.
@@ -68,8 +68,8 @@ export function ShuffleIcon({ size = 22, color = '#333', style }) {
     const bar = size * 0.86;
     return (
         <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
-            <View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '28deg' }] }} />
-            <View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-28deg' }] }} />
+            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '28deg' }] }} />
+            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-28deg' }] }} />
         </View>
     );
 }

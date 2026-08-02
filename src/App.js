@@ -21,6 +21,7 @@ import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { scanLibrary } from './utils/files';
 import { getPlaylistCovers } from './utils/storage';
+import { EDGE_SWIPE_WIDTH } from './utils/layout';
 
 enableScreens(false);
 
@@ -45,10 +46,11 @@ function PlaylistsStackScreen() {
                     // on song rows uses the rest of the row's width, so this
                     // back-gesture only claims a thin strip at the very edge
                     // (matching iOS's own edge-swipe convention) to leave room
-                    // for both to coexist. Was a flat 24px; changed to ~10% of
-                    // screen width per request — still worth retuning against
-                    // the row gesture on a real device, this is a starting point.
-                    gestureResponseDistance: Math.round(Dimensions.get('window').width * 0.1),
+                    // for both to coexist. SwipeableRow's own edgeExclude prop
+                    // (see PlaylistDetailScreen) carves out this same width
+                    // from ITS side too, so the edge zone belongs to this
+                    // back-gesture outright instead of the two arbitrating.
+                    gestureResponseDistance: EDGE_SWIPE_WIDTH,
                 }}
             />
         </PlaylistsStack.Navigator>

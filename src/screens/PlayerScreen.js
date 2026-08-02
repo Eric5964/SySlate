@@ -41,8 +41,18 @@ export default function PlayerScreen() {
     } = usePlayback();
 
     const progress = useProgress(500);
+    // Only true right after the CURRENTLY-PLAYING track actually changes —
+    // not on every mount. Before, this effect fired on mount regardless of
+    // whether currentTrack.id had genuinely changed (that's just how effects
+    // work on the dependency they're given), which is why opening the player
+    // — even mid-song — briefly showed 0:00 before jumping to the real
+    // position. prevTrackIdRef starts equal to the first render's id, so the
+    // mount case is a no-op; only a later, real change fires this.
+    const prevTrackIdRef = useRef(currentTrack?.id);
     const [justSwitched, setJustSwitched] = useState(false);
     useEffect(() => {
+        if (prevTrackIdRef.current === currentTrack?.id) return;
+        prevTrackIdRef.current = currentTrack?.id;
         setJustSwitched(true);
         const t = setTimeout(() => setJustSwitched(false), 400);
         return () => clearTimeout(t);
@@ -76,6 +86,7 @@ export default function PlayerScreen() {
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
     const lastSeekAt = useRef(0);
+    const lastSeekRatio = useRef(null);
     const clearDragTimer = useRef(null);
 
     // One continuous animation running at the song's actual real-time rate,
@@ -124,9 +135,22 @@ export default function PlayerScreen() {
         animPct.setValue(ratio);
         animPctValueRef.current = ratio;
         const now = Date.now();
-        if (progress.duration > 0 && (commit || now - lastSeekAt.current > 110)) {
-            lastSeekAt.current = now;
-            TrackPlayer.seekTo(ratio * progress.duration);
+        if (progress.duration > 0) {
+            const sameAsLast = lastSeekRatio.current !== null && Math.abs(ratio - lastSeekRatio.current) < 0.0015;
+            const recentSeek = now - lastSeekAt.current < 110;
+            // While actively dragging, keep the original ~110ms debounce so a
+            // fast swipe doesn't flood seekTo(). On commit (release/tap),
+            // only skip if this would be a near-instant duplicate of a seek
+            // already issued to the same spot — which is exactly what a
+            // plain tap does (BEGAN then END fire back-to-back at the same
+            // position). A real drag-then-release still always seeks here,
+            // same as before.
+            const skip = commit ? (sameAsLast && recentSeek) : recentSeek;
+            if (!skip) {
+                lastSeekAt.current = now;
+                lastSeekRatio.current = ratio;
+                TrackPlayer.seekTo(ratio * progress.duration);
+            }
         }
         if (commit) {
             // Hand off directly to the real-time animation from this exact
@@ -210,6 +234,24 @@ export default function PlayerScreen() {
     const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const skipIconColor = '#ccc'; // fixed regardless of accent, including white
 
+    // Shuffle/loop previously swapped color INSTANTLY on state change while
+    // TouchableOpacity's own built-in press-dim (opacity 1 -> 0.2 -> 1) was
+    // still running — the color jump landing mid-dim is what read as "goes
+    // dark, goes darker, goes back up" (three visible stages) instead of one
+    // smooth motion like the skip buttons (whose color never changes, only
+    // opacity does). Animating the color itself in step with the same kind
+    // of timing lets both properties move together as one transition.
+    const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
+    const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
+    useEffect(() => {
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: 200, useNativeDriver: false }).start();
+    }, [shuffleOn]);
+    useEffect(() => {
+        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: 200, useNativeDriver: false }).start();
+    }, [singleLoop]);
+    const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
+    const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
+
     return (
         <View style={[s.container, { paddingTop: insets.top + 6, backgroundColor: base.bg }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
@@ -280,7 +322,7 @@ export default function PlayerScreen() {
 
                 <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
                     <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT}>
-                        <ShuffleIcon size={22} color={shuffleOn ? theme.accent : '#333'} />
+                        <ShuffleIcon size={22} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipPrevIcon size={28} color={skipIconColor} />
@@ -295,7 +337,7 @@ export default function PlayerScreen() {
                         <SkipNextIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT}>
-                        <Text style={[s.sideIcon, { color: singleLoop ? theme.accent : '#333' }]}>↺¹</Text>
+                        <Animated.Text style={[s.sideIcon, { color: loopColor }]}>↺¹</Animated.Text>
                     </TouchableOpacity>
                 </View>
             </View>

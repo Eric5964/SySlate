@@ -14,6 +14,7 @@ import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
+import { EDGE_SWIPE_WIDTH } from '../utils/layout';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -144,6 +145,7 @@ export default function PlaylistDetailScreen() {
                             <TouchableOpacity
                                 style={[s.cover, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(180) }]}
                                 onLongPress={changeCover}
+                                delayLongPress={200}
                                 activeOpacity={0.85}
                             >
                                 {cover
@@ -192,7 +194,7 @@ export default function PlaylistDetailScreen() {
                     </View>
                 }
                 renderItem={({ item }) => (
-                    <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
+                    <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
                         <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
                             <View style={{ flex: 1 }}>
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>

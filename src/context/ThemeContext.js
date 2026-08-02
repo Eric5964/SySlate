@@ -25,7 +25,10 @@ export const THEMES = {
 // still the lightest/most colorful of the four, just not literally gray.
 export const BASE_COLORS = {
     galaxy: { name: 'Galaxy', bg: '#1a1730', surface: '#231f42', border: '#332d55' },
-    gray: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
+    // Was flat gray (#1c1c1e) — the lightest/flattest of the four in
+    // practice, even though "Galaxy" already covers the deep-purple end.
+    // Replaced with a gentler, lighter galaxy tone instead of plain gray.
+    gray: { name: 'Nebula', bg: '#242038', surface: '#2d2850', border: '#413a6b' },
     dark_gray: { name: 'Dark Gray', bg: '#0a0a0a', surface: '#0f0f0f', border: '#1a1a1a' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
 };

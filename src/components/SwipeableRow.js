@@ -13,15 +13,21 @@ export default function SwipeableRow({
     rightColor = '#7c3aed',
     leftColor = '#dc2626',
     disabled = false,
+    // Excludes a strip at the left edge from this row's own pan gesture, so
+    // a screen-level edge-swipe-back gesture (e.g. leaving a playlist) can
+    // claim that zone instead of this row eating it as a queue-swipe. 0 by
+    // default; PlaylistDetailScreen passes the same width as its navigator's
+    // gestureResponseDistance.
+    edgeExclude = 0,
 }) {
     const translateX = useRef(new Animated.Value(0)).current;
-    // Post-commit color flash — one Animated.Value per side rather than
-    // trying to interpolate a single value between two arbitrary colors.
-    // Both are opacity-only (native-driver-safe) overlays on fixed-color
-    // layers, kept in the SAME transformed Animated.View as children so
-    // they travel with the row instead of the fixed underlay track.
-    const rightFlash = useRef(new Animated.Value(0)).current;
-    const leftFlash = useRef(new Animated.Value(0)).current;
+    // Post-commit feedback — a soft accent-colored GLOW (border + shadow),
+    // not a filled color flash. The flash-fill version read as harsh/didn't
+    // land well, so this only ever animates `opacity` on a bordered overlay
+    // (native-driver-safe, same pattern as the underlays below) rather than
+    // introducing any new animated color/shadow properties.
+    const rightGlow = useRef(new Animated.Value(0)).current;
+    const leftGlow = useRef(new Animated.Value(0)).current;
     const onSwipeRightRef = useRef(onSwipeRight);
     const onSwipeLeftRef = useRef(onSwipeLeft);
     useEffect(() => { onSwipeRightRef.current = onSwipeRight; onSwipeLeftRef.current = onSwipeLeft; });
@@ -33,35 +39,36 @@ export default function SwipeableRow({
         )
     ).current;
 
-    const flashPulse = (val) => {
-        val.setValue(1);
-        Animated.timing(val, { toValue: 0, duration: 320, useNativeDriver: true }).start();
+    const glowPulse = (val) => {
+        val.setValue(0);
+        Animated.sequence([
+            Animated.timing(val, { toValue: 1, duration: 90, useNativeDriver: true }),
+            Animated.timing(val, { toValue: 0, duration: 380, useNativeDriver: true }),
+        ]).start();
     };
 
     const onHandlerStateChange = useRef((e) => {
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const dx = e.nativeEvent.translationX;
         if (dx > COMMIT_DISTANCE && onSwipeRightRef.current) {
-            // Fire the action immediately — no lag on the actual "add" — but
-            // animate the row back into place with a quick spring instead of
-            // teleporting it via setValue(0). The instant jump was what read
-            // as "jumpy"; this keeps the same snappy response time while
-            // still looking like motion rather than a cut.
+            // Fire immediately, animate the row back with a quick spring
+            // instead of teleporting it via setValue(0).
             onSwipeRightRef.current();
-            flashPulse(rightFlash);
+            glowPulse(rightGlow);
             Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 10, tension: 120 }).start();
             return;
         }
         if (dx < -COMMIT_DISTANCE && onSwipeLeftRef.current) {
-            // Fires after the slide-off finishes (not before), since the row
-            // actually gets removed from the underlying list — firing early
-            // would unmount it mid-animation. Duration shortened so it feels
-            // as quick as the add-side spring above, just necessarily
-            // sequenced (animate then fire) rather than parallel.
-            flashPulse(leftFlash);
-            Animated.timing(translateX, { toValue: -400, duration: 130, useNativeDriver: true }).start(() => {
-                onSwipeLeftRef.current();
-            });
+            // Fires immediately now too (was waiting for the slide-off
+            // animation to finish first, which made it feel slower to
+            // respond than the add side). The actual list-removal round
+            // trip through TrackPlayer + refresh() already takes longer
+            // than this 130ms slide, so firing in parallel doesn't cut the
+            // animation short in practice — the row unmounts only once the
+            // real data update lands.
+            glowPulse(leftGlow);
+            onSwipeLeftRef.current();
+            Animated.timing(translateX, { toValue: -400, duration: 130, useNativeDriver: true }).start();
             return;
         }
         Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
@@ -87,8 +94,8 @@ export default function SwipeableRow({
     // side's color for a moment when reversing direction mid-swipe.
     const rightOpacity = translateX.interpolate({ inputRange: [0, 12], outputRange: [0, 1], extrapolate: 'clamp' });
     const leftOpacity = translateX.interpolate({ inputRange: [-12, 0], outputRange: [1, 0], extrapolate: 'clamp' });
-    const rightFlashOpacity = rightFlash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.32] });
-    const leftFlashOpacity = leftFlash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.32] });
+    const rightGlowOpacity = rightGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
+    const leftGlowOpacity = leftGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
     return (
         <View style={styles.wrap}>
@@ -110,14 +117,15 @@ export default function SwipeableRow({
                 onHandlerStateChange={onHandlerStateChange}
                 activeOffsetX={[-10, 10]}
                 failOffsetY={[-15, 15]}
+                hitSlop={edgeExclude ? { left: -edgeExclude } : undefined}
             >
                 <Animated.View style={{ transform: [{ translateX: displayX }] }}>
                     {children}
                     {onSwipeRight && (
-                        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { backgroundColor: rightColor, opacity: rightFlashOpacity, borderRadius: 12 }]} />
+                        <Animated.View pointerEvents="none" style={[styles.glow, { borderColor: rightColor, shadowColor: rightColor, opacity: rightGlowOpacity }]} />
                     )}
                     {onSwipeLeft && (
-                        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFillObject, { backgroundColor: leftColor, opacity: leftFlashOpacity, borderRadius: 12 }]} />
+                        <Animated.View pointerEvents="none" style={[styles.glow, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
                     )}
                 </Animated.View>
             </PanGestureHandler>
@@ -135,4 +143,14 @@ const styles = StyleSheet.create({
     underlayLeft: { justifyContent: 'flex-start' },
     underlayRight: { justifyContent: 'flex-end' },
     underlayText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+    // Static border + shadow — only `opacity` is ever animated (native-driver
+    // safe), same principle as the underlay opacity interpolations above.
+    glow: {
+        ...StyleSheet.absoluteFillObject,
+        borderRadius: 14,
+        borderWidth: 1.5,
+        shadowOffset: { width: 0, height: 0 },
+        shadowRadius: 10,
+        shadowOpacity: 0.9,
+    },
 });
