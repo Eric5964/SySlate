@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 10 accents, spread evenly around the color wheel (plus 2 neutrals) so none
-// feel like a near-duplicate of another (previous set had blue/indigo,
-// green/lime, and orange/amber sitting right on top of each other).
+// 10 accents. Pink replaces the old White (which read as broken/invisible in
+// several places against the app's dark chrome and iOS's own white UI
+// elements). Ordered cool-to-warm: pink+purple+blue+teal+green on top,
+// yellow+orange+red+rose+mono (warm + neutral) on the bottom.
 export const THEMES = {
+    pink: { name: 'Pink', accent: '#ec4899', accentDim: '#3d1a30', onAccent: '#fff' },
     purple: { name: 'Purple', accent: '#7c3aed', accentDim: '#2a1f3d', onAccent: '#fff' },
     blue: { name: 'Blue', accent: '#2563eb', accentDim: '#1e2a4d', onAccent: '#fff' },
     teal: { name: 'Teal', accent: '#0891b2', accentDim: '#0a2a33', onAccent: '#fff' },
@@ -14,14 +16,15 @@ export const THEMES = {
     red: { name: 'Red', accent: '#dc2626', accentDim: '#3d1a1a', onAccent: '#fff' },
     rose: { name: 'Rose', accent: '#db2777', accentDim: '#3d1428', onAccent: '#fff' },
     mono: { name: 'Mono', accent: '#9ca3af', accentDim: '#26282c', onAccent: '#000' },
-    white: { name: 'White', accent: '#f2f2f2', accentDim: '#2a2a2a', onAccent: '#000' },
 };
 
 // The app's neutral/background palette, independent of accent color.
 // "dark_gray" matches the app's original hardcoded look, so existing
 // installs default to looking exactly the same as before this existed.
+// The old "Light Gray" option is now a deep galaxy purple/blue instead —
+// still the lightest/most colorful of the four, just not literally gray.
 export const BASE_COLORS = {
-    light_gray: { name: 'Light Gray', bg: '#2c2c2e', surface: '#363638', border: '#48484a' },
+    galaxy: { name: 'Galaxy', bg: '#1a1730', surface: '#231f42', border: '#332d55' },
     gray: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
     dark_gray: { name: 'Dark Gray', bg: '#0a0a0a', surface: '#0f0f0f', border: '#1a1a1a' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
@@ -39,11 +42,16 @@ export function ThemeProvider({ children }) {
     useEffect(() => {
         AsyncStorage.getItem('theme_id').then(id => {
             if (id && THEMES[id]) { setThemeId(id); return; }
-            const migrate = { indigo: 'blue', lime: 'green', amber: 'orange', pink: 'rose' };
+            // Migrate old ids that no longer exist. "white" specifically
+            // becomes the new "pink" rather than falling back to rose,
+            // since pink is now its own distinct color again.
+            const migrate = { indigo: 'blue', lime: 'green', amber: 'orange', white: 'pink' };
             if (id && migrate[id]) setThemeId(migrate[id]);
         });
         AsyncStorage.getItem('base_color_id').then(id => {
-            if (id && BASE_COLORS[id]) setBaseId(id);
+            if (id && BASE_COLORS[id]) { setBaseId(id); return; }
+            const migrate = { light_gray: 'galaxy' };
+            if (id && migrate[id]) setBaseId(migrate[id]);
         });
     }, []);
 

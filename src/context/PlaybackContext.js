@@ -4,7 +4,8 @@ import { buildQueue, shuffleArray } from '../utils/shuffle';
 import { playWithRamp, isTransitionLocked, forceReleaseFade } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
-    getShuffleMode, setShuffleMode, getEQPreset, setEQPreset,
+    getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
+    getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
 } from '../utils/storage';
 
@@ -29,14 +30,12 @@ export function PlaybackProvider({ children }) {
     const priorityRef = useRef([]);
     useEffect(() => { priorityRef.current = priorityQueue; }, [priorityQueue]);
 
-    const lastActiveModeRef = useRef('full_cycle');
-    useEffect(() => { if (shuffleMode !== 'off') lastActiveModeRef.current = shuffleMode; }, [shuffleMode]);
-
     useEffect(() => {
-        getShuffleMode().then(mode => {
+        (async () => {
+            const [mode, on] = await Promise.all([getShuffleMode(), getShuffleOnStorage()]);
             setShuffleModeState(mode);
-            setShuffleOn(mode !== 'off');
-        });
+            setShuffleOn(on);
+        })();
     }, []);
 
     const saveSessionRef = useRef(() => {});
@@ -161,9 +160,9 @@ export function PlaybackProvider({ children }) {
     const loadPlaylist = useCallback(async (playlist, forceIndex = null) => {
         if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
+        const isOn = await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         const session = await getSession(playlist.path);
-        const isOn = mode !== 'off';
         let queue = session?.queue ?? (isOn ? buildQueue(playlist.songs, mode) : [...playlist.songs]);
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
@@ -211,9 +210,8 @@ export function PlaybackProvider({ children }) {
 
     const playPlaylistShuffled = useCallback(async (playlist) => {
         if (isTransitionLocked()) return;
-        const mode = await getShuffleMode();
+        const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
-        const useMode = mode === 'off' ? (lastActiveModeRef.current === 'off' ? 'full_cycle' : lastActiveModeRef.current) : mode;
         const queue = buildQueue(playlist.songs, useMode);
         await TrackPlayer.reset();
         await withTimeout(TrackPlayer.add(queue), 6000);
@@ -232,13 +230,14 @@ export function PlaybackProvider({ children }) {
         priorityRef.current = [];
         await setSession(playlist.path, { queue, index: 0 });
         await setShuffleMode(useMode);
+        await setShuffleOnStorage(true);
     }, []);
 
     const playSongFromPlaylist = useCallback(async (playlist, songId) => {
         if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
+        const isOn = await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
-        const isOn = mode !== 'off';
         const song = playlist.songs.find(s => s.id === songId);
         if (!song) { console.warn('Song not found:', songId); return; }
 
@@ -297,6 +296,7 @@ export function PlaybackProvider({ children }) {
             const queue = last?.playlist?.queue;
             if (!queue?.length || last.index === undefined) return;
             const mode = await getShuffleMode();
+            const on = await getShuffleOnStorage();
             await TrackPlayer.reset();
             await withTimeout(TrackPlayer.add(queue), 6000);
             if (last.index > 0) await withTimeout(TrackPlayer.skip(last.index), 4000);
@@ -313,7 +313,7 @@ export function PlaybackProvider({ children }) {
             setCurrentPlaylist({ ...last.playlist, queue });
             setCurrentTrack(queue[last.index] ?? null);
             setShuffleModeState(mode);
-            setShuffleOn(mode !== 'off');
+            setShuffleOn(on);
             setPriorityQueue([]);
             priorityRef.current = [];
         } catch (e) { console.error('restoreSession:', e); }
@@ -353,21 +353,28 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('reshuffleUpcoming:', e); }
     }, []);
 
+    // Only flips on/off. The algorithm (shuffleMode) is left exactly as it
+    // was — it's persisted independently now, so there's no more "which mode
+    // do we restore to" question when re-enabling.
     const toggleShuffle = useCallback(async () => {
         const newOn = !shuffleOn;
         setShuffleOn(newOn);
-        const mode = newOn ? (lastActiveModeRef.current === 'off' ? 'full_cycle' : lastActiveModeRef.current) : 'off';
-        setShuffleModeState(mode);
-        await setShuffleMode(mode);
-        await reshuffleUpcoming(mode);
-    }, [shuffleOn, reshuffleUpcoming]);
+        await setShuffleOnStorage(newOn);
+        await reshuffleUpcoming(newOn ? shuffleMode : 'off');
+    }, [shuffleOn, shuffleMode, reshuffleUpcoming]);
 
+    // Only changes the algorithm preference. Does NOT touch shuffleOn — this
+    // used to force shuffle on any time a mode was picked in Settings, which
+    // wasn't the ask ("allow the shuffle MODE to be changed without the
+    // shuffle needing to be on. don't make it enable shuffle either"). If
+    // shuffle happens to already be on, the upcoming queue is rebuilt with
+    // the new mode; if it's off, this just remembers the preference for next
+    // time shuffle gets turned on.
     const changeShuffleMode = useCallback(async (mode) => {
         setShuffleModeState(mode);
-        setShuffleOn(mode !== 'off');
         await setShuffleMode(mode);
-        await reshuffleUpcoming(mode);
-    }, [reshuffleUpcoming]);
+        if (shuffleOn) await reshuffleUpcoming(mode);
+    }, [shuffleOn, reshuffleUpcoming]);
 
     const toggleSingleLoop = useCallback(async () => {
         const next = !singleLoop;

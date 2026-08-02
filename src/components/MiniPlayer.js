@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State, useProgress } from 'react-native-track-player';
 import { useNavigation } from '@react-navigation/native';
@@ -40,14 +40,33 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
     const animPct = useRef(new Animated.Value(pct)).current;
-    const lastTickAt = useRef(Date.now());
+    const animRunRef = useRef(null);
+    const animPctValueRef = useRef(pct);
     useEffect(() => {
-        const now = Date.now();
-        const elapsed = now - lastTickAt.current;
-        lastTickAt.current = now;
-        const dur = Math.min(1000, Math.max(150, elapsed || 500));
-        Animated.timing(animPct, { toValue: pct, duration: dur, useNativeDriver: false }).start();
-    }, [pct]);
+        const id = animPct.addListener(({ value }) => { animPctValueRef.current = value; });
+        return () => animPct.removeListener(id);
+    }, []);
+
+    useEffect(() => {
+        const drift = Math.abs(animPctValueRef.current - pct);
+        if (!animRunRef.current || drift > 0.02) {
+            animRunRef.current?.stop();
+            animPct.setValue(pct);
+            animPctValueRef.current = pct;
+            if (isPlaying && progress.duration > 0 && pct < 1) {
+                const remainingMs = Math.max(0, (1 - pct) * progress.duration * 1000);
+                const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
+                animRunRef.current = anim;
+                anim.start();
+            } else {
+                animRunRef.current = null;
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
+
+    useEffect(() => () => animRunRef.current?.stop(), []);
+
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
     if (!currentTrack) return null;

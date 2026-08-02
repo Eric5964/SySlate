@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, TextInput,
     Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
+import { useScrollToTop } from '@react-navigation/native';
 import BottomSheet from '../components/BottomSheet';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
@@ -35,6 +36,8 @@ export default function SettingsScreen() {
     const { shuffleMode, changeShuffleMode } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base } = useTheme();
+    const scrollRef = useRef(null);
+    useScrollToTop(scrollRef);
 
     const [cf, setCf] = useState(3.0);
     const [skipCf, setSkipCf] = useState(0.5);
@@ -108,7 +111,7 @@ export default function SettingsScreen() {
                 width: SWATCH_SIZE, height: SWATCH_SIZE, borderRadius: squircle(SWATCH_SIZE),
                 backgroundColor: t.accent,
             }, themeId === id && s.swatchActive,
-            id === 'white' && { borderWidth: 1, borderColor: '#444' }]}>
+            ]}>
             {themeId === id && <Text style={{ color: t.onAccent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
         </TouchableOpacity>
     );
@@ -129,7 +132,7 @@ export default function SettingsScreen() {
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
             {!loaded ? null : (
                 <>
-            <ScrollView contentContainerStyle={{ paddingBottom: 160 }}>
+            <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 160 }}>
                 {/* 1. EQ — built-in presets as a condensed 2-wide grid, custom ones as a list below */}
                 <Section title="EQ Presets">
                     <View style={s.eqGrid}>

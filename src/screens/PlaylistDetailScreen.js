@@ -7,7 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount } from '../utils/storage';
+import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
@@ -44,6 +44,7 @@ export default function PlaylistDetailScreen() {
         getPlayCounts(playlist.songs.map(s => s.id)).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
         getShowPlayCount().then(setShowPlayCount);
+        getPlaylistSort(playlist.path).then(setSortId);
     }, []);
 
     const sorted = useMemo(() => {
@@ -110,14 +111,21 @@ export default function PlaylistDetailScreen() {
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
                 </TouchableOpacity>
-                <TextInput
-                    style={[s.searchBar, { backgroundColor: base.surface }]}
-                    value={search}
-                    onChangeText={setSearch}
-                    placeholder="Search this playlist"
-                    placeholderTextColor="#444"
-                    textAlign="center"
-                />
+                <View style={{ flex: 1, marginHorizontal: 4, justifyContent: 'center' }}>
+                    <TextInput
+                        style={[s.searchBar, { backgroundColor: base.surface, marginHorizontal: 0 }]}
+                        value={search}
+                        onChangeText={setSearch}
+                        placeholder="Search this playlist"
+                        placeholderTextColor="#444"
+                        textAlign="center"
+                    />
+                    {search.length > 0 && (
+                        <TouchableOpacity style={s.clearBtn} onPress={() => setSearch('')} hitSlop={HIT}>
+                            <Text style={s.clearBtnText}>✕</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
                 <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
                 </TouchableOpacity>
@@ -172,7 +180,7 @@ export default function PlaylistDetailScreen() {
                                     <TouchableOpacity
                                         key={opt.id}
                                         style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                        onPress={() => { setSortId(opt.id); setShowSort(false); }}
+                                        onPress={() => { setSortId(opt.id); setPlaylistSort(playlist.path, opt.id); setShowSort(false); }}
                                     >
                                         <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
                                             {opt.label}
@@ -212,7 +220,9 @@ const s = StyleSheet.create({
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     backIcon: { fontSize: 24 },
     eqTag: { fontSize: 14, fontWeight: '700' },
-    searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, color: '#e5e5e5', fontSize: 14 },
+    searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, paddingRight: 28, color: '#e5e5e5', fontSize: 14 },
+    clearBtn: { position: 'absolute', right: 6, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
+    clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
     coverWrap: { alignItems: 'center', marginTop: 8, marginBottom: 18 },
     cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },

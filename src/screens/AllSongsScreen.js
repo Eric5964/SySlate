@@ -1,13 +1,16 @@
-import React, { useContext, useState, useMemo } from 'react';
+import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
     TextInput, StyleSheet, StatusBar,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useScrollToTop } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import SwipeableRow from '../components/SwipeableRow';
+import EQModal from '../components/EQModal';
+import QueueModal from '../components/QueueModal';
+import { MenuBarsIcon } from '../components/Icons';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
@@ -15,7 +18,21 @@ export default function AllSongsScreen() {
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
-    const [showSearch, setShowSearch] = useState(false);
+    const [showEQ, setShowEQ] = useState(false);
+    const [showQueue, setShowQueue] = useState(false);
+
+    const listRef = useRef(null);
+    useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
+
+    // Tapping the All Songs tab again while already on it also clears the
+    // search, same idea as tapping Playlists again backing out of a
+    // playlist — "return to the top-level state of this tab."
+    useEffect(() => {
+        const sub = navigation.addListener('tabPress', () => {
+            if (navigation.isFocused()) setSearch('');
+        });
+        return sub;
+    }, [navigation]);
 
     const filtered = useMemo(() => {
         if (!search.trim()) return allSongs;
@@ -26,31 +43,41 @@ export default function AllSongsScreen() {
     }, [allSongs, search]);
 
     const play = async (song) => {
-        // Deduplicated allSongs already sorted by title
         const playlist = { name: 'All Songs', path: '__all__', songs: allSongs };
         await playSongFromPlaylist(playlist, song.id);
-        // No auto-navigate to the full player — the mini player appearing is
-        // enough; tap it if you want the full screen.
     };
 
     return (
         <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
-            <View style={s.header}>
+
+            {/* Same top-bar layout as the playlist screen: title, then a row
+                with centered search (+ clear button), EQ tag, queue icon. */}
+            <View style={s.topBar}>
                 <Text style={s.title}>All Songs</Text>
-                <TouchableOpacity onPress={() => { setShowSearch(v => !v); setSearch(''); }} style={s.btn} hitSlop={HIT}>
-                    <Text style={[s.btnText, { color: theme.accent }]}>⌕</Text>
-                </TouchableOpacity>
+                <View style={s.searchRow}>
+                    <View style={{ flex: 1, justifyContent: 'center' }}>
+                        <TextInput
+                            style={[s.searchBar, { backgroundColor: base.surface }]}
+                            value={search} onChangeText={setSearch}
+                            placeholder="Search songs, artists..."
+                            placeholderTextColor="#444"
+                        />
+                        {search.length > 0 && (
+                            <TouchableOpacity style={s.clearBtn} onPress={() => setSearch('')} hitSlop={HIT}>
+                                <Text style={s.clearBtnText}>✕</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                        <MenuBarsIcon size={20} color={theme.accent} />
+                    </TouchableOpacity>
+                </View>
             </View>
-            {showSearch && (
-                <TextInput
-                    style={[s.search, { backgroundColor: base.surface, borderColor: theme.accentDim }]}
-                    value={search} onChangeText={setSearch}
-                    placeholder="Search songs, artists..."
-                    placeholderTextColor="#444"
-                    autoFocus
-                />
-            )}
+
             {allSongs.length === 0 ? (
                 <View style={s.empty}>
                     <Text style={s.emptyTitle}>No songs found</Text>
@@ -58,6 +85,7 @@ export default function AllSongsScreen() {
                 </View>
             ) : (
                 <FlatList
+                    ref={listRef}
                     data={filtered}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingBottom: 150 }}
@@ -71,6 +99,9 @@ export default function AllSongsScreen() {
                     )}
                 />
             )}
+
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} />
+            <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>
     );
 }
@@ -79,11 +110,14 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 60, paddingHorizontal: 24, paddingBottom: 16 },
-    title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
-    btn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
-    btnText: { fontSize: 24 },
-    search: { marginHorizontal: 20, marginBottom: 12, backgroundColor: '#141414', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: '#e5e5e5', fontSize: 15, borderWidth: 1 },
+    topBar: { paddingTop: 56, paddingHorizontal: 20, paddingBottom: 10 },
+    title: { color: '#e5e5e5', fontSize: 22, fontWeight: '700', marginBottom: 10 },
+    searchRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    searchBar: { borderRadius: 10, paddingVertical: 9, paddingHorizontal: 14, paddingRight: 32, color: '#e5e5e5', fontSize: 14 },
+    clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
+    clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
+    topBtn: { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
+    eqTag: { fontSize: 14, fontWeight: '700' },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },

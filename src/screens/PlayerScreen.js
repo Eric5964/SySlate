@@ -160,12 +160,13 @@ export default function PlayerScreen() {
     }).current;
 
     const onProgressStateChange = useRef((e) => {
-        if (e.nativeEvent.state === GHState.BEGAN) {
+        const { state, absoluteX } = e.nativeEvent;
+        if (state === GHState.BEGAN) {
             measureProgress();
-            onScrubRef.current(e.nativeEvent.absoluteX, false);
+            onScrubRef.current(absoluteX, false);
         }
-        if (e.nativeEvent.oldState === GHState.ACTIVE) {
-            onScrubRef.current(e.nativeEvent.absoluteX, true);
+        if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
+            onScrubRef.current(absoluteX, true);
         }
     }).current;
 

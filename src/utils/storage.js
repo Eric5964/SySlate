@@ -5,8 +5,30 @@ const safe = async (fn, fallback) => { try { return await fn(); } catch { return
 
 export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:${path}` : 'eq:global').then(v => v ?? 'flat'), 'flat');
 export const setEQPreset = (id, path) => safe(() => AsyncStorage.setItem(path ? `eq:${path}` : 'eq:global', id), null);
-export const getShuffleMode = () => safe(() => AsyncStorage.getItem('shuffle_mode').then(v => v ?? 'full_cycle'), 'full_cycle');
+// `shuffle_mode` now holds ONLY the algorithm preference (full_cycle /
+// true_random / smart) and is never written as 'off' going forward — that
+// used to double as the on/off flag too, which is why picking a mode in
+// Settings silently turned shuffle on. Old installs may still have 'off'
+// sitting in this key from before; getShuffleMode() below treats that the
+// same as "no preference yet" and falls back to the default, since the
+// on/off state itself now lives separately in `shuffle_on`.
+export const getShuffleMode = () => safe(async () => {
+    const v = await AsyncStorage.getItem('shuffle_mode');
+    return (v && v !== 'off') ? v : 'full_cycle';
+}, 'full_cycle');
 export const setShuffleMode = (m) => safe(() => AsyncStorage.setItem('shuffle_mode', m), null);
+
+// Whether shuffle is currently enabled, independent of which algorithm is
+// selected. Falls back to reading the legacy combined `shuffle_mode` value
+// on first read after updating (old 'off' -> false, any real mode -> true,
+// matching what those installs actually had turned on before).
+export const getShuffleOn = () => safe(async () => {
+    const v = await AsyncStorage.getItem('shuffle_on');
+    if (v !== null) return v === 'true';
+    const legacy = await AsyncStorage.getItem('shuffle_mode');
+    return legacy !== 'off';
+}, true);
+export const setShuffleOn = (v) => safe(() => AsyncStorage.setItem('shuffle_on', String(v)), null);
 export const getCrossfade = () => safe(() => AsyncStorage.getItem('crossfade').then(v => v !== null ? parseFloat(v) : 3.0), 3.0);
 export const setCrossfade = (s) => safe(() => AsyncStorage.setItem('crossfade', String(s)), null);
 export const getSkipCrossfade = () => safe(() => AsyncStorage.getItem('skip_crossfade').then(v => v !== null ? parseFloat(v) : 0.5), 0.5);
@@ -43,6 +65,23 @@ export const setPlaylistCover = async (path, uri) => {
 
 export const getShowPlayCount = () => safe(() => AsyncStorage.getItem('show_play_count').then(v => v !== 'false'), true);
 export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_play_count', String(v)), null);
+
+// Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
+// separately, persisted across app restarts.
+export const getPlaylistSort = (playlistPath) => safe(async () => {
+    const all = await AsyncStorage.getItem('playlist_sort_orders');
+    const map = all ? JSON.parse(all) : {};
+    return map[playlistPath] ?? 'alpha';
+}, 'alpha');
+
+export const setPlaylistSort = async (playlistPath, sortId) => {
+    try {
+        const all = await AsyncStorage.getItem('playlist_sort_orders');
+        const map = all ? JSON.parse(all) : {};
+        map[playlistPath] = sortId;
+        await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
+    } catch { }
+};
 
 // expo-image-picker's result URI lives in a CACHE directory, which iOS can
 // clear at any time and which was also the likely cause of covers flashing
@@ -81,7 +120,7 @@ export const getPlayCounts = async (songIds) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'shuffle_mode', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'playlist_sort_orders'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
