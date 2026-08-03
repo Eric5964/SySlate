@@ -7,7 +7,7 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
-import { PanGestureHandler, State as GHState } from 'react-native-gesture-handler';
+import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
@@ -70,7 +70,7 @@ export default function PlayerScreen() {
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
-        getPlayCounts([currentTrack.id]).then(counts => setPlayCount(counts[currentTrack.id] ?? 0));
+        getPlayCounts([currentTrack]).then(counts => setPlayCount(counts[currentTrack.id] ?? 0));
     }, [currentTrack?.id]);
 
     useEffect(() => {
@@ -88,6 +88,14 @@ export default function PlayerScreen() {
     const lastSeekAt = useRef(0);
     const lastSeekRatio = useRef(null);
     const clearDragTimer = useRef(null);
+    // Backstop: if no terminal gesture state ever arrives after a touch
+    // starts (this has been the recurring symptom — the bar freezes and
+    // STAYS frozen, even across later songs, only unstuck by a real drag),
+    // force a commit anyway after 500ms so a touch can never leave dragRatio
+    // stuck forever. This doesn't depend on correctly diagnosing which
+    // gesture-handler state transition is or isn't firing.
+    const stuckSafetyTimer = useRef(null);
+    const lastTouchX = useRef(0);
 
     // One continuous animation running at the song's actual real-time rate,
     // instead of a new mini-animation restarted on every progress hook tick.
@@ -129,6 +137,7 @@ export default function PlayerScreen() {
     ));
 
     const onScrub = (absoluteX, commit) => {
+        lastTouchX.current = absoluteX;
         const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
         stopAnim();
@@ -153,6 +162,7 @@ export default function PlayerScreen() {
             }
         }
         if (commit) {
+            clearTimeout(stuckSafetyTimer.current);
             // Hand off directly to the real-time animation from this exact
             // ratio right now — waiting for the drag-clear timer and the
             // next progress hook tick (which can be stale for up to another
@@ -188,9 +198,31 @@ export default function PlayerScreen() {
         if (state === GHState.BEGAN) {
             measureProgress();
             onScrubRef.current(absoluteX, false);
+            clearTimeout(stuckSafetyTimer.current);
+            stuckSafetyTimer.current = setTimeout(() => {
+                onScrubRef.current(lastTouchX.current, true);
+            }, 500);
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
             onScrubRef.current(absoluteX, true);
+        }
+    }).current;
+
+    // A plain stationary tap has been the one case that's stayed broken
+    // across several attempts at handling it through PanGestureHandler's own
+    // BEGAN/END states — this hands taps to a purpose-built TapGestureHandler
+    // running SIMULTANEOUSLY with the pan handler instead, which is the
+    // standard gesture-handler pattern for "tap or drag on the same view."
+    // It fires reliably on ACTIVE for a genuine tap regardless of whatever
+    // the pan handler's own state transitions do for a zero-movement touch,
+    // and simply fails (no-op here) for anything that turns into a real
+    // drag, since the pan handler already covers that case above.
+    const panRef = useRef(null);
+    const tapRef = useRef(null);
+    const onTapStateChange = useRef((e) => {
+        if (e.nativeEvent.state === GHState.ACTIVE) {
+            measureProgress();
+            onScrubRef.current(e.nativeEvent.absoluteX, true);
         }
     }).current;
 
@@ -219,6 +251,16 @@ export default function PlayerScreen() {
     // — no restart, no stutter.
     useEffect(() => {
         if (dragRatio !== null) return; // scrubbing owns the value right now
+        // Same fix as MiniPlayer: always stop on pause regardless of drift,
+        // since a drift-gated check skips the stop() call whenever drift
+        // happens to be near-zero at the moment of pausing — which is the
+        // normal case, since pausing is immediate.
+        if (!isPlaying) {
+            stopAnim();
+            animPct.setValue(pct);
+            animPctValueRef.current = pct;
+            return;
+        }
         const drift = Math.abs(animPctValueRef.current - pct);
         if (!animRunRef.current || drift > 0.02) {
             startRealTimeAnim(pct);
@@ -227,7 +269,7 @@ export default function PlayerScreen() {
     }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
 
     useEffect(() => {
-        return () => stopAnim();
+        return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); };
     }, []);
 
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
@@ -296,23 +338,27 @@ export default function PlayerScreen() {
                     </View>
 
                     <View style={s.progressSection}>
-                        <PanGestureHandler
-                            onGestureEvent={onProgressGestureEvent}
-                            onHandlerStateChange={onProgressStateChange}
-                            activeOffsetX={[-6, 6]}
-                            failOffsetY={[-14, 14]}
-                        >
-                            <View
-                                ref={progressRef}
-                                style={s.progressTouch}
-                                onLayout={measureProgress}
+                        <TapGestureHandler ref={tapRef} onHandlerStateChange={onTapStateChange} simultaneousHandlers={panRef}>
+                            <PanGestureHandler
+                                ref={panRef}
+                                onGestureEvent={onProgressGestureEvent}
+                                onHandlerStateChange={onProgressStateChange}
+                                activeOffsetX={[-6, 6]}
+                                failOffsetY={[-14, 14]}
+                                simultaneousHandlers={tapRef}
                             >
-                                <View style={s.progressTrack}>
-                                    <Animated.View style={[s.progressFill, { width: animWidth, backgroundColor: theme.accent }]} />
+                                <View
+                                    ref={progressRef}
+                                    style={s.progressTouch}
+                                    onLayout={measureProgress}
+                                >
+                                    <View style={s.progressTrack}>
+                                        <Animated.View style={[s.progressFill, { width: animWidth, backgroundColor: theme.accent }]} />
+                                    </View>
+                                    <Animated.View style={[s.progressThumb, { left: animLeft, marginLeft: -10, backgroundColor: theme.accent }]} />
                                 </View>
-                                <Animated.View style={[s.progressThumb, { left: animLeft, marginLeft: -10, backgroundColor: theme.accent }]} />
-                            </View>
-                        </PanGestureHandler>
+                            </PanGestureHandler>
+                        </TapGestureHandler>
                         <View style={s.times}>
                             <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? 0 : progress.position))}</Text>
                             <Text style={s.time}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
@@ -321,7 +367,7 @@ export default function PlayerScreen() {
                 </View>
 
                 <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
-                    <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT}>
+                    <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <ShuffleIcon size={22} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
@@ -336,7 +382,7 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipNextIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT}>
+                    <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <Animated.Text style={[s.sideIcon, { color: loopColor }]}>↺¹</Animated.Text>
                     </TouchableOpacity>
                 </View>

@@ -11,6 +11,7 @@ import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
+import { getPlayCounts, getShowPlayCount } from '../utils/storage';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
@@ -20,6 +21,10 @@ export default function AllSongsScreen() {
     const [search, setSearch] = useState('');
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
+    const [playCounts, setPlayCounts] = useState({});
+    const [showPlayCount, setShowPlayCountState] = useState(true);
+
+    useEffect(() => { getShowPlayCount().then(setShowPlayCountState); }, []);
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -34,16 +39,36 @@ export default function AllSongsScreen() {
         return sub;
     }, [navigation]);
 
+    // "Combine songs... with the same name & artist" — same song sitting in
+    // multiple playlists showed up as multiple rows here. First occurrence
+    // wins (order doesn't matter per Eric). Deduping HERE (not just visually)
+    // means the queue built for playback also only ever has one entry per
+    // song, so skip/shuffle naturally never lands on a duplicate — playlist
+    // associations are dropped entirely, as confirmed not to matter.
+    const dedupedSongs = useMemo(() => {
+        const seen = new Set();
+        const out = [];
+        for (const s of allSongs) {
+            const key = `${(s.title || '').trim().toLowerCase()}::${(s.artist || '').trim().toLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(s);
+        }
+        return out;
+    }, [allSongs]);
+
+    useEffect(() => { getPlayCounts(dedupedSongs).then(setPlayCounts); }, [dedupedSongs]);
+
     const filtered = useMemo(() => {
-        if (!search.trim()) return allSongs;
+        if (!search.trim()) return dedupedSongs;
         const q = search.toLowerCase();
-        return allSongs.filter(s =>
+        return dedupedSongs.filter(s =>
             s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
         );
-    }, [allSongs, search]);
+    }, [dedupedSongs, search]);
 
     const play = async (song) => {
-        const playlist = { name: 'All Songs', path: '__all__', songs: allSongs };
+        const playlist = { name: 'All Songs', path: '__all__', songs: dedupedSongs };
         await playSongFromPlaylist(playlist, song.id);
     };
 
@@ -91,9 +116,14 @@ export default function AllSongsScreen() {
                     contentContainerStyle={{ paddingBottom: 150 }}
                     renderItem={({ item }) => (
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
-                            <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
-                                <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
-                                <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
+                            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
+                                    <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
+                                </View>
+                                {showPlayCount && playCounts[item.id] > 0 && (
+                                    <Text style={s.playCount}>{playCounts[item.id]}×</Text>
+                                )}
                             </TouchableOpacity>
                         </SwipeableRow>
                     )}
@@ -124,4 +154,5 @@ const s = StyleSheet.create({
     row: { paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12, backgroundColor: '#0d0d0d' },
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
+    playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
 });

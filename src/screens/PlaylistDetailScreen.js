@@ -42,7 +42,7 @@ export default function PlaylistDetailScreen() {
     const [showPlayCount, setShowPlayCount] = useState(true);
 
     useEffect(() => {
-        getPlayCounts(playlist.songs.map(s => s.id)).then(setPlayCounts);
+        getPlayCounts(playlist.songs).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
         getShowPlayCount().then(setShowPlayCount);
         getPlaylistSort(playlist.path).then(setSortId);

@@ -40,8 +40,13 @@ function PlaylistsStackScreen() {
                 name="PlaylistDetail"
                 component={PlaylistDetailScreen}
                 options={{
+                    ...TransitionPresets.SlideFromRightIOS,
                     gestureEnabled: true,
                     gestureDirection: 'horizontal',
+                    // A bit higher than the 0.3 default so a quick flick
+                    // carries the swipe-to-dismiss through more readily,
+                    // instead of needing to cross most of the screen width.
+                    gestureVelocityImpact: 0.5,
                     // Narrow on purpose — SwipeableRow's swipe-to-queue gesture
                     // on song rows uses the rest of the row's width, so this
                     // back-gesture only claims a thin strip at the very edge

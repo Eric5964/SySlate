@@ -23,7 +23,7 @@ export const SHEET_HEIGHT = Math.round(SCREEN_H * (2 / 3));
 const CLOSE_COMMIT_DISTANCE = 70; // lower = easier to trigger = "less resistance"
 const CLOSE_VELOCITY = 1.1;
 
-export default function BottomSheet({ visible, onClose, children, height = SHEET_HEIGHT }) {
+export default function BottomSheet({ visible, onClose, header, children, height = SHEET_HEIGHT }) {
     const { base } = useTheme();
     const backdropOpacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(height)).current;
@@ -98,6 +98,7 @@ export default function BottomSheet({ visible, onClose, children, height = SHEET
                 >
                     <Animated.View style={s.handleZone}>
                         <View style={s.handleBar} />
+                        {header}
                     </Animated.View>
                 </PanGestureHandler>
                 <View style={{ flex: 1 }}>
@@ -111,6 +112,6 @@ export default function BottomSheet({ visible, onClose, children, height = SHEET
 const s = StyleSheet.create({
     overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.65)' },
     sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 34, overflow: 'hidden' },
-    handleZone: { width: '100%', alignItems: 'center', paddingTop: 10, paddingBottom: 10 },
+    handleZone: { width: '100%', alignItems: 'center', paddingTop: 10, paddingBottom: 4 },
     handleBar: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#333' },
 });

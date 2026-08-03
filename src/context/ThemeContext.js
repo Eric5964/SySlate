@@ -14,33 +14,32 @@ export const THEMES = {
     yellow: { name: 'Yellow', accent: '#eab308', accentDim: '#332c08', onAccent: '#000' },
     orange: { name: 'Orange', accent: '#ea580c', accentDim: '#3d2a1a', onAccent: '#fff' },
     red: { name: 'Red', accent: '#dc2626', accentDim: '#3d1a1a', onAccent: '#fff' },
-    rose: { name: 'Rose', accent: '#db2777', accentDim: '#3d1428', onAccent: '#fff' },
+    // Was "Rose" (#db2777, a pink-leaning red) — the "second pink" sitting
+    // next to Orange and Mono. Recolored to a distinct, more orange-shifted
+    // red so it reads clearly apart from the existing Red above it.
+    rose: { name: 'Crimson', accent: '#b91c1c', accentDim: '#3d1616', onAccent: '#fff' },
     mono: { name: 'Mono', accent: '#9ca3af', accentDim: '#26282c', onAccent: '#000' },
 };
 
-// The app's neutral/background palette, independent of accent color.
-// "dark_gray" matches the app's original hardcoded look, so existing
-// installs default to looking exactly the same as before this existed.
-// The old "Light Gray" option is now a deep galaxy purple/blue instead —
-// still the lightest/most colorful of the four, just not literally gray.
+// Four base palettes: light purple, dark purple, gray, black. The purples
+// were flagged as too muddy/desaturated before — pushed more saturated
+// (more blue/violet, less gray mixed in) so they read as genuinely vibrant
+// rather than a slightly-tinted dark gray.
 export const BASE_COLORS = {
-    galaxy: { name: 'Galaxy', bg: '#1a1730', surface: '#231f42', border: '#332d55' },
-    // Was flat gray (#1c1c1e) — the lightest/flattest of the four in
-    // practice, even though "Galaxy" already covers the deep-purple end.
-    // Replaced with a gentler, lighter galaxy tone instead of plain gray.
-    gray: { name: 'Nebula', bg: '#242038', surface: '#2d2850', border: '#413a6b' },
-    dark_gray: { name: 'Dark Gray', bg: '#0a0a0a', surface: '#0f0f0f', border: '#1a1a1a' },
+    light_purple: { name: 'Light Purple', bg: '#332363', surface: '#3f2c7a', border: '#5439a3' },
+    dark_purple: { name: 'Dark Purple', bg: '#180f33', surface: '#221545', border: '#332161' },
+    slate: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
 };
 
 const ThemeContext = createContext({
     theme: THEMES.purple, themeId: 'purple', setTheme: () => { },
-    base: BASE_COLORS.dark_gray, baseId: 'dark_gray', setBase: () => { },
+    base: BASE_COLORS.black, baseId: 'black', setBase: () => { },
 });
 
 export function ThemeProvider({ children }) {
     const [themeId, setThemeId] = useState('purple');
-    const [baseId, setBaseId] = useState('dark_gray');
+    const [baseId, setBaseId] = useState('black');
 
     useEffect(() => {
         AsyncStorage.getItem('theme_id').then(id => {
@@ -53,7 +52,11 @@ export function ThemeProvider({ children }) {
         });
         AsyncStorage.getItem('base_color_id').then(id => {
             if (id && BASE_COLORS[id]) { setBaseId(id); return; }
-            const migrate = { light_gray: 'galaxy' };
+            // light_gray -> galaxy -> light_purple (chained through two
+            // renames); the old "gray" id held a purple (Nebula) by the time
+            // of this rename, so it continues on as dark_purple; dark_gray
+            // (near-black) is closest to the new flat black.
+            const migrate = { light_gray: 'light_purple', galaxy: 'light_purple', gray: 'dark_purple', dark_gray: 'black' };
             if (id && migrate[id]) setBaseId(migrate[id]);
         });
     }, []);

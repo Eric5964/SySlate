@@ -48,12 +48,25 @@ export default function MiniPlayer({ withTabBar = true }) {
     }, []);
 
     useEffect(() => {
+        // Always stop and snap to the exact real position when paused —
+        // this used to be gated behind the same drift check as the resync
+        // logic below, so if the animation was already running and drift
+        // happened to be small at the instant of pausing (the normal case,
+        // since pausing is immediate), the running Animated.timing never
+        // actually got stopped and kept advancing on its own.
+        if (!isPlaying) {
+            animRunRef.current?.stop();
+            animRunRef.current = null;
+            animPct.setValue(pct);
+            animPctValueRef.current = pct;
+            return;
+        }
         const drift = Math.abs(animPctValueRef.current - pct);
         if (!animRunRef.current || drift > 0.02) {
             animRunRef.current?.stop();
             animPct.setValue(pct);
             animPctValueRef.current = pct;
-            if (isPlaying && progress.duration > 0 && pct < 1) {
+            if (progress.duration > 0 && pct < 1) {
                 const remainingMs = Math.max(0, (1 - pct) * progress.duration * 1000);
                 const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
                 animRunRef.current = anim;

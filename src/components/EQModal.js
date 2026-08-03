@@ -21,8 +21,7 @@ export default function EQModal({ visible, onClose, playlistPath }) {
     }, [visible]);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose}>
-            <Text style={s.sheetTitle}>EQ Preset</Text>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>EQ Preset</Text>}>
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {eqPresets.length === 0
                     ? <Text style={s.empty}>No presets visible — manage in Settings</Text>
@@ -41,7 +40,7 @@ export default function EQModal({ visible, onClose, playlistPath }) {
 }
 
 const s = StyleSheet.create({
-    sheetTitle: { color: '#555', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 16, paddingHorizontal: 24 },
+    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
     presetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
     presetName: { color: '#555', fontSize: 17 },
     empty: { color: '#333', fontSize: 14, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 24 },

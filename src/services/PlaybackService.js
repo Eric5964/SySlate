@@ -56,11 +56,16 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function fadeVol(from, to, sec, ownerId) {
     if (sec <= 0.05) { if (isFadeOwner(ownerId)) { TrackPlayer.setVolume(to).catch(() => { }); } return; }
     const STEPS = Math.max(10, Math.round(sec * 25));
-    const dt = (sec * 1000) / STEPS;
+    const totalMs = sec * 1000;
+    const start = Date.now();
     for (let i = 1; i <= STEPS; i++) {
         if (!isFadeOwner(ownerId)) return;
         TrackPlayer.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))).catch(() => { });
-        if (i < STEPS) await sleep(dt);
+        if (i < STEPS) {
+            const targetElapsed = totalMs * (i / STEPS);
+            const wait = Math.max(0, targetElapsed - (Date.now() - start));
+            await sleep(wait);
+        }
     }
 }
 

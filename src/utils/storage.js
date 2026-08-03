@@ -50,16 +50,59 @@ export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('pla
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
 export const setLastSession = (d) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(d)), null);
 
+// Best-effort resilience for playlist order/covers looking inconsistent
+// across app updates (reinstalls via SideStore/LiveContainer). AsyncStorage's
+// underlying store may not survive an IPA reinstall the same way the
+// Documents directory does — Documents is where the music library itself
+// lives, which does survive — so these two are also mirrored into a small
+// JSON file there on every write. If AsyncStorage ever comes back empty for
+// one of them but this file has real data, it's restored automatically.
+// This is a defensive backstop rather than a confirmed diagnosis of the
+// exact cause — worth testing across an actual update to see if it helps.
+const BACKUP_PATH = FileSystem.documentDirectory + '.syslate_settings_backup.json';
+const writeBackup = async (patch) => {
+    try {
+        let existing = {};
+        try { existing = JSON.parse(await FileSystem.readAsStringAsync(BACKUP_PATH)); } catch { }
+        await FileSystem.writeAsStringAsync(BACKUP_PATH, JSON.stringify({ ...existing, ...patch }));
+    } catch { }
+};
+const readBackup = async () => {
+    try { return JSON.parse(await FileSystem.readAsStringAsync(BACKUP_PATH)); } catch { return null; }
+};
+
 // Persisted playlist order — array of playlist paths, most-preferred first
-export const getPlaylistOrder = () => safe(() => AsyncStorage.getItem('playlist_order').then(v => v ? JSON.parse(v) : []), []);
-export const setPlaylistOrder = (order) => safe(() => AsyncStorage.setItem('playlist_order', JSON.stringify(order)), null);
+export const getPlaylistOrder = () => safe(async () => {
+    const v = await AsyncStorage.getItem('playlist_order');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.playlist_order?.length) {
+        await AsyncStorage.setItem('playlist_order', JSON.stringify(backup.playlist_order));
+        return backup.playlist_order;
+    }
+    return [];
+}, []);
+export const setPlaylistOrder = (order) => safe(async () => {
+    await AsyncStorage.setItem('playlist_order', JSON.stringify(order));
+    await writeBackup({ playlist_order: order });
+}, null);
 
 // Custom cover image per playlist, keyed by playlist path -> local image URI
-export const getPlaylistCovers = () => safe(() => AsyncStorage.getItem('playlist_covers').then(v => v ? JSON.parse(v) : {}), {});
+export const getPlaylistCovers = () => safe(async () => {
+    const v = await AsyncStorage.getItem('playlist_covers');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.playlist_covers && Object.keys(backup.playlist_covers).length) {
+        await AsyncStorage.setItem('playlist_covers', JSON.stringify(backup.playlist_covers));
+        return backup.playlist_covers;
+    }
+    return {};
+}, {});
 export const setPlaylistCover = async (path, uri) => {
     const covers = await getPlaylistCovers();
     if (uri) covers[path] = uri; else delete covers[path];
     await safe(() => AsyncStorage.setItem('playlist_covers', JSON.stringify(covers)), null);
+    await writeBackup({ playlist_covers: covers });
     return covers;
 };
 
@@ -101,20 +144,53 @@ export const persistCoverImage = async (pickerUri) => {
     }
 };
 
-export const incrementPlayCount = async (songId) => {
-    if (!songId) return;
+// Keyed by title+artist rather than song.id (a file path) — two files of
+// the "same song" living in different playlists used to track separate
+// counts since they had different paths. Normalizing case/whitespace so
+// "Song.flac" and "song.flac" style differences don't split a count.
+const playCountKey = (song) => {
+    const t = (song?.ourTitle ?? song?.title ?? '').trim().toLowerCase();
+    const a = (song?.ourArtist ?? song?.artist ?? '').trim().toLowerCase();
+    return `pcn:${t}::${a}`;
+};
+
+export const incrementPlayCount = async (song) => {
+    if (!song) return;
     try {
-        const k = `pc:${songId}`;
+        const k = playCountKey(song);
         const v = await AsyncStorage.getItem(k);
         await AsyncStorage.setItem(k, String(v ? parseInt(v) + 1 : 1));
     } catch { }
 };
 
-export const getPlayCounts = async (songIds) => {
+// Takes full song objects (needs title/artist to compute the shared key),
+// not bare ids. Returns counts keyed by song.id for callers, but the VALUE
+// is the same for every song sharing a title+artist. The first time a given
+// combined key has no count yet, falls back to summing the old per-file
+// ('pc:<path>') counts for every song sharing it, so history from before
+// this change isn't lost.
+export const getPlayCounts = async (songs) => {
     try {
-        const pairs = await AsyncStorage.multiGet(songIds.map(id => `pc:${id}`));
+        const byKey = {};
+        songs.forEach(s => { (byKey[playCountKey(s)] ??= []).push(s); });
+        const keys = Object.keys(byKey);
+        const pairs = await AsyncStorage.multiGet(keys);
+        const keyCounts = {};
+        const missingKeys = [];
+        pairs.forEach(([k, v]) => {
+            if (v) keyCounts[k] = parseInt(v);
+            else missingKeys.push(k);
+        });
+        if (missingKeys.length) {
+            const legacyKeys = missingKeys.flatMap(k => byKey[k].map(s => `pc:${s.id}`));
+            const legacyPairs = await AsyncStorage.multiGet(legacyKeys);
+            const legacyMap = Object.fromEntries(legacyPairs);
+            missingKeys.forEach(k => {
+                keyCounts[k] = byKey[k].reduce((sum, s) => sum + (parseInt(legacyMap[`pc:${s.id}`]) || 0), 0);
+            });
+        }
         const out = {};
-        pairs.forEach(([k, v]) => { out[k.replace('pc:', '')] = v ? parseInt(v) : 0; });
+        songs.forEach(s => { out[s.id] = keyCounts[playCountKey(s)] ?? 0; });
         return out;
     } catch { return {}; }
 };
