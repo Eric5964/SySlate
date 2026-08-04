@@ -92,8 +92,17 @@ export default function SwipeableRow({
     // from the gesture listener. The JS-state version lagged a frame or two
     // behind the actual native position, which is what showed the wrong
     // side's color for a moment when reversing direction mid-swipe.
-    const rightOpacity = translateX.interpolate({ inputRange: [0, 12], outputRange: [0, 1], extrapolate: 'clamp' });
-    const leftOpacity = translateX.interpolate({ inputRange: [-12, 0], outputRange: [1, 0], extrapolate: 'clamp' });
+    // A small dead zone before any underlay starts to reveal — natural touch
+    // jitter at the very start of a swipe (a few px in the "wrong" direction
+    // before the real direction settles) used to be enough to cross the old
+    // 0-12px threshold, briefly flashing the OTHER side's underlay (e.g.
+    // priority-queue rows have Remove wired even when swiping right to
+    // reveal nothing, so a little leftward jitter flashed Remove first).
+    // Nothing reveals now until movement is unambiguously past 10px.
+    const REVEAL_DEADZONE = 10;
+    const REVEAL_FULL = 30;
+    const rightOpacity = translateX.interpolate({ inputRange: [REVEAL_DEADZONE, REVEAL_FULL], outputRange: [0, 1], extrapolate: 'clamp' });
+    const leftOpacity = translateX.interpolate({ inputRange: [-REVEAL_FULL, -REVEAL_DEADZONE], outputRange: [1, 0], extrapolate: 'clamp' });
     const rightGlowOpacity = rightGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const leftGlowOpacity = leftGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 

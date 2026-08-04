@@ -67,6 +67,36 @@ function base64ToBytes(b64) {
     return out;
 }
 
+// Same decode as above, but yields back to the event loop every ~250K input
+// characters instead of running as one long uninterrupted synchronous loop.
+// For a 6MB read (~8M base64 characters) the plain version could occupy the
+// JS thread for a real stretch — and this runs right at track-change time,
+// which is exactly when the audio ramp's setTimeout-driven fade steps also
+// need to fire. A blocked JS thread there delays those timers, which is
+// what turns a smooth ~40ms-stepped fade into visible flat-then-jump
+// plateaus. Used for the two large "front" reads; the small tail read isn't
+// worth chunking.
+const B64_YIELD_CHUNK_CHARS = 250000;
+async function base64ToBytesChunked(b64) {
+    const clean = b64.replace(/=+$/, '');
+    const outLen = Math.floor(clean.length * 3 / 4);
+    const out = new Uint8Array(outLen);
+    let o = 0;
+    for (let i = 0; i < clean.length; i += 4) {
+        const b0 = B64_LOOKUP[clean.charCodeAt(i)];
+        const b1 = B64_LOOKUP[clean.charCodeAt(i + 1)];
+        const b2 = i + 2 < clean.length ? B64_LOOKUP[clean.charCodeAt(i + 2)] : 0;
+        const b3 = i + 3 < clean.length ? B64_LOOKUP[clean.charCodeAt(i + 3)] : 0;
+        if (o < outLen) out[o++] = (b0 << 2) | (b1 >> 4);
+        if (o < outLen) out[o++] = ((b1 & 0xf) << 4) | (b2 >> 2);
+        if (o < outLen) out[o++] = ((b2 & 0x3) << 6) | b3;
+        if (i % B64_YIELD_CHUNK_CHARS === 0 && i > 0) {
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
+    return out;
+}
+
 function bytesToBase64(bytes) {
     let out = '';
     for (let i = 0; i < bytes.length; i += 3) {
@@ -81,7 +111,7 @@ function bytesToBase64(bytes) {
 
 async function readBytes(uri, options) {
     const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64, ...options });
-    return base64ToBytes(b64);
+    return base64ToBytesChunked(b64);
 }
 
 function readU32BE(bytes, o) { return ((bytes[o] << 24) | (bytes[o + 1] << 16) | (bytes[o + 2] << 8) | bytes[o + 3]) >>> 0; }

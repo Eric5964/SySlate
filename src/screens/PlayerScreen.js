@@ -286,10 +286,10 @@ export default function PlayerScreen() {
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
     useEffect(() => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: 200, useNativeDriver: false }).start();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [shuffleOn]);
     useEffect(() => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: 200, useNativeDriver: false }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });

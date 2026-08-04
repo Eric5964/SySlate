@@ -43,11 +43,22 @@ export function PlaybackProvider({ children }) {
     useEffect(() => {
         if (!currentTrack?.id || currentTrack.artwork) return;
         let cancelled = false;
-        extractEmbeddedArt(currentTrack).then(uri => {
-            if (cancelled || !uri) return;
-            setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
-        });
-        return () => { cancelled = true; };
+        // Delayed rather than immediate — this used to fire the instant a
+        // track changed, which is also exactly when the audio ramp's
+        // setTimeout-driven fade steps need to run on time. The extraction
+        // read + decode is heavy enough to have been stalling those timers
+        // (measured via an actual waveform: two ~300-400ms "stuck" plateaus
+        // in the fade-in instead of a smooth climb). Album art appearing a
+        // moment later is unnoticeable; audio stutter isn't. Default ramp is
+        // 3s, so this waits past that.
+        const t = setTimeout(() => {
+            if (cancelled) return;
+            extractEmbeddedArt(currentTrack).then(uri => {
+                if (cancelled || !uri) return;
+                setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
+            });
+        }, 4000);
+        return () => { cancelled = true; clearTimeout(t); };
     }, [currentTrack?.id]);
 
     // "Only count a play after playing half of the song continuously without

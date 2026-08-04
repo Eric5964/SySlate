@@ -162,6 +162,11 @@ function AppInner() {
                                 ...TransitionPresets.ModalSlideFromBottomIOS,
                                 gestureEnabled: true,
                                 gestureResponseDistance: Dimensions.get('window').height,
+                                // Same tuning as the playlist swipe-out — a
+                                // quick flick carries the dismiss through
+                                // more readily instead of needing to cross
+                                // most of the screen height.
+                                gestureVelocityImpact: 0.5,
                             }}
                         />
                     </Root.Navigator>

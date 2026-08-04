@@ -315,9 +315,8 @@ export default function SettingsScreen() {
                 </>
             )}
 
-            <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)}>
+            <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>New EQ Preset</Text>}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
-                    <Text style={s.sheetTitle}>New EQ Preset</Text>
                     <TextInput
                         style={[s.nameInput, { borderColor: theme.accent }]}
                         value={newName} onChangeText={setNewName}
@@ -421,7 +420,7 @@ const s = StyleSheet.create({
     locBody: { color: '#555', fontSize: 13, lineHeight: 20 },
     locPath: { fontSize: 11, marginTop: 4, lineHeight: 16 },
     locNote: { color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 },
-    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 16 },
+    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4 },
     nameInput: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, color: '#e5e5e5', fontSize: 15, borderWidth: 1, marginBottom: 12 },
     bandRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },
     bandHz: { color: '#555', fontSize: 11, width: 36, textAlign: 'right', marginRight: 4 },
