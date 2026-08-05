@@ -9,7 +9,6 @@ import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/Play
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
-import { getPlaylistCovers } from '../utils/storage';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = 44;
@@ -17,27 +16,12 @@ const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
-    const { currentTrack, currentPlaylist } = usePlayback();
+    const { currentTrack } = usePlayback();
     const { theme, base } = useTheme();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
     const insets = useSafeAreaInsets();
-    const [fallbackArt, setFallbackArt] = useState(null);
-
-    // No per-song embedded artwork (ID3/FLAC picture tag) extraction exists
-    // yet — currentTrack.artwork is never actually populated, so covers were
-    // always silently falling back to the note glyph. This falls back to the
-    // playlist's cover image instead, which is real data we already have.
-    useEffect(() => {
-        setFallbackArt(null);
-        if (!currentPlaylist?.path) return;
-        let cancelled = false;
-        getPlaylistCovers().then(covers => {
-            if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);
-        });
-        return () => { cancelled = true; };
-    }, [currentPlaylist?.path]);
 
     const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
     const animPct = useRef(new Animated.Value(pct)).current;
@@ -88,7 +72,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
-    const artwork = currentTrack.artwork ?? fallbackArt;
+    const artwork = currentTrack.artwork;
 
     return (
         <TouchableOpacity

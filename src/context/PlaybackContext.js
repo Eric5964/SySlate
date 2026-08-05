@@ -9,7 +9,7 @@ import {
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
 } from '../utils/storage';
-import { extractEmbeddedArt } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
 const Ctx = createContext(null);
 
@@ -44,37 +44,47 @@ export function PlaybackProvider({ children }) {
     useEffect(() => {
         if (!currentTrack?.id || currentTrack.artwork) return;
         let cancelled = false;
-        // Delayed rather than immediate — this used to fire the instant a
-        // track changed, which is also exactly when the audio ramp's
-        // setTimeout-driven fade steps need to run on time. The extraction
-        // read + decode is heavy enough to have been stalling those timers
-        // (measured via an actual waveform: two ~300-400ms "stuck" plateaus
-        // in the fade-in instead of a smooth climb). Album art appearing a
-        // moment later is unnoticeable; audio stutter isn't. Default ramp is
-        // 3s, so this waits past that.
-        const t = setTimeout(() => {
+        let timer = null;
+
+        const pushMetadataAndPrefetch = async (uri) => {
+            try {
+                const queue = await TrackPlayer.getQueue();
+                const idx = queue.findIndex(t => t.id === currentTrack.id);
+                if (idx !== -1) await TrackPlayer.updateMetadataForTrack(idx, { artwork: uri });
+                // Warm the cache for what's coming up next — fire and
+                // forget, no state to update since these aren't playing
+                // yet. By the time playback naturally reaches them,
+                // extraction is often already done.
+                const upcoming = queue.slice(idx + 1, idx + 3);
+                for (const t of upcoming) extractEmbeddedArt(t).catch(() => { });
+            } catch { }
+        };
+
+        const applyArt = (uri) => {
+            if (cancelled || !uri) return;
+            setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
+            pushMetadataAndPrefetch(uri);
+        };
+
+        getCachedArt(currentTrack).then(cached => {
             if (cancelled) return;
-            extractEmbeddedArt(currentTrack).then(async uri => {
-                if (cancelled || !uri) return;
-                setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
-                // Also push into TrackPlayer's own native queue item — the
-                // system now-playing UI (lock screen, Control Center) reads
-                // artwork from there, not from this app's React state, so it
-                // never picked up extracted art before this.
-                try {
-                    const queue = await TrackPlayer.getQueue();
-                    const idx = queue.findIndex(t => t.id === currentTrack.id);
-                    if (idx !== -1) await TrackPlayer.updateMetadataForTrack(idx, { artwork: uri });
-                    // Warm the cache for what's coming up next — fire and
-                    // forget, no state to update since these aren't playing
-                    // yet. By the time playback naturally reaches them,
-                    // extraction is often already done.
-                    const upcoming = queue.slice(idx + 1, idx + 3);
-                    for (const t of upcoming) extractEmbeddedArt(t).catch(() => { });
-                } catch { }
-            });
-        }, 4000);
-        return () => { cancelled = true; clearTimeout(t); };
+            if (cached !== undefined) {
+                // Already known (found or confirmed not found) — no reason
+                // to wait, there's no heavy work happening here.
+                if (cached) applyArt(cached);
+                return;
+            }
+            // Genuinely new song — delay past the ramp's typical window
+            // (default 3s) before doing the real extraction, since that
+            // read + decode is heavy enough to have stalled the ramp's
+            // timing-sensitive fade steps (measured via an actual waveform).
+            timer = setTimeout(() => {
+                if (cancelled) return;
+                extractEmbeddedArt(currentTrack).then(applyArt);
+            }, 4000);
+        });
+
+        return () => { cancelled = true; if (timer) clearTimeout(timer); };
     }, [currentTrack?.id]);
 
     // "Only count a play after playing half of the song continuously without

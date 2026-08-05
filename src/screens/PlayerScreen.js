@@ -12,7 +12,7 @@ import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
-import { getPlaylistCovers, getPlayCounts, getShowPlayCount } from '../utils/storage';
+import { getPlayCounts, getShowPlayCount } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -62,7 +62,6 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const [fallbackArt, setFallbackArt] = useState(null);
     const [playCount, setPlayCount] = useState(0);
     const [showPlayCount, setShowPlayCountState] = useState(true);
 
@@ -72,22 +71,6 @@ export default function PlayerScreen() {
         if (!currentTrack?.id) { setPlayCount(0); return; }
         getPlayCounts([currentTrack]).then(counts => setPlayCount(counts[currentTrack.id] ?? 0));
     }, [currentTrack?.id]);
-
-    useEffect(() => {
-        // Reset immediately (synchronously) rather than leaving the
-        // PREVIOUS playlist's cover showing while this one loads — that
-        // stale cover lingering during the async gap is what showed as
-        // "wrong playlist's cover, then N/A, then the real cover" when
-        // tapping directly into a song from a different playlist (which
-        // changes currentPlaylist.path, unlike skip which usually doesn't).
-        setFallbackArt(null);
-        if (!currentPlaylist?.path) return;
-        let cancelled = false;
-        getPlaylistCovers().then(covers => {
-            if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);
-        });
-        return () => { cancelled = true; };
-    }, [currentPlaylist?.path]);
 
     const progressRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
@@ -248,7 +231,7 @@ export default function PlayerScreen() {
     // which is real data we already have. True per-file embedded artwork
     // would need a native module or a metadata-parsing library — a separate,
     // bigger feature if you want it.
-    const artwork = currentTrack?.artwork ?? fallbackArt;
+    const artwork = currentTrack?.artwork;
     const pct = justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
@@ -300,6 +283,21 @@ export default function PlayerScreen() {
     }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
+
+    // Triggers the animation immediately, synchronously, right at the tap —
+    // not waiting on the setShuffleOn -> re-render -> useEffect round trip
+    // above, which costs at least one full extra render cycle before the
+    // animation even starts. The useEffect above still exists as a fallback
+    // for shuffleOn/singleLoop changing from somewhere else entirely (e.g.
+    // restoring a session), so nothing relies exclusively on this.
+    const onPressShuffle = () => {
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        toggleShuffle();
+    };
+    const onPressLoop = () => {
+        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        toggleSingleLoop();
+    };
 
     return (
         <View style={[s.container, { paddingTop: insets.top + 6, backgroundColor: base.bg }]}>
@@ -374,7 +372,7 @@ export default function PlayerScreen() {
                 </View>
 
                 <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
-                    <TouchableOpacity onPress={toggleShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <ShuffleIcon size={22} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
@@ -389,7 +387,7 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipNextIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={toggleSingleLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <Animated.Text style={[s.sideIcon, { color: loopColor }]}>↺¹</Animated.Text>
                     </TouchableOpacity>
                 </View>

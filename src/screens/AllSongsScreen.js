@@ -1,9 +1,9 @@
-import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
+import React, { useContext, useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar,
 } from 'react-native';
-import { useNavigation, useScrollToTop } from '@react-navigation/native';
+import { useNavigation, useScrollToTop, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -26,8 +26,10 @@ export default function AllSongsScreen() {
     const [showPlayCount, setShowPlayCountState] = useState(true);
     const [showSongCovers, setShowSongCoversState] = useState(false);
 
-    useEffect(() => { getShowPlayCount().then(setShowPlayCountState); }, []);
-    useEffect(() => { getShowSongCovers().then(setShowSongCoversState); }, []);
+    useFocusEffect(useCallback(() => {
+        getShowPlayCount().then(setShowPlayCountState);
+        getShowSongCovers().then(setShowSongCoversState);
+    }, []));
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -124,7 +126,10 @@ export default function AllSongsScreen() {
                             <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
                                 {showSongCovers && (
                                     <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                                        {artMap[item.id] && <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />}
+                                        {artMap[item.id]
+                                            ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
+                                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                        }
                                     </View>
                                 )}
                                 <View style={{ flex: 1 }}>
@@ -165,6 +170,7 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden' },
+    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
+    thumbNote: { fontSize: 18 },
 });

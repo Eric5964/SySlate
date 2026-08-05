@@ -26,7 +26,7 @@ export const THEMES = {
 // (more blue/violet, less gray mixed in) so they read as genuinely vibrant
 // rather than a slightly-tinted dark gray.
 export const BASE_COLORS = {
-    light_purple: { name: 'Light Purple', bg: '#332a5c', surface: '#3d3369', border: '#4d3f85' },
+    light_purple: { name: 'Light Purple', bg: '#260e4c', surface: '#311262', border: '#441a88' },
     dark_purple: { name: 'Dark Purple', bg: '#140a2e', surface: '#1c1040', border: '#2a1860' },
     slate: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },

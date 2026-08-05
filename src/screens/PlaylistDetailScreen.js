@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
     StyleSheet, TextInput, StatusBar, Image, Alert,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount, getShowSongCovers, getPlaylistSort, setPlaylistSort } from '../utils/storage';
@@ -46,10 +46,16 @@ export default function PlaylistDetailScreen() {
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
-        getShowPlayCount().then(setShowPlayCount);
-        getShowSongCovers().then(setShowSongCovers);
         getPlaylistSort(playlist.path).then(setSortId);
     }, []);
+
+    // Re-read on focus (not just mount) — switching back to this screen
+    // after changing a Visual Setting should pick it up immediately,
+    // without needing the screen to fully unmount/remount first.
+    useFocusEffect(useCallback(() => {
+        getShowPlayCount().then(setShowPlayCount);
+        getShowSongCovers().then(setShowSongCovers);
+    }, []));
 
     const sorted = useMemo(() => {
         let songs = [...playlist.songs];
@@ -203,7 +209,10 @@ export default function PlaylistDetailScreen() {
                         <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
                             {showSongCovers && (
                                 <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                                    {artMap[item.id] && <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />}
+                                    {artMap[item.id]
+                                        ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
+                                        : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                    }
                                 </View>
                             )}
                             <View style={{ flex: 1 }}>
@@ -255,6 +264,7 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden' },
+    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
+    thumbNote: { fontSize: 18 },
 });

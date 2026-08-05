@@ -232,8 +232,7 @@ export default function SettingsScreen() {
                 <Section title="Visual Settings">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Show Song Covers</Text>
-                            <Text style={s.toggleSub}>Embedded cover art next to songs in a list — can take a while to load on a big library</Text>
+                            <Text style={s.toggleLabel}>Show Song Covers in Lists</Text>
                         </View>
                         <Switch value={showSongCovers} onValueChange={v => { setSSC(v); setShowSongCovers(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />

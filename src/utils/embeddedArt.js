@@ -182,6 +182,17 @@ function hashCode(str) {
     return Math.abs(hash);
 }
 
+// Cache-only lookup — no file I/O, just checks what we already know. Returns
+// the cached URI, null (confirmed no art), or undefined (never processed).
+// Safe to call immediately with no delay, since there's no heavy work here —
+// callers use this to skip the artificial "don't compete with the ramp"
+// delay entirely for songs that are already cached.
+export async function getCachedArt(song) {
+    if (!song?.id) return undefined;
+    const cache = await loadCacheMap();
+    return song.id in cache ? (cache[song.id] || null) : undefined;
+}
+
 // Returns a local file:// URI for the song's embedded cover art, or null if
 // none was found/the format isn't supported. Safe to call repeatedly — the
 // result (including a miss) is cached, so only the first call per song does
