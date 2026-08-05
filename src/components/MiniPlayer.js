@@ -30,7 +30,8 @@ export default function MiniPlayer({ withTabBar = true }) {
     // always silently falling back to the note glyph. This falls back to the
     // playlist's cover image instead, which is real data we already have.
     useEffect(() => {
-        if (!currentPlaylist?.path) { setFallbackArt(null); return; }
+        setFallbackArt(null);
+        if (!currentPlaylist?.path) return;
         let cancelled = false;
         getPlaylistCovers().then(covers => {
             if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);

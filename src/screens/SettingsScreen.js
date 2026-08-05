@@ -21,6 +21,7 @@ import {
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     getShowPlayCount, setShowPlayCount,
+    getShowSongCovers, setShowSongCovers,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -52,6 +53,7 @@ export default function SettingsScreen() {
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const [showPlayCount, setSPC] = useState(true);
+    const [showSongCovers, setSSC] = useState(false);
 
     const [loaded, setLoaded] = useState(false);
 
@@ -65,6 +67,7 @@ export default function SettingsScreen() {
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
             setSPC(await getShowPlayCount());
+            setSSC(await getShowSongCovers());
             setLoaded(true);
         })();
     }, []);
@@ -226,8 +229,16 @@ export default function SettingsScreen() {
                 {/* Between Shuffle and Accent Color, per request. Play counts are
                      always tracked regardless of this setting — it only controls
                      whether the number is shown. */}
-                <Section title="Play Count">
+                <Section title="Visual Settings">
                     <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Show Song Covers</Text>
+                            <Text style={s.toggleSub}>Embedded cover art next to songs in a list — can take a while to load on a big library</Text>
+                        </View>
+                        <Switch value={showSongCovers} onValueChange={v => { setSSC(v); setShowSongCovers(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Play Count</Text>
                             <Text style={s.toggleSub}>Next to songs in a playlist, and on the player</Text>

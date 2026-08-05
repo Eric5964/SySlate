@@ -18,6 +18,20 @@ const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
 const isFadeOwner = (id) => activeFadeId === id;
 const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
 
+// Claims the fade lock BEFORE the caller populates a fresh native queue
+// (TrackPlayer.reset()+add()). That add() can itself fire a native
+// PlaybackTrackChanged event — and the listener below has a fallback that
+// forces volume to 1 immediately if no fade is claimed yet. Previously
+// nothing claimed the lock until playWithRamp() actually started running,
+// AFTER the queue was already primed, so that fallback could win the race:
+// volume jumps to full the instant the queue populates, then playWithRamp's
+// own ramp cuts it back to 0 and re-ramps up a moment later. That's the "ramp
+// started high, then started low to high" bug. Pre-claiming here closes the
+// gap — activeFadeId is already non-null by the time the queue populates.
+export function preClaimFadeForFreshStart() {
+    return claimFade();
+}
+
 // Exposed so the UI layer (song taps, queue taps, playlist Play/Shuffle) can
 // ignore input for the brief window a fade/ramp is in flight, instead of
 // racing it.
@@ -149,13 +163,13 @@ function stopWatcher() {
     if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
 }
 
-export async function playWithRamp() {
-    if (isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
+export async function playWithRamp(preClaimedId) {
+    if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;
     try {
         const ramp = await getAudioRamp();
-        if (ramp > 0.05 && activeFadeId === null) {
-            const id = claimFade();
+        if (ramp > 0.05 && (preClaimedId || activeFadeId === null)) {
+            const id = preClaimedId ?? claimFade();
             try { await TrackPlayer.setVolume(0); } catch { }
             try { await TrackPlayer.play(); } catch { }
             await waitForPlaying();
@@ -163,6 +177,7 @@ export async function playWithRamp() {
             await fadeVol(0, 1, ramp, id);
             releaseFade(id);
         } else {
+            if (preClaimedId) releaseFade(preClaimedId);
             try { await TrackPlayer.setVolume(1); } catch { }
             try { await TrackPlayer.play(); } catch { }
         }

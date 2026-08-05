@@ -7,7 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount, getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount, getShowSongCovers, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
@@ -15,6 +15,7 @@ import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { EDGE_SWIPE_WIDTH } from '../utils/layout';
+import { useListArt } from '../hooks/useListArt';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -40,11 +41,13 @@ export default function PlaylistDetailScreen() {
     const [showQueue, setShowQueue] = useState(false);
     const [cover, setCover] = useState(null);
     const [showPlayCount, setShowPlayCount] = useState(true);
+    const [showSongCovers, setShowSongCovers] = useState(false);
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
         getShowPlayCount().then(setShowPlayCount);
+        getShowSongCovers().then(setShowSongCovers);
         getPlaylistSort(playlist.path).then(setSortId);
     }, []);
 
@@ -67,6 +70,8 @@ export default function PlaylistDetailScreen() {
             (s.ourArtist ?? s.artist ?? '').toLowerCase().includes(q)
         );
     }, [sorted, search]);
+
+    const artMap = useListArt(filtered, showSongCovers);
 
     // Tapping a song no longer force-opens the full player — the mini player
     // appearing at the bottom is the signal that something started playing.
@@ -196,6 +201,11 @@ export default function PlaylistDetailScreen() {
                 renderItem={({ item }) => (
                     <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
                         <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => play(item)} activeOpacity={0.7}>
+                            {showSongCovers && (
+                                <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                    {artMap[item.id] && <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />}
+                                </View>
+                            )}
                             <View style={{ flex: 1 }}>
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
                                 <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>
@@ -245,4 +255,6 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
+    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden' },
+    thumbImg: { width: '100%', height: '100%' },
 });

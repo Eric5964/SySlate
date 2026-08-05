@@ -74,8 +74,23 @@ export default function SwipeableRow({
         Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
     }).current;
 
+    // A small dead zone before ANY visible reaction (position OR underlay)
+    // — natural touch jitter at the very start of a swipe (a few px in the
+    // "wrong" direction before the real direction settles) was enough to
+    // move the row and/or flash the other side's underlay. Both now derive
+    // from ONE adjusted value instead of two separately-thresholded ones —
+    // that mismatch (row already moving while the underlay was still hidden
+    // behind its own threshold, then suddenly appearing) is what read as a
+    // "bump" rather than a clean reveal.
+    const REVEAL_DEADZONE = 10;
+    const REVEAL_FULL = 30;
+    const adjustedX = translateX.interpolate({
+        inputRange: [-1000, -REVEAL_DEADZONE, REVEAL_DEADZONE, 1000],
+        outputRange: [-1000 + REVEAL_DEADZONE, 0, 0, 1000 - REVEAL_DEADZONE],
+    });
+
     // Clamp/rubber-band via interpolation (native thread).
-    const displayX = translateX.interpolate({
+    const displayX = adjustedX.interpolate({
         inputRange: [-300, -MAX_REVEAL, 0, MAX_REVEAL, 300],
         outputRange: [
             onSwipeLeft ? -MAX_REVEAL - 40 : 0,
@@ -88,21 +103,12 @@ export default function SwipeableRow({
     });
 
     // Both underlays are always mounted, with opacity interpolated DIRECTLY
-    // from translateX (native thread) instead of a JS state variable set
+    // from adjustedX (native thread) instead of a JS state variable set
     // from the gesture listener. The JS-state version lagged a frame or two
     // behind the actual native position, which is what showed the wrong
     // side's color for a moment when reversing direction mid-swipe.
-    // A small dead zone before any underlay starts to reveal — natural touch
-    // jitter at the very start of a swipe (a few px in the "wrong" direction
-    // before the real direction settles) used to be enough to cross the old
-    // 0-12px threshold, briefly flashing the OTHER side's underlay (e.g.
-    // priority-queue rows have Remove wired even when swiping right to
-    // reveal nothing, so a little leftward jitter flashed Remove first).
-    // Nothing reveals now until movement is unambiguously past 10px.
-    const REVEAL_DEADZONE = 10;
-    const REVEAL_FULL = 30;
-    const rightOpacity = translateX.interpolate({ inputRange: [REVEAL_DEADZONE, REVEAL_FULL], outputRange: [0, 1], extrapolate: 'clamp' });
-    const leftOpacity = translateX.interpolate({ inputRange: [-REVEAL_FULL, -REVEAL_DEADZONE], outputRange: [1, 0], extrapolate: 'clamp' });
+    const rightOpacity = adjustedX.interpolate({ inputRange: [0, REVEAL_FULL - REVEAL_DEADZONE], outputRange: [0, 1], extrapolate: 'clamp' });
+    const leftOpacity = adjustedX.interpolate({ inputRange: [-(REVEAL_FULL - REVEAL_DEADZONE), 0], outputRange: [1, 0], extrapolate: 'clamp' });
     const rightGlowOpacity = rightGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const leftGlowOpacity = leftGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 

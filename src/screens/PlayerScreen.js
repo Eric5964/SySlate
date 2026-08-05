@@ -74,7 +74,14 @@ export default function PlayerScreen() {
     }, [currentTrack?.id]);
 
     useEffect(() => {
-        if (!currentPlaylist?.path) { setFallbackArt(null); return; }
+        // Reset immediately (synchronously) rather than leaving the
+        // PREVIOUS playlist's cover showing while this one loads — that
+        // stale cover lingering during the async gap is what showed as
+        // "wrong playlist's cover, then N/A, then the real cover" when
+        // tapping directly into a song from a different playlist (which
+        // changes currentPlaylist.path, unlike skip which usually doesn't).
+        setFallbackArt(null);
+        if (!currentPlaylist?.path) return;
         let cancelled = false;
         getPlaylistCovers().then(covers => {
             if (!cancelled) setFallbackArt(covers[currentPlaylist.path] ?? null);

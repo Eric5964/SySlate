@@ -1,6 +1,6 @@
 import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity,
+    View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar,
 } from 'react-native';
 import { useNavigation, useScrollToTop } from '@react-navigation/native';
@@ -11,7 +11,8 @@ import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlayCounts, getShowPlayCount } from '../utils/storage';
+import { getPlayCounts, getShowPlayCount, getShowSongCovers } from '../utils/storage';
+import { useListArt } from '../hooks/useListArt';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
@@ -23,8 +24,10 @@ export default function AllSongsScreen() {
     const [showQueue, setShowQueue] = useState(false);
     const [playCounts, setPlayCounts] = useState({});
     const [showPlayCount, setShowPlayCountState] = useState(true);
+    const [showSongCovers, setShowSongCoversState] = useState(false);
 
     useEffect(() => { getShowPlayCount().then(setShowPlayCountState); }, []);
+    useEffect(() => { getShowSongCovers().then(setShowSongCoversState); }, []);
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -66,6 +69,8 @@ export default function AllSongsScreen() {
             s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
         );
     }, [dedupedSongs, search]);
+
+    const artMap = useListArt(filtered, showSongCovers);
 
     const play = async (song) => {
         const playlist = { name: 'All Songs', path: '__all__', songs: dedupedSongs };
@@ -117,6 +122,11 @@ export default function AllSongsScreen() {
                     renderItem={({ item }) => (
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
                             <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
+                                {showSongCovers && (
+                                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                        {artMap[item.id] && <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />}
+                                    </View>
+                                )}
                                 <View style={{ flex: 1 }}>
                                     <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
                                     <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
@@ -155,4 +165,6 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
+    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden' },
+    thumbImg: { width: '100%', height: '100%' },
 });

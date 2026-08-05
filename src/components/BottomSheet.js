@@ -98,7 +98,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                 >
                     <Animated.View style={s.handleZone}>
                         <View style={s.handleBar} />
-                        {header}
+                        <View style={s.headerZone}>{header}</View>
                     </Animated.View>
                 </PanGestureHandler>
                 <View style={{ flex: 1 }}>
@@ -113,5 +113,6 @@ const s = StyleSheet.create({
     overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.65)' },
     sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 34, overflow: 'hidden' },
     handleZone: { width: '100%', alignItems: 'center', paddingTop: 12, paddingBottom: 14, gap: 8 },
+    headerZone: { width: '100%', alignItems: 'flex-start' },
     handleBar: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#333' },
 });

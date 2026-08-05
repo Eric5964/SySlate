@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
+import { AppState } from 'react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp, isTransitionLocked, forceReleaseFade } from '../services/PlaybackService';
+import { playWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
@@ -53,9 +54,24 @@ export function PlaybackProvider({ children }) {
         // 3s, so this waits past that.
         const t = setTimeout(() => {
             if (cancelled) return;
-            extractEmbeddedArt(currentTrack).then(uri => {
+            extractEmbeddedArt(currentTrack).then(async uri => {
                 if (cancelled || !uri) return;
                 setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
+                // Also push into TrackPlayer's own native queue item — the
+                // system now-playing UI (lock screen, Control Center) reads
+                // artwork from there, not from this app's React state, so it
+                // never picked up extracted art before this.
+                try {
+                    const queue = await TrackPlayer.getQueue();
+                    const idx = queue.findIndex(t => t.id === currentTrack.id);
+                    if (idx !== -1) await TrackPlayer.updateMetadataForTrack(idx, { artwork: uri });
+                    // Warm the cache for what's coming up next — fire and
+                    // forget, no state to update since these aren't playing
+                    // yet. By the time playback naturally reaches them,
+                    // extraction is often already done.
+                    const upcoming = queue.slice(idx + 1, idx + 3);
+                    for (const t of upcoming) extractEmbeddedArt(t).catch(() => { });
+                } catch { }
             });
         }, 4000);
         return () => { cancelled = true; clearTimeout(t); };
@@ -283,10 +299,11 @@ export function PlaybackProvider({ children }) {
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
 
+        forceReleaseFade();
+        const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, startIndex);
         await setQueueLoop();
-        forceReleaseFade();
-        await playWithRamp();
+        await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -304,10 +321,11 @@ export function PlaybackProvider({ children }) {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
+        forceReleaseFade();
+        const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
         await setQueueLoop();
-        forceReleaseFade();
-        await playWithRamp();
+        await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -326,10 +344,11 @@ export function PlaybackProvider({ children }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const queue = buildQueue(playlist.songs, useMode);
+        forceReleaseFade();
+        const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
         await setQueueLoop();
-        forceReleaseFade();
-        await playWithRamp();
+        await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -375,10 +394,11 @@ export function PlaybackProvider({ children }) {
 
         const queue = [song, ...prioritySongs, ...rest];
 
+        forceReleaseFade();
+        const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
         await setQueueLoop();
-        forceReleaseFade();
-        await playWithRamp();
+        await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -450,12 +470,21 @@ export function PlaybackProvider({ children }) {
             if (currentIndex === null || currentIndex === undefined) return;
             const queue = await TrackPlayer.getQueue();
             const keepEnd = currentIndex + 1 + priorityRef.current.length;
+            const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
             let rest = pl.songs.filter(s => !usedIds.has(s.id));
             rest = mode === 'off' ? rest : buildQueue(rest, mode);
-            for (let i = queue.length - 1; i >= keepEnd; i--) {
-                await TrackPlayer.remove(i);
-            }
+
+            // One bulk removal instead of removing up to ~50 loaded tracks
+            // one at a time (each its own native bridge round trip) — that
+            // loop was very likely the real cause of the shuffle toggle
+            // feeling like it takes about a second, since the button's own
+            // color animation is fast but toggleShuffle awaits this whole
+            // function before it's done. Priority-queued tracks get removed
+            // by the bulk call too, so they're re-added right after.
+            await withTimeout(TrackPlayer.removeUpcomingTracks(), 4000);
+            if (priorityTracks.length) await withTimeout(TrackPlayer.add(priorityTracks), 4000);
+
             const batch = rest.slice(0, QUEUE_BATCH_SIZE);
             if (batch.length) await withTimeout(TrackPlayer.add(batch), 6000);
             const newQueue = [...queue.slice(0, keepEnd), ...rest];
@@ -518,6 +547,21 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     useEffect(() => { saveSessionRef.current = saveSession; });
+
+    // Position wasn't being saved between app opens/closes — saveSession was
+    // only ever called on track-change events, so closing mid-song (not at a
+    // track boundary, the common case) lost the real position and resumed
+    // from wherever the current song had last started instead.
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (state) => {
+            if (state === 'background' || state === 'inactive') saveSessionRef.current?.();
+        });
+        return () => sub.remove();
+    }, []);
+    useEffect(() => {
+        const interval = setInterval(() => saveSessionRef.current?.(), 15000);
+        return () => clearInterval(interval);
+    }, []);
 
     return (
         <Ctx.Provider value={{

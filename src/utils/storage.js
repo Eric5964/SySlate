@@ -109,6 +109,13 @@ export const setPlaylistCover = async (path, uri) => {
 export const getShowPlayCount = () => safe(() => AsyncStorage.getItem('show_play_count').then(v => v !== 'false'), true);
 export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_play_count', String(v)), null);
 
+// Off by default — showing a cover next to every row means extracting art
+// for the whole visible list (not just the currently-playing song), which
+// is real, noticeable work for a big library. Opt-in rather than surprising
+// someone with a slow first load.
+export const getShowSongCovers = () => safe(() => AsyncStorage.getItem('show_song_covers').then(v => v === 'true'), false);
+export const setShowSongCovers = (v) => safe(() => AsyncStorage.setItem('show_song_covers', String(v)), null);
+
 // Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
 // separately, persisted across app restarts.
 export const getPlaylistSort = (playlistPath) => safe(async () => {
@@ -196,7 +203,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'playlist_sort_orders'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
