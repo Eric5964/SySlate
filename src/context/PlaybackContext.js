@@ -121,6 +121,8 @@ export function PlaybackProvider({ children }) {
         })();
     }, []);
 
+    const saveSessionRef = useRef(() => {});
+
     // Sleep timer — pauses playback (via the same smooth pauseWithRamp used
     // elsewhere) either after a set duration or once the current track ends.
     // sleepTimerEndAt is a real epoch timestamp (not "minutes remaining")
