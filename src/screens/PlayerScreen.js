@@ -6,7 +6,8 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
-import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
+import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
+import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
@@ -38,6 +39,7 @@ export default function PlayerScreen() {
     const {
         currentPlaylist, currentTrack, eqPresetId, shuffleOn, singleLoop,
         loadPlaylist, toggleShuffle, toggleSingleLoop,
+        sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
 
     const progress = useProgress(500);
@@ -62,6 +64,7 @@ export default function PlayerScreen() {
 
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
+    const [showSleepTimer, setShowSleepTimer] = useState(false);
     const [playCount, setPlayCount] = useState(0);
     const [showPlayCount, setShowPlayCountState] = useState(true);
 
@@ -309,6 +312,9 @@ export default function PlayerScreen() {
                 </TouchableOpacity>
                 <Text style={s.topLabel} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
+                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} bgColor={base.bg} />
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topTag, { color: theme.accent }]}>EQ</Text>
                     </TouchableOpacity>
@@ -395,6 +401,7 @@ export default function PlayerScreen() {
 
             <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
+            <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
         </View>
     );
 }

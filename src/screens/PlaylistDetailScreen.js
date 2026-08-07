@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
     StyleSheet, TextInput, StatusBar, Image, Alert,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getShowPlayCount, getShowSongCovers, getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { usePreferences } from '../context/PreferencesContext';
+import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
@@ -40,22 +41,13 @@ export default function PlaylistDetailScreen() {
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
     const [cover, setCover] = useState(null);
-    const [showPlayCount, setShowPlayCount] = useState(true);
-    const [showSongCovers, setShowSongCovers] = useState(false);
+    const { showPlayCount, showSongCovers } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
         getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
         getPlaylistSort(playlist.path).then(setSortId);
     }, []);
-
-    // Re-read on focus (not just mount) — switching back to this screen
-    // after changing a Visual Setting should pick it up immediately,
-    // without needing the screen to fully unmount/remount first.
-    useFocusEffect(useCallback(() => {
-        getShowPlayCount().then(setShowPlayCount);
-        getShowSongCovers().then(setShowSongCovers);
-    }, []));
 
     const sorted = useMemo(() => {
         let songs = [...playlist.songs];

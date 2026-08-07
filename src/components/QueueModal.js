@@ -1,14 +1,17 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet } from 'react-native';
 import TrackPlayer from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
+import { useListArt } from '../hooks/useListArt';
+import { usePreferences } from '../context/PreferencesContext';
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
+    const { showSongCovers } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
 
     const refresh = useCallback(async (priorityOverride) => {
@@ -44,6 +47,7 @@ export default function QueueModal({ visible, onClose }) {
 
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
+    const artMap = useListArt(rows.map(r => r.song), showSongCovers);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
     const remove = async (song) => { const next = await removeFromQueue(song.id); await refresh(next); };
@@ -58,9 +62,20 @@ export default function QueueModal({ visible, onClose }) {
             leftColor="#dc2626"
         >
             {/* Same shape as the All Songs / Playlist rows (rounded card,
-                same padding/margins/colors) — only the interaction (swipe
-                feedback, glow, etc.) stays specific to the queue context. */}
-            <TouchableOpacity style={[s.qRow, { backgroundColor: base.surface }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
+                same padding/margins) — border tier instead of surface, since
+                the sheet itself is already surface (using the same color for
+                both left rows with no visible shape against their own
+                container). Interaction (swipe feedback, glow, etc.) stays
+                specific to the queue context. */}
+            <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
+                {showSongCovers && (
+                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                        {artMap[song.id]
+                            ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                        }
+                    </View>
+                )}
                 <View style={{ flex: 1 }}>
                     <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
                     <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
@@ -105,7 +120,10 @@ const s = StyleSheet.create({
     groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
     divider: { height: 1, backgroundColor: '#1e1e1e', marginHorizontal: 24, marginTop: 8 },
     empty: { color: '#333', fontSize: 14, textAlign: 'center' },
-    qRow: { paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12 },
+    qRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12 },
     qTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     qArtist: { color: '#555', fontSize: 12, marginTop: 3 },
+    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumbImg: { width: '100%', height: '100%' },
+    thumbNote: { fontSize: 18 },
 });

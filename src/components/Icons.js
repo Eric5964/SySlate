@@ -103,3 +103,15 @@ export function TrashIcon({ size = 20, color = '#fff', style }) {
         </View>
     );
 }
+
+export function MoonIcon({ size = 20, color = '#fff', bgColor = '#000', style }) {
+    return (
+        <View style={[{ width: size, height: size }, style]}>
+            <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }} />
+            <View style={{
+                position: 'absolute', top: -size * 0.08, left: size * 0.32,
+                width: size, height: size, borderRadius: size / 2, backgroundColor: bgColor,
+            }} />
+        </View>
+    );
+}

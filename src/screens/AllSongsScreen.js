@@ -1,17 +1,18 @@
-import React, { useContext, useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar,
 } from 'react-native';
-import { useNavigation, useScrollToTop, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useScrollToTop } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePreferences } from '../context/PreferencesContext';
 import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlayCounts, getShowPlayCount, getShowSongCovers } from '../utils/storage';
+import { getPlayCounts } from '../utils/storage';
 import { useListArt } from '../hooks/useListArt';
 
 export default function AllSongsScreen() {
@@ -23,13 +24,7 @@ export default function AllSongsScreen() {
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
     const [playCounts, setPlayCounts] = useState({});
-    const [showPlayCount, setShowPlayCountState] = useState(true);
-    const [showSongCovers, setShowSongCoversState] = useState(false);
-
-    useFocusEffect(useCallback(() => {
-        getShowPlayCount().then(setShowPlayCountState);
-        getShowSongCovers().then(setShowSongCoversState);
-    }, []));
+    const { showPlayCount, showSongCovers } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import { AppState } from 'react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart } from '../services/PlaybackService';
+import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
@@ -121,7 +121,44 @@ export function PlaybackProvider({ children }) {
         })();
     }, []);
 
-    const saveSessionRef = useRef(() => {});
+    // Sleep timer — pauses playback (via the same smooth pauseWithRamp used
+    // elsewhere) either after a set duration or once the current track ends.
+    // sleepTimerEndAt is a real epoch timestamp (not "minutes remaining")
+    // so the UI can compute a live countdown itself without this context
+    // needing to tick every second.
+    const [sleepTimerEndAt, setSleepTimerEndAt] = useState(null);
+    const [sleepAtTrackEnd, setSleepAtTrackEnd] = useState(false);
+    const sleepAtTrackEndRef = useRef(false);
+    useEffect(() => { sleepAtTrackEndRef.current = sleepAtTrackEnd; }, [sleepAtTrackEnd]);
+    const sleepTimerTimeoutRef = useRef(null);
+
+    const cancelSleepTimer = useCallback(() => {
+        clearTimeout(sleepTimerTimeoutRef.current);
+        sleepTimerTimeoutRef.current = null;
+        setSleepTimerEndAt(null);
+        setSleepAtTrackEnd(false);
+    }, []);
+
+    const setSleepTimer = useCallback((minutes) => {
+        clearTimeout(sleepTimerTimeoutRef.current);
+        setSleepAtTrackEnd(false);
+        const endAt = Date.now() + minutes * 60000;
+        setSleepTimerEndAt(endAt);
+        sleepTimerTimeoutRef.current = setTimeout(() => {
+            pauseWithRamp();
+            setSleepTimerEndAt(null);
+        }, minutes * 60000);
+    }, []);
+
+    const setSleepTimerAtTrackEnd = useCallback(() => {
+        clearTimeout(sleepTimerTimeoutRef.current);
+        sleepTimerTimeoutRef.current = null;
+        setSleepTimerEndAt(null);
+        setSleepAtTrackEnd(true);
+    }, []);
+
+    useEffect(() => () => clearTimeout(sleepTimerTimeoutRef.current), []);
+
 
     useEffect(() => {
         const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
@@ -146,6 +183,11 @@ export function PlaybackProvider({ children }) {
                 // which is why closing the app resumed a stale song/queue.
                 saveSessionRef.current?.();
                 topUpQueueIfNeeded();
+                if (sleepAtTrackEndRef.current) {
+                    sleepAtTrackEndRef.current = false;
+                    setSleepAtTrackEnd(false);
+                    pauseWithRamp();
+                }
             } catch { }
         });
         return () => sub.remove();
@@ -282,6 +324,19 @@ export function PlaybackProvider({ children }) {
         loadedThroughRef.current = anchorIndex + batch.length;
     };
 
+    // Wrap around the ENTIRE body of loadPlaylist/playPlaylistOrdered/
+    // playPlaylistShuffled/playSongFromPlaylist. Each call waits for the
+    // previous one to fully finish before it even starts — including its
+    // own isTransitionLocked() check — so rapid taps run strictly one at a
+    // time instead of interleaving.
+    const playActionLockRef = useRef(Promise.resolve());
+    const runExclusivePlayAction = (fn) => {
+        const run = async () => { await fn(); };
+        const chained = playActionLockRef.current.then(run, run);
+        playActionLockRef.current = chained;
+        return chained;
+    };
+
     const topUpQueueIfNeeded = async () => {
         try {
             if (loadedThroughRef.current >= logicalQueueRef.current.length) return; // already fully loaded
@@ -299,7 +354,7 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('topUpQueue:', e); }
     };
 
-    const loadPlaylist = useCallback(async (playlist, forceIndex = null) => {
+    const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
         if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
         const isOn = await getShuffleOnStorage();
@@ -325,9 +380,9 @@ export function PlaybackProvider({ children }) {
         setPriorityQueue([]);
         priorityRef.current = [];
         await setSession(playlist.path, { queue, index: startIndex });
-    }, []);
+    }), []);
 
-    const playPlaylistOrdered = useCallback(async (playlist, orderedSongs) => {
+    const playPlaylistOrdered = useCallback((playlist, orderedSongs) => runExclusivePlayAction(async () => {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
@@ -347,9 +402,9 @@ export function PlaybackProvider({ children }) {
         setPriorityQueue([]);
         priorityRef.current = [];
         await setSession(playlist.path, { queue, index: 0 });
-    }, []);
+    }), []);
 
-    const playPlaylistShuffled = useCallback(async (playlist) => {
+    const playPlaylistShuffled = useCallback((playlist) => runExclusivePlayAction(async () => {
         if (isTransitionLocked()) return;
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
@@ -372,9 +427,9 @@ export function PlaybackProvider({ children }) {
         await setSession(playlist.path, { queue, index: 0 });
         await setShuffleMode(useMode);
         await setShuffleOnStorage(true);
-    }, []);
+    }), []);
 
-    const playSongFromPlaylist = useCallback(async (playlist, songId) => {
+    const playSongFromPlaylist = useCallback((playlist, songId) => runExclusivePlayAction(async () => {
         if (isTransitionLocked()) return;
         const mode = await getShuffleMode();
         const isOn = await getShuffleOnStorage();
@@ -422,7 +477,7 @@ export function PlaybackProvider({ children }) {
             priorityRef.current = [];
         }
         await setSession(playlist.path, { queue, index: 0 });
-    }, [currentPlaylist]);
+    }), [currentPlaylist]);
 
     // Restores playback after a cold app launch. Uses the actual last-playing
     // queue (last.playlist.queue) rather than the playlist's original scan
@@ -579,6 +634,7 @@ export function PlaybackProvider({ children }) {
             loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
             toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
             addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+            sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
         }}>
             {children}
         </Ctx.Provider>

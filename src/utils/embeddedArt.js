@@ -26,8 +26,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
 const CACHE_KEY = 'song_art_cache_v1';
-const FRONT_PREFIX_BYTES = 6 * 1024 * 1024;
-const TAIL_BYTES = 4 * 1024 * 1024;
+const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
+const TAIL_BYTES = 2 * 1024 * 1024;
 
 let cacheMapPromise = null;
 async function loadCacheMap() {
@@ -118,8 +118,15 @@ function readU32BE(bytes, o) { return ((bytes[o] << 24) | (bytes[o + 1] << 16) |
 function readU24BE(bytes, o) { return ((bytes[o] << 16) | (bytes[o + 1] << 8) | bytes[o + 2]) >>> 0; }
 
 function extractPictureFromFlac(bytes) {
-    if (bytes.length < 4 || bytes[0] !== 0x66 || bytes[1] !== 0x4C || bytes[2] !== 0x61 || bytes[3] !== 0x43) return null; // "fLaC"
-    let offset = 4;
+    let start = 0;
+    // ID3v2 tag prepended before the FLAC stream — the tag's size is a
+    // "synchsafe" 28-bit integer (high bit of each of 4 bytes is always 0).
+    if (bytes.length > 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+        const size = ((bytes[6] & 0x7f) << 21) | ((bytes[7] & 0x7f) << 14) | ((bytes[8] & 0x7f) << 7) | (bytes[9] & 0x7f);
+        start = 10 + size;
+    }
+    if (bytes.length < start + 4 || bytes[start] !== 0x66 || bytes[start + 1] !== 0x4C || bytes[start + 2] !== 0x61 || bytes[start + 3] !== 0x43) return null; // "fLaC"
+    let offset = start + 4;
     while (offset + 4 <= bytes.length) {
         const header = bytes[offset];
         const isLast = (header & 0x80) !== 0;
@@ -146,10 +153,20 @@ function extractPictureFromFlac(bytes) {
 function findAtom(bytes, start, end, fourcc) {
     let offset = start;
     while (offset + 8 <= end) {
-        const size = readU32BE(bytes, offset);
+        let size = readU32BE(bytes, offset);
         const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
-        if (size < 8) return null; // malformed, or a 64-bit extended-size atom (not handled)
-        if (type === fourcc) return { dataStart: offset + 8, dataEnd: Math.min(offset + size, end) };
+        let headerSize = 8;
+        if (size === 1) {
+            // 64-bit extended size — the real size is a big-endian uint64
+            // in the next 8 bytes. JS numbers only give us 53 safe integer
+            // bits, but no real atom in this chain is anywhere near that
+            // large, so the low 32 bits (offset+12..+16) are enough.
+            if (offset + 16 > end) return null;
+            size = readU32BE(bytes, offset + 12);
+            headerSize = 16;
+        }
+        if (size < headerSize) return null; // malformed
+        if (type === fourcc) return { dataStart: offset + headerSize, dataEnd: Math.min(offset + size, end) };
         offset += size;
     }
     return null;

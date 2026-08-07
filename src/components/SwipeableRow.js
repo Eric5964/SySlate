@@ -4,7 +4,7 @@ import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { AddQueueIcon, TrashIcon } from './Icons';
 
 const COMMIT_DISTANCE = 72;
-const MAX_REVEAL = 96;
+const MAX_REVEAL = 108;
 
 export default function SwipeableRow({
     children,
@@ -116,14 +116,14 @@ export default function SwipeableRow({
         <View style={styles.wrap}>
             {onSwipeRight && (
                 <Animated.View style={[styles.underlay, styles.underlayLeft, { backgroundColor: rightColor, opacity: rightOpacity }]}>
-                    <AddQueueIcon size={18} color="#fff" />
-                    <Text style={styles.underlayText}>Play Next</Text>
+                    <AddQueueIcon size={15} color="#fff" />
+                    <Text style={styles.underlayText}>Next</Text>
                 </Animated.View>
             )}
             {onSwipeLeft && (
                 <Animated.View style={[styles.underlay, styles.underlayRight, { backgroundColor: leftColor, opacity: leftOpacity }]}>
                     <Text style={styles.underlayText}>Remove</Text>
-                    <TrashIcon size={18} color="#fff" />
+                    <TrashIcon size={15} color="#fff" />
                 </Animated.View>
             )}
             <PanGestureHandler
@@ -153,11 +153,11 @@ const styles = StyleSheet.create({
     underlay: {
         position: 'absolute', top: 0, bottom: 0, left: 0, right: 0,
         flexDirection: 'row', alignItems: 'center', borderRadius: 12,
-        paddingHorizontal: 20, gap: 8,
+        paddingHorizontal: 16, gap: 6,
     },
     underlayLeft: { justifyContent: 'flex-start' },
     underlayRight: { justifyContent: 'flex-end' },
-    underlayText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+    underlayText: { color: '#fff', fontSize: 12, fontWeight: '700' },
     // Static border + shadow — only `opacity` is ever animated (native-driver
     // safe), same principle as the underlay opacity interpolations above.
     glow: {

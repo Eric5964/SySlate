@@ -11,6 +11,7 @@ import TrackPlayer, { Capability } from 'react-native-track-player';
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { PreferencesProvider } from './context/PreferencesContext';
 import { LibraryContext } from './context/LibraryContext';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
@@ -181,9 +182,11 @@ export default function App() {
         <GestureHandlerRootView style={{ flex: 1 }}>
             <ErrorBoundary>
                 <ThemeProvider>
-                    <SafeAreaProvider>
-                        <AppInner />
-                    </SafeAreaProvider>
+                    <PreferencesProvider>
+                        <SafeAreaProvider>
+                            <AppInner />
+                        </SafeAreaProvider>
+                    </PreferencesProvider>
                 </ThemeProvider>
             </ErrorBoundary>
         </GestureHandlerRootView>

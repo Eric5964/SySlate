@@ -9,6 +9,7 @@ import BottomSheet from '../components/BottomSheet';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES, BASE_COLORS } from '../context/ThemeContext';
+import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
@@ -20,8 +21,6 @@ import {
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
-    getShowPlayCount, setShowPlayCount,
-    getShowSongCovers, setShowSongCovers,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -52,8 +51,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const [showPlayCount, setSPC] = useState(true);
-    const [showSongCovers, setSSC] = useState(false);
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
 
@@ -66,8 +64,6 @@ export default function SettingsScreen() {
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
-            setSPC(await getShowPlayCount());
-            setSSC(await getShowSongCovers());
             setLoaded(true);
         })();
     }, []);
@@ -233,8 +229,9 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Song Covers in Lists</Text>
+                            <Text style={s.toggleSub}>Embedded cover art next to songs in a list</Text>
                         </View>
-                        <Switch value={showSongCovers} onValueChange={v => { setSSC(v); setShowSongCovers(v); }}
+                        <Switch value={showSongCovers} onValueChange={setShowSongCovers}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
@@ -242,7 +239,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Show Play Count</Text>
                             <Text style={s.toggleSub}>Next to songs in a playlist, and on the player</Text>
                         </View>
-                        <Switch value={showPlayCount} onValueChange={v => { setSPC(v); setShowPlayCount(v); }}
+                        <Switch value={showPlayCount} onValueChange={setShowPlayCount}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
