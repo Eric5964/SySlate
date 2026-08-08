@@ -147,7 +147,7 @@ export function PlaybackProvider({ children }) {
         const endAt = Date.now() + minutes * 60000;
         setSleepTimerEndAt(endAt);
         sleepTimerTimeoutRef.current = setTimeout(() => {
-            pauseWithRamp();
+            pauseWithRamp(true);
             setSleepTimerEndAt(null);
         }, minutes * 60000);
     }, []);
@@ -188,7 +188,7 @@ export function PlaybackProvider({ children }) {
                 if (sleepAtTrackEndRef.current) {
                     sleepAtTrackEndRef.current = false;
                     setSleepAtTrackEnd(false);
-                    pauseWithRamp();
+                    pauseWithRamp(true);
                 }
             } catch { }
         });
@@ -249,9 +249,11 @@ export function PlaybackProvider({ children }) {
             const idx = queue.findIndex(t => t.id === songId);
             if (idx === -1 || idx <= currentIndex) return priorityRef.current;
             const track = queue[idx];
-            await TrackPlayer.remove(idx);
+            // Keeps the original occurrence in place instead of moving it —
+            // the song plays sooner via this new priority copy, but still
+            // plays again later at its natural spot too.
             const insertAt = currentIndex + 1 + priorityRef.current.length;
-            await TrackPlayer.add(track, insertAt);
+            await TrackPlayer.add({ ...track }, insertAt);
             const next = [...priorityRef.current, songId];
             priorityRef.current = next;
             setPriorityQueue(next);
@@ -327,13 +329,24 @@ export function PlaybackProvider({ children }) {
     };
 
     // Wrap around the ENTIRE body of loadPlaylist/playPlaylistOrdered/
-    // playPlaylistShuffled/playSongFromPlaylist. Each call waits for the
-    // previous one to fully finish before it even starts — including its
-    // own isTransitionLocked() check — so rapid taps run strictly one at a
-    // time instead of interleaving.
+    // playPlaylistShuffled/playSongFromPlaylist. The currently-RUNNING
+    // action always finishes (an in-flight TrackPlayer.reset/add can't be
+    // safely interrupted), but a NEW tap arriving while a previous one is
+    // still just QUEUED (not yet started) replaces it entirely instead of
+    // both running one after another. Without this, rapid taps queued up
+    // strictly FIFO and every single one played out in full — tapping
+    // through several songs felt like each tap got added to a playback
+    // queue instead of the latest tap just taking over.
     const playActionLockRef = useRef(Promise.resolve());
+    const latestPendingRef = useRef(null);
     const runExclusivePlayAction = (fn) => {
-        const run = async () => { await fn(); };
+        const entry = {};
+        latestPendingRef.current = entry;
+        const run = async () => {
+            if (latestPendingRef.current !== entry) return; // superseded before it got a turn
+            latestPendingRef.current = null;
+            await fn();
+        };
         const chained = playActionLockRef.current.then(run, run);
         playActionLockRef.current = chained;
         return chained;

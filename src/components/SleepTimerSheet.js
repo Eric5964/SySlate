@@ -7,7 +7,7 @@ import BottomSheet from './BottomSheet';
 const DURATIONS = [15, 30, 45, 60, 90];
 
 function formatRemaining(ms) {
-    const totalSec = Math.max(0, Math.round(ms / 1000));
+    const totalSec = Math.max(0, Math.ceil(ms / 1000));
     const mm = Math.floor(totalSec / 60);
     const ss = totalSec % 60;
     return `${mm}:${String(ss).padStart(2, '0')}`;
@@ -20,8 +20,13 @@ export default function SleepTimerSheet({ visible, onClose }) {
 
     // Only ticks while a duration timer is actually active and this sheet is
     // open — no reason to run a 1s interval in the background otherwise.
+    // Refreshes immediately on start rather than waiting for the first
+    // setInterval tick (which doesn't fire until a full second has already
+    // passed) — that gap was what made the countdown look frozen at the
+    // starting value for up to a second after opening the sheet.
     useEffect(() => {
         if (!visible || !sleepTimerEndAt) return;
+        setNow(Date.now());
         const id = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(id);
     }, [visible, sleepTimerEndAt]);

@@ -30,12 +30,19 @@ export default function QueueModal({ visible, onClose }) {
             // only change for a row when a duplicate of ITS OWN song is
             // added/removed earlier in the list, which is rare.
             const idOccurrence = {};
+            const seenAsPriority = new Set();
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
                 const n = (idOccurrence[song.id] = (idOccurrence[song.id] || 0) + 1);
+                // Only the first occurrence of a given song in queue order
+                // can be "the" priority slot for it — a later, natural-
+                // position duplicate of the same song shouldn't also read
+                // as prioritized just because the id matches.
+                const eligible = activePriority.includes(song.id) && !seenAsPriority.has(song.id);
+                if (eligible) seenAsPriority.add(song.id);
                 return {
                     realIndex: currentIndex + 1 + i,
                     song,
-                    isPriority: activePriority.includes(song.id),
+                    isPriority: eligible,
                     stableKey: `${song.id}#${n}`,
                 };
             });

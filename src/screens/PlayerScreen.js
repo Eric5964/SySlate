@@ -80,6 +80,8 @@ export default function PlayerScreen() {
     const [dragRatio, setDragRatio] = useState(null);
     const lastSeekAt = useRef(0);
     const lastSeekRatio = useRef(null);
+    const seekChainRef = useRef(Promise.resolve());
+    const latestSeekRatioRef = useRef(null);
     const clearDragTimer = useRef(null);
     // Backstop: if no terminal gesture state ever arrives after a touch
     // starts (this has been the recurring symptom — the bar freezes and
@@ -125,7 +127,7 @@ export default function PlayerScreen() {
         });
     };
 
-    const touchToRatio = (pageX) => Math.max(0, Math.min(1,
+    const touchToRatio = (pageX) => Math.max(0, Math.min(0.99,
         (pageX - progressLayout.current.pageX) / progressLayout.current.width
     ));
 
@@ -151,7 +153,13 @@ export default function PlayerScreen() {
             if (!skip) {
                 lastSeekAt.current = now;
                 lastSeekRatio.current = ratio;
-                TrackPlayer.seekTo(ratio * progress.duration);
+                latestSeekRatioRef.current = ratio;
+                const targetRatio = ratio;
+                const duration = progress.duration;
+                seekChainRef.current = seekChainRef.current.then(async () => {
+                    if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
+                    try { await TrackPlayer.seekTo(targetRatio * duration); } catch { }
+                });
             }
         }
         if (commit) {

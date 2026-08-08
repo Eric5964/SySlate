@@ -28,6 +28,7 @@ export default function SwipeableRow({
     // introducing any new animated color/shadow properties.
     const rightGlow = useRef(new Animated.Value(0)).current;
     const leftGlow = useRef(new Animated.Value(0)).current;
+    const addedTextOpacity = useRef(new Animated.Value(0)).current;
     const onSwipeRightRef = useRef(onSwipeRight);
     const onSwipeLeftRef = useRef(onSwipeLeft);
     useEffect(() => { onSwipeRightRef.current = onSwipeRight; onSwipeLeftRef.current = onSwipeLeft; });
@@ -47,6 +48,15 @@ export default function SwipeableRow({
         ]).start();
     };
 
+    const showAddedText = () => {
+        addedTextOpacity.setValue(0);
+        Animated.sequence([
+            Animated.timing(addedTextOpacity, { toValue: 1, duration: 120, useNativeDriver: true }),
+            Animated.delay(500),
+            Animated.timing(addedTextOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+        ]).start();
+    };
+
     const onHandlerStateChange = useRef((e) => {
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const dx = e.nativeEvent.translationX;
@@ -55,6 +65,7 @@ export default function SwipeableRow({
             // instead of teleporting it via setValue(0).
             onSwipeRightRef.current();
             glowPulse(rightGlow);
+            showAddedText();
             Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 10, tension: 120 }).start();
             return;
         }
@@ -68,7 +79,7 @@ export default function SwipeableRow({
             // real data update lands.
             glowPulse(leftGlow);
             onSwipeLeftRef.current();
-            Animated.timing(translateX, { toValue: -400, duration: 130, useNativeDriver: true }).start();
+            Animated.spring(translateX, { toValue: -400, useNativeDriver: true, friction: 9, tension: 100 }).start();
             return;
         }
         Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
@@ -142,6 +153,13 @@ export default function SwipeableRow({
                     {onSwipeLeft && (
                         <Animated.View pointerEvents="none" style={[styles.glow, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
                     )}
+                    {onSwipeRight && (
+                        <Animated.View pointerEvents="none" style={[styles.addedBadgeZone, { opacity: addedTextOpacity }]}>
+                            <View style={[styles.addedBadge, { backgroundColor: rightColor }]}>
+                                <Text style={styles.addedText}>Added</Text>
+                            </View>
+                        </Animated.View>
+                    )}
                 </Animated.View>
             </PanGestureHandler>
         </View>
@@ -165,7 +183,15 @@ const styles = StyleSheet.create({
         borderRadius: 14,
         borderWidth: 1.5,
         shadowOffset: { width: 0, height: 0 },
-        shadowRadius: 10,
-        shadowOpacity: 0.9,
+        shadowRadius: 5,
+        shadowOpacity: 0.55,
     },
+    addedBadgeZone: {
+        position: 'absolute', top: 0, bottom: 0, right: 10,
+        justifyContent: 'center', alignItems: 'flex-end',
+    },
+    addedBadge: {
+        paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+    },
+    addedText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 });

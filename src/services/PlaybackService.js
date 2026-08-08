@@ -189,15 +189,15 @@ export async function playWithRamp(preClaimedId) {
     }
 }
 
-export async function pauseWithRamp() {
-    if (isTransitionLocked()) { queueAction(() => pauseWithRamp()); return; }
+export async function pauseWithRamp(fullRamp = false) {
+    if (isTransitionLocked()) { queueAction(() => pauseWithRamp(fullRamp)); return; }
     rampLock = true;
     try {
         const useFade = await getRampOnPause();
         const ramp = await getAudioRamp();
         if (useFade && ramp > 0.05 && activeFadeId === null) {
             const id = claimFade();
-            await fadeVol(1, 0, ramp * 0.5, id);
+            await fadeVol(1, 0, fullRamp ? ramp : ramp * 0.5, id);
             releaseFade(id);
             try { await TrackPlayer.pause(); } catch { }
             try { await TrackPlayer.setVolume(1); } catch { }
