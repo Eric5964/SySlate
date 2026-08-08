@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { InteractionManager } from 'react-native';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
 // Returns { songId: uri | null } for whichever songs have resolved so far.
@@ -26,7 +27,7 @@ export function useListArt(songs, enabled) {
         let cancelled = false;
         let newExtractions = 0;
 
-        (async () => {
+        const run = async () => {
             for (const song of songs) {
                 if (cancelled || runIdRef.current !== runId) return;
                 if (song.id in artMap) continue; // already resolved (or resolving) this run
@@ -48,9 +49,26 @@ export function useListArt(songs, enabled) {
                 // library.
                 await new Promise(r => setTimeout(r, 30));
             }
-        })();
+        };
 
-        return () => { cancelled = true; };
+        // Previously this fired the instant the screen mounted — which is
+        // exactly when a navigation push/transition is also trying to
+        // animate on the JS thread (this app uses @react-navigation/stack,
+        // not native-stack, so transitions run in JS). Competing with that
+        // for the thread is a very plausible cause of both "delay before
+        // anything happens after tapping" and "choppy transitions."
+        // InteractionManager defers until animations/interactions have
+        // settled; the extra 300ms is a safety margin on top of that, since
+        // JS-driven navigation transitions don't always register themselves
+        // as an "interaction" the same way RN's own Animated calls do.
+        const cancelRef = { current: null };
+        const handle = InteractionManager.runAfterInteractions(() => {
+            const t = setTimeout(run, 300);
+            cancelRef.current = () => clearTimeout(t);
+        });
+        cancelRef.current = () => handle.cancel();
+
+        return () => { cancelled = true; cancelRef.current?.(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, songs]);
 
