@@ -126,13 +126,13 @@ export default function SwipeableRow({
     return (
         <View style={styles.wrap}>
             {onSwipeRight && (
-                <Animated.View style={[styles.underlay, styles.underlayLeft, { backgroundColor: rightColor, opacity: rightOpacity }]}>
+                <Animated.View style={[styles.underlay, styles.underlayLeft, { width: MAX_REVEAL, backgroundColor: rightColor, opacity: rightOpacity }]}>
                     <AddQueueIcon size={15} color="#fff" />
                     <Text style={styles.underlayText}>Next</Text>
                 </Animated.View>
             )}
             {onSwipeLeft && (
-                <Animated.View style={[styles.underlay, styles.underlayRight, { backgroundColor: leftColor, opacity: leftOpacity }]}>
+                <Animated.View style={[styles.underlay, styles.underlayRight, { width: MAX_REVEAL, backgroundColor: leftColor, opacity: leftOpacity }]}>
                     <Text style={styles.underlayText}>Remove</Text>
                     <TrashIcon size={15} color="#fff" />
                 </Animated.View>
@@ -169,12 +169,12 @@ export default function SwipeableRow({
 const styles = StyleSheet.create({
     wrap: { position: 'relative' },
     underlay: {
-        position: 'absolute', top: 0, bottom: 0, left: 0, right: 0,
+        position: 'absolute', top: 0, bottom: 0,
         flexDirection: 'row', alignItems: 'center', borderRadius: 12,
         paddingHorizontal: 16, gap: 6,
     },
-    underlayLeft: { justifyContent: 'flex-start' },
-    underlayRight: { justifyContent: 'flex-end' },
+    underlayLeft: { left: 0, justifyContent: 'flex-start' },
+    underlayRight: { right: 0, justifyContent: 'flex-end' },
     underlayText: { color: '#fff', fontSize: 12, fontWeight: '700' },
     // Static border + shadow — only `opacity` is ever animated (native-driver
     // safe), same principle as the underlay opacity interpolations above.
@@ -187,7 +187,7 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.55,
     },
     addedBadgeZone: {
-        position: 'absolute', top: 0, bottom: 0, right: 10,
+        position: 'absolute', top: 0, bottom: 0, right: 56,
         justifyContent: 'center', alignItems: 'flex-end',
     },
     addedBadge: {

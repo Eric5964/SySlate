@@ -127,7 +127,7 @@ export default function PlayerScreen() {
         });
     };
 
-    const touchToRatio = (pageX) => Math.max(0, Math.min(0.99,
+    const touchToRatio = (pageX) => Math.max(0.002, Math.min(0.99,
         (pageX - progressLayout.current.pageX) / progressLayout.current.width
     ));
 

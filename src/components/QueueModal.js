@@ -30,19 +30,20 @@ export default function QueueModal({ visible, onClose }) {
             // only change for a row when a duplicate of ITS OWN song is
             // added/removed earlier in the list, which is rare.
             const idOccurrence = {};
-            const seenAsPriority = new Set();
+            const priorityEnd = currentIndex + 1 + activePriority.length;
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
                 const n = (idOccurrence[song.id] = (idOccurrence[song.id] || 0) + 1);
-                // Only the first occurrence of a given song in queue order
-                // can be "the" priority slot for it — a later, natural-
-                // position duplicate of the same song shouldn't also read
-                // as prioritized just because the id matches.
-                const eligible = activePriority.includes(song.id) && !seenAsPriority.has(song.id);
-                if (eligible) seenAsPriority.add(song.id);
+                const realIndex = currentIndex + 1 + i;
                 return {
-                    realIndex: currentIndex + 1 + i,
+                    realIndex,
                     song,
-                    isPriority: eligible,
+                    // Purely positional — a slot is "priority" based on where
+                    // it sits, not by matching song id against a list. That's
+                    // what the insertAt math elsewhere already assumes, and
+                    // it naturally handles multiple genuine copies of the
+                    // same song (each a distinct slot) correctly, unlike
+                    // id-matching which can only ever mark one of them.
+                    isPriority: realIndex < priorityEnd,
                     stableKey: `${song.id}#${n}`,
                 };
             });
@@ -57,14 +58,14 @@ export default function QueueModal({ visible, onClose }) {
     const artMap = useListArt(rows.map(r => r.song), showSongCovers);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
-    const remove = async (song) => { const next = await removeFromQueue(song.id); await refresh(next); };
+    const remove = async (realIndex) => { const next = await removeFromQueue(realIndex); await refresh(next); };
     const promote = async (song) => { const next = await promoteToQueue(song.id); await refresh(next); };
 
     const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
         <SwipeableRow
             key={stableKey}
-            onSwipeLeft={() => remove(song)}
-            onSwipeRight={isPriority ? undefined : () => promote(song)}
+            onSwipeLeft={() => remove(realIndex)}
+            onSwipeRight={() => promote(song)}
             rightColor={theme.accent}
             leftColor="#dc2626"
         >

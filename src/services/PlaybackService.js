@@ -163,7 +163,7 @@ function stopWatcher() {
     if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
 }
 
-export async function playWithRamp(preClaimedId) {
+export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer.play()) {
     if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;
     try {
@@ -171,7 +171,7 @@ export async function playWithRamp(preClaimedId) {
         if (ramp > 0.05 && (preClaimedId || activeFadeId === null)) {
             const id = preClaimedId ?? claimFade();
             try { await TrackPlayer.setVolume(0); } catch { }
-            try { await TrackPlayer.play(); } catch { }
+            try { await startAction(); } catch { }
             await waitForPlaying();
             await sleep(50); // let the audio pipeline settle before ramping — was causing a small blip at the very start
             await fadeVol(0, 1, ramp, id);
@@ -179,7 +179,7 @@ export async function playWithRamp(preClaimedId) {
         } else {
             if (preClaimedId) releaseFade(preClaimedId);
             try { await TrackPlayer.setVolume(1); } catch { }
-            try { await TrackPlayer.play(); } catch { }
+            try { await startAction(); } catch { }
         }
         startWatcher();
     } finally {
@@ -189,15 +189,15 @@ export async function playWithRamp(preClaimedId) {
     }
 }
 
-export async function pauseWithRamp(fullRamp = false) {
-    if (isTransitionLocked()) { queueAction(() => pauseWithRamp(fullRamp)); return; }
+export async function pauseWithRamp() {
+    if (isTransitionLocked()) { queueAction(() => pauseWithRamp()); return; }
     rampLock = true;
     try {
         const useFade = await getRampOnPause();
         const ramp = await getAudioRamp();
         if (useFade && ramp > 0.05 && activeFadeId === null) {
             const id = claimFade();
-            await fadeVol(1, 0, fullRamp ? ramp : ramp * 0.5, id);
+            await fadeVol(1, 0, ramp, id);
             releaseFade(id);
             try { await TrackPlayer.pause(); } catch { }
             try { await TrackPlayer.setVolume(1); } catch { }

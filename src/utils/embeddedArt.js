@@ -25,7 +25,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 //   this cost is paid once per song, not on every play.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
-const CACHE_KEY = 'song_art_cache_v1';
+// v2: bumped because a lot of songs were likely permanently cached as "no
+// art found" by earlier parsing logic (before the ID3v2-prefix and 64-bit-
+// atom-size fixes) — that negative result is cached forever, so without a
+// version bump those songs would never get retried under the fixed parser.
+const CACHE_KEY = 'song_art_cache_v2';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
 const TAIL_BYTES = 2 * 1024 * 1024;
 

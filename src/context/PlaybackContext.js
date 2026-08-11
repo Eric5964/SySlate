@@ -147,7 +147,7 @@ export function PlaybackProvider({ children }) {
         const endAt = Date.now() + minutes * 60000;
         setSleepTimerEndAt(endAt);
         sleepTimerTimeoutRef.current = setTimeout(() => {
-            pauseWithRamp(true);
+            pauseWithRamp();
             setSleepTimerEndAt(null);
         }, minutes * 60000);
     }, []);
@@ -172,6 +172,7 @@ export function PlaybackProvider({ children }) {
                     track = await TrackPlayer.getTrack(nextTrack);
                 }
                 if (!track) return;
+                if (track.id === currentTrackRef.current?.id) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
                 setCurrentTrack(track);
                 if (priorityRef.current.includes(track.id)) {
                     const next = priorityRef.current.filter(id => id !== track.id);
@@ -188,7 +189,7 @@ export function PlaybackProvider({ children }) {
                 if (sleepAtTrackEndRef.current) {
                     sleepAtTrackEndRef.current = false;
                     setSleepAtTrackEnd(false);
-                    pauseWithRamp(true);
+                    pauseWithRamp();
                 }
             } catch { }
         });
@@ -261,13 +262,21 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('promoteToQueue:', e); return priorityRef.current; }
     }, []);
 
-    const removeFromQueue = useCallback(async (songId) => {
+    const removeFromQueue = useCallback(async (realIndex) => {
         try {
-            const queue = await TrackPlayer.getQueue();
-            const idx = queue.findIndex(t => t.id === songId);
-            if (idx === -1) return priorityRef.current;
-            await TrackPlayer.remove(idx);
-            const next = priorityRef.current.filter(id => id !== songId);
+            const currentIndex = await TrackPlayer.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
+            await TrackPlayer.remove(realIndex);
+            const priorityCount = priorityRef.current.length;
+            const priorityEnd = currentIndex + 1 + priorityCount;
+            let next = priorityRef.current;
+            if (realIndex < priorityEnd) {
+                // Removed slot was within the priority window — drop exactly
+                // one tracked slot (not by id-filter, which would strip
+                // every copy of a duplicated song from tracking even if only
+                // one of its copies was actually removed).
+                next = next.slice(0, -1);
+            }
             priorityRef.current = next;
             setPriorityQueue(next);
             return next;
@@ -279,12 +288,16 @@ export function PlaybackProvider({ children }) {
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
+            if (realIndex === currentIndex) return; // already playing this exact slot
             const priorityCount = priorityRef.current.length;
             const priorityStart = currentIndex + 1;
             const priorityEnd = priorityStart + priorityCount;
 
+            forceReleaseFade();
+            const preClaimedId = preClaimFadeForFreshStart();
+
             if (realIndex < priorityEnd) {
-                await TrackPlayer.skip(realIndex);
+                await playWithRamp(preClaimedId, () => TrackPlayer.skip(realIndex));
                 return;
             }
 
@@ -297,7 +310,7 @@ export function PlaybackProvider({ children }) {
             if (priorityTracks.length) {
                 await TrackPlayer.add(priorityTracks, newTargetIndex + 1);
             }
-            await TrackPlayer.skip(newTargetIndex);
+            await playWithRamp(preClaimedId, () => TrackPlayer.skip(newTargetIndex));
         } catch (e) { console.error('jumpToQueueIndex:', e); }
     }, []);
 
@@ -453,6 +466,7 @@ export function PlaybackProvider({ children }) {
         if (!song) { console.warn('Song not found:', songId); return; }
 
         const isSamePlaylist = currentPlaylist?.path === playlist.path;
+        if (isSamePlaylist && currentTrack?.id === songId) return; // already playing this exact song here
         const keepIds = isSamePlaylist ? priorityRef.current : [];
         const keepSet = new Set(keepIds);
         const prioritySongs = keepIds
