@@ -1,5 +1,12 @@
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Alert } from 'react-native';
+
+// TEMP DEBUG (remove once the covers bug is diagnosed): extractEmbeddedArt's
+// catch block below swallows every error silently via console.error, which
+// is invisible without a Metro/dev-server connection. This surfaces the
+// first real error via Alert so it's visible on-device with no dev tools.
+let hasShownDebugAlert = false;
 
 // Extracts embedded cover art (the PICTURE block in FLAC, the 'covr' atom in
 // MP4/ALAC) directly, with hand-rolled binary parsers instead of a metadata
@@ -255,6 +262,13 @@ export async function extractEmbeddedArt(song) {
         return dest;
     } catch (e) {
         console.error('extractEmbeddedArt:', e);
+        if (!hasShownDebugAlert) {
+            hasShownDebugAlert = true;
+            Alert.alert(
+                'DEBUG: extractEmbeddedArt error',
+                `song: ${song?.filename || song?.id}\n\n${e?.message || e}\n\n${e?.stack || ''}`.slice(0, 1200)
+            );
+        }
         return null;
     }
 }

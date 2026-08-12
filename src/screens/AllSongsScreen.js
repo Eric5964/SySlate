@@ -150,8 +150,8 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
-    topBar: { paddingTop: 56, paddingHorizontal: 20, paddingBottom: 10 },
-    title: { color: '#e5e5e5', fontSize: 22, fontWeight: '700', marginBottom: 10 },
+    topBar: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 10 },
+    title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700', marginBottom: 10 },
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     searchBar: { borderRadius: 10, paddingVertical: 9, paddingHorizontal: 14, paddingRight: 32, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
