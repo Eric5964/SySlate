@@ -32,11 +32,10 @@ let hasShownDebugAlert = false;
 //   this cost is paid once per song, not on every play.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
-// v2: bumped because a lot of songs were likely permanently cached as "no
-// art found" by earlier parsing logic (before the ID3v2-prefix and 64-bit-
-// atom-size fixes) — that negative result is cached forever, so without a
-// version bump those songs would never get retried under the fixed parser.
-const CACHE_KEY = 'song_art_cache_v2';
+// v3: bumped again — negative cache entries from before this debug pass may
+// be stuck (device data wipe didn't clear AsyncStorage), so bump forces
+// every song through real extraction again regardless of what's cached.
+const CACHE_KEY = 'song_art_cache_v3';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
 const TAIL_BYTES = 2 * 1024 * 1024;
 
@@ -225,7 +224,26 @@ export async function getCachedArt(song) {
 // none was found/the format isn't supported. Safe to call repeatedly — the
 // result (including a miss) is cached, so only the first call per song does
 // real work.
+//
+// In-flight dedup: several call sites can ask for the same song's art at
+// nearly the same moment — PlaybackContext's own "currently playing" effect,
+// its upcoming-track prefetch, and a list screen's useListArt scan can all
+// legitimately want the same song around a track change. Without this, each
+// of those would independently kick off its own full file read + base64
+// decode (several MB apiece) for the identical song at the identical time.
+// This makes concurrent callers share one in-flight extraction instead.
+const inFlightExtractions = new Map();
 export async function extractEmbeddedArt(song) {
+    if (!song?.id || !song?.url) return null;
+    if (inFlightExtractions.has(song.id)) return inFlightExtractions.get(song.id);
+    const promise = extractEmbeddedArtUncached(song).finally(() => {
+        inFlightExtractions.delete(song.id);
+    });
+    inFlightExtractions.set(song.id, promise);
+    return promise;
+}
+
+async function extractEmbeddedArtUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {
         const cache = await loadCacheMap();

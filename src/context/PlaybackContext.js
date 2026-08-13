@@ -51,12 +51,22 @@ export function PlaybackProvider({ children }) {
                 const queue = await TrackPlayer.getQueue();
                 const idx = queue.findIndex(t => t.id === currentTrack.id);
                 if (idx !== -1) await TrackPlayer.updateMetadataForTrack(idx, { artwork: uri });
-                // Warm the cache for what's coming up next — fire and
-                // forget, no state to update since these aren't playing
-                // yet. By the time playback naturally reaches them,
-                // extraction is often already done.
+                // Warm the cache for what's coming up next. Sequential with a
+                // small stagger (not fired concurrently) — this used to be a
+                // fire-and-forget loop that kicked off both reads at once,
+                // which meant every track change could briefly hold 2-3 full
+                // multi-MB file reads + base64 decodes in memory at the same
+                // time (this track's own extraction, plus both upcoming
+                // ones). Deduped against other callers via extractEmbeddedArt's
+                // in-flight map, but that only helps when the SAME song is
+                // requested twice — it doesn't help two DIFFERENT upcoming
+                // songs racing each other, which is what this fixes.
                 const upcoming = queue.slice(idx + 1, idx + 3);
-                for (const t of upcoming) extractEmbeddedArt(t).catch(() => { });
+                for (const t of upcoming) {
+                    if (cancelled) return;
+                    await extractEmbeddedArt(t).catch(() => { });
+                    await new Promise(r => setTimeout(r, 200));
+                }
             } catch { }
         };
 
