@@ -32,10 +32,10 @@ let hasShownDebugAlert = false;
 //   this cost is paid once per song, not on every play.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
-// v3: bumped again — negative cache entries from before this debug pass may
-// be stuck (device data wipe didn't clear AsyncStorage), so bump forces
-// every song through real extraction again regardless of what's cached.
-const CACHE_KEY = 'song_art_cache_v3';
+// v4: bumped again — some previously-cached mp4/alac covers were saved as
+// truncated (partial) images before the fix below, so they need to be
+// re-processed with the fix rather than served from cache as-is.
+const CACHE_KEY = 'song_art_cache_v4';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
 const TAIL_BYTES = 2 * 1024 * 1024;
 
@@ -176,13 +176,17 @@ function findAtom(bytes, start, end, fourcc) {
             headerSize = 16;
         }
         if (size < headerSize) return null; // malformed
-        if (type === fourcc) return { dataStart: offset + headerSize, dataEnd: Math.min(offset + size, end) };
+        if (type === fourcc) return { dataStart: offset + headerSize, dataEnd: Math.min(offset + size, end), trueEnd: offset + size };
         offset += size;
     }
     return null;
 }
 
-function extractPictureFromMp4(bytes) {
+function guessImageMime(bytes) {
+    return (bytes[0] === 0xFF && bytes[1] === 0xD8) ? 'image/jpeg' : 'image/png';
+}
+
+function extractPictureFromMp4(bytes, baseOffset = 0) {
     const moov = findAtom(bytes, 0, bytes.length, 'moov');
     if (!moov) return null;
     const udta = findAtom(bytes, moov.dataStart, moov.dataEnd, 'udta');
@@ -197,10 +201,19 @@ function extractPictureFromMp4(bytes) {
     const dataAtom = findAtom(bytes, covr.dataStart, covr.dataEnd, 'data');
     if (!dataAtom) return null;
     const payloadStart = dataAtom.dataStart + 8; // 4-byte type indicator + 4-byte locale
+    // dataAtom.trueEnd is the atom's real declared end, unclamped — if that
+    // runs past what we actually read (bytes.length), the picture is bigger
+    // than our read window. Previously this just silently sliced to
+    // whatever fit, writing a truncated image to disk that displays as a
+    // half-scanned/corrupt cover forever (cached as "found", never retried).
+    // Now it reports back exactly which absolute file range still needs to
+    // be read, instead of guessing.
+    if (dataAtom.trueEnd > bytes.length) {
+        return { truncated: true, start: baseOffset + payloadStart, length: dataAtom.trueEnd - payloadStart };
+    }
     const payload = bytes.slice(payloadStart, dataAtom.dataEnd);
     if (!payload.length) return null;
-    const mime = (payload[0] === 0xFF && payload[1] === 0xD8) ? 'image/jpeg' : 'image/png';
-    return { mime, data: payload };
+    return { mime: guessImageMime(payload), data: payload };
 }
 
 function hashCode(str) {
@@ -243,6 +256,18 @@ export async function extractEmbeddedArt(song) {
     return promise;
 }
 
+const MAX_MP4_PICTURE_BYTES = 20 * 1024 * 1024;
+
+async function resolveMp4Picture(song, bytes, baseOffset) {
+    const picture = extractPictureFromMp4(bytes, baseOffset);
+    if (!picture?.truncated) return picture;
+    if (picture.length > MAX_MP4_PICTURE_BYTES || picture.length <= 0) return null;
+    // Read exactly the remaining bytes of the real image, using the exact
+    // absolute file position we now know it's at.
+    const rest = await readBytes(song.url, { position: picture.start, length: picture.length });
+    return { mime: guessImageMime(rest), data: rest };
+}
+
 async function extractEmbeddedArtUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {
@@ -257,12 +282,13 @@ async function extractEmbeddedArtUncached(song) {
             picture = extractPictureFromFlac(bytes);
         } else if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') {
             const front = await readBytes(song.url, { position: 0, length: FRONT_PREFIX_BYTES });
-            picture = extractPictureFromMp4(front);
+            picture = await resolveMp4Picture(song, front, 0);
             if (!picture) {
                 const info = await FileSystem.getInfoAsync(song.url);
                 if (info.exists && info.size > TAIL_BYTES) {
-                    const tail = await readBytes(song.url, { position: info.size - TAIL_BYTES, length: TAIL_BYTES });
-                    picture = extractPictureFromMp4(tail);
+                    const tailStart = info.size - TAIL_BYTES;
+                    const tail = await readBytes(song.url, { position: tailStart, length: TAIL_BYTES });
+                    picture = await resolveMp4Picture(song, tail, tailStart);
                 }
             }
         }
