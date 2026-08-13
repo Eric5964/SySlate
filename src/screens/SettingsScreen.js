@@ -193,8 +193,8 @@ export default function SettingsScreen() {
 
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Ramp on Pause</Text>
-                            <Text style={s.toggleSub}>Fade out when pausing too</Text>
+                            <Text style={s.toggleLabel}>Ramp on Pause / Play</Text>
+                            <Text style={s.toggleSub}>Fade out on pause, fade in on resume</Text>
                         </View>
                         <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />

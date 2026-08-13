@@ -168,6 +168,13 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
     rampLock = true;
     try {
         const ramp = await getAudioRamp();
+        // "Ramp on Pause" only controls the pause fade-out (below in
+        // pauseWithRamp) — it does not gate this function. Resuming/playing
+        // always follows the Audio Ramp duration on its own, same as a
+        // fresh song start. A previous version gated this on the pause
+        // toggle too, which meant turning "Ramp on Pause" off silently also
+        // killed ramping on resume, skip-while-paused, and effectively the
+        // whole ramp-in side — that was wrong scope, not intended.
         if (ramp > 0.05 && (preClaimedId || activeFadeId === null)) {
             const id = preClaimedId ?? claimFade();
             try { await TrackPlayer.setVolume(0); } catch { }

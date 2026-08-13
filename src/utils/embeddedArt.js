@@ -32,12 +32,14 @@ let hasShownDebugAlert = false;
 //   this cost is paid once per song, not on every play.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
-// v4: bumped again — some previously-cached mp4/alac covers were saved as
-// truncated (partial) images before the fix below, so they need to be
-// re-processed with the fix rather than served from cache as-is.
-const CACHE_KEY = 'song_art_cache_v4';
+// v5: the tail-fallback for "moov at end" ALAC/m4a files was fundamentally
+// broken — it assumed a fixed-size chunk read from near EOF started exactly
+// at the 'moov' box boundary, which is essentially never true. Replaced
+// with a proper scan that locates 'moov' by its marker and re-reads the
+// exact box. Old cached "no art found" results for those files need to be
+// retried under the real logic.
+const CACHE_KEY = 'song_art_cache_v5';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
-const TAIL_BYTES = 2 * 1024 * 1024;
 
 let cacheMapPromise = null;
 async function loadCacheMap() {
@@ -256,6 +258,45 @@ export async function extractEmbeddedArt(song) {
     return promise;
 }
 
+// For "moov at end" files (common for ALAC when the encoder doesn't put
+// metadata up front for streaming), a fixed-size tail read can't just
+// assume its first byte is the start of the 'moov' box — there's no way to
+// know that without knowing exactly where 'moov' begins, and moov's own
+// declared size includes any embedded cover art inside it, so it can
+// legitimately run several MB. This scans for the "moov" marker itself and
+// validates it against the known file size (moov is virtually always the
+// last top-level box, so its declared end should land exactly on EOF).
+function findMoovNearEnd(bytes, tailStart, fileSize) {
+    for (let i = bytes.length - 4; i >= 4; i--) {
+        if (bytes[i] === 0x6D && bytes[i + 1] === 0x6F && bytes[i + 2] === 0x6F && bytes[i + 3] === 0x76) { // "moov"
+            const sizeFieldOffset = i - 4;
+            const size = readU32BE(bytes, sizeFieldOffset);
+            if (size === 1) continue; // 64-bit extended size — vanishingly rare for moov, skip
+            const absStart = tailStart + sizeFieldOffset;
+            if (absStart + size === fileSize) return { absStart, size };
+        }
+    }
+    return null;
+}
+
+const MOOV_SCAN_START_BYTES = 3 * 1024 * 1024;
+const MOOV_SCAN_MAX_BYTES = 24 * 1024 * 1024;
+const MAX_MOOV_BYTES = MOOV_SCAN_MAX_BYTES;
+
+// Widens the tail scan window geometrically until the 'moov' marker is
+// found or we hit the cap. Most files resolve on the first (smallest) pass.
+async function locateMoovNearEnd(song, fileSize) {
+    let scanLen = Math.min(MOOV_SCAN_START_BYTES, fileSize);
+    for (; ;) {
+        const scanStart = fileSize - scanLen;
+        const scanBytes = await readBytes(song.url, { position: scanStart, length: scanLen });
+        const moov = findMoovNearEnd(scanBytes, scanStart, fileSize);
+        if (moov) return { moov, scanBytes, scanStart };
+        if (scanLen >= fileSize || scanLen >= MOOV_SCAN_MAX_BYTES) return null;
+        scanLen = Math.min(scanLen * 2, MOOV_SCAN_MAX_BYTES, fileSize);
+    }
+}
+
 const MAX_MP4_PICTURE_BYTES = 20 * 1024 * 1024;
 
 async function resolveMp4Picture(song, bytes, baseOffset) {
@@ -285,10 +326,22 @@ async function extractEmbeddedArtUncached(song) {
             picture = await resolveMp4Picture(song, front, 0);
             if (!picture) {
                 const info = await FileSystem.getInfoAsync(song.url);
-                if (info.exists && info.size > TAIL_BYTES) {
-                    const tailStart = info.size - TAIL_BYTES;
-                    const tail = await readBytes(song.url, { position: tailStart, length: TAIL_BYTES });
-                    picture = await resolveMp4Picture(song, tail, tailStart);
+                if (info.exists) {
+                    const located = await locateMoovNearEnd(song, info.size);
+                    if (located) {
+                        const { moov, scanBytes, scanStart } = located;
+                        let moovBytes = null, moovBase = 0;
+                        if (moov.absStart >= scanStart) {
+                            // Whole moov box, cover art included, was already in what we scanned.
+                            moovBytes = scanBytes.slice(moov.absStart - scanStart);
+                            moovBase = moov.absStart;
+                        } else if (moov.size <= MAX_MOOV_BYTES) {
+                            // moov starts earlier than our scan reached — go get the whole box directly.
+                            moovBytes = await readBytes(song.url, { position: moov.absStart, length: moov.size });
+                            moovBase = moov.absStart;
+                        }
+                        if (moovBytes) picture = await resolveMp4Picture(song, moovBytes, moovBase);
+                    }
                 }
             }
         }

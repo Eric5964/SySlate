@@ -19,9 +19,9 @@ export function useListArt(songs, enabled) {
         if (!enabled || !songs?.length) return;
         const runId = ++runIdRef.current;
         let cancelled = false;
-        let newExtractions = 0;
         let pending = {};
         let pendingCount = 0;
+        const resolved = new Set();
 
         const flush = () => {
             if (pendingCount === 0) return;
@@ -31,56 +31,61 @@ export function useListArt(songs, enabled) {
             setArtMap(prev => ({ ...prev, ...batch }));
         };
 
-        const run = async () => {
+        const isStale = () => cancelled || runIdRef.current !== runId;
+
+        // Phase 1: restore anything already cached, immediately, with no
+        // delay. This used to be gated behind the same InteractionManager
+        // + 300ms guard as the heavy extraction pass below, which meant
+        // covers already found would still vanish and take ~300ms+ to
+        // reappear every time this screen remounted (e.g. leaving and
+        // re-entering a playlist). A cache hit is cheap — one AsyncStorage
+        // lookup, no file I/O — so there's no reason to delay it.
+        const runCacheOnly = async () => {
             for (const song of songs) {
-                if (cancelled || runIdRef.current !== runId) break;
-                if (song.id in artMap || song.id in pending) continue;
-                let didRealWork = false;
+                if (isStale()) return;
+                if (resolved.has(song.id)) continue;
                 try {
                     const cached = await getCachedArt(song);
-                    if (cancelled || runIdRef.current !== runId) break;
+                    if (isStale()) return;
                     if (cached !== undefined) {
-                        // A cache hit is cheap (one AsyncStorage lookup, no
-                        // file I/O) — no artificial delay needed. This was
-                        // the real cause of "takes forever / unusable" for
-                        // All Songs specifically: hundreds of already-cached
-                        // songs each triggering their own setState AND an
-                        // unconditional 30ms delay, even though there was
-                        // almost no real work happening.
+                        resolved.add(song.id);
                         pending[song.id] = cached;
                         pendingCount++;
-                    } else if (newExtractions < MAX_NEW_EXTRACTIONS_PER_RUN) {
-                        newExtractions++;
-                        didRealWork = true;
-                        const uri = await extractEmbeddedArt(song);
-                        if (cancelled || runIdRef.current !== runId) break;
-                        pending[song.id] = uri;
-                        pendingCount++;
+                        if (pendingCount >= FLUSH_BATCH_SIZE) flush();
                     }
                 } catch { }
-                // Batched instead of one setState (and one re-render) per
-                // song. Only genuinely new extractions are throttled — the
-                // heavy file read + decode is what needed protecting the JS
-                // thread from, not cheap cache hits.
-                if (pendingCount >= FLUSH_BATCH_SIZE) flush();
-                if (didRealWork) await new Promise(r => setTimeout(r, 30));
             }
             flush();
         };
 
-        // Previously this fired the instant the screen mounted — which is
-        // exactly when a navigation push/transition is also trying to
-        // animate on the JS thread (this app uses @react-navigation/stack,
-        // not native-stack, so transitions run in JS). Competing with that
-        // for the thread is a very plausible cause of both "delay before
-        // anything happens after tapping" and "choppy transitions."
-        // InteractionManager defers until animations/interactions have
-        // settled; the extra 300ms is a safety margin on top of that, since
-        // JS-driven navigation transitions don't always register themselves
-        // as an "interaction" the same way RN's own Animated calls do.
+        // Phase 2: genuinely new extractions — real file I/O — stay behind
+        // the interaction/settle delay so they don't compete with
+        // navigation transitions on the JS thread.
+        const runNewExtractions = async () => {
+            let newExtractions = 0;
+            for (const song of songs) {
+                if (isStale()) break;
+                if (resolved.has(song.id)) continue;
+                if (newExtractions >= MAX_NEW_EXTRACTIONS_PER_RUN) break;
+                newExtractions++;
+                try {
+                    const uri = await extractEmbeddedArt(song);
+                    if (isStale()) break;
+                    resolved.add(song.id);
+                    pending[song.id] = uri;
+                    pendingCount++;
+                } catch { }
+                if (pendingCount >= FLUSH_BATCH_SIZE) flush();
+                await new Promise(r => setTimeout(r, 30));
+            }
+            flush();
+        };
+
+        runCacheOnly();
+
         const cancelRef = { current: null };
         const handle = InteractionManager.runAfterInteractions(() => {
-            const t = setTimeout(run, 300);
+            const t = setTimeout(runNewExtractions, 300);
             cancelRef.current = () => clearTimeout(t);
         });
         cancelRef.current = () => handle.cancel();
