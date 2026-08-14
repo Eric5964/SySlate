@@ -279,22 +279,29 @@ function findMoovNearEnd(bytes, tailStart, fileSize) {
     return null;
 }
 
-const MOOV_SCAN_START_BYTES = 3 * 1024 * 1024;
-const MOOV_SCAN_MAX_BYTES = 24 * 1024 * 1024;
-const MAX_MOOV_BYTES = MOOV_SCAN_MAX_BYTES;
+const MOOV_SCAN_SIZES = [6 * 1024 * 1024, 24 * 1024 * 1024];
+const MAX_MOOV_BYTES = MOOV_SCAN_SIZES[MOOV_SCAN_SIZES.length - 1];
 
-// Widens the tail scan window geometrically until the 'moov' marker is
-// found or we hit the cap. Most files resolve on the first (smallest) pass.
+// Tries a small number of fixed, non-redundant window sizes rather than
+// doubling from a small start — each attempt was a brand new read+decode of
+// the WHOLE window from scratch, so doubling meant re-decoding bytes already
+// covered by the previous attempt for no reason. Base64-decoding is real
+// CPU work, and this runs once per song across a whole library on first
+// scan — the previous version of this was almost certainly the main driver
+// behind a CPU-limit kill (confirmed via crash log: memory stayed flat,
+// only CPU time was the problem). Starting at a size that comfortably
+// covers the vast majority of real embedded covers means most songs never
+// need the second, larger attempt at all.
 async function locateMoovNearEnd(song, fileSize) {
-    let scanLen = Math.min(MOOV_SCAN_START_BYTES, fileSize);
-    for (; ;) {
+    for (const size of MOOV_SCAN_SIZES) {
+        const scanLen = Math.min(size, fileSize);
         const scanStart = fileSize - scanLen;
         const scanBytes = await readBytes(song.url, { position: scanStart, length: scanLen });
         const moov = findMoovNearEnd(scanBytes, scanStart, fileSize);
         if (moov) return { moov, scanBytes, scanStart };
-        if (scanLen >= fileSize || scanLen >= MOOV_SCAN_MAX_BYTES) return null;
-        scanLen = Math.min(scanLen * 2, MOOV_SCAN_MAX_BYTES, fileSize);
+        if (scanLen >= fileSize) return null;
     }
+    return null;
 }
 
 const MAX_MP4_PICTURE_BYTES = 20 * 1024 * 1024;

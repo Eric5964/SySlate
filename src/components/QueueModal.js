@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet } from 'react-native';
 import TrackPlayer from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
@@ -55,7 +55,21 @@ export default function QueueModal({ visible, onClose }) {
 
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
-    const artMap = useListArt(rows.map(r => r.song), showSongCovers);
+    // useListArt restarts its whole effect whenever the array reference it's
+    // given changes — `rows.map(r => r.song)` built a brand new array on
+    // every render, including renders caused by useListArt's OWN state
+    // updates. That's a feedback loop: effect runs -> resolves cached art ->
+    // updates state -> re-render -> new array -> effect runs again -> ...
+    // with nothing to stop it while the sheet stayed open. It used to be
+    // throttled enough (everything gated behind an interaction+300ms delay)
+    // that this was only mildly wasteful; making cache hits apply instantly
+    // removed that throttle and let it spin as fast as it could, which is
+    // almost certainly what was starving the dismiss gesture of JS-thread
+    // time. `rows` is real state that only changes on an actual refresh, so
+    // memoizing on it keeps the array reference stable across the
+    // unrelated re-renders that were re-triggering this.
+    const songsForArt = useMemo(() => rows.map(r => r.song), [rows]);
+    const artMap = useListArt(songsForArt, showSongCovers);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
     const remove = async (realIndex) => { const next = await removeFromQueue(realIndex); await refresh(next); };

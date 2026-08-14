@@ -6,10 +6,14 @@ import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 //
 // Genuinely new (uncached) extractions are capped per run — a large library
 // with this setting on could otherwise background-process thousands of
-// songs unboundedly in one sweep, which is real sustained memory/IO
-// pressure. Cached lookups don't count against the cap.
-const MAX_NEW_EXTRACTIONS_PER_RUN = 150;
+// songs unboundedly in one sweep, which is real sustained CPU pressure.
+// Lowered from 150 after a confirmed CPU-limit kill (crash log showed flat
+// memory, pure CPU-time violation) — a big library doing this many
+// extractions back to back, even staggered, was too much sustained work in
+// one run. Cached lookups don't count against the cap.
+const MAX_NEW_EXTRACTIONS_PER_RUN = 60;
 const FLUSH_BATCH_SIZE = 20;
+const YIELD_EVERY = 40;
 
 export function useListArt(songs, enabled) {
     const [artMap, setArtMap] = useState({});
@@ -41,6 +45,7 @@ export function useListArt(songs, enabled) {
         // re-entering a playlist). A cache hit is cheap — one AsyncStorage
         // lookup, no file I/O — so there's no reason to delay it.
         const runCacheOnly = async () => {
+            let checked = 0;
             for (const song of songs) {
                 if (isStale()) return;
                 if (resolved.has(song.id)) continue;
@@ -54,6 +59,12 @@ export function useListArt(songs, enabled) {
                         if (pendingCount >= FLUSH_BATCH_SIZE) flush();
                     }
                 } catch { }
+                // A long uninterrupted loop of hundreds of these back to
+                // back can still add up to a real blocking stretch on the
+                // JS thread even though each individual check is cheap —
+                // this yields periodically so it can't be the thing making
+                // a gesture/animation stutter elsewhere in the app.
+                if (++checked % YIELD_EVERY === 0) await new Promise(r => setTimeout(r, 0));
             }
             flush();
         };
@@ -76,7 +87,7 @@ export function useListArt(songs, enabled) {
                     pendingCount++;
                 } catch { }
                 if (pendingCount >= FLUSH_BATCH_SIZE) flush();
-                await new Promise(r => setTimeout(r, 30));
+                await new Promise(r => setTimeout(r, 60));
             }
             flush();
         };
@@ -107,7 +118,7 @@ export function useListArt(songs, enabled) {
             if (isStale()) { clearInterval(sweepInterval); return; }
             if (resolved.size >= songs.length) { clearInterval(sweepInterval); return; }
             runCacheOnly();
-        }, 3000);
+        }, 6000);
 
         return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); };
         // eslint-disable-next-line react-hooks/exhaustive-deps

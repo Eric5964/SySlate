@@ -410,7 +410,12 @@ export function PlaybackProvider({ children }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
-        setCurrentTrack(queue[startIndex] ?? null);
+        // Same reasoning as playSongFromPlaylist — don't wipe already-known
+        // art for a song that turns out to be the one still playing.
+        setCurrentTrack(prev => {
+            const next = queue[startIndex] ?? null;
+            return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
+        });
         setShuffleModeState(mode);
         setShuffleOn(isOn);
         setEqPresetId(eq);
@@ -432,7 +437,10 @@ export function PlaybackProvider({ children }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
-        setCurrentTrack(queue[0] ?? null);
+        setCurrentTrack(prev => {
+            const next = queue[0] ?? null;
+            return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
+        });
         setShuffleModeState('off');
         setShuffleOn(false);
         setEqPresetId(eq);
@@ -455,7 +463,10 @@ export function PlaybackProvider({ children }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
-        setCurrentTrack(queue[0] ?? null);
+        setCurrentTrack(prev => {
+            const next = queue[0] ?? null;
+            return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
+        });
         setShuffleModeState(useMode);
         setShuffleOn(true);
         setEqPresetId(eq);
@@ -506,7 +517,15 @@ export function PlaybackProvider({ children }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
-        setCurrentTrack(song);
+        // If this is the same song that was already playing (just reached
+        // through a different playlist that also contains it, or the same
+        // playlist replayed), keep whatever art was already resolved for it
+        // instead of handing the screen a bare track object with none. The
+        // audio itself doesn't actually restart in that case (see
+        // primeNativeQueue), so the art shouldn't visually reset either —
+        // previously it did, and nothing re-fetched it afterward since nothing
+        // about the track's id had changed to re-trigger that.
+        setCurrentTrack(prev => (prev?.id === song.id && prev.artwork ? { ...song, artwork: prev.artwork } : song));
         setShuffleModeState(mode);
         setShuffleOn(isOn);
         setEqPresetId(eq);
