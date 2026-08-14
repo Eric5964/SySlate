@@ -78,7 +78,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
 });
 
 export default function PlaylistsScreen() {
-    const { playlists, reload } = useContext(LibraryContext);
+    const { playlists, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
@@ -112,8 +112,15 @@ export default function PlaylistsScreen() {
     const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item });
 
     const persistOrder = async (newList) => {
-        await setPlaylistOrder(newList.map(p => p.path));
-        await reload();
+        // Reordering only needs to persist the small order list and update
+        // what's on screen — it doesn't change anything about the songs or
+        // playlists themselves. This used to call the same full reload()
+        // used after a real library change, which re-scans the whole music
+        // folder from disk AND re-prefetches every playlist's cover image,
+        // just to reflect a reorder. That's what made "Move Up/Down/Top/
+        // Bottom" feel slow to respond.
+        setPlaylistOrder(newList.map(p => p.path));
+        reorderPlaylists(newList);
     };
 
     const moveItem = async (item, action) => {

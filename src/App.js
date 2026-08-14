@@ -108,6 +108,10 @@ function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
 
+    const reorderPlaylists = (newPlaylists) => {
+        setLibrary(prev => ({ ...prev, playlists: newPlaylists }));
+    };
+
     const reload = async () => {
         try {
             const lib = await scanLibrary();
@@ -151,7 +155,7 @@ function AppInner() {
     }
 
     return (
-        <LibraryContext.Provider value={{ ...library, reload }}>
+        <LibraryContext.Provider value={{ ...library, reload, reorderPlaylists }}>
             <PlaybackProvider>
                 <NavigationContainer>
                     <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>

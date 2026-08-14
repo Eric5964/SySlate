@@ -90,7 +90,26 @@ export function useListArt(songs, enabled) {
         });
         cancelRef.current = () => handle.cancel();
 
-        return () => { cancelled = true; cancelRef.current?.(); };
+        // While this screen stays mounted, periodically re-check for
+        // anything that got resolved by someone ELSE — mainly the
+        // currently-playing track's own prefetch-ahead in PlaybackContext,
+        // which writes into the same shared disk cache but has no way to
+        // tell an already-open list screen "hey, I found one." Without
+        // this, art that appeared in the background only ever showed up
+        // the next time the screen remounted (leaving and re-entering the
+        // playlist), which is what made it look like it only refreshed on
+        // exit/re-entry, and left coverage looking arbitrarily scattered
+        // depending on exactly when you happened to leave and come back.
+        // Cheap — every check here is a plain object lookup against the
+        // cache already held in memory, no file I/O. Stops on its own once
+        // nothing's left to resolve.
+        const sweepInterval = setInterval(() => {
+            if (isStale()) { clearInterval(sweepInterval); return; }
+            if (resolved.size >= songs.length) { clearInterval(sweepInterval); return; }
+            runCacheOnly();
+        }, 3000);
+
+        return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, songs]);
 

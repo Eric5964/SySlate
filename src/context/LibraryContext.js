@@ -6,6 +6,7 @@ export const LibraryContext = createContext({
     scanPath: '',
     scanError: null,
     reload: async () => { },
+    reorderPlaylists: () => { },
 });
 
 export const useLibrary = () => useContext(LibraryContext);
