@@ -123,19 +123,42 @@ export default function SwipeableRow({
     const rightGlowOpacity = rightGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const leftGlowOpacity = leftGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
+    // The colored fill used to be a flat, fixed-width block that just faded
+    // in — it didn't track how far you'd actually dragged. This makes it
+    // grow with the drag instead (edge pinned, fill stretching out from it,
+    // reaching full width right as the row does), same idea as iOS Mail's
+    // swipe actions. Width itself can't be animated on the native driver,
+    // so this is done as scaleX + a compensating translateX to keep the
+    // pinned edge from drifting (scaleX alone shrinks/grows from the
+    // center) — both of those ARE native-driver-safe, so this doesn't
+    // reintroduce the JS-thread lag the opacity-only version was written to
+    // avoid. The icon/text stay a separate, unscaled layer on top (using the
+    // existing opacity fade above) so they never stretch — they just become
+    // visible once there's enough color underneath them.
+    const rightFill = adjustedX.interpolate({ inputRange: [0, REVEAL_FULL, MAX_REVEAL], outputRange: [0, 0.4, 1], extrapolate: 'clamp' });
+    const leftFill = adjustedX.interpolate({ inputRange: [-MAX_REVEAL, -REVEAL_FULL, 0], outputRange: [1, 0.4, 0], extrapolate: 'clamp' });
+    const rightFillTranslate = rightFill.interpolate({ inputRange: [0, 1], outputRange: [-MAX_REVEAL / 2, 0] });
+    const leftFillTranslate = leftFill.interpolate({ inputRange: [0, 1], outputRange: [MAX_REVEAL / 2, 0] });
+
     return (
         <View style={styles.wrap}>
             {onSwipeRight && (
-                <Animated.View style={[styles.underlay, styles.underlayLeft, { width: MAX_REVEAL, backgroundColor: rightColor, opacity: rightOpacity }]}>
-                    <AddQueueIcon size={15} color="#fff" />
-                    <Text style={styles.underlayText}>Next</Text>
-                </Animated.View>
+                <View style={[styles.underlay, styles.underlayLeft, { width: MAX_REVEAL }]}>
+                    <Animated.View style={[styles.underlayFill, { backgroundColor: rightColor, transform: [{ translateX: rightFillTranslate }, { scaleX: rightFill }] }]} />
+                    <Animated.View style={[styles.underlayContent, styles.underlayContentLeft, { opacity: rightOpacity }]}>
+                        <AddQueueIcon size={15} color="#fff" />
+                        <Text style={styles.underlayText}>Next</Text>
+                    </Animated.View>
+                </View>
             )}
             {onSwipeLeft && (
-                <Animated.View style={[styles.underlay, styles.underlayRight, { width: MAX_REVEAL, backgroundColor: leftColor, opacity: leftOpacity }]}>
-                    <Text style={styles.underlayText}>Remove</Text>
-                    <TrashIcon size={15} color="#fff" />
-                </Animated.View>
+                <View style={[styles.underlay, styles.underlayRight, { width: MAX_REVEAL }]}>
+                    <Animated.View style={[styles.underlayFill, { backgroundColor: leftColor, transform: [{ translateX: leftFillTranslate }, { scaleX: leftFill }] }]} />
+                    <Animated.View style={[styles.underlayContent, styles.underlayContentRight, { opacity: leftOpacity }]}>
+                        <Text style={styles.underlayText}>Remove</Text>
+                        <TrashIcon size={15} color="#fff" />
+                    </Animated.View>
+                </View>
             )}
             <PanGestureHandler
                 enabled={!disabled && (!!onSwipeRight || !!onSwipeLeft)}
@@ -170,11 +193,18 @@ const styles = StyleSheet.create({
     wrap: { position: 'relative' },
     underlay: {
         position: 'absolute', top: 0, bottom: 0,
-        flexDirection: 'row', alignItems: 'center', borderRadius: 12,
+        borderRadius: 12, overflow: 'hidden',
+    },
+    underlayLeft: { left: 0 },
+    underlayRight: { right: 0 },
+    underlayFill: { ...StyleSheet.absoluteFillObject },
+    underlayContent: {
+        ...StyleSheet.absoluteFillObject,
+        flexDirection: 'row', alignItems: 'center',
         paddingHorizontal: 16, gap: 6,
     },
-    underlayLeft: { left: 0, justifyContent: 'flex-start' },
-    underlayRight: { right: 0, justifyContent: 'flex-end' },
+    underlayContentLeft: { justifyContent: 'flex-start' },
+    underlayContentRight: { justifyContent: 'flex-end' },
     underlayText: { color: '#fff', fontSize: 12, fontWeight: '700' },
     // Static border + shadow — only `opacity` is ever animated (native-driver
     // safe), same principle as the underlay opacity interpolations above.

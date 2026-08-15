@@ -163,6 +163,29 @@ function stopWatcher() {
     if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
 }
 
+// Fades out whatever's currently audible (if anything is), using the same
+// duration as skipWithCrossfade's fade-out. Used right before any "start
+// something new" action (tapping a song, tapping Play on a playlist,
+// jumping to a queue row) so the previous audio doesn't just cut — those
+// actions previously only ever faded the NEW track in, never faded the OLD
+// one out, so switching mid-song sounded like an abrupt stop followed by a
+// fade-in, not a real transition. Leaves the fade lock claimed by the id it
+// used; callers are expected to immediately call forceReleaseFade() +
+// preClaimFadeForFreshStart() afterward for their own fade-in, which safely
+// takes over ownership.
+export async function fadeOutCurrentIfPlaying() {
+    try {
+        const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
+        if (!wasPlaying) return;
+        const id = claimFade();
+        const dur = await getSkipCrossfade();
+        if (dur > 0.05) {
+            try { await TrackPlayer.setVolume(1); } catch { }
+            await fadeVol(1, 0, dur, id);
+        }
+    } catch { }
+}
+
 export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer.play()) {
     if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;

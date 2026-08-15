@@ -9,7 +9,7 @@ import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/Play
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
-import EQModal from '../components/EQModal';
+// import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
@@ -62,7 +62,7 @@ export default function PlayerScreen() {
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
 
-    const [showEQ, setShowEQ] = useState(false);
+    // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [showSleepTimer, setShowSleepTimer] = useState(false);
     const [playCount, setPlayCount] = useState(0);
@@ -323,9 +323,11 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} bgColor={base.bg} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    {/* EQ hidden — react-native-track-player doesn't support real
+                        audio EQ, so this button never did anything audible. */}
+                    {/* <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity>
+                    </TouchableOpacity> */}
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
@@ -407,7 +409,7 @@ export default function PlayerScreen() {
                 </View>
             </View>
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
+            {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
             <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
         </View>

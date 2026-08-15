@@ -11,8 +11,9 @@ import TrackPlayer, { Capability } from 'react-native-track-player';
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
-import { PreferencesProvider } from './context/PreferencesContext';
+import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
 import { LibraryContext } from './context/LibraryContext';
+import { useBackgroundArtLoader } from './hooks/useBackgroundArtLoader';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
@@ -107,6 +108,9 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
+    const { showSongCovers } = usePreferences();
+
+    useBackgroundArtLoader(library.allSongs, playerReady && showSongCovers);
 
     const reorderPlaylists = (newPlaylists) => {
         setLibrary(prev => ({ ...prev, playlists: newPlaylists }));

@@ -9,7 +9,7 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import SwipeableRow from '../components/SwipeableRow';
-import EQModal from '../components/EQModal';
+// import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
 import { getPlayCounts } from '../utils/storage';
@@ -21,7 +21,7 @@ export default function AllSongsScreen() {
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
-    const [showEQ, setShowEQ] = useState(false);
+    // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [playCounts, setPlayCounts] = useState({});
     const { showPlayCount, showSongCovers } = usePreferences();
@@ -96,9 +96,10 @@ export default function AllSongsScreen() {
                             </TouchableOpacity>
                         )}
                     </View>
-                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    {/* EQ hidden — not supported by react-native-track-player */}
+                    {/* <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity>
+                    </TouchableOpacity> */}
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
@@ -140,7 +141,7 @@ export default function AllSongsScreen() {
                 />
             )}
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} />
+            {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>
     );

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import { AppState } from 'react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart } from '../services/PlaybackService';
+import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
@@ -252,20 +252,34 @@ export function PlaybackProvider({ children }) {
     // was showing the promoted song still under "Up Next" because it was
     // reading the pre-update priority list before this component's state
     // had actually re-rendered.
-    const promoteToQueue = useCallback(async (songId) => {
+    //
+    // Takes realIndex (the exact queue slot), not songId — it used to take
+    // songId and resolve it with queue.findIndex(t => t.id === songId),
+    // which always resolves to the FIRST matching slot. That's wrong the
+    // moment a song appears more than once in the queue, which includes the
+    // currently-playing song appearing again later as a genuine upcoming
+    // repeat: findIndex matched the currently-playing slot itself (the
+    // first occurrence), tripped the idx <= currentIndex guard, and silently
+    // did nothing — while the swipe's own success animation played anyway,
+    // and the very next refresh (reading a fresh, correct currentIndex)
+    // stopped showing that row under "Up Next" at all, since it never
+    // belonged there in the first place. Looked exactly like "the song got
+    // removed instead of added." Taking realIndex directly removes the
+    // ambiguity entirely — there's no lookup to get wrong.
+    const promoteToQueue = useCallback(async (realIndex) => {
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
+            if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return priorityRef.current;
             const queue = await TrackPlayer.getQueue();
-            const idx = queue.findIndex(t => t.id === songId);
-            if (idx === -1 || idx <= currentIndex) return priorityRef.current;
-            const track = queue[idx];
+            const track = queue[realIndex];
+            if (!track) return priorityRef.current;
             // Keeps the original occurrence in place instead of moving it —
             // the song plays sooner via this new priority copy, but still
             // plays again later at its natural spot too.
             const insertAt = currentIndex + 1 + priorityRef.current.length;
             await TrackPlayer.add({ ...track }, insertAt);
-            const next = [...priorityRef.current, songId];
+            const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
             return next;
@@ -303,6 +317,7 @@ export function PlaybackProvider({ children }) {
             const priorityStart = currentIndex + 1;
             const priorityEnd = priorityStart + priorityCount;
 
+            await fadeOutCurrentIfPlaying();
             forceReleaseFade();
             const preClaimedId = preClaimFadeForFreshStart();
 
@@ -402,6 +417,7 @@ export function PlaybackProvider({ children }) {
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
 
+        await fadeOutCurrentIfPlaying();
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, startIndex);
@@ -429,6 +445,7 @@ export function PlaybackProvider({ children }) {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
+        await fadeOutCurrentIfPlaying();
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
@@ -455,6 +472,7 @@ export function PlaybackProvider({ children }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const queue = buildQueue(playlist.songs, useMode);
+        await fadeOutCurrentIfPlaying();
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
@@ -509,6 +527,7 @@ export function PlaybackProvider({ children }) {
 
         const queue = [song, ...prioritySongs, ...rest];
 
+        await fadeOutCurrentIfPlaying();
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);

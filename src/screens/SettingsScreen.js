@@ -132,7 +132,9 @@ export default function SettingsScreen() {
             {!loaded ? null : (
                 <>
             <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 160 }}>
-                {/* 1. EQ — built-in presets as a condensed 2-wide grid, custom ones as a list below */}
+                {/*
+                EQ hidden — not supported by react-native-track-player, so
+                presets never did anything audible.
                 <Section title="EQ Presets">
                     <View style={s.eqGrid}>
                         {BUILT_IN_PRESETS.map(p => (
@@ -161,6 +163,7 @@ export default function SettingsScreen() {
                         <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                     </TouchableOpacity>
                 </Section>
+                */}
 
                 {/* 2. Audio — everything that fades/ramps volume, plus normalization,
                      all together under one heading in the spot Crossfade used to be.
@@ -199,14 +202,18 @@ export default function SettingsScreen() {
                         <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={s.toggleRow}>
+                    {/* Volume Normalization hidden — never actually wired to
+                        the playback pipeline anywhere; react-native-track-player
+                        has no built-in loudness normalization to hook it up to,
+                        so this toggle never did anything audible either. */}
+                    {/* <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Volume Normalization</Text>
                             <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
                         </View>
                         <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
+                    </View> */}
                 </Section>
 
                 {/* 3. Shuffle */}
@@ -322,6 +329,7 @@ export default function SettingsScreen() {
                 </>
             )}
 
+            {/*
             <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>New EQ Preset</Text>}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
                     <TextInput
@@ -348,6 +356,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </KeyboardAvoidingView>
             </BottomSheet>
+            */}
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>

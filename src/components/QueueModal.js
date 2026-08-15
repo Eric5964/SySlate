@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
 import TrackPlayer from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -8,11 +8,34 @@ import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { usePreferences } from '../context/PreferencesContext';
 
+// Grows a newly-added row in from nothing instead of it just abruptly
+// appearing in the list (same idea as Spotify's queue-add animation).
+// Existing rows render at full size immediately — only ones QueueModal
+// marks as newly added (via `isNew`) animate. transform/opacity only, so
+// this stays on the native driver like the rest of this screen's animations.
+function GrowInRow({ isNew, children }) {
+    const anim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+    useEffect(() => {
+        if (!isNew) return;
+        Animated.spring(anim, { toValue: 1, useNativeDriver: true, friction: 8, tension: 60 }).start();
+        // Intentionally mount-only — this is a one-time "arrival" animation,
+        // not something that should replay if isNew's identity ever changed.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    return <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>{children}</Animated.View>;
+}
+
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
     const { showSongCovers } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
+    // null until the first refresh after opening — that first population is
+    // the baseline "already there" state and shouldn't animate in. Reset to
+    // null again on close so reopening doesn't retroactively grow-in
+    // anything that changed while the sheet was shut.
+    const knownKeysRef = useRef(null);
+    const [newKeys, setNewKeys] = useState(() => new Set());
 
     const refresh = useCallback(async (priorityOverride) => {
         try {
@@ -47,11 +70,36 @@ export default function QueueModal({ visible, onClose }) {
                     stableKey: `${song.id}#${n}`,
                 };
             });
+            const currentKeys = new Set(upcoming.map(r => r.stableKey));
+            if (knownKeysRef.current === null) {
+                setNewKeys(new Set());
+            } else {
+                const added = new Set();
+                for (const k of currentKeys) if (!knownKeysRef.current.has(k)) added.add(k);
+                setNewKeys(added);
+            }
+            knownKeysRef.current = currentKeys;
             setRows(upcoming);
         } catch { setRows([]); }
     }, [priorityQueue]);
 
-    useEffect(() => { if (visible) refresh(); }, [visible, refresh]);
+    useEffect(() => {
+        // Deferred until the sheet's own open animation has settled, rather
+        // than firing the instant `visible` flips true. refresh() does real
+        // native-bridge round trips (getQueue/getCurrentTrack) and then
+        // triggers the art-loading pass on top of that — racing all of that
+        // against the slide-up animation is very likely why opening the
+        // queue felt drastically slower than the other sheets (EQ, sleep
+        // timer), which have no such data-fetch on open. Letting the
+        // animation finish untouched first, then populating content right
+        // after, should make the open itself feel identical to the others.
+        if (!visible) {
+            knownKeysRef.current = null;
+            return;
+        }
+        const task = InteractionManager.runAfterInteractions(() => refresh());
+        return () => task.cancel();
+    }, [visible, refresh]);
 
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
@@ -73,37 +121,38 @@ export default function QueueModal({ visible, onClose }) {
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
     const remove = async (realIndex) => { const next = await removeFromQueue(realIndex); await refresh(next); };
-    const promote = async (song) => { const next = await promoteToQueue(song.id); await refresh(next); };
+    const promote = async (realIndex) => { const next = await promoteToQueue(realIndex); await refresh(next); };
 
     const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
-        <SwipeableRow
-            key={stableKey}
-            onSwipeLeft={() => remove(realIndex)}
-            onSwipeRight={() => promote(song)}
-            rightColor={theme.accent}
-            leftColor="#dc2626"
-        >
-            {/* Same shape as the All Songs / Playlist rows (rounded card,
-                same padding/margins) — border tier instead of surface, since
-                the sheet itself is already surface (using the same color for
-                both left rows with no visible shape against their own
-                container). Interaction (swipe feedback, glow, etc.) stays
-                specific to the queue context. */}
-            <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
-                {showSongCovers && (
-                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                        {artMap[song.id]
-                            ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
-                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                        }
+        <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
+            <SwipeableRow
+                onSwipeLeft={() => remove(realIndex)}
+                onSwipeRight={() => promote(realIndex)}
+                rightColor={theme.accent}
+                leftColor="#dc2626"
+            >
+                {/* Same shape as the All Songs / Playlist rows (rounded card,
+                    same padding/margins) — border tier instead of surface, since
+                    the sheet itself is already surface (using the same color for
+                    both left rows with no visible shape against their own
+                    container). Interaction (swipe feedback, glow, etc.) stays
+                    specific to the queue context. */}
+                <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
+                    {showSongCovers && (
+                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                            {artMap[song.id]
+                                ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                            }
+                        </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                        <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                        <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
                     </View>
-                )}
-                <View style={{ flex: 1 }}>
-                    <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                    <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
-                </View>
-            </TouchableOpacity>
-        </SwipeableRow>
+                </TouchableOpacity>
+            </SwipeableRow>
+        </GrowInRow>
     );
 
     return (

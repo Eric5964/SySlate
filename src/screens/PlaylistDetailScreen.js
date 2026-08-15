@@ -13,7 +13,7 @@ import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
-import EQModal from '../components/EQModal';
+// import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
 import { EDGE_SWIPE_WIDTH } from '../utils/layout';
 import { useListArt } from '../hooks/useListArt';
@@ -38,7 +38,7 @@ export default function PlaylistDetailScreen() {
     const [sortId, setSortId] = useState('alpha');
     const [playCounts, setPlayCounts] = useState({});
     const [showSort, setShowSort] = useState(false);
-    const [showEQ, setShowEQ] = useState(false);
+    // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [cover, setCover] = useState(null);
     const { showPlayCount, showSongCovers } = usePreferences();
@@ -130,9 +130,10 @@ export default function PlaylistDetailScreen() {
                         </TouchableOpacity>
                     )}
                 </View>
-                <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                {/* EQ hidden — not supported by react-native-track-player */}
+                {/* <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                </TouchableOpacity>
+                </TouchableOpacity> */}
                 <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                     <MenuBarsIcon size={20} color={theme.accent} />
                 </TouchableOpacity>
@@ -219,7 +220,7 @@ export default function PlaylistDetailScreen() {
                 )}
             />
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} />
+            {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>
     );
