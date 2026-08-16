@@ -173,12 +173,22 @@ function stopWatcher() {
 // used; callers are expected to immediately call forceReleaseFade() +
 // preClaimFadeForFreshStart() afterward for their own fade-in, which safely
 // takes over ownership.
-export async function fadeOutCurrentIfPlaying() {
+// Fades out whatever's currently audible (if anything is). Takes the
+// duration to use rather than deciding internally — this used to always use
+// the Skip duration, even for actions that aren't a skip at all (tapping a
+// song, tapping Play on a playlist, jumping to a queue row). If someone had
+// a real Skip duration but a near-zero/0 "On Play" duration, that mismatch
+// meant those actions faded OUT audibly (skip's duration) but snapped IN
+// instantly (play's duration, used separately by playWithRamp right after)
+// — sounded like a genuine bug even though each half was individually
+// working as configured. Callers now pass whichever duration setting
+// actually matches the fade-IN they're about to do immediately after, so
+// both halves of the transition always agree.
+export async function fadeOutCurrentIfPlaying(dur) {
     try {
         const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
         if (!wasPlaying) return;
         const id = claimFade();
-        const dur = await getSkipCrossfade();
         if (dur > 0.05) {
             try { await TrackPlayer.setVolume(1); } catch { }
             await fadeVol(1, 0, dur, id);

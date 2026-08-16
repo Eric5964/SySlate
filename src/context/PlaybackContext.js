@@ -8,6 +8,7 @@ import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
+    getAudioRamp,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
@@ -347,7 +348,7 @@ export function PlaybackProvider({ children }) {
             const priorityStart = currentIndex + 1;
             const priorityEnd = priorityStart + priorityCount;
 
-            await fadeOutCurrentIfPlaying();
+            await fadeOutCurrentIfPlaying(await getAudioRamp());
             forceReleaseFade();
             const preClaimedId = preClaimFadeForFreshStart();
 
@@ -453,7 +454,7 @@ export function PlaybackProvider({ children }) {
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
 
-        await fadeOutCurrentIfPlaying();
+        await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, startIndex);
@@ -481,7 +482,7 @@ export function PlaybackProvider({ children }) {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
-        await fadeOutCurrentIfPlaying();
+        await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
@@ -508,7 +509,7 @@ export function PlaybackProvider({ children }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const queue = buildQueue(playlist.songs, useMode);
-        await fadeOutCurrentIfPlaying();
+        await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
@@ -563,7 +564,7 @@ export function PlaybackProvider({ children }) {
 
         const queue = [song, ...prioritySongs, ...rest];
 
-        await fadeOutCurrentIfPlaying();
+        await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);

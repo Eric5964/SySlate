@@ -144,6 +144,28 @@ export default function QueueModal({ visible, onClose }) {
         return () => task.cancel();
     }, [visible, refresh]);
 
+    // Keeps retrying on its own while the sheet is open and showing nothing,
+    // instead of only trying once at open time. The retry-with-backoff at
+    // open covers the ordinary "queue reset mid-flight" gap, but if
+    // something is still wrong past that (or state legitimately hasn't
+    // settled yet for some other reason), there was nothing to ever try
+    // again — the sheet just sat there empty until closed and reopened.
+    // Capped at 10 tries (~10s) so this doesn't poll forever in the one
+    // case where "nothing" is actually correct (nothing has ever played
+    // yet this session).
+    useEffect(() => {
+        if (!visible || rows.length > 0) return;
+        let cancelled = false;
+        let tries = 0;
+        const id = setInterval(() => {
+            if (cancelled) return;
+            tries++;
+            if (tries > 10) { clearInterval(id); return; }
+            refresh();
+        }, 1000);
+        return () => { cancelled = true; clearInterval(id); };
+    }, [visible, rows.length, refresh]);
+
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
     // useListArt restarts its whole effect whenever the array reference it's
