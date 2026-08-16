@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AppState } from 'react-native';
+import { AppState, InteractionManager } from 'react-native';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
 // Genuinely new extractions per burst, and how long to rest between bursts.
@@ -14,7 +14,7 @@ import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 const BATCH_SIZE = 15;
 const EXTRACTION_STAGGER_MS = 75;
 const BURST_PAUSE_MS = 4000;
-const YIELD_EVERY = 40;
+const YIELD_EVERY = 20;
 
 // Walks the whole library once per app session (once per stable `songs`
 // reference — a fresh library reload produces a new one, so a relaunch or
@@ -72,7 +72,17 @@ export function useBackgroundArtLoader(songs, enabled) {
             }
         };
 
-        run();
-        return () => { cancelled = true; sub.remove(); };
+        // Deferred slightly — this hook waking up (e.g. right when "Show
+        // Song Covers" gets toggled on) coincides with every currently
+        // mounted screen's OWN cover-loading also waking up at the exact
+        // same instant, all reacting to the same preference flip at once.
+        // This one has no urgency (it's explicitly a slow background pass),
+        // so letting the toggle's own UI settle first — and giving
+        // per-screen loading, which DOES need to feel immediate, first crack
+        // at the thread — is a straightforward way to reduce that pile-up
+        // without touching the timing either of those screens already rely
+        // on.
+        const task = InteractionManager.runAfterInteractions(() => { if (!cancelled) run(); });
+        return () => { cancelled = true; sub.remove(); task.cancel(); };
     }, [enabled, songs]);
 }

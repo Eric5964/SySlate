@@ -13,7 +13,7 @@ import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 // one run. Cached lookups don't count against the cap.
 const MAX_NEW_EXTRACTIONS_PER_RUN = 60;
 const FLUSH_BATCH_SIZE = 20;
-const YIELD_EVERY = 40;
+const YIELD_EVERY = 20;
 
 export function useListArt(songs, enabled) {
     const [artMap, setArtMap] = useState({});

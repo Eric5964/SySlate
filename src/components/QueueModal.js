@@ -25,19 +25,31 @@ function GrowInRow({ isNew, children }) {
     return <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>{children}</Animated.View>;
 }
 
+// Mirrors GrowInRow — shrinks a row out before it's actually removed from
+// the list, instead of it just vanishing the instant the data updates. The
+// row stays in `rows` (and keeps its reserved layout space) for the short
+// duration of this animation and is only actually removed once it's
+// finished, so what would otherwise be a visible row disappearing abruptly
+// becomes a brief collapse of now-empty space instead.
+const REMOVE_ANIM_MS = 180;
+function ShrinkOutRow({ removing, children }) {
+    const anim = useRef(new Animated.Value(1)).current;
+    useEffect(() => {
+        if (!removing) return;
+        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }).start();
+    }, [removing]);
+    return <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>{children}</Animated.View>;
+}
+
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
     const { showSongCovers } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
-    // null until the first refresh after opening — that first population is
-    // the baseline "already there" state and shouldn't animate in. Reset to
-    // null again on close so reopening doesn't retroactively grow-in
-    // anything that changed while the sheet was shut.
-    const knownKeysRef = useRef(null);
     const [newKeys, setNewKeys] = useState(() => new Set());
+    const [removingKeys, setRemovingKeys] = useState(() => new Set());
 
-    const refresh = useCallback(async (priorityOverride) => {
+    const refresh = useCallback(async (priorityOverride, justAddedRealIndex) => {
         try {
             const queue = await TrackPlayer.getQueue();
             const currentIndex = await TrackPlayer.getCurrentTrack();
@@ -54,9 +66,21 @@ export default function QueueModal({ visible, onClose }) {
             // added/removed earlier in the list, which is rare.
             const idOccurrence = {};
             const priorityEnd = currentIndex + 1 + activePriority.length;
+            let justAddedKey = null;
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
                 const n = (idOccurrence[song.id] = (idOccurrence[song.id] || 0) + 1);
                 const realIndex = currentIndex + 1 + i;
+                const stableKey = `${song.id}#${n}`;
+                // Inserting a new copy earlier in the queue shifts the
+                // occurrence numbers of any LATER copies of that same song
+                // (the one that was "#1" can become "#2", etc.) — diffing
+                // stableKeys against a previous snapshot to guess "what's
+                // new" was catching that renumbered EXISTING row as new
+                // instead of the actual new one, since its key changed too.
+                // Being told exactly which realIndex was just inserted at
+                // (from the action that caused this refresh) sidesteps that
+                // entirely — no guessing from key identity needed.
+                if (realIndex === justAddedRealIndex) justAddedKey = stableKey;
                 return {
                     realIndex,
                     song,
@@ -67,18 +91,10 @@ export default function QueueModal({ visible, onClose }) {
                     // same song (each a distinct slot) correctly, unlike
                     // id-matching which can only ever mark one of them.
                     isPriority: realIndex < priorityEnd,
-                    stableKey: `${song.id}#${n}`,
+                    stableKey,
                 };
             });
-            const currentKeys = new Set(upcoming.map(r => r.stableKey));
-            if (knownKeysRef.current === null) {
-                setNewKeys(new Set());
-            } else {
-                const added = new Set();
-                for (const k of currentKeys) if (!knownKeysRef.current.has(k)) added.add(k);
-                setNewKeys(added);
-            }
-            knownKeysRef.current = currentKeys;
+            setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
             setRows(upcoming);
         } catch { setRows([]); }
     }, [priorityQueue]);
@@ -93,10 +109,7 @@ export default function QueueModal({ visible, onClose }) {
         // timer), which have no such data-fetch on open. Letting the
         // animation finish untouched first, then populating content right
         // after, should make the open itself feel identical to the others.
-        if (!visible) {
-            knownKeysRef.current = null;
-            return;
-        }
+        if (!visible) return;
         const task = InteractionManager.runAfterInteractions(() => refresh());
         return () => task.cancel();
     }, [visible, refresh]);
@@ -120,38 +133,51 @@ export default function QueueModal({ visible, onClose }) {
     const artMap = useListArt(songsForArt, showSongCovers);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
-    const remove = async (realIndex) => { const next = await removeFromQueue(realIndex); await refresh(next); };
-    const promote = async (realIndex) => { const next = await promoteToQueue(realIndex); await refresh(next); };
+    const remove = async (realIndex, stableKey) => {
+        // Let the shrink play out first, then do the real removal + refresh
+        // — see ShrinkOutRow above for why.
+        setRemovingKeys(prev => new Set(prev).add(stableKey));
+        await new Promise(r => setTimeout(r, REMOVE_ANIM_MS));
+        const next = await removeFromQueue(realIndex);
+        await refresh(next);
+        setRemovingKeys(prev => { const n = new Set(prev); n.delete(stableKey); return n; });
+    };
+    const promote = async (realIndex) => {
+        const { priority, insertedAt } = await promoteToQueue(realIndex);
+        await refresh(priority, insertedAt);
+    };
 
     const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
         <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
-            <SwipeableRow
-                onSwipeLeft={() => remove(realIndex)}
-                onSwipeRight={() => promote(realIndex)}
-                rightColor={theme.accent}
-                leftColor="#dc2626"
-            >
-                {/* Same shape as the All Songs / Playlist rows (rounded card,
-                    same padding/margins) — border tier instead of surface, since
-                    the sheet itself is already surface (using the same color for
-                    both left rows with no visible shape against their own
-                    container). Interaction (swipe feedback, glow, etc.) stays
-                    specific to the queue context. */}
-                <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
-                    {showSongCovers && (
-                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                            {artMap[song.id]
-                                ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
-                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                            }
+            <ShrinkOutRow removing={removingKeys.has(stableKey)}>
+                <SwipeableRow
+                    onSwipeLeft={() => remove(realIndex, stableKey)}
+                    onSwipeRight={() => promote(realIndex)}
+                    rightColor={theme.accent}
+                    leftColor="#dc2626"
+                >
+                    {/* Same shape as the All Songs / Playlist rows (rounded card,
+                        same padding/margins) — border tier instead of surface, since
+                        the sheet itself is already surface (using the same color for
+                        both left rows with no visible shape against their own
+                        container). Interaction (swipe feedback, glow, etc.) stays
+                        specific to the queue context. */}
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
+                        {showSongCovers && (
+                            <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                {artMap[song.id]
+                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                }
+                            </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                            <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
                         </View>
-                    )}
-                    <View style={{ flex: 1 }}>
-                        <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                        <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
-                    </View>
-                </TouchableOpacity>
-            </SwipeableRow>
+                    </TouchableOpacity>
+                </SwipeableRow>
+            </ShrinkOutRow>
         </GrowInRow>
     );
 

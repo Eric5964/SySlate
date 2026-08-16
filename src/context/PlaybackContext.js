@@ -184,8 +184,19 @@ export function PlaybackProvider({ children }) {
                 if (!track) return;
                 if (track.id === currentTrackRef.current?.id) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
                 setCurrentTrack(track);
-                if (priorityRef.current.includes(track.id)) {
-                    const next = priorityRef.current.filter(id => id !== track.id);
+                // Priority items are always inserted at the tail of the
+                // contiguous priority block (currentIndex+1+length), so the
+                // tracked array's order matches the priority zone's actual
+                // queue order — the item becoming current should always be
+                // priorityRef.current[0]. Checking that specific slot and
+                // dropping just it (instead of filtering every entry whose id
+                // matches) is what actually handles the same song being
+                // promoted to priority more than once — a filter would have
+                // dropped ALL of its tracked copies the moment just one of
+                // them started playing, losing track of the other(s) even
+                // though they're still genuinely queued.
+                if (priorityRef.current[0] === track.id) {
+                    const next = priorityRef.current.slice(1);
                     priorityRef.current = next;
                     setPriorityQueue(next);
                 }
@@ -269,11 +280,11 @@ export function PlaybackProvider({ children }) {
     const promoteToQueue = useCallback(async (realIndex) => {
         try {
             const currentIndex = await TrackPlayer.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-            if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return priorityRef.current;
+            if (currentIndex === null || currentIndex === undefined) return { priority: priorityRef.current, insertedAt: null };
+            if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return { priority: priorityRef.current, insertedAt: null };
             const queue = await TrackPlayer.getQueue();
             const track = queue[realIndex];
-            if (!track) return priorityRef.current;
+            if (!track) return { priority: priorityRef.current, insertedAt: null };
             // Keeps the original occurrence in place instead of moving it —
             // the song plays sooner via this new priority copy, but still
             // plays again later at its natural spot too.
@@ -282,8 +293,8 @@ export function PlaybackProvider({ children }) {
             const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
-            return next;
-        } catch (e) { console.error('promoteToQueue:', e); return priorityRef.current; }
+            return { priority: next, insertedAt: insertAt };
+        } catch (e) { console.error('promoteToQueue:', e); return { priority: priorityRef.current, insertedAt: null }; }
     }, []);
 
     const removeFromQueue = useCallback(async (realIndex) => {
@@ -295,14 +306,33 @@ export function PlaybackProvider({ children }) {
             const priorityEnd = currentIndex + 1 + priorityCount;
             let next = priorityRef.current;
             if (realIndex < priorityEnd) {
-                // Removed slot was within the priority window — drop exactly
-                // one tracked slot (not by id-filter, which would strip
-                // every copy of a duplicated song from tracking even if only
-                // one of its copies was actually removed).
-                next = next.slice(0, -1);
+                // Removed slot was within the priority window — drop the
+                // exact tracked entry at that position, not just whichever
+                // happens to be last. The priority array is laid out in the
+                // same order as the priority zone itself (index 0 =
+                // currentIndex+1, index 1 = currentIndex+2, ...), so a
+                // slot's offset within that zone is also its index in the
+                // tracked array. Always dropping the last entry was wrong
+                // the moment there was more than one priority item and you
+                // removed anything other than the last of them — it kept
+                // the removed song's id tracked and untracked a completely
+                // different, still-queued song instead. That's very likely
+                // what was behind priority items getting miscounted as
+                // "Up Next" after enough removals — the tracked array's
+                // LENGTH stayed numerically right (so the boundary math
+                // mostly still worked), but its CONTENTS silently drifted
+                // from what was actually in the priority zone.
+                const priorityIdx = realIndex - (currentIndex + 1);
+                next = [...next.slice(0, priorityIdx), ...next.slice(priorityIdx + 1)];
             }
             priorityRef.current = next;
             setPriorityQueue(next);
+            // Removing a song shrinks the loaded window the same way a song
+            // finishing does — top up here too instead of only checking on
+            // natural track advance, so removing several in a row can't
+            // drain the window down without anything topping it back up
+            // until the next real track change happens to come along.
+            topUpQueueIfNeeded();
             return next;
         } catch (e) { console.error('removeFromQueue:', e); return priorityRef.current; }
     }, []);
@@ -350,8 +380,14 @@ export function PlaybackProvider({ children }) {
     // currentPlaylist.queue / session storage (unpaginated) since that's
     // what shuffle "memory" and resuming a session depend on — only what's
     // actually sitting in TrackPlayer's native queue is windowed.
-    const QUEUE_BATCH_SIZE = 50;
-    const QUEUE_TOPUP_THRESHOLD = 15;
+    const QUEUE_WINDOW_SIZE = 50;
+    const QUEUE_TOPUP_BATCH = 5;
+    // Triggers a top-up as soon as what's left loaded drops to 45, adding
+    // 5 more to bring it back to 50 — keeps the loaded window oscillating
+    // in the 45-50 range rather than being allowed to drain a long way
+    // down (old threshold was 15) before refilling all the way back to 50
+    // in one large jump.
+    const QUEUE_TOPUP_THRESHOLD = 45;
     const logicalQueueRef = useRef([]);
     const loadedThroughRef = useRef(0);
 
@@ -360,7 +396,7 @@ export function PlaybackProvider({ children }) {
     // separate "skip to index" step needed after this, unlike before.
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
-        const batch = fullQueue.slice(anchorIndex, anchorIndex + QUEUE_BATCH_SIZE);
+        const batch = fullQueue.slice(anchorIndex, anchorIndex + QUEUE_WINDOW_SIZE);
         await TrackPlayer.reset();
         await withTimeout(TrackPlayer.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
@@ -398,7 +434,7 @@ export function PlaybackProvider({ children }) {
             const nativeLen = (await TrackPlayer.getQueue()).length;
             const remaining = nativeLen - 1 - currentIndex;
             if (remaining < QUEUE_TOPUP_THRESHOLD) {
-                const next = logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_BATCH_SIZE);
+                const next = logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH);
                 if (next.length) {
                     await TrackPlayer.add(next);
                     loadedThroughRef.current += next.length;
@@ -627,7 +663,7 @@ export function PlaybackProvider({ children }) {
             await withTimeout(TrackPlayer.removeUpcomingTracks(), 4000);
             if (priorityTracks.length) await withTimeout(TrackPlayer.add(priorityTracks), 4000);
 
-            const batch = rest.slice(0, QUEUE_BATCH_SIZE);
+            const batch = rest.slice(0, QUEUE_WINDOW_SIZE);
             if (batch.length) await withTimeout(TrackPlayer.add(batch), 6000);
             const newQueue = [...queue.slice(0, keepEnd), ...rest];
             logicalQueueRef.current = newQueue;

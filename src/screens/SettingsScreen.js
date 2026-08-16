@@ -21,6 +21,7 @@ import {
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
+    getShuffleMode,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -33,7 +34,7 @@ const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 3) / 4);
 
 export default function SettingsScreen() {
-    const { shuffleMode, changeShuffleMode } = usePlayback();
+    const { changeShuffleMode } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base } = useTheme();
     const scrollRef = useRef(null);
@@ -54,6 +55,15 @@ export default function SettingsScreen() {
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
+    // Separate from `shuffleMode` (from usePlayback) on purpose — that one
+    // reflects LIVE playback state and is legitimately 'off' whenever
+    // nothing's actively shuffling, which doesn't match any of the 3 radio
+    // options below and left the whole section showing nothing selected.
+    // This tracks the persisted TYPE preference instead, which stays one of
+    // the 3 real types regardless of whether shuffle happens to be on right
+    // now — shuffle_mode in storage is only ever written as one of those,
+    // never 'off' (only the live state uses 'off').
+    const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
 
     useEffect(() => {
         (async () => {
@@ -64,6 +74,7 @@ export default function SettingsScreen() {
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
+            setShuffleTypePref(await getShuffleMode());
             setLoaded(true);
         })();
     }, []);
@@ -219,12 +230,12 @@ export default function SettingsScreen() {
                 {/* 3. Shuffle */}
                 <Section title="Shuffle Mode">
                     {MODES.map(m => (
-                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => changeShuffleMode(m.id)}>
+                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => { setShuffleTypePref(m.id); changeShuffleMode(m.id); }}>
                             <View style={{ flex: 1 }}>
                                 <Text style={s.modeLabel}>{m.label}</Text>
                                 <Text style={s.modeSub}>{m.sub}</Text>
                             </View>
-                            <View style={[s.radio, shuffleMode === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
+                            <View style={[s.radio, shuffleTypePref === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
                         </TouchableOpacity>
                     ))}
                 </Section>

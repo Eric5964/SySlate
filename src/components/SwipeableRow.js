@@ -13,6 +13,10 @@ export default function SwipeableRow({
     rightColor = '#7c3aed',
     leftColor = '#dc2626',
     disabled = false,
+    // Matches the swiped row's own borderRadius so the color underneath
+    // reads as part of the same shape, not a differently-rounded layer
+    // behind it.
+    radius = 12,
     // Excludes a strip at the left edge from this row's own pan gesture, so
     // a screen-level edge-swipe-back gesture (e.g. leaving a playlist) can
     // claim that zone instead of this row eating it as a queue-swipe. 0 by
@@ -123,28 +127,21 @@ export default function SwipeableRow({
     const rightGlowOpacity = rightGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
     const leftGlowOpacity = leftGlow.interpolate({ inputRange: [0, 1], outputRange: [0, 1] });
 
-    // The colored fill used to be a flat, fixed-width block that just faded
-    // in — it didn't track how far you'd actually dragged. This makes it
-    // grow with the drag instead (edge pinned, fill stretching out from it,
-    // reaching full width right as the row does), same idea as iOS Mail's
-    // swipe actions. Width itself can't be animated on the native driver,
-    // so this is done as scaleX + a compensating translateX to keep the
-    // pinned edge from drifting (scaleX alone shrinks/grows from the
-    // center) — both of those ARE native-driver-safe, so this doesn't
-    // reintroduce the JS-thread lag the opacity-only version was written to
-    // avoid. The icon/text stay a separate, unscaled layer on top (using the
-    // existing opacity fade above) so they never stretch — they just become
-    // visible once there's enough color underneath them.
-    const rightFill = adjustedX.interpolate({ inputRange: [0, REVEAL_FULL, MAX_REVEAL], outputRange: [0, 0.4, 1], extrapolate: 'clamp' });
-    const leftFill = adjustedX.interpolate({ inputRange: [-MAX_REVEAL, -REVEAL_FULL, 0], outputRange: [1, 0.4, 0], extrapolate: 'clamp' });
-    const rightFillTranslate = rightFill.interpolate({ inputRange: [0, 1], outputRange: [-MAX_REVEAL / 2, 0] });
-    const leftFillTranslate = leftFill.interpolate({ inputRange: [0, 1], outputRange: [MAX_REVEAL / 2, 0] });
-
+    // Previously a narrow fixed-width strip (MAX_REVEAL wide) sitting off to
+    // the side with its own rounded corners — it read as a separate floating
+    // pill next to the row rather than a background the row was sliding off
+    // of. This instead spans the row's own full footprint (same size,
+    // matching radius via the `radius` prop) and sits directly underneath
+    // it — the row sliding away (its existing displayX transform, unchanged)
+    // is what reveals it, the same way Gmail/Mail's swipe actions work.
+    // Nothing about the underlay itself needs to grow or scale anymore;
+    // there's no separate fill layer, no transform-origin math — just a
+    // solid color the row slides off of. The icon/text still fade in via
+    // the opacity interpolations above so they don't pop in instantly.
     return (
         <View style={styles.wrap}>
             {onSwipeRight && (
-                <View style={[styles.underlay, styles.underlayLeft, { width: MAX_REVEAL }]}>
-                    <Animated.View style={[styles.underlayFill, { backgroundColor: rightColor, transform: [{ translateX: rightFillTranslate }, { scaleX: rightFill }] }]} />
+                <View style={[styles.underlay, { backgroundColor: rightColor, borderRadius: radius }]}>
                     <Animated.View style={[styles.underlayContent, styles.underlayContentLeft, { opacity: rightOpacity }]}>
                         <AddQueueIcon size={15} color="#fff" />
                         <Text style={styles.underlayText}>Next</Text>
@@ -152,8 +149,7 @@ export default function SwipeableRow({
                 </View>
             )}
             {onSwipeLeft && (
-                <View style={[styles.underlay, styles.underlayRight, { width: MAX_REVEAL }]}>
-                    <Animated.View style={[styles.underlayFill, { backgroundColor: leftColor, transform: [{ translateX: leftFillTranslate }, { scaleX: leftFill }] }]} />
+                <View style={[styles.underlay, { backgroundColor: leftColor, borderRadius: radius }]}>
                     <Animated.View style={[styles.underlayContent, styles.underlayContentRight, { opacity: leftOpacity }]}>
                         <Text style={styles.underlayText}>Remove</Text>
                         <TrashIcon size={15} color="#fff" />
@@ -192,16 +188,13 @@ export default function SwipeableRow({
 const styles = StyleSheet.create({
     wrap: { position: 'relative' },
     underlay: {
-        position: 'absolute', top: 0, bottom: 0,
-        borderRadius: 12, overflow: 'hidden',
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'center',
     },
-    underlayLeft: { left: 0 },
-    underlayRight: { right: 0 },
-    underlayFill: { ...StyleSheet.absoluteFillObject },
     underlayContent: {
         ...StyleSheet.absoluteFillObject,
         flexDirection: 'row', alignItems: 'center',
-        paddingHorizontal: 16, gap: 6,
+        paddingHorizontal: 20, gap: 6,
     },
     underlayContentLeft: { justifyContent: 'flex-start' },
     underlayContentRight: { justifyContent: 'flex-end' },
