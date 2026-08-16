@@ -36,9 +36,24 @@ function ShrinkOutRow({ removing, children }) {
     const anim = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }).start();
+        // Non-native here (unlike GrowInRow) specifically to also animate
+        // marginVertical down to 0 alongside the scale/fade — the row's own
+        // small vertical margin was staying put even as its content shrank
+        // to nothing, leaving a thin leftover gap that then snapped shut
+        // the instant the row was actually removed. One extra non-native
+        // property on a single ~180ms one-off animation isn't the kind of
+        // thing that competes with anything performance-sensitive.
+        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }).start();
     }, [removing]);
-    return <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>{children}</Animated.View>;
+    return (
+        <Animated.View style={{
+            opacity: anim,
+            transform: [{ scaleY: anim }],
+            marginVertical: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 2] }),
+        }}>
+            {children}
+        </Animated.View>
+    );
 }
 
 export default function QueueModal({ visible, onClose }) {
@@ -51,8 +66,23 @@ export default function QueueModal({ visible, onClose }) {
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex) => {
         try {
-            const queue = await TrackPlayer.getQueue();
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            // Tapping a song to play resets TrackPlayer's queue entirely and
+            // re-adds the new window right after — there's a brief real gap
+            // between those two steps where the native queue is legitimately
+            // empty and has no current track. If this runs during exactly
+            // that gap (e.g. opening the queue sheet right after tapping a
+            // song), it used to take that as "nothing's playing" and show a
+            // permanently blank sheet, since nothing else ever re-triggers a
+            // refresh on its own. Retrying briefly instead of taking the
+            // first empty read as final rides out that gap — it's normally
+            // gone well within a couple hundred ms.
+            let queue, currentIndex;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                queue = await TrackPlayer.getQueue();
+                currentIndex = await TrackPlayer.getCurrentTrack();
+                if (currentIndex !== null && currentIndex !== undefined && queue.length > 0) break;
+                if (attempt < 4) await new Promise(r => setTimeout(r, 120));
+            }
             if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
             const activePriority = priorityOverride ?? priorityQueue;
             // stableKey is song.id + which occurrence of that id this is,

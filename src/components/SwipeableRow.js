@@ -141,20 +141,20 @@ export default function SwipeableRow({
     return (
         <View style={styles.wrap}>
             {onSwipeRight && (
-                <View style={[styles.underlay, { backgroundColor: rightColor, borderRadius: radius }]}>
-                    <Animated.View style={[styles.underlayContent, styles.underlayContentLeft, { opacity: rightOpacity }]}>
+                <Animated.View style={[styles.underlay, { backgroundColor: rightColor, borderRadius: radius, opacity: rightOpacity }]}>
+                    <View style={[styles.underlayContent, styles.underlayContentLeft]}>
                         <AddQueueIcon size={15} color="#fff" />
                         <Text style={styles.underlayText}>Next</Text>
-                    </Animated.View>
-                </View>
+                    </View>
+                </Animated.View>
             )}
             {onSwipeLeft && (
-                <View style={[styles.underlay, { backgroundColor: leftColor, borderRadius: radius }]}>
-                    <Animated.View style={[styles.underlayContent, styles.underlayContentRight, { opacity: leftOpacity }]}>
+                <Animated.View style={[styles.underlay, { backgroundColor: leftColor, borderRadius: radius, opacity: leftOpacity }]}>
+                    <View style={[styles.underlayContent, styles.underlayContentRight]}>
                         <Text style={styles.underlayText}>Remove</Text>
                         <TrashIcon size={15} color="#fff" />
-                    </Animated.View>
-                </View>
+                    </View>
+                </Animated.View>
             )}
             <PanGestureHandler
                 enabled={!disabled && (!!onSwipeRight || !!onSwipeLeft)}
