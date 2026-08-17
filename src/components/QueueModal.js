@@ -36,21 +36,21 @@ function ShrinkOutRow({ removing, children }) {
     const anim = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // Non-native here (unlike GrowInRow) specifically to also animate
-        // marginVertical down to 0 alongside the scale/fade — the row's own
-        // small vertical margin was staying put even as its content shrank
-        // to nothing, leaving a thin leftover gap that then snapped shut
-        // the instant the row was actually removed. One extra non-native
-        // property on a single ~180ms one-off animation isn't the kind of
-        // thing that competes with anything performance-sensitive.
-        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }).start();
+        // Native driver, matching GrowInRow — a previous version of this
+        // also animated marginVertical to close the small leftover gap,
+        // but that property can't run on the native driver, so the whole
+        // animation had to fall back to running on the JS thread instead.
+        // That's what made it choppy: a JS-driven animation is at the mercy
+        // of whatever else the JS thread is doing at that exact moment
+        // (and removing a row kicks off real async work right alongside
+        // it — removeFromQueue, refresh). Opacity + scaleY alone stay
+        // fully on the native thread and aren't affected by that. The
+        // couple of leftover pixels of margin aren't worth JS-thread
+        // animation for.
+        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }).start();
     }, [removing]);
     return (
-        <Animated.View style={{
-            opacity: anim,
-            transform: [{ scaleY: anim }],
-            marginVertical: anim.interpolate({ inputRange: [0, 1], outputRange: [0, 2] }),
-        }}>
+        <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>
             {children}
         </Animated.View>
     );
@@ -85,31 +85,21 @@ export default function QueueModal({ visible, onClose }) {
             }
             if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
             const activePriority = priorityOverride ?? priorityQueue;
-            // stableKey is song.id + which occurrence of that id this is,
-            // NOT realIndex. Keying by realIndex meant every row after a
-            // removed/added item got a brand-new key on each refresh (since
-            // their queue position shifted), so React treated them as
-            // entirely new components and remounted the whole tail of the
-            // list — that remount-flash was the actual "flash" on add/remove,
-            // separate from the swipe feedback glow. Occurrence-based keys
-            // only change for a row when a duplicate of ITS OWN song is
-            // added/removed earlier in the list, which is rare.
-            const idOccurrence = {};
             const priorityEnd = currentIndex + 1 + activePriority.length;
             let justAddedKey = null;
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
-                const n = (idOccurrence[song.id] = (idOccurrence[song.id] || 0) + 1);
                 const realIndex = currentIndex + 1 + i;
-                const stableKey = `${song.id}#${n}`;
-                // Inserting a new copy earlier in the queue shifts the
-                // occurrence numbers of any LATER copies of that same song
-                // (the one that was "#1" can become "#2", etc.) — diffing
-                // stableKeys against a previous snapshot to guess "what's
-                // new" was catching that renumbered EXISTING row as new
-                // instead of the actual new one, since its key changed too.
-                // Being told exactly which realIndex was just inserted at
-                // (from the action that caused this refresh) sidesteps that
-                // entirely — no guessing from key identity needed.
+                // Every track gets a unique _qid stamped on the moment it's
+                // added to the native queue (see stampQid in
+                // PlaybackContext) — using that directly as the row key
+                // instead of computing one from song id + occurrence means
+                // a row's identity is tied to the actual queue slot it is,
+                // permanently, regardless of what gets added or removed
+                // elsewhere. Occurrence numbers (which copy of this song is
+                // this) shifted whenever a duplicate got added/removed
+                // earlier in the list, which was making an UNRELATED
+                // existing row look like it had moved or been replaced.
+                const stableKey = song._qid ?? `${song.id}#${realIndex}`;
                 if (realIndex === justAddedRealIndex) justAddedKey = stableKey;
                 return {
                     realIndex,
@@ -130,18 +120,15 @@ export default function QueueModal({ visible, onClose }) {
     }, [priorityQueue]);
 
     useEffect(() => {
-        // Deferred until the sheet's own open animation has settled, rather
-        // than firing the instant `visible` flips true. refresh() does real
-        // native-bridge round trips (getQueue/getCurrentTrack) and then
-        // triggers the art-loading pass on top of that — racing all of that
-        // against the slide-up animation is very likely why opening the
-        // queue felt drastically slower than the other sheets (EQ, sleep
-        // timer), which have no such data-fetch on open. Letting the
-        // animation finish untouched first, then populating content right
-        // after, should make the open itself feel identical to the others.
+        // Was deferred until the sheet's open animation settled, to stop
+        // content-loading from competing with that animation. That traded
+        // one complaint for a worse one — the sheet opening instantly but
+        // sitting empty for a beat reads as "broken" in a way slow-but-
+        // together doesn't. Loading immediately again; the retry-on-open
+        // logic below still means a slow first read doesn't show as
+        // permanently empty.
         if (!visible) return;
-        const task = InteractionManager.runAfterInteractions(() => refresh());
-        return () => task.cancel();
+        refresh();
     }, [visible, refresh]);
 
     // Keeps retrying on its own while the sheet is open and showing nothing,

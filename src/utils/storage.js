@@ -4,6 +4,8 @@ import * as FileSystem from 'expo-file-system';
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
 export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:${path}` : 'eq:global').then(v => v ?? 'flat'), 'flat');
+export const getKeepPriorityOnPlaylistSwitch = () => safe(() => AsyncStorage.getItem('keep_priority_on_switch').then(v => v !== 'false'), true);
+export const setKeepPriorityOnPlaylistSwitch = (v) => safe(() => AsyncStorage.setItem('keep_priority_on_switch', String(v)), null);
 export const setEQPreset = (id, path) => safe(() => AsyncStorage.setItem(path ? `eq:${path}` : 'eq:global', id), null);
 // `shuffle_mode` now holds ONLY the algorithm preference (full_cycle /
 // true_random / smart) and is never written as 'off' going forward — that
@@ -203,7 +205,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

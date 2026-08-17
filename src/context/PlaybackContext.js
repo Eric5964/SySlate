@@ -18,6 +18,20 @@ const setQueueLoop = async () => {
     try { const { RepeatMode } = require('react-native-track-player'); await TrackPlayer.setRepeatMode(RepeatMode.Queue); } catch { }
 };
 
+// Every track that ever gets added to the native queue gets a unique _qid
+// stamped on at the moment it's added — not derived from song id or queue
+// position, so it can never collide with (or be reassigned by) another
+// track, including a genuine second copy of the same song sitting
+// elsewhere in the queue. The queue view uses this as its row key instead
+// of computing one from position/occurrence, which is what let promoting or
+// removing one copy of a duplicated song visually affect a DIFFERENT copy —
+// occurrence numbers shift when a duplicate gets added or removed earlier
+// in the queue; this never does, because it isn't derived from anything
+// that changes.
+let qidCounter = 0;
+const stampQid = (track) => ({ ...track, _qid: `q${++qidCounter}` });
+const stampQids = (tracks) => tracks.map(stampQid);
+
 export function PlaybackProvider({ children }) {
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
     const [currentTrack, setCurrentTrack] = useState(null);
@@ -246,7 +260,7 @@ export function PlaybackProvider({ children }) {
                     priority = priority.filter(id => id !== song.id);
                 }
                 const insertAt = currentIndex + 1 + priority.length;
-                await TrackPlayer.add({ ...song }, insertAt);
+                await TrackPlayer.add(stampQid(song), insertAt);
                 priority = [...priority, song.id];
                 priorityRef.current = priority;
                 setPriorityQueue(priority);
@@ -290,7 +304,7 @@ export function PlaybackProvider({ children }) {
             // the song plays sooner via this new priority copy, but still
             // plays again later at its natural spot too.
             const insertAt = currentIndex + 1 + priorityRef.current.length;
-            await TrackPlayer.add({ ...track }, insertAt);
+            await TrackPlayer.add(stampQid(track), insertAt);
             const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
@@ -397,7 +411,7 @@ export function PlaybackProvider({ children }) {
     // separate "skip to index" step needed after this, unlike before.
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
-        const batch = fullQueue.slice(anchorIndex, anchorIndex + QUEUE_WINDOW_SIZE);
+        const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_WINDOW_SIZE));
         await TrackPlayer.reset();
         await withTimeout(TrackPlayer.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
@@ -435,13 +449,45 @@ export function PlaybackProvider({ children }) {
             const nativeLen = (await TrackPlayer.getQueue()).length;
             const remaining = nativeLen - 1 - currentIndex;
             if (remaining < QUEUE_TOPUP_THRESHOLD) {
-                const next = logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH);
+                const next = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH));
                 if (next.length) {
                     await TrackPlayer.add(next);
                     loadedThroughRef.current += next.length;
                 }
             }
         } catch (e) { console.error('topUpQueue:', e); }
+    };
+
+    // Captures whatever's currently in the priority zone before a playlist
+    // switch wipes the native queue — used when "Keep Priority Queue When
+    // Switching Playlists" is on. Existing objects (with their real _qid
+    // already stamped on) are returned as-is so re-adding them after the
+    // switch doesn't need to treat them as new inserts.
+    const capturePriorityTracks = async () => {
+        try {
+            if (!priorityRef.current.length) return [];
+            const currentIndex = await TrackPlayer.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return [];
+            const queue = await TrackPlayer.getQueue();
+            return queue.slice(currentIndex + 1, currentIndex + 1 + priorityRef.current.length);
+        } catch { return []; }
+    };
+
+    // Re-adds carried-over priority tracks right after the new current
+    // track (which is always native index 0 immediately after
+    // primeNativeQueue) and restores tracking for them. Falls back to
+    // actually clearing priority when there's nothing to carry over, or the
+    // setting is off.
+    const restorePriorityTracks = async (carried) => {
+        if (carried.length) {
+            try { await TrackPlayer.add(carried, 1); } catch { }
+            const ids = carried.map(t => t.id);
+            priorityRef.current = ids;
+            setPriorityQueue(ids);
+        } else {
+            priorityRef.current = [];
+            setPriorityQueue([]);
+        }
     };
 
     const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
@@ -454,10 +500,14 @@ export function PlaybackProvider({ children }) {
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
 
+        const keepPriority = await getKeepPriorityOnPlaylistSwitch();
+        const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
+
         await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, startIndex);
+        await restorePriorityTracks(carriedPriority);
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -473,8 +523,6 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(isOn);
         setEqPresetId(eq);
         setSingleLoop(false);
-        setPriorityQueue([]);
-        priorityRef.current = [];
         await setSession(playlist.path, { queue, index: startIndex });
     }), []);
 
@@ -482,10 +530,13 @@ export function PlaybackProvider({ children }) {
         if (isTransitionLocked()) return;
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
+        const keepPriority = await getKeepPriorityOnPlaylistSwitch();
+        const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
+        await restorePriorityTracks(carriedPriority);
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -499,8 +550,6 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(false);
         setEqPresetId(eq);
         setSingleLoop(false);
-        setPriorityQueue([]);
-        priorityRef.current = [];
         await setSession(playlist.path, { queue, index: 0 });
     }), []);
 
@@ -509,10 +558,13 @@ export function PlaybackProvider({ children }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const queue = buildQueue(playlist.songs, useMode);
+        const keepPriority = await getKeepPriorityOnPlaylistSwitch();
+        const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         await fadeOutCurrentIfPlaying(await getAudioRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
+        await restorePriorityTracks(carriedPriority);
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -526,8 +578,6 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(true);
         setEqPresetId(eq);
         setSingleLoop(false);
-        setPriorityQueue([]);
-        priorityRef.current = [];
         await setSession(playlist.path, { queue, index: 0 });
         await setShuffleMode(useMode);
         await setShuffleOnStorage(true);
@@ -664,7 +714,7 @@ export function PlaybackProvider({ children }) {
             await withTimeout(TrackPlayer.removeUpcomingTracks(), 4000);
             if (priorityTracks.length) await withTimeout(TrackPlayer.add(priorityTracks), 4000);
 
-            const batch = rest.slice(0, QUEUE_WINDOW_SIZE);
+            const batch = stampQids(rest.slice(0, QUEUE_WINDOW_SIZE));
             if (batch.length) await withTimeout(TrackPlayer.add(batch), 6000);
             const newQueue = [...queue.slice(0, keepEnd), ...rest];
             logicalQueueRef.current = newQueue;

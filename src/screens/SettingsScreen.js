@@ -22,6 +22,7 @@ import {
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     getShuffleMode,
+    getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -64,6 +65,7 @@ export default function SettingsScreen() {
     // now — shuffle_mode in storage is only ever written as one of those,
     // never 'off' (only the live state uses 'off').
     const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
+    const [keepPriority, setKeepPriority] = useState(true);
 
     useEffect(() => {
         (async () => {
@@ -75,6 +77,7 @@ export default function SettingsScreen() {
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
             setShuffleTypePref(await getShuffleMode());
+            setKeepPriority(await getKeepPriorityOnPlaylistSwitch());
             setLoaded(true);
         })();
     }, []);
@@ -238,6 +241,17 @@ export default function SettingsScreen() {
                             <View style={[s.radio, shuffleTypePref === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
                         </TouchableOpacity>
                     ))}
+                </Section>
+
+                <Section title="Queue">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
+                            <Text style={s.toggleSub}>Carries over songs you've queued up next instead of clearing them</Text>
+                        </View>
+                        <Switch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
                 </Section>
 
                 {/* Between Shuffle and Accent Color, per request. Play counts are

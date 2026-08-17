@@ -141,7 +141,19 @@ function AppInner() {
                 await TrackPlayer.updateOptions({
                     capabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop],
                     compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
-                    progressUpdateEventThrottle: 150,
+                    // Was `progressUpdateEventThrottle: 150` — not a real
+                    // react-native-track-player option (that name doesn't
+                    // exist in its API), so it was silently ignored. The
+                    // real option is progressUpdateEventInterval, in
+                    // seconds, and without it set, Event.PlaybackProgressUpdated
+                    // never fires at all — which is exactly what play-count
+                    // crediting in PlaybackContext depends on entirely to
+                    // know when a song crosses 50% played. The visible
+                    // progress bar elsewhere never looked broken because it
+                    // polls position on its own and was never affected by
+                    // this — only the count, which had no other path to
+                    // being incremented, silently never moved.
+                    progressUpdateEventInterval: 1,
                 });
             } catch { }
             await reload();
