@@ -31,7 +31,6 @@ export default function PlaylistDetailScreen() {
     const { playlist } = route.params;
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue,
-        currentPlaylist, shuffleOn, toggleShuffle,
     } = usePlayback();
     const { theme, base } = useTheme();
 
@@ -78,30 +77,18 @@ export default function PlaylistDetailScreen() {
         await playSongFromPlaylist({ ...playlist, songs: sorted }, song.id);
     };
 
-    const isActivePlaylist = currentPlaylist?.path === playlist.path;
-
     const handlePlay = async () => {
-        // Always starts in order, regardless of whatever shuffle state was
-        // left on from something else — shuffle is now something you turn
-        // ON for a fresh Play, not a state Play inherits.
+        // Always starts in order — shuffle is something you turn ON, not a
+        // state Play inherits from wherever shuffle was last left.
         await playPlaylistOrdered(playlist, sorted);
     };
 
     const handleShuffle = async () => {
-        // If this playlist is what's already playing, shuffle acts as a
-        // live toggle on the queue you're already in — reshuffles what's
-        // upcoming without restarting the current song, and un-toggling
-        // later resumes in order from wherever playback currently is (both
-        // via the existing toggleShuffle/reshuffleUpcoming, previously only
-        // reachable from the Player screen's shuffle icon). If a different
-        // playlist (or nothing) is playing, there's no "current" queue to
-        // toggle within yet, so this starts the playlist fresh in shuffled
-        // order same as before.
-        if (isActivePlaylist) {
-            await toggleShuffle();
-        } else {
-            await playPlaylistShuffled(playlist);
-        }
+        // Simple and direct: starts this playlist shuffled, every time you
+        // tap it — not a live toggle. The Player screen's own shuffle icon
+        // already covers "toggle shuffle on what's currently playing
+        // without restarting it," so this doesn't need to duplicate that.
+        await playPlaylistShuffled(playlist);
     };
 
     const changeCover = async () => {
@@ -183,16 +170,9 @@ export default function PlaylistDetailScreen() {
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity
-                                style={[
-                                    s.shuffleBtn,
-                                    { borderColor: theme.accentDim },
-                                    isActivePlaylist && shuffleOn && { backgroundColor: theme.accent, borderColor: theme.accent },
-                                ]}
-                                onPress={handleShuffle}
-                            >
-                                <ShuffleIcon size={16} color={isActivePlaylist && shuffleOn ? theme.onAccent : theme.accent} />
-                                <Text style={[s.shuffleBtnText, { color: isActivePlaylist && shuffleOn ? theme.onAccent : theme.accent }]}>Shuffle</Text>
+                            <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
+                                <ShuffleIcon size={16} color={theme.accent} />
+                                <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
                             </TouchableOpacity>
                         </View>
 

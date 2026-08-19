@@ -1,7 +1,7 @@
 import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, Image,
-    TextInput, StyleSheet, StatusBar,
+    TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
 import { useNavigation, useScrollToTop } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
@@ -75,6 +75,7 @@ export default function AllSongsScreen() {
     };
 
     return (
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
         <View style={[s.container, { backgroundColor: base.bg }]}>
             <StatusBar barStyle="light-content" />
 
@@ -91,7 +92,7 @@ export default function AllSongsScreen() {
                             placeholderTextColor="#444"
                         />
                         {search.length > 0 && (
-                            <TouchableOpacity style={s.clearBtn} onPress={() => setSearch('')} hitSlop={HIT}>
+                            <TouchableOpacity style={s.clearBtn} onPress={() => { setSearch(''); Keyboard.dismiss(); }} hitSlop={HIT}>
                                 <Text style={s.clearBtnText}>✕</Text>
                             </TouchableOpacity>
                         )}
@@ -117,6 +118,7 @@ export default function AllSongsScreen() {
                     data={filtered}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingBottom: 150 }}
+                    onScrollBeginDrag={Keyboard.dismiss}
                     renderItem={({ item }) => (
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
                             <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
@@ -144,6 +146,7 @@ export default function AllSongsScreen() {
             {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </View>
+        </TouchableWithoutFeedback>
     );
 }
 

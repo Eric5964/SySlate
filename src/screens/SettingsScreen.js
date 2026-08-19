@@ -310,7 +310,13 @@ export default function SettingsScreen() {
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using SideStore</Text>
                             <Text style={s.locBody}>
-                                Files → On My iPhone → SySlate, appearing as its own top-level app folder.
+                                Files → On My iPhone → SideStore → Data → Application → (SySlate's app ID) → Documents
+                            </Text>
+                            <Text style={[s.locNote, { marginTop: 6 }]}>
+                                Known issue: on some SideStore installs this Documents folder shows as empty/unreachable
+                                even though the path above is correct — a sandboxing limitation on SideStore's side, not
+                                something adding files elsewhere (like a manually made top-level "SySlate" folder) works
+                                around, since that folder isn't actually connected to the app's real storage.
                             </Text>
                         </View>
                     )}

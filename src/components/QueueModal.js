@@ -7,51 +7,73 @@ import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { usePreferences } from '../context/PreferencesContext';
+import { getPlayCounts } from '../utils/storage';
+
+// Fixed estimate of a row's rendered height (thumb + padding + margins) —
+// used instead of measuring each row via onLayout, which would need an
+// extra render pass before the animation could even start (and risks a
+// one-frame flash at full size while waiting on that measurement). Queue
+// rows are a consistent height regardless of content (thumb is fixed size,
+// title/artist are single-line truncated), so a constant is close enough
+// that the couple of px of slop is not visible.
+const ROW_HEIGHT = 74;
 
 // Grows a newly-added row in from nothing instead of it just abruptly
-// appearing in the list (same idea as Spotify's queue-add animation).
+// appearing in the list (same idea as Spotify's queue-add animation) — both
+// its height (so surrounding rows make room for it smoothly instead of
+// space just appearing) and its own opacity/scale animate together.
 // Existing rows render at full size immediately — only ones QueueModal
-// marks as newly added (via `isNew`) animate. transform/opacity only, so
-// this stays on the native driver like the rest of this screen's animations.
+// marks as newly added (via `isNew`) animate.
 function GrowInRow({ isNew, children }) {
-    const anim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+    const opacityScale = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+    // Height can't run on the native driver (it's a layout property, not
+    // transform/opacity), so this one specific animation runs on the JS
+    // thread while opacityScale above stays native — Animated.parallel
+    // supports mixing driver modes across its children as long as each
+    // individual animation is internally consistent, which these are.
+    const heightAnim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
     useEffect(() => {
         if (!isNew) return;
-        Animated.spring(anim, { toValue: 1, useNativeDriver: true, friction: 8, tension: 60 }).start();
-        // Intentionally mount-only — this is a one-time "arrival" animation,
-        // not something that should replay if isNew's identity ever changed.
+        Animated.parallel([
+            Animated.spring(opacityScale, { toValue: 1, useNativeDriver: true, friction: 8, tension: 60 }),
+            Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
+        ]).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-    return <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>{children}</Animated.View>;
+    if (!isNew) return <View>{children}</View>;
+    return (
+        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
+            <Animated.View style={{ opacity: opacityScale, transform: [{ scaleY: opacityScale }] }}>
+                {children}
+            </Animated.View>
+        </Animated.View>
+    );
 }
 
-// Mirrors GrowInRow — shrinks a row out before it's actually removed from
-// the list, instead of it just vanishing the instant the data updates. The
-// row stays in `rows` (and keeps its reserved layout space) for the short
-// duration of this animation and is only actually removed once it's
-// finished, so what would otherwise be a visible row disappearing abruptly
-// becomes a brief collapse of now-empty space instead.
-const REMOVE_ANIM_MS = 180;
+// Mirrors GrowInRow — shrinks a row's height AND content out before it's
+// actually removed from the list, instead of it just vanishing the instant
+// the data updates (which is what "the space doesn't close naturally" was
+// describing — the content faded/scaled away already, but the space it sat
+// in didn't shrink until the row was actually removed, so it just snapped
+// shut at the end). The row stays in `rows` (and keeps its layout slot) for
+// the duration of this animation and is only actually removed once it's
+// finished.
+const REMOVE_ANIM_MS = 220;
 function ShrinkOutRow({ removing, children }) {
-    const anim = useRef(new Animated.Value(1)).current;
+    const opacityScale = useRef(new Animated.Value(1)).current;
+    const heightAnim = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // Native driver, matching GrowInRow — a previous version of this
-        // also animated marginVertical to close the small leftover gap,
-        // but that property can't run on the native driver, so the whole
-        // animation had to fall back to running on the JS thread instead.
-        // That's what made it choppy: a JS-driven animation is at the mercy
-        // of whatever else the JS thread is doing at that exact moment
-        // (and removing a row kicks off real async work right alongside
-        // it — removeFromQueue, refresh). Opacity + scaleY alone stay
-        // fully on the native thread and aren't affected by that. The
-        // couple of leftover pixels of margin aren't worth JS-thread
-        // animation for.
-        Animated.timing(anim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }).start();
+        Animated.parallel([
+            Animated.timing(opacityScale, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }),
+            Animated.timing(heightAnim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }),
+        ]).start();
     }, [removing]);
     return (
-        <Animated.View style={{ opacity: anim, transform: [{ scaleY: anim }] }}>
-            {children}
+        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
+            <Animated.View style={{ opacity: opacityScale, transform: [{ scaleY: opacityScale }] }}>
+                {children}
+            </Animated.View>
         </Animated.View>
     );
 }
@@ -59,10 +81,11 @@ function ShrinkOutRow({ removing, children }) {
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
-    const { showSongCovers } = usePreferences();
+    const { showSongCovers, showPlayCount } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
+    const [playCounts, setPlayCounts] = useState({});
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex) => {
         try {
@@ -171,6 +194,11 @@ export default function QueueModal({ visible, onClose }) {
     const songsForArt = useMemo(() => rows.map(r => r.song), [rows]);
     const artMap = useListArt(songsForArt, showSongCovers);
 
+    useEffect(() => {
+        if (!showPlayCount || !songsForArt.length) return;
+        getPlayCounts(songsForArt).then(setPlayCounts);
+    }, [songsForArt, showPlayCount]);
+
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
     const remove = async (realIndex, stableKey) => {
         // Let the shrink play out first, then do the real removal + refresh
@@ -214,6 +242,9 @@ export default function QueueModal({ visible, onClose }) {
                             <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
                             <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
                         </View>
+                        {showPlayCount && playCounts[song.id] > 0 && (
+                            <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
+                        )}
                     </TouchableOpacity>
                 </SwipeableRow>
             </ShrinkOutRow>
@@ -259,6 +290,7 @@ const s = StyleSheet.create({
     qRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12 },
     qTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     qArtist: { color: '#555', fontSize: 12, marginTop: 3 },
+    qPlayCount: { color: '#333', fontSize: 12, marginLeft: 8 },
     thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },

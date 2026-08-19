@@ -348,8 +348,22 @@ export async function PlaybackService() {
             try { await TrackPlayer.setVolume(0); } catch { }
             const cf = await getCrossfade();
             if (cf > 0.05) {
-                await waitForPlaying(800);
-                if (isFadeOwner(id)) await fadeVol(0, 1, Math.min(cf, 2.5), id);
+                // Same issue as playWithRamp had: waitForPlaying's result
+                // was never checked, so if it timed out (audio not
+                // confirmed playing within 800ms — plausible right after a
+                // natural track change, loading the next file), the ramp
+                // still started anyway. It fading partway against
+                // silence/buffering, then something else (the very next
+                // event, or this same handler firing again) setting volume
+                // outright, is exactly what "starts quiet then jumps" would
+                // sound like — a real ramp that got cut short, not a
+                // missing one.
+                const reallyPlaying = await waitForPlaying(800);
+                if (!reallyPlaying) {
+                    try { await TrackPlayer.setVolume(1); } catch { }
+                } else if (isFadeOwner(id)) {
+                    await fadeVol(0, 1, Math.min(cf, 2.5), id);
+                }
             } else {
                 try { await TrackPlayer.setVolume(1); } catch { }
             }

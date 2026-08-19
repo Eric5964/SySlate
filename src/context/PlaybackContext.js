@@ -8,7 +8,7 @@ import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
-    getAudioRamp,
+    getAudioRamp, getKeepPriorityOnPlaylistSwitch,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
@@ -252,13 +252,14 @@ export function PlaybackProvider({ children }) {
             try {
                 const currentIndex = await TrackPlayer.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-                const queue = await TrackPlayer.getQueue();
-                const dupeIdx = queue.findIndex((t, i) => t.id === song.id && i > currentIndex);
+                // Used to look for an existing copy of this song later in
+                // the queue and move it forward instead of adding a new
+                // one — which meant tapping "add to queue" on the same song
+                // more than once only ever resulted in one copy, no matter
+                // how many times you tapped it. Every call now just adds
+                // another genuine copy, same as promoteToQueue already does
+                // for the swipe-inside-the-queue-view version of this.
                 let priority = priorityRef.current;
-                if (dupeIdx !== -1) {
-                    await TrackPlayer.remove(dupeIdx);
-                    priority = priority.filter(id => id !== song.id);
-                }
                 const insertAt = currentIndex + 1 + priority.length;
                 await TrackPlayer.add(stampQid(song), insertAt);
                 priority = [...priority, song.id];
@@ -396,6 +397,7 @@ export function PlaybackProvider({ children }) {
     // what shuffle "memory" and resuming a session depend on — only what's
     // actually sitting in TrackPlayer's native queue is windowed.
     const QUEUE_WINDOW_SIZE = 50;
+    const QUEUE_INITIAL_BATCH = 10;
     const QUEUE_TOPUP_BATCH = 5;
     // Triggers a top-up as soon as what's left loaded drops to 45, adding
     // 5 more to bring it back to 50 — keeps the loaded window oscillating
@@ -409,12 +411,38 @@ export function PlaybackProvider({ children }) {
     // Resets TrackPlayer to a fresh window of `fullQueue` starting at logical
     // index `anchorIndex` — native index 0 IS anchorIndex, so there's no
     // separate "skip to index" step needed after this, unlike before.
+    //
+    // Only actually loads QUEUE_INITIAL_BATCH (10) up front now, not the
+    // full 50 — TrackPlayer.add() is a real native bridge call whose cost
+    // scales with how many tracks are in it, so a smaller first batch means
+    // less time between tapping something and it actually being ready to
+    // play. The rest of the window (up to 50) gets topped up right after,
+    // in the background, via the exact same path (topUpQueueIfNeeded) that
+    // already handles keeping it filled as songs play — this is just an
+    // extra call to it immediately rather than waiting for the threshold.
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
-        const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_WINDOW_SIZE));
+        const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
         await TrackPlayer.reset();
         await withTimeout(TrackPlayer.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
+        // Deliberately NOT calling fillRestOfWindow() here — callers that
+        // also need to re-insert priority tracks (restorePriorityTracks) do
+        // that FIRST and call fillRestOfWindow() themselves right after.
+        // Firing it from in here would race that insert — both are
+        // TrackPlayer.add() calls, one inserting at a specific index and
+        // one appending, and interleaving them is asking for a scrambled
+        // queue order.
+    };
+
+    const fillRestOfWindow = async () => {
+        try {
+            const rest = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + (QUEUE_WINDOW_SIZE - QUEUE_INITIAL_BATCH)));
+            if (rest.length) {
+                await withTimeout(TrackPlayer.add(rest), 6000);
+                loadedThroughRef.current += rest.length;
+            }
+        } catch (e) { console.error('fillRestOfWindow:', e); }
     };
 
     // Wrap around the ENTIRE body of loadPlaylist/playPlaylistOrdered/
@@ -434,7 +462,17 @@ export function PlaybackProvider({ children }) {
         const run = async () => {
             if (latestPendingRef.current !== entry) return; // superseded before it got a turn
             latestPendingRef.current = null;
-            await fn();
+            try {
+                await fn();
+            } catch (e) {
+                // This chain has no other catch anywhere in it — an
+                // uncaught error here previously just became a silently
+                // swallowed rejection (Play/Shuffle doing visibly nothing,
+                // no error, no crash). Logging at minimum makes a bug like
+                // that show up somewhere instead of just looking like
+                // nothing happened.
+                console.error('runExclusivePlayAction:', e);
+            }
         };
         const chained = playActionLockRef.current.then(run, run);
         playActionLockRef.current = chained;
@@ -508,6 +546,7 @@ export function PlaybackProvider({ children }) {
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, startIndex);
         await restorePriorityTracks(carriedPriority);
+        fillRestOfWindow();
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -537,6 +576,7 @@ export function PlaybackProvider({ children }) {
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
         await restorePriorityTracks(carriedPriority);
+        fillRestOfWindow();
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -565,6 +605,7 @@ export function PlaybackProvider({ children }) {
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
         await restorePriorityTracks(carriedPriority);
+        fillRestOfWindow();
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -618,6 +659,7 @@ export function PlaybackProvider({ children }) {
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
+        fillRestOfWindow();
         await setQueueLoop();
         await playWithRamp(preClaimedId);
 
@@ -658,6 +700,7 @@ export function PlaybackProvider({ children }) {
             const mode = await getShuffleMode();
             const on = await getShuffleOnStorage();
             await primeNativeQueue(queue, last.index);
+            fillRestOfWindow();
             if (last.position > 2) {
                 // Seeking immediately after skip was silently getting ignored —
                 // the native player hadn't finished preparing the track yet.
