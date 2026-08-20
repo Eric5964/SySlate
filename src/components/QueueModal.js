@@ -86,6 +86,28 @@ export default function QueueModal({ visible, onClose }) {
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
     const [playCounts, setPlayCounts] = useState({});
+    // Distinguishes "still working through the retry loop above" from
+    // "genuinely nothing queued" — without this, both looked identical
+    // (rows.length === 0) and the sheet showed "Nothing up next" during
+    // that first loading window too, which read as the queue being empty
+    // rather than just not loaded yet.
+    const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+
+    // remove()/promote() already call refresh() explicitly, right after
+    // their own native change, with the correct priorityOverride for that
+    // exact moment. refresh() closing over `priorityQueue` (via the
+    // dependency array below) meant its identity changed on every priority
+    // update too — including the ones remove()/promote() themselves just
+    // caused — which re-fired the "refresh on open" effect further down a
+    // SECOND, uncoordinated time with no override, racing the deliberate
+    // call. That race is what produced the empty-gap flash when removing
+    // the last Priority row: one refresh reading the native queue before
+    // the removal had landed, the other after, each briefly rendering a
+    // different (both individually reasonable, but inconsistent) view.
+    // Reading priorityQueue through a ref instead keeps refresh's identity
+    // stable so only the explicit calls trigger it.
+    const priorityQueueRef = useRef(priorityQueue);
+    useEffect(() => { priorityQueueRef.current = priorityQueue; }, [priorityQueue]);
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex) => {
         try {
@@ -101,13 +123,18 @@ export default function QueueModal({ visible, onClose }) {
             // gone well within a couple hundred ms.
             let queue, currentIndex;
             for (let attempt = 0; attempt < 5; attempt++) {
-                queue = await TrackPlayer.getQueue();
-                currentIndex = await TrackPlayer.getCurrentTrack();
+                // These were two sequential awaits (getQueue then
+                // getCurrentTrack) — each a separate bridge round trip.
+                // Running them together halves the round trips on every
+                // attempt, which is most of what "queue takes a second to
+                // load" was: the sheet showing genuinely blank while this
+                // loop worked through its retries one slow step at a time.
+                [queue, currentIndex] = await Promise.all([TrackPlayer.getQueue(), TrackPlayer.getCurrentTrack()]);
                 if (currentIndex !== null && currentIndex !== undefined && queue.length > 0) break;
                 if (attempt < 4) await new Promise(r => setTimeout(r, 120));
             }
             if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
-            const activePriority = priorityOverride ?? priorityQueue;
+            const activePriority = priorityOverride ?? priorityQueueRef.current;
             const priorityEnd = currentIndex + 1 + activePriority.length;
             let justAddedKey = null;
             const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
@@ -139,8 +166,8 @@ export default function QueueModal({ visible, onClose }) {
             });
             setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
             setRows(upcoming);
-        } catch { setRows([]); }
-    }, [priorityQueue]);
+        } catch { setRows([]); } finally { setHasLoadedOnce(true); }
+    }, []);
 
     useEffect(() => {
         // Was deferred until the sheet's open animation settled, to stop
@@ -150,9 +177,14 @@ export default function QueueModal({ visible, onClose }) {
         // together doesn't. Loading immediately again; the retry-on-open
         // logic below still means a slow first read doesn't show as
         // permanently empty.
+        // Deliberately only depends on `visible` now — see the note above
+        // refresh's definition for why depending on refresh's identity
+        // (which used to shift with every priorityQueue change) was wrong.
         if (!visible) return;
+        setHasLoadedOnce(false);
         refresh();
-    }, [visible, refresh]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible]);
 
     // Keeps retrying on its own while the sheet is open and showing nothing,
     // instead of only trying once at open time. The retry-with-backoff at
@@ -253,10 +285,17 @@ export default function QueueModal({ visible, onClose }) {
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Queue</Text>}>
-            {rows.length === 0 ? (
+            {rows.length === 0 && hasLoadedOnce ? (
                 <View style={{ flex: 1, justifyContent: 'center' }}>
                     <Text style={s.empty}>Nothing up next</Text>
                 </View>
+            ) : rows.length === 0 ? (
+                // Loaded-once hasn't landed yet (still inside refresh()'s
+                // retry loop) — stay visually blank instead of claiming
+                // "Nothing up next" for a state we don't actually know is
+                // true yet. Sheet still opens instantly; this just stops it
+                // from asserting something false for that first stretch.
+                <View style={{ flex: 1 }} />
             ) : (
                 <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
                     {priorityRows.length > 0 && (

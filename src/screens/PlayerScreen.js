@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
+import { usePreferences } from '../context/PreferencesContext';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
@@ -13,7 +14,7 @@ import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-na
 import QueueModal from '../components/QueueModal';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
-import { getPlayCounts, getShowPlayCount } from '../utils/storage';
+import { getPlayCounts } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -66,9 +67,17 @@ export default function PlayerScreen() {
     const [showQueue, setShowQueue] = useState(false);
     const [showSleepTimer, setShowSleepTimer] = useState(false);
     const [playCount, setPlayCount] = useState(0);
-    const [showPlayCount, setShowPlayCountState] = useState(true);
-
-    useEffect(() => { getShowPlayCount().then(setShowPlayCountState); }, []);
+    // This used to be its own local `useState(true)`, loaded once on mount
+    // via getShowPlayCount() and never touched again — every OTHER screen
+    // (All Songs, Playlist Detail, Queue) reads this from the shared
+    // PreferencesContext specifically so a toggle in Settings reaches an
+    // already-mounted screen immediately (see that context's own comment).
+    // Player being the one screen that kept its own stale local copy meant
+    // it just wouldn't notice a toggle flip while already open — since
+    // Player tends to stay mounted for the whole session, this is likely
+    // why play count looked "off" here even after confirming the actual
+    // preference was on.
+    const { showPlayCount } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -172,6 +181,23 @@ export default function PlayerScreen() {
             startRealTimeAnim(ratio);
             clearTimeout(clearDragTimer.current);
             clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
+        } else {
+            // Re-arm the stuck-safety backstop on every drag update instead
+            // of only once at BEGAN. It was firing 500ms after the touch
+            // STARTED, not 500ms after the last update — so any real drag
+            // that simply took longer than 500ms start-to-finish (easy to
+            // do dragging across the bar) hit this backstop mid-drag,
+            // committing a premature seek to wherever the finger happened
+            // to be at that instant. Then the real release fired its own
+            // seek moments later. That's the "starts in that location
+            // twice, about .5 sec apart" bug — two real commits, not one
+            // glitchy one. Resetting the timer on every update makes it a
+            // true "500ms since anything last happened" watchdog, which
+            // only ever fires for an actually-stuck gesture.
+            clearTimeout(stuckSafetyTimer.current);
+            stuckSafetyTimer.current = setTimeout(() => {
+                onScrubRef.current(lastTouchX.current, true);
+            }, 500);
         }
     };
 
@@ -284,13 +310,17 @@ export default function PlayerScreen() {
     // smooth motion like the skip buttons (whose color never changes, only
     // opacity does). Animating the color itself in step with the same kind
     // of timing lets both properties move together as one transition.
+    // Duration bumped from 120 -> 180ms per feedback ("slightly longer
+    // fade"). Kept as one constant so the press-time trigger below and the
+    // fallback useEffect can't drift apart from each other.
+    const SIDE_BTN_FADE_MS = 180;
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
     useEffect(() => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [shuffleOn]);
     useEffect(() => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
@@ -302,11 +332,11 @@ export default function PlayerScreen() {
     // for shuffleOn/singleLoop changing from somewhere else entirely (e.g.
     // restoring a session), so nothing relies exclusively on this.
     const onPressShuffle = () => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
         toggleShuffle();
     };
     const onPressLoop = () => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
         toggleSingleLoop();
     };
 
@@ -389,7 +419,7 @@ export default function PlayerScreen() {
 
                 <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
                     <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
-                        <ShuffleIcon size={22} color={shuffleColor} />
+                        <ShuffleIcon size={25} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipPrevIcon size={28} color={skipIconColor} />
@@ -444,7 +474,7 @@ const s = StyleSheet.create({
     time: { color: '#3a3a3a', fontSize: 12 },
     controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12 },
     sideBtn: { width: 60, height: 60, alignItems: 'center', justifyContent: 'center' },
-    sideIcon: { fontSize: 26 },
+    sideIcon: { fontSize: 29 },
     skipBtn: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center' },
     playBtn: { width: 84, height: 84, borderRadius: 42, justifyContent: 'center', alignItems: 'center', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8 },
 });

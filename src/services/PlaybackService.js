@@ -276,7 +276,20 @@ export async function pauseWithRamp() {
 //   not the Skip ramp (skipping while paused isn't really "crossfading"
 //   between two playing songs).
 export async function skipWithCrossfade(direction = 'next') {
-    if (isTransitionLocked()) { queueAction(() => skipWithCrossfade(direction)); return; }
+    // A skip that arrives while the NATURAL end-of-track crossfade is
+    // running (naturalEndFadeOwner) is dropped entirely, not queued — that
+    // fade is already about to move to the next song on its own, so
+    // queueing a skip on top of it used to skip PAST that song to the one
+    // after, which read as the skip firing on a song you never actually
+    // saw. A skip during any OTHER lock (the ramp-in at the start of a
+    // track, a manual pause fade, another skip already in flight) still
+    // queues as before — that's a real tap that should still land once
+    // that transition clears, just not this one specific case.
+    if (isTransitionLocked()) {
+        if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) return;
+        queueAction(() => skipWithCrossfade(direction));
+        return;
+    }
     skipLock = true;
     try {
         const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
@@ -339,7 +352,26 @@ export async function PlaybackService() {
     TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
         if (nextTrack === null || nextTrack === undefined) {
             if (naturalEndFadeOwner !== null) { releaseFade(naturalEndFadeOwner); naturalEndFadeOwner = null; }
-            try { await TrackPlayer.setVolume(1); } catch { }
+            // TrackPlayer.reset() (the first half of primeNativeQueue, used
+            // any time playback is interrupted rather than left to end
+            // naturally) fires THIS event with nextTrack null, since the
+            // queue is briefly empty between reset() and the following
+            // add(). Forcing volume back to 1 here unconditionally — with
+            // no activeFadeId check — undoes preClaimFadeForFreshStart's
+            // whole purpose: activeFadeId is already claimed by that point,
+            // but this branch ignored it and slammed volume to 1 anyway.
+            // playWithRamp's own setVolume(0) a moment later mostly papers
+            // over it, but not before that forced 1 has already reached the
+            // native audio session — which is the "starts super high, then
+            // starts the ramp" bug, and exactly why it only ever happened
+            // interrupting a playing song (which goes through reset()) and
+            // never on a natural track-end (which doesn't). The sibling
+            // branch below already guards this same fallback correctly with
+            // `activeFadeId === null` — this one just never got the same
+            // guard when reset()'s null-nextTrack case was added.
+            if (activeFadeId === null) {
+                try { await TrackPlayer.setVolume(1); } catch { }
+            }
             return;
         }
         if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) {

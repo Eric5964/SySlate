@@ -715,8 +715,12 @@ export function PlaybackProvider({ children }) {
             setCurrentTrack(queue[last.index] ?? null);
             setShuffleModeState(mode);
             setShuffleOn(on);
-            setPriorityQueue([]);
-            priorityRef.current = [];
+            const priorityCount = last.priorityCount ?? 0;
+            const restoredPriority = priorityCount > 0
+                ? queue.slice(last.index + 1, last.index + 1 + priorityCount).map(t => t.id)
+                : [];
+            setPriorityQueue(restoredPriority);
+            priorityRef.current = restoredPriority;
         } catch (e) { console.error('restoreSession:', e); }
     }, []);
 
@@ -745,7 +749,24 @@ export function PlaybackProvider({ children }) {
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
             let rest = pl.songs.filter(s => !usedIds.has(s.id));
-            rest = mode === 'off' ? rest : buildQueue(rest, mode);
+            if (mode === 'off') {
+                // Turning shuffle off used to just filter pl.songs down to
+                // whatever's left, which — since filter() preserves original
+                // order — meant "continue on in order" actually meant
+                // "restart from the top of the playlist" any time the
+                // current song wasn't already near the front. Same fix as
+                // playSongFromPlaylist's off-mode branch: find where the
+                // CURRENT track sits in the playlist's natural order and
+                // wrap the upcoming list to start right after it.
+                const curTrack = queue[currentIndex];
+                const curIdx = curTrack ? pl.songs.findIndex(s => s.id === curTrack.id) : -1;
+                if (curIdx !== -1) {
+                    const wrapped = [...pl.songs.slice(curIdx + 1), ...pl.songs.slice(0, curIdx)];
+                    rest = wrapped.filter(s => !usedIds.has(s.id));
+                }
+            } else {
+                rest = buildQueue(rest, mode);
+            }
 
             // One bulk removal instead of removing up to ~50 loaded tracks
             // one at a time (each its own native bridge round trip) — that
@@ -813,7 +834,17 @@ export function PlaybackProvider({ children }) {
                 let pos = 0;
                 try { const p = await TrackPlayer.getProgress(); pos = p?.position ?? 0; } catch { }
                 await setSession(pl.path, { queue, index });
-                await setLastSession({ playlist: { ...pl, queue }, index, position: pos });
+                // priorityCount is enough to reconstruct which of the
+                // tracks right after `index` were priority-queued on
+                // restore — the queue array already preserves their actual
+                // order/position, we just need to know how many of the
+                // leading upcoming slots they occupy. Previously nothing
+                // about priority was saved at all, so restoreSession always
+                // reset it to empty — the priority tracks were still right
+                // there in the restored queue, just no longer TRACKED as
+                // priority, which is what "priority gets mushed together
+                // with up next after closing and reopening" was describing.
+                await setLastSession({ playlist: { ...pl, queue }, index, position: pos, priorityCount: priorityRef.current.length });
             }
         } catch { }
     }, []);
