@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer, { Event } from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import SwipeableRow from './SwipeableRow';
+import DraggableRow from './DraggableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { usePreferences } from '../context/PreferencesContext';
@@ -78,9 +79,61 @@ function ShrinkOutRow({ removing, children }) {
     );
 }
 
+// Grows/shrinks the "Priority" label + its divider in and out, SEQUENCED
+// after the row-level animations above rather than snapping in sync with
+// raw data changes: growing waits for the newly-added row's own 220ms
+// grow-in to finish before starting (see the setTimeout in the effect that
+// drives `shown`, below in QueueModal), and shrinking starts the moment the
+// last row is actually gone from `rows` — which, since ShrinkOutRow's own
+// animation always finishes BEFORE remove() ever touches `rows` (remove()
+// awaits REMOVE_ANIM_MS first, see below), is already after that row has
+// visually finished collapsing rather than racing it. `instant` is used
+// exactly once per direction, for whatever the section's real state is the
+// first time the sheet loads real data — that's a sync, not something the
+// user did, so it shouldn't animate any more than existing (non-new) rows
+// do on that same initial load.
+function AnimatedSection({ shown, instant, targetHeight, children }) {
+    const heightAnim = useRef(new Animated.Value(shown ? 1 : 0)).current;
+    const opacityAnim = useRef(new Animated.Value(shown ? 1 : 0)).current;
+    const [rendered, setRendered] = useState(shown);
+    useEffect(() => {
+        if (instant) {
+            heightAnim.setValue(shown ? 1 : 0);
+            opacityAnim.setValue(shown ? 1 : 0);
+            setRendered(shown);
+            return;
+        }
+        if (shown) {
+            setRendered(true);
+            Animated.parallel([
+                Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
+                Animated.timing(opacityAnim, { toValue: 1, duration: 220, useNativeDriver: true }),
+            ]).start();
+        } else {
+            Animated.parallel([
+                Animated.timing(heightAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
+                Animated.timing(opacityAnim, { toValue: 0, duration: 220, useNativeDriver: true }),
+            ]).start(() => setRendered(false));
+        }
+    }, [shown, instant]);
+    if (!rendered) return null;
+    return (
+        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, targetHeight] }), overflow: 'hidden' }}>
+            <Animated.View style={{ opacity: opacityAnim }}>
+                {children}
+            </Animated.View>
+        </Animated.View>
+    );
+}
+// Rough rendered heights of the pill (marginTop 14 + paddingVertical 4*2 +
+// label line height + marginBottom 6) and the divider (marginTop 8 + its
+// own 1px) — same "close enough, not visibly off" reasoning as ROW_HEIGHT.
+const SECTION_PILL_HEIGHT = 56;
+const SECTION_DIVIDER_HEIGHT = 9;
+
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, reorderQueue } = usePlayback();
     const { showSongCovers, showPlayCount } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
@@ -92,6 +145,40 @@ export default function QueueModal({ visible, onClose }) {
     // that first loading window too, which read as the queue being empty
     // rather than just not loaded yet.
     const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+
+    // Drives AnimatedSection above. prioritySyncedOnceRef/prevHasPriorityRef
+    // track state across renders without needing them in refresh()'s own
+    // dependency array (refresh must stay stable — see the note on
+    // priorityQueueRef just below). instant starts true so the very first
+    // real load — which might already have priority items sitting in it
+    // from a restored session — reflects reality immediately with no
+    // animation, same as how existing rows skip GrowInRow's animation on
+    // that same initial load. It flips to false the first time a genuine
+    // add/remove happens, and stays false from then on.
+    const [prioritySectionShown, setPrioritySectionShown] = useState(false);
+    const [prioritySectionInstant, setPrioritySectionInstant] = useState(true);
+    const prioritySyncedOnceRef = useRef(false);
+    const prevHasPriorityRef = useRef(false);
+
+    // Drag-to-reorder state. `dragSection` + `liveOrder` are what actually
+    // drive rendering DURING a drag (see displayedPriorityRows/
+    // displayedUpNextRows below) — `rows` itself is left untouched until the
+    // drag commits, so a cancelled/failed drag just discards liveOrder with
+    // nothing to undo. liveOrderRef mirrors the state for synchronous reads
+    // inside the pan handler, which fires much faster than React re-renders.
+    const [dragSection, setDragSection] = useState(null); // 'priority' | 'upnext' | null
+    const [liveOrder, setLiveOrder] = useState(null); // ordered stableKeys, only set during a drag
+    const liveOrderRef = useRef(null);
+    const dragKeyRef = useRef(null);
+    const dragStartIndexRef = useRef(0);
+    const dragCurrentIndexRef = useRef(0);
+    const dragTranslateY = useRef(new Animated.Value(0)).current;
+    const dragTranslateYRef = useRef(0);
+    const scrollViewRef = useRef(null);
+    const scrollViewYRef = useRef(0); // this ScrollView's own absolute Y on screen
+    const scrollOffsetRef = useRef(0); // current scroll position within it
+    const dragAbsoluteYRef = useRef(0); // last known absolute touch Y on screen
+    const autoScrollRAF = useRef(null);
 
     // remove()/promote() already call refresh() explicitly, right after
     // their own native change, with the correct priorityOverride for that
@@ -166,8 +253,41 @@ export default function QueueModal({ visible, onClose }) {
             });
             setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
             setRows(upcoming);
+            if (!prioritySyncedOnceRef.current) {
+                // First real data this sheet-lifetime has seen — sync the
+                // section's visibility to match instantly (AnimatedSection's
+                // `instant` prop, still true at this point, makes sure this
+                // doesn't animate), then hand off to the effect below for
+                // every genuine change after this one.
+                prioritySyncedOnceRef.current = true;
+                const anyPriority = upcoming.some(r => r.isPriority);
+                prevHasPriorityRef.current = anyPriority;
+                setPrioritySectionShown(anyPriority);
+            }
         } catch { setRows([]); } finally { setHasLoadedOnce(true); }
     }, []);
+
+    useEffect(() => {
+        if (!prioritySyncedOnceRef.current) return; // first sync above hasn't happened yet
+        const has = rows.some(r => r.isPriority);
+        if (has === prevHasPriorityRef.current) return;
+        prevHasPriorityRef.current = has;
+        setPrioritySectionInstant(false); // every transition from here is a real one — animate it
+        if (has) {
+            // Wait for the newly-added row's own 220ms grow-in (see
+            // GrowInRow) to finish before the header starts growing in
+            // too, so the two don't visually compete.
+            const t = setTimeout(() => setPrioritySectionShown(true), 220);
+            return () => clearTimeout(t);
+        }
+        // Shrinking needs no equivalent delay: by the time a row is
+        // actually gone from `rows`, ShrinkOutRow's own 220ms shrink has
+        // already fully played out (remove() awaits that BEFORE it ever
+        // touches `rows` — see remove() below), so this is already
+        // starting after the row has visually finished collapsing.
+        setPrioritySectionShown(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rows]);
 
     useEffect(() => {
         // Was deferred until the sheet's open animation settled, to stop
@@ -183,6 +303,20 @@ export default function QueueModal({ visible, onClose }) {
         if (!visible) return;
         setHasLoadedOnce(false);
         refresh();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible]);
+
+    // Safety net: if the sheet gets closed mid-drag (shouldn't normally
+    // happen, but a hardware back-press or a parent-driven close could land
+    // mid-gesture), this stops the auto-scroll RAF loop and drops the drag
+    // state rather than leaving requestAnimationFrame ticking forever
+    // against a closed sheet.
+    useEffect(() => {
+        if (visible) return;
+        stopAutoScroll();
+        setDragSection(null);
+        setLiveOrder(null);
+        liveOrderRef.current = null;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible]);
 
@@ -208,8 +342,123 @@ export default function QueueModal({ visible, onClose }) {
         return () => { cancelled = true; clearInterval(id); };
     }, [visible, rows.length, refresh]);
 
+    // The sheet previously only ever refreshed when it opened, or right
+    // after a remove/promote/jump it triggered itself — nothing refreshed
+    // it as playback naturally advanced from one song to the next while it
+    // stayed open. Songs kept playing correctly (this doesn't touch
+    // playback), the list just silently fell behind what was actually
+    // playing until you closed and reopened the sheet.
+    useEffect(() => {
+        if (!visible) return;
+        // Matches PlaybackService.js's own listener — this project targets
+        // the PlaybackTrackChanged event (RNTP's older API, `{ nextTrack }`),
+        // not the newer PlaybackActiveTrackChanged one, so staying
+        // consistent with what's already proven to fire elsewhere in this
+        // codebase rather than assuming the newer event is also available.
+        const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, () => refresh());
+        return () => sub.remove();
+    }, [visible, refresh]);
+
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
+
+    const rowsByKey = useMemo(() => {
+        const m = new Map();
+        rows.forEach(r => m.set(r.stableKey, r));
+        return m;
+    }, [rows]);
+
+    // During a drag, these substitute for priorityRows/upNextRows in the
+    // render below — `rows` itself (and each row's own `realIndex`) stays
+    // untouched until the drag commits, so this is purely visual reordering
+    // of the SAME row objects via a separate key-order list.
+    const displayedPriorityRows = dragSection === 'priority' && liveOrder
+        ? liveOrder.map(k => rowsByKey.get(k)).filter(Boolean)
+        : priorityRows;
+    const displayedUpNextRows = dragSection === 'upnext' && liveOrder
+        ? liveOrder.map(k => rowsByKey.get(k)).filter(Boolean)
+        : upNextRows;
+
+    const stopAutoScroll = () => {
+        if (autoScrollRAF.current) { cancelAnimationFrame(autoScrollRAF.current); autoScrollRAF.current = null; }
+    };
+    const startAutoScroll = () => {
+        if (autoScrollRAF.current) return;
+        const EDGE = 60, SPEED = 8;
+        const tick = () => {
+            const touchYInView = dragAbsoluteYRef.current - scrollViewYRef.current;
+            let delta = 0;
+            // Rough visible-height guess (sheet content area) — doesn't need
+            // to be exact, just enough to know "near the bottom edge."
+            const viewH = 480;
+            if (touchYInView < EDGE) delta = -SPEED;
+            else if (touchYInView > viewH - EDGE) delta = SPEED;
+            if (delta !== 0) {
+                scrollOffsetRef.current = Math.max(0, scrollOffsetRef.current + delta);
+                scrollViewRef.current?.scrollTo({ y: scrollOffsetRef.current, animated: false });
+            }
+            autoScrollRAF.current = requestAnimationFrame(tick);
+        };
+        autoScrollRAF.current = requestAnimationFrame(tick);
+    };
+
+    const startDrag = (key) => {
+        const section = rowsByKey.get(key)?.isPriority ? 'priority' : 'upnext';
+        const base = section === 'priority' ? priorityRows : upNextRows;
+        const order = base.map(r => r.stableKey);
+        const idx = order.indexOf(key);
+        if (idx === -1) return;
+        dragKeyRef.current = key;
+        dragStartIndexRef.current = idx;
+        dragCurrentIndexRef.current = idx;
+        dragTranslateY.setValue(0);
+        dragTranslateYRef.current = 0;
+        liveOrderRef.current = order;
+        setLiveOrder(order);
+        setDragSection(section);
+        startAutoScroll();
+    };
+
+    const moveDrag = (translationY, absoluteY) => {
+        dragAbsoluteYRef.current = absoluteY;
+        dragTranslateY.setValue(translationY);
+        dragTranslateYRef.current = translationY;
+        const order = liveOrderRef.current;
+        if (!order) return;
+        const shift = Math.round(translationY / ROW_HEIGHT);
+        const target = Math.min(Math.max(dragStartIndexRef.current + shift, 0), order.length - 1);
+        if (target !== dragCurrentIndexRef.current) {
+            const newOrder = order.slice();
+            const [item] = newOrder.splice(dragCurrentIndexRef.current, 1);
+            newOrder.splice(target, 0, item);
+            dragCurrentIndexRef.current = target;
+            liveOrderRef.current = newOrder;
+            setLiveOrder(newOrder);
+        }
+    };
+
+    const endDrag = async () => {
+        stopAutoScroll();
+        const section = dragSection;
+        const key = dragKeyRef.current;
+        const order = liveOrderRef.current;
+        const startIndex = dragStartIndexRef.current;
+        const finalIndex = order ? order.indexOf(key) : startIndex;
+        Animated.timing(dragTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }).start();
+        setDragSection(null);
+        setLiveOrder(null);
+        liveOrderRef.current = null;
+        if (!order || finalIndex === startIndex || finalIndex === -1) return; // no actual move
+        const base = section === 'priority' ? priorityRows : upNextRows;
+        const baseRealIndex = base[0]?.realIndex;
+        const draggedRow = rowsByKey.get(key);
+        if (baseRealIndex === undefined || !draggedRow) return;
+        const fromRealIndex = draggedRow.realIndex;
+        const toRealIndex = baseRealIndex + finalIndex;
+        await reorderQueue(fromRealIndex, toRealIndex);
+        await refresh();
+    };
+
     // useListArt restarts its whole effect whenever the array reference it's
     // given changes — `rows.map(r => r.song)` built a brand new array on
     // every render, including renders caused by useListArt's OWN state
@@ -246,42 +495,66 @@ export default function QueueModal({ visible, onClose }) {
         await refresh(priority, insertedAt);
     };
 
-    const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
-        <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
-            <ShrinkOutRow removing={removingKeys.has(stableKey)}>
-                <SwipeableRow
-                    onSwipeLeft={() => remove(realIndex, stableKey)}
-                    onSwipeRight={() => promote(realIndex)}
-                    rightColor={theme.accent}
-                    leftColor="#dc2626"
-                >
-                    {/* Same shape as the All Songs / Playlist rows (rounded card,
-                        same padding/margins) — border tier instead of surface, since
-                        the sheet itself is already surface (using the same color for
-                        both left rows with no visible shape against their own
-                        container). Interaction (swipe feedback, glow, etc.) stays
-                        specific to the queue context. */}
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
-                        {showSongCovers && (
-                            <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                                {artMap[song.id]
-                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
-                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                }
-                            </View>
-                        )}
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                            <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
-                        </View>
-                        {showPlayCount && playCounts[song.id] > 0 && (
-                            <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
-                        )}
-                    </TouchableOpacity>
-                </SwipeableRow>
-            </ShrinkOutRow>
-        </GrowInRow>
-    );
+    const renderRow = ({ song, realIndex, isPriority, stableKey }) => {
+        const isDragging = dragKeyRef.current === stableKey && dragSection !== null;
+        const dragging = dragSection !== null; // any row being dragged, not just this one
+        return (
+            <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
+                <ShrinkOutRow removing={removingKeys.has(stableKey)}>
+                    <DraggableRow
+                        dragKey={stableKey}
+                        disabled={dragging && !isDragging}
+                        onDragStart={startDrag}
+                        onDragMove={moveDrag}
+                        onDragEnd={endDrag}
+                    >
+                        <Animated.View style={isDragging ? {
+                            transform: [{ translateY: dragTranslateY }, { scale: 1.03 }],
+                            shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
+                            elevation: 8, zIndex: 10,
+                        } : null}>
+                            <SwipeableRow
+                                onSwipeLeft={() => remove(realIndex, stableKey)}
+                                onSwipeRight={() => promote(realIndex)}
+                                rightColor={theme.accent}
+                                leftColor="#dc2626"
+                                disabled={dragging}
+                            >
+                                {/* Same shape as the All Songs / Playlist rows (rounded card,
+                                    same padding/margins) — border tier instead of surface, since
+                                    the sheet itself is already surface (using the same color for
+                                    both left rows with no visible shape against their own
+                                    container). Interaction (swipe feedback, glow, etc.) stays
+                                    specific to the queue context. */}
+                                <TouchableOpacity
+                                    style={[s.qRow, { backgroundColor: base.border }]}
+                                    onPress={() => { if (!dragging) jump(realIndex); }}
+                                    activeOpacity={0.7}
+                                >
+                                    {showSongCovers && (
+                                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                            {artMap[song.id]
+                                                ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                            }
+                                        </View>
+                                    )}
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                                        <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
+                                    </View>
+                                    {showPlayCount && playCounts[song.id] > 0 && (
+                                        <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
+                                    )}
+                                </TouchableOpacity>
+                            </SwipeableRow>
+                        </Animated.View>
+                    </DraggableRow>
+                </ShrinkOutRow>
+            </GrowInRow>
+        );
+    };
+
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Queue</Text>}>
@@ -297,18 +570,32 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-                    {priorityRows.length > 0 && (
-                        <>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
-                            {priorityRows.map(renderRow)}
-                        </>
-                    )}
-                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={s.divider} />}
-                    {upNextRows.length > 0 && (
+                <ScrollView
+                    ref={scrollViewRef}
+                    showsVerticalScrollIndicator={false}
+                    style={{ flex: 1 }}
+                    scrollEventThrottle={16}
+                    onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+                    onLayout={() => {
+                        // Absolute on-screen Y of the ScrollView itself, used
+                        // by the edge auto-scroll loop to know where "near
+                        // the top/bottom of the visible area" actually is —
+                        // onLayout's own layout.y is relative to the parent,
+                        // not the screen, so this needs the native measure.
+                        scrollViewRef.current?.measureInWindow?.((x, y) => { scrollViewYRef.current = y; });
+                    }}
+                >
+                    <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
+                        <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
+                    </AnimatedSection>
+                    {displayedPriorityRows.length > 0 && displayedPriorityRows.map(renderRow)}
+                    <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
+                        <View style={s.divider} />
+                    </AnimatedSection>
+                    {displayedUpNextRows.length > 0 && (
                         <>
                             <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
-                            {upNextRows.map(renderRow)}
+                            {displayedUpNextRows.map(renderRow)}
                         </>
                     )}
                 </ScrollView>

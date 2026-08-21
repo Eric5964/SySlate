@@ -247,7 +247,25 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
 }
 
 export async function pauseWithRamp() {
-    if (isTransitionLocked()) { queueAction(() => pauseWithRamp()); return; }
+    if (isTransitionLocked()) {
+        // A pause tapped while the NATURAL end-of-track crossfade is
+        // running gets different treatment than any other lock: instead of
+        // queueing a pause that runs its OWN full ramp-out once that
+        // crossfade finishes — which meant you'd hear the next song start,
+        // play for a moment, then fade back out before actually pausing —
+        // this lets the crossfade land on the next song normally, then
+        // pauses it immediately, no ramp, right as it becomes current.
+        // It's shown, ready, and one tap of Play (with the normal
+        // play-ramp) away from actually starting. Any other lock (a fresh
+        // start's ramp-in, another pause already in flight) still queues
+        // pauseWithRamp itself as before.
+        if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) {
+            queueAction(() => pauseImmediate());
+            return;
+        }
+        queueAction(() => pauseWithRamp());
+        return;
+    }
     rampLock = true;
     try {
         const useFade = await getRampOnPause();
@@ -261,6 +279,21 @@ export async function pauseWithRamp() {
         } else {
             try { await TrackPlayer.pause(); } catch { }
         }
+    } finally {
+        await sleep(60);
+        rampLock = false;
+        drainPending();
+    }
+}
+
+// See the natural-end-fade branch in pauseWithRamp above — pauses right
+// away with no ramp at all, regardless of the Ramp on Pause setting,
+// instead of running pauseWithRamp's normal fade-out logic.
+async function pauseImmediate() {
+    rampLock = true;
+    try {
+        try { await TrackPlayer.pause(); } catch { }
+        try { await TrackPlayer.setVolume(1); } catch { }
     } finally {
         await sleep(60);
         rampLock = false;

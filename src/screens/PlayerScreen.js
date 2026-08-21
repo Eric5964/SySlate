@@ -85,6 +85,7 @@ export default function PlayerScreen() {
     }, [currentTrack?.id]);
 
     const progressRef = useRef(null);
+    const controlsRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
     const lastSeekAt = useRef(0);
@@ -149,16 +150,30 @@ export default function PlayerScreen() {
         animPctValueRef.current = ratio;
         const now = Date.now();
         if (progress.duration > 0) {
-            const sameAsLast = lastSeekRatio.current !== null && Math.abs(ratio - lastSeekRatio.current) < 0.0015;
+            // Widened from 0.0015 — the actual repeat wasn't a race
+            // (the seek chain fully serializes; a later commit's `await`
+            // can't interleave before an earlier link's check runs, since
+            // nothing yields between them in a single synchronous
+            // stretch). It's simpler than that: dragging fires a live seek
+            // roughly every 110ms, and release essentially never lands on
+            // the EXACT same ratio as that last live tick — so both seeks
+            // were genuinely valid and both really ran, one right after
+            // the other, each a real seekTo the device actually executed.
+            // First the last live-drag position, then the release
+            // position, tens of ms apart — which is exactly "the audio
+            // repeats itself" from the listening end. Widening the
+            // closeness check catches the common case (release landing
+            // close to wherever the last live tick already put it) and
+            // skips the redundant second seek, instead of only catching
+            // literal same-spot duplicates like a tap's BEGAN+END.
+            const sameAsLast = lastSeekRatio.current !== null && Math.abs(ratio - lastSeekRatio.current) < 0.003;
             const recentSeek = now - lastSeekAt.current < 110;
-            // While actively dragging, keep the original ~110ms debounce so a
-            // fast swipe doesn't flood seekTo(). On commit (release/tap),
-            // only skip if this would be a near-instant duplicate of a seek
-            // already issued to the same spot — which is exactly what a
-            // plain tap does (BEGAN then END fire back-to-back at the same
-            // position). A real drag-then-release still always seeks here,
-            // same as before.
-            const skip = commit ? (sameAsLast && recentSeek) : recentSeek;
+            // On commit, position closeness is what actually matters here
+            // (see above) — timing isn't part of why the duplicate seek
+            // happened, so it's dropped from this specific check. Still
+            // used for the drag-time debounce below, which is a genuinely
+            // different concern (not flooding seekTo during a fast swipe).
+            const skip = commit ? sameAsLast : recentSeek;
             if (!skip) {
                 lastSeekAt.current = now;
                 lastSeekRatio.current = ratio;
@@ -417,7 +432,26 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                <View style={[s.controls, { paddingBottom: insets.bottom + 10 }]}>
+                <View
+                    ref={controlsRef}
+                    style={[s.controls, { paddingBottom: insets.bottom + 10 }]}
+                    onLayout={() => {
+                        // Shrinks the swipe-to-dismiss zone (App.js sets
+                        // gestureResponseDistance to the full screen height,
+                        // so the sheet can be dismissed by swiping from
+                        // anywhere) so it stops right above this row instead
+                        // of covering it too. Without this, a tap on
+                        // play/skip/shuffle/loop that carries even a little
+                        // downward motion — normal with a real finger — could
+                        // get stolen by the outer dismiss gesture instead of
+                        // registering as a press, or trigger an unwanted
+                        // dismiss outright. measureInWindow needs the view
+                        // already laid out, which onLayout guarantees.
+                        controlsRef.current?.measureInWindow((x, y) => {
+                            if (y > 0) navigation.setOptions({ gestureResponseDistance: y });
+                        });
+                    }}
+                >
                     <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <ShuffleIcon size={25} color={shuffleColor} />
                     </TouchableOpacity>

@@ -8,7 +8,7 @@ import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
-    getAudioRamp, getKeepPriorityOnPlaylistSwitch,
+    getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipCrossfade,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
@@ -385,6 +385,41 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('jumpToQueueIndex:', e); }
     }, []);
 
+    // Moves a single track within the native queue from one index to
+    // another — RNTP has no direct "move" call, so this removes it and
+    // re-adds it at the target slot. Used by drag-to-reorder in the Queue
+    // sheet. Only ever called with both indices inside the SAME section
+    // (priority or up next) — dragging across that boundary isn't
+    // supported; promoting/demoting already has its own gesture (swipe).
+    const reorderQueue = useCallback(async (fromRealIndex, toRealIndex) => {
+        if (fromRealIndex === toRealIndex) return;
+        try {
+            const currentIndex = await TrackPlayer.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return;
+            const queue = await TrackPlayer.getQueue();
+            const track = queue[fromRealIndex];
+            if (!track) return;
+            await TrackPlayer.remove(fromRealIndex);
+            await TrackPlayer.add([track], toRealIndex);
+            // If this move happened within the priority zone, priorityRef's
+            // tracked id order needs the same reorder applied to it, or it
+            // drifts out of sync with what's actually sitting in that zone
+            // — same class of bug as removeFromQueue's own priority-index
+            // handling deals with above.
+            const priorityCount = priorityRef.current.length;
+            const priorityEnd = currentIndex + 1 + priorityCount;
+            if (fromRealIndex < priorityEnd && toRealIndex < priorityEnd) {
+                const fromIdx = fromRealIndex - (currentIndex + 1);
+                const toIdx = toRealIndex - (currentIndex + 1);
+                const next = priorityRef.current.slice();
+                const [id] = next.splice(fromIdx, 1);
+                next.splice(toIdx, 0, id);
+                priorityRef.current = next;
+                setPriorityQueue(next);
+            }
+        } catch (e) { console.error('reorderQueue:', e); }
+    }, []);
+
     // Loading an entire large playlist into TrackPlayer's native queue in one
     // TrackPlayer.add() call was both the "queue takes a while to load" and
     // (very likely) the "queue ends up empty at the end" bug: that add() is
@@ -396,15 +431,16 @@ export function PlaybackProvider({ children }) {
     // currentPlaylist.queue / session storage (unpaginated) since that's
     // what shuffle "memory" and resuming a session depend on — only what's
     // actually sitting in TrackPlayer's native queue is windowed.
-    const QUEUE_WINDOW_SIZE = 50;
+    const QUEUE_WINDOW_SIZE = 25;
     const QUEUE_INITIAL_BATCH = 10;
-    const QUEUE_TOPUP_BATCH = 5;
-    // Triggers a top-up as soon as what's left loaded drops to 45, adding
-    // 5 more to bring it back to 50 — keeps the loaded window oscillating
-    // in the 45-50 range rather than being allowed to drain a long way
-    // down (old threshold was 15) before refilling all the way back to 50
-    // in one large jump.
-    const QUEUE_TOPUP_THRESHOLD = 45;
+    const QUEUE_TOPUP_BATCH = 4;
+    // Triggers a top-up once the loaded NORMAL (non-priority) upcoming count
+    // drops to 23, adding 4 back to reach 27 — keeps it oscillating in the
+    // 23-27 range around a ~25 steady state. Priority is intentionally
+    // excluded from this count entirely (see topUpQueueIfNeeded below) —
+    // queuing or clearing priority tracks shouldn't grow or shrink the
+    // normal window at all.
+    const QUEUE_TOPUP_THRESHOLD = 23;
     const logicalQueueRef = useRef([]);
     const loadedThroughRef = useRef(0);
 
@@ -413,10 +449,10 @@ export function PlaybackProvider({ children }) {
     // separate "skip to index" step needed after this, unlike before.
     //
     // Only actually loads QUEUE_INITIAL_BATCH (10) up front now, not the
-    // full 50 — TrackPlayer.add() is a real native bridge call whose cost
+    // full 25 — TrackPlayer.add() is a real native bridge call whose cost
     // scales with how many tracks are in it, so a smaller first batch means
     // less time between tapping something and it actually being ready to
-    // play. The rest of the window (up to 50) gets topped up right after,
+    // play. The rest of the window (up to 25) gets topped up right after,
     // in the background, via the exact same path (topUpQueueIfNeeded) that
     // already handles keeping it filled as songs play — this is just an
     // extra call to it immediately rather than waiting for the threshold.
@@ -485,7 +521,14 @@ export function PlaybackProvider({ children }) {
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
             const nativeLen = (await TrackPlayer.getQueue()).length;
-            const remaining = nativeLen - 1 - currentIndex;
+            // Priority tracks live in this same native queue, right after
+            // the current track, so they'd otherwise count toward
+            // "remaining" too — meaning queuing a few priority songs could
+            // stave off a top-up that was actually needed, and clearing
+            // them out could trigger one that wasn't. Subtracting them out
+            // keeps this purely a normal-queue measurement, per "priority
+            // is completely separate."
+            const remaining = nativeLen - 1 - currentIndex - priorityRef.current.length;
             if (remaining < QUEUE_TOPUP_THRESHOLD) {
                 const next = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH));
                 if (next.length) {
@@ -634,11 +677,20 @@ export function PlaybackProvider({ children }) {
 
         const isSamePlaylist = currentPlaylist?.path === playlist.path;
         if (isSamePlaylist && currentTrack?.id === songId) return; // already playing this exact song here
-        const keepIds = isSamePlaylist ? priorityRef.current : [];
-        const keepSet = new Set(keepIds);
-        const prioritySongs = keepIds
-            .map(id => playlist.songs.find(s => s.id === id))
-            .filter(Boolean);
+
+        // Previously only kept priority when tapping a song within the SAME
+        // playlist already playing, and never actually checked "Keep
+        // Priority Queue When Switching Playlists" at all — inconsistent
+        // with loadPlaylist/playPlaylistOrdered/playPlaylistShuffled, which
+        // all respect it, and it didn't work at all tapping from a
+        // different playlist or All Songs regardless of what the setting
+        // said. Tapping a song is really just "switch to this playlist,
+        // starting here" — so it now goes through the exact same
+        // capture/restore mechanism as those, for the same consistent
+        // behavior everywhere.
+        const keepPriority = await getKeepPriorityOnPlaylistSwitch();
+        const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
+        const keepSet = new Set(carriedPriority.map(t => t.id));
 
         let rest;
         if (isOn) {
@@ -653,12 +705,17 @@ export function PlaybackProvider({ children }) {
             rest = wrapped.filter(s => !keepSet.has(s.id));
         }
 
-        const queue = [song, ...prioritySongs, ...rest];
+        const queue = [song, ...rest];
 
-        await fadeOutCurrentIfPlaying(await getAudioRamp());
+        // Uses the Skip crossfade duration here, not the general Audio
+        // Ramp — tapping a song is conceptually closer to a skip (jump
+        // straight to a specific song) than it is to a fresh "start
+        // playback from nothing" moment.
+        await fadeOutCurrentIfPlaying(await getSkipCrossfade());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);
+        await restorePriorityTracks(carriedPriority);
         fillRestOfWindow();
         await setQueueLoop();
         await playWithRamp(preClaimedId);
@@ -678,10 +735,9 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(isOn);
         setEqPresetId(eq);
         setSingleLoop(false);
-        if (!isSamePlaylist) {
-            setPriorityQueue([]);
-            priorityRef.current = [];
-        }
+        // priority tracking is now fully owned by restorePriorityTracks
+        // above (it clears it when there's nothing carried over, same as
+        // when the setting is off) — no separate reset needed here.
         await setSession(playlist.path, { queue, index: 0 });
     }), [currentPlaylist]);
 
@@ -871,7 +927,7 @@ export function PlaybackProvider({ children }) {
             currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
             loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
             toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-            addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+            addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex, reorderQueue,
             sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
         }}>
             {children}
