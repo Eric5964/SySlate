@@ -332,10 +332,12 @@ export default function PlayerScreen() {
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
     useEffect(() => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        // Native driver — see onPressShuffle below for why this changed
+        // from false.
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
     }, [shuffleOn]);
     useEffect(() => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
     }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
@@ -346,12 +348,27 @@ export default function PlayerScreen() {
     // animation even starts. The useEffect above still exists as a fallback
     // for shuffleOn/singleLoop changing from somewhere else entirely (e.g.
     // restoring a session), so nothing relies exclusively on this.
+    //
+    // useNativeDriver is true now, for both — it was false, which meant the
+    // color fade ran on the JS thread. toggleShuffle() does real work right
+    // as this animation plays: reading the current track, reading the whole
+    // native queue, rebuilding and re-adding it (see reshuffleUpcoming) —
+    // several real bridge round trips. toggleSingleLoop() is a single
+    // setRepeatMode() call, comparatively nothing. Both animations were
+    // equally JS-driven, but only shuffle's tap also loads the JS thread
+    // down with that much concurrent work — which is exactly why loop's
+    // fade stayed smooth while shuffle's stuttered or seemed to not run at
+    // all, and part of why shuffle felt slower to react overall. Moving the
+    // color fade onto the native driver (color/backgroundColor interpolation
+    // is natively supported) takes it off the JS thread entirely, so
+    // reshuffleUpcoming's work running concurrently can't compete with it
+    // for frames anymore.
     const onPressShuffle = () => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
         toggleShuffle();
     };
     const onPressLoop = () => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
         toggleSingleLoop();
     };
 
@@ -452,7 +469,15 @@ export default function PlayerScreen() {
                         });
                     }}
                 >
-                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    {/* activeOpacity was 1 — meaning zero dimming feedback on
+                        touch-down. That's a native, immediate response
+                        (TouchableOpacity's own gesture responder, no JS round
+                        trip) — without it, the color fade (however fast) was
+                        the ONLY acknowledgment a tap had landed, and that's
+                        gated behind JS work even at its quickest. This gives
+                        an instant visual response the moment the finger
+                        touches down, independent of everything else. */}
+                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
                         <ShuffleIcon size={25} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
@@ -467,7 +492,7 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipNextIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
                         <Animated.Text style={[s.sideIcon, { color: loopColor }]}>↺¹</Animated.Text>
                     </TouchableOpacity>
                 </View>

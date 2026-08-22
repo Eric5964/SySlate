@@ -12,8 +12,25 @@ import SwipeableRow from '../components/SwipeableRow';
 // import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlayCounts } from '../utils/storage';
+import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { useListArt } from '../hooks/useListArt';
+
+// Reuses the exact same 4 sorts as the playlist screen, for the same reason
+// they're offered there — this list is functionally "the All Songs
+// playlist," so the same sorting makes sense here too.
+const SORTS = [
+    { id: 'alpha', label: 'A–Z' },
+    { id: 'alpha_r', label: 'Z–A' },
+    { id: 'plays', label: 'Most Played' },
+    { id: 'plays_r', label: 'Least Played' },
+];
+
+// Storage key for the persisted sort choice — reuses getPlaylistSort/
+// setPlaylistSort (keyed by playlist path) rather than adding a parallel
+// storage function, with '__all__' as the key since that's already the
+// path this screen's pseudo-playlist object uses everywhere else (see
+// `play` below).
+const ALL_SONGS_KEY = '__all__';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
@@ -24,6 +41,8 @@ export default function AllSongsScreen() {
     // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [playCounts, setPlayCounts] = useState({});
+    const [sortId, setSortId] = useState('alpha');
+    const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers } = usePreferences();
 
     const listRef = useRef(null);
@@ -58,21 +77,35 @@ export default function AllSongsScreen() {
     }, [allSongs]);
 
     useEffect(() => { getPlayCounts(dedupedSongs).then(setPlayCounts); }, [dedupedSongs]);
+    useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
+
+    const sorted = useMemo(() => {
+        let songs = [...dedupedSongs];
+        switch (sortId) {
+            case 'alpha': songs.sort((a, b) => a.title.localeCompare(b.title)); break;
+            case 'alpha_r': songs.sort((a, b) => b.title.localeCompare(a.title)); break;
+            case 'plays': songs.sort((a, b) => (playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)); break;
+            case 'plays_r': songs.sort((a, b) => (playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)); break;
+        }
+        return songs;
+    }, [dedupedSongs, sortId, playCounts]);
 
     const filtered = useMemo(() => {
-        if (!search.trim()) return dedupedSongs;
+        if (!search.trim()) return sorted;
         const q = search.toLowerCase();
-        return dedupedSongs.filter(s =>
+        return sorted.filter(s =>
             s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
         );
-    }, [dedupedSongs, search]);
+    }, [sorted, search]);
 
     const artMap = useListArt(filtered, showSongCovers);
 
     const play = async (song) => {
-        const playlist = { name: 'All Songs', path: '__all__', songs: dedupedSongs };
+        const playlist = { name: 'All Songs', path: ALL_SONGS_KEY, songs: sorted };
         await playSongFromPlaylist(playlist, song.id);
     };
+
+    const sortLabel = SORTS.find(o => o.id === sortId)?.label ?? 'Sort';
 
     return (
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
@@ -82,7 +115,27 @@ export default function AllSongsScreen() {
             {/* Same top-bar layout as the playlist screen: title, then a row
                 with centered search (+ clear button), EQ tag, queue icon. */}
             <View style={s.topBar}>
-                <Text style={s.title}>All Songs</Text>
+                <View style={s.titleRow}>
+                    <Text style={s.title}>All Songs</Text>
+                    <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
+                        <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
+                    </TouchableOpacity>
+                </View>
+                {showSort && (
+                    <View style={s.sortRow}>
+                        {SORTS.map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => { setSortId(opt.id); setPlaylistSort(ALL_SONGS_KEY, opt.id); setShowSort(false); }}
+                            >
+                                <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                )}
                 <View style={s.searchRow}>
                     <View style={{ flex: 1, justifyContent: 'center' }}>
                         <TextInput
@@ -155,7 +208,13 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 const s = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#0a0a0a' },
     topBar: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 10 },
-    title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700', marginBottom: 10 },
+    titleRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 },
+    title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
+    sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },
+    sortBtnText: { fontSize: 13, fontWeight: '600' },
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingBottom: 10, gap: 8 },
+    sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
+    sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     searchBar: { borderRadius: 10, paddingVertical: 9, paddingHorizontal: 14, paddingRight: 32, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },

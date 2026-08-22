@@ -114,14 +114,38 @@ async function checkCrossfadeWindow(position, duration) {
         // If we currently own a natural end-of-track fade but a seek moved
         // playback back OUT of the window (e.g. rewound), cancel it instead
         // of letting it keep fading toward 0 and getting stuck silent —
-        // this was the "song goes silent but keeps playing" bug.
+        // this was the "song goes silent but keeps playing" bug. This is
+        // ALSO what actually runs every time single-track repeat
+        // (RepeatMode.Track) loops the same song back to its own start:
+        // position resetting to ~0 mid-fade looks identical to a rewind
+        // from here, and RNTP doesn't fire PlaybackTrackChanged for a
+        // same-track repeat (the queue index never actually changes), so
+        // the real ramp-in logic further down — entirely gated behind that
+        // event — never runs for a loop repeat. This path was the ONLY
+        // thing restoring volume after a loop, and it did it with a flat
+        // setVolume(1) — a hard jump, not a ramp, which is exactly "the
+        // ramping doesn't work going into the start." Fading back in here
+        // instead covers both cases: a genuine rewind recovers smoothly
+        // instead of snapping, and a loop repeat now gets the same ramp-in
+        // a real track change would have given it.
         if (naturalEndFadeOwner !== null && activeFadeId === naturalEndFadeOwner) {
             const remaining = duration ? duration - position : Infinity;
             if (cf <= 0 || !duration || remaining > cf + 0.5) {
                 const id = naturalEndFadeOwner;
                 naturalEndFadeOwner = null;
                 releaseFade(id);
-                try { await TrackPlayer.setVolume(1); } catch { }
+                const newId = claimFade();
+                try {
+                    const cur = await TrackPlayer.getVolume();
+                    if (cf > 0.05 && cur < 0.95) {
+                        await fadeVol(cur, 1, Math.min(cf, 2.5), newId);
+                    } else {
+                        try { await TrackPlayer.setVolume(1); } catch { }
+                    }
+                } catch {
+                    try { await TrackPlayer.setVolume(1); } catch { }
+                }
+                releaseFade(newId);
                 drainPending();
             }
             return;
@@ -248,22 +272,17 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
 
 export async function pauseWithRamp() {
     if (isTransitionLocked()) {
-        // A pause tapped while the NATURAL end-of-track crossfade is
-        // running gets different treatment than any other lock: instead of
-        // queueing a pause that runs its OWN full ramp-out once that
-        // crossfade finishes — which meant you'd hear the next song start,
-        // play for a moment, then fade back out before actually pausing —
-        // this lets the crossfade land on the next song normally, then
-        // pauses it immediately, no ramp, right as it becomes current.
-        // It's shown, ready, and one tap of Play (with the normal
-        // play-ramp) away from actually starting. Any other lock (a fresh
-        // start's ramp-in, another pause already in flight) still queues
-        // pauseWithRamp itself as before.
-        if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) {
-            queueAction(() => pauseImmediate());
-            return;
-        }
-        queueAction(() => pauseWithRamp());
+        // Whatever's currently ramping — a fresh start's ramp-in, a manual
+        // ramp-out already in flight, the natural end-of-track crossfade,
+        // another skip — gets left to finish on its own; pause doesn't
+        // interrupt it. This used to queue pauseWithRamp itself here, which
+        // meant once that finished, IT would kick off its OWN full
+        // ramp-down before actually pausing — so what landed was [current
+        // ramp] [a whole SECOND ramp] [finally paused], noticeably later
+        // than the tap. Now it's [current ramp] [paused immediately, no
+        // ramp] — the pause lands the moment it safely can, without adding
+        // a second ramp cycle on top of whatever was already happening.
+        queueAction(() => pauseImmediate());
         return;
     }
     rampLock = true;

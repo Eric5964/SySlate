@@ -385,41 +385,6 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('jumpToQueueIndex:', e); }
     }, []);
 
-    // Moves a single track within the native queue from one index to
-    // another — RNTP has no direct "move" call, so this removes it and
-    // re-adds it at the target slot. Used by drag-to-reorder in the Queue
-    // sheet. Only ever called with both indices inside the SAME section
-    // (priority or up next) — dragging across that boundary isn't
-    // supported; promoting/demoting already has its own gesture (swipe).
-    const reorderQueue = useCallback(async (fromRealIndex, toRealIndex) => {
-        if (fromRealIndex === toRealIndex) return;
-        try {
-            const currentIndex = await TrackPlayer.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return;
-            const queue = await TrackPlayer.getQueue();
-            const track = queue[fromRealIndex];
-            if (!track) return;
-            await TrackPlayer.remove(fromRealIndex);
-            await TrackPlayer.add([track], toRealIndex);
-            // If this move happened within the priority zone, priorityRef's
-            // tracked id order needs the same reorder applied to it, or it
-            // drifts out of sync with what's actually sitting in that zone
-            // — same class of bug as removeFromQueue's own priority-index
-            // handling deals with above.
-            const priorityCount = priorityRef.current.length;
-            const priorityEnd = currentIndex + 1 + priorityCount;
-            if (fromRealIndex < priorityEnd && toRealIndex < priorityEnd) {
-                const fromIdx = fromRealIndex - (currentIndex + 1);
-                const toIdx = toRealIndex - (currentIndex + 1);
-                const next = priorityRef.current.slice();
-                const [id] = next.splice(fromIdx, 1);
-                next.splice(toIdx, 0, id);
-                priorityRef.current = next;
-                setPriorityQueue(next);
-            }
-        } catch (e) { console.error('reorderQueue:', e); }
-    }, []);
-
     // Loading an entire large playlist into TrackPlayer's native queue in one
     // TrackPlayer.add() call was both the "queue takes a while to load" and
     // (very likely) the "queue ends up empty at the end" bug: that add() is
@@ -927,7 +892,7 @@ export function PlaybackProvider({ children }) {
             currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
             loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
             toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-            addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex, reorderQueue,
+            addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
             sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
         }}>
             {children}

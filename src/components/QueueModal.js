@@ -4,7 +4,6 @@ import TrackPlayer, { Event } from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import SwipeableRow from './SwipeableRow';
-import DraggableRow from './DraggableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { usePreferences } from '../context/PreferencesContext';
@@ -28,15 +27,24 @@ const ROW_HEIGHT = 74;
 function GrowInRow({ isNew, children }) {
     const opacityScale = useRef(new Animated.Value(isNew ? 0 : 1)).current;
     // Height can't run on the native driver (it's a layout property, not
-    // transform/opacity), so this one specific animation runs on the JS
-    // thread while opacityScale above stays native — Animated.parallel
-    // supports mixing driver modes across its children as long as each
-    // individual animation is internally consistent, which these are.
+    // transform/opacity) — so it always animates on the JS thread. This
+    // used to run opacityScale on the NATIVE driver instead, since in
+    // isolation that's smoother. But the two are supposed to move together,
+    // and under real JS-thread load (a queue add/remove firing state
+    // updates, list re-renders, and art lookups all at once — exactly when
+    // this animation is running) the native-driven half kept finishing on
+    // schedule while the JS-driven height lagged behind, visibly pulling
+    // apart: content already faded/scaled away, but the space it sat in
+    // hadn't caught up yet, reading as a bare gap sitting there for a beat.
+    // Keeping both on the JS driver means they're subject to the exact same
+    // load and can never visibly desync from each other — worst case the
+    // whole animation is a little less buttery under heavy load, but it
+    // never shows that gap.
     const heightAnim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
     useEffect(() => {
         if (!isNew) return;
         Animated.parallel([
-            Animated.spring(opacityScale, { toValue: 1, useNativeDriver: true, friction: 8, tension: 60 }),
+            Animated.spring(opacityScale, { toValue: 1, useNativeDriver: false, friction: 8, tension: 60 }),
             Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
         ]).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,8 +73,12 @@ function ShrinkOutRow({ removing, children }) {
     const heightAnim = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
+        // Both on the JS driver — see the comment in GrowInRow above for
+        // why: mixing drivers here is what caused the "empty gap sitting
+        // there" glitch (content already gone, space not yet collapsed)
+        // under the JS-thread load a removal itself causes.
         Animated.parallel([
-            Animated.timing(opacityScale, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: true }),
+            Animated.timing(opacityScale, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }),
             Animated.timing(heightAnim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }),
         ]).start();
     }, [removing]);
@@ -105,14 +117,18 @@ function AnimatedSection({ shown, instant, targetHeight, children }) {
         }
         if (shown) {
             setRendered(true);
+            // Both JS-driven, same reasoning as GrowInRow/ShrinkOutRow above
+            // — this used to run opacity on the native driver, which could
+            // desync from the (necessarily JS-driven) height under load and
+            // produce the same kind of gap.
             Animated.parallel([
                 Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
-                Animated.timing(opacityAnim, { toValue: 1, duration: 220, useNativeDriver: true }),
+                Animated.timing(opacityAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
             ]).start();
         } else {
             Animated.parallel([
                 Animated.timing(heightAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
-                Animated.timing(opacityAnim, { toValue: 0, duration: 220, useNativeDriver: true }),
+                Animated.timing(opacityAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
             ]).start(() => setRendered(false));
         }
     }, [shown, instant]);
@@ -133,7 +149,7 @@ const SECTION_DIVIDER_HEIGHT = 9;
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, reorderQueue } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
     const { showSongCovers, showPlayCount } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
@@ -159,26 +175,6 @@ export default function QueueModal({ visible, onClose }) {
     const [prioritySectionInstant, setPrioritySectionInstant] = useState(true);
     const prioritySyncedOnceRef = useRef(false);
     const prevHasPriorityRef = useRef(false);
-
-    // Drag-to-reorder state. `dragSection` + `liveOrder` are what actually
-    // drive rendering DURING a drag (see displayedPriorityRows/
-    // displayedUpNextRows below) — `rows` itself is left untouched until the
-    // drag commits, so a cancelled/failed drag just discards liveOrder with
-    // nothing to undo. liveOrderRef mirrors the state for synchronous reads
-    // inside the pan handler, which fires much faster than React re-renders.
-    const [dragSection, setDragSection] = useState(null); // 'priority' | 'upnext' | null
-    const [liveOrder, setLiveOrder] = useState(null); // ordered stableKeys, only set during a drag
-    const liveOrderRef = useRef(null);
-    const dragKeyRef = useRef(null);
-    const dragStartIndexRef = useRef(0);
-    const dragCurrentIndexRef = useRef(0);
-    const dragTranslateY = useRef(new Animated.Value(0)).current;
-    const dragTranslateYRef = useRef(0);
-    const scrollViewRef = useRef(null);
-    const scrollViewYRef = useRef(0); // this ScrollView's own absolute Y on screen
-    const scrollOffsetRef = useRef(0); // current scroll position within it
-    const dragAbsoluteYRef = useRef(0); // last known absolute touch Y on screen
-    const autoScrollRAF = useRef(null);
 
     // remove()/promote() already call refresh() explicitly, right after
     // their own native change, with the correct priorityOverride for that
@@ -306,20 +302,6 @@ export default function QueueModal({ visible, onClose }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible]);
 
-    // Safety net: if the sheet gets closed mid-drag (shouldn't normally
-    // happen, but a hardware back-press or a parent-driven close could land
-    // mid-gesture), this stops the auto-scroll RAF loop and drops the drag
-    // state rather than leaving requestAnimationFrame ticking forever
-    // against a closed sheet.
-    useEffect(() => {
-        if (visible) return;
-        stopAutoScroll();
-        setDragSection(null);
-        setLiveOrder(null);
-        liveOrderRef.current = null;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [visible]);
-
     // Keeps retrying on its own while the sheet is open and showing nothing,
     // instead of only trying once at open time. The retry-with-backoff at
     // open covers the ordinary "queue reset mid-flight" gap, but if
@@ -362,103 +344,6 @@ export default function QueueModal({ visible, onClose }) {
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
 
-    const rowsByKey = useMemo(() => {
-        const m = new Map();
-        rows.forEach(r => m.set(r.stableKey, r));
-        return m;
-    }, [rows]);
-
-    // During a drag, these substitute for priorityRows/upNextRows in the
-    // render below — `rows` itself (and each row's own `realIndex`) stays
-    // untouched until the drag commits, so this is purely visual reordering
-    // of the SAME row objects via a separate key-order list.
-    const displayedPriorityRows = dragSection === 'priority' && liveOrder
-        ? liveOrder.map(k => rowsByKey.get(k)).filter(Boolean)
-        : priorityRows;
-    const displayedUpNextRows = dragSection === 'upnext' && liveOrder
-        ? liveOrder.map(k => rowsByKey.get(k)).filter(Boolean)
-        : upNextRows;
-
-    const stopAutoScroll = () => {
-        if (autoScrollRAF.current) { cancelAnimationFrame(autoScrollRAF.current); autoScrollRAF.current = null; }
-    };
-    const startAutoScroll = () => {
-        if (autoScrollRAF.current) return;
-        const EDGE = 60, SPEED = 8;
-        const tick = () => {
-            const touchYInView = dragAbsoluteYRef.current - scrollViewYRef.current;
-            let delta = 0;
-            // Rough visible-height guess (sheet content area) — doesn't need
-            // to be exact, just enough to know "near the bottom edge."
-            const viewH = 480;
-            if (touchYInView < EDGE) delta = -SPEED;
-            else if (touchYInView > viewH - EDGE) delta = SPEED;
-            if (delta !== 0) {
-                scrollOffsetRef.current = Math.max(0, scrollOffsetRef.current + delta);
-                scrollViewRef.current?.scrollTo({ y: scrollOffsetRef.current, animated: false });
-            }
-            autoScrollRAF.current = requestAnimationFrame(tick);
-        };
-        autoScrollRAF.current = requestAnimationFrame(tick);
-    };
-
-    const startDrag = (key) => {
-        const section = rowsByKey.get(key)?.isPriority ? 'priority' : 'upnext';
-        const base = section === 'priority' ? priorityRows : upNextRows;
-        const order = base.map(r => r.stableKey);
-        const idx = order.indexOf(key);
-        if (idx === -1) return;
-        dragKeyRef.current = key;
-        dragStartIndexRef.current = idx;
-        dragCurrentIndexRef.current = idx;
-        dragTranslateY.setValue(0);
-        dragTranslateYRef.current = 0;
-        liveOrderRef.current = order;
-        setLiveOrder(order);
-        setDragSection(section);
-        startAutoScroll();
-    };
-
-    const moveDrag = (translationY, absoluteY) => {
-        dragAbsoluteYRef.current = absoluteY;
-        dragTranslateY.setValue(translationY);
-        dragTranslateYRef.current = translationY;
-        const order = liveOrderRef.current;
-        if (!order) return;
-        const shift = Math.round(translationY / ROW_HEIGHT);
-        const target = Math.min(Math.max(dragStartIndexRef.current + shift, 0), order.length - 1);
-        if (target !== dragCurrentIndexRef.current) {
-            const newOrder = order.slice();
-            const [item] = newOrder.splice(dragCurrentIndexRef.current, 1);
-            newOrder.splice(target, 0, item);
-            dragCurrentIndexRef.current = target;
-            liveOrderRef.current = newOrder;
-            setLiveOrder(newOrder);
-        }
-    };
-
-    const endDrag = async () => {
-        stopAutoScroll();
-        const section = dragSection;
-        const key = dragKeyRef.current;
-        const order = liveOrderRef.current;
-        const startIndex = dragStartIndexRef.current;
-        const finalIndex = order ? order.indexOf(key) : startIndex;
-        Animated.timing(dragTranslateY, { toValue: 0, duration: 150, useNativeDriver: true }).start();
-        setDragSection(null);
-        setLiveOrder(null);
-        liveOrderRef.current = null;
-        if (!order || finalIndex === startIndex || finalIndex === -1) return; // no actual move
-        const base = section === 'priority' ? priorityRows : upNextRows;
-        const baseRealIndex = base[0]?.realIndex;
-        const draggedRow = rowsByKey.get(key);
-        if (baseRealIndex === undefined || !draggedRow) return;
-        const fromRealIndex = draggedRow.realIndex;
-        const toRealIndex = baseRealIndex + finalIndex;
-        await reorderQueue(fromRealIndex, toRealIndex);
-        await refresh();
-    };
-
     // useListArt restarts its whole effect whenever the array reference it's
     // given changes — `rows.map(r => r.song)` built a brand new array on
     // every render, including renders caused by useListArt's OWN state
@@ -495,111 +380,109 @@ export default function QueueModal({ visible, onClose }) {
         await refresh(priority, insertedAt);
     };
 
-    const renderRow = ({ song, realIndex, isPriority, stableKey }) => {
-        const isDragging = dragKeyRef.current === stableKey && dragSection !== null;
-        const dragging = dragSection !== null; // any row being dragged, not just this one
-        return (
-            <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
-                <ShrinkOutRow removing={removingKeys.has(stableKey)}>
-                    <DraggableRow
-                        dragKey={stableKey}
-                        disabled={dragging && !isDragging}
-                        onDragStart={startDrag}
-                        onDragMove={moveDrag}
-                        onDragEnd={endDrag}
-                    >
-                        <Animated.View style={isDragging ? {
-                            transform: [{ translateY: dragTranslateY }, { scale: 1.03 }],
-                            shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 10, shadowOffset: { width: 0, height: 4 },
-                            elevation: 8, zIndex: 10,
-                        } : null}>
-                            <SwipeableRow
-                                onSwipeLeft={() => remove(realIndex, stableKey)}
-                                onSwipeRight={() => promote(realIndex)}
-                                rightColor={theme.accent}
-                                leftColor="#dc2626"
-                                disabled={dragging}
-                            >
-                                {/* Same shape as the All Songs / Playlist rows (rounded card,
-                                    same padding/margins) — border tier instead of surface, since
-                                    the sheet itself is already surface (using the same color for
-                                    both left rows with no visible shape against their own
-                                    container). Interaction (swipe feedback, glow, etc.) stays
-                                    specific to the queue context. */}
-                                <TouchableOpacity
-                                    style={[s.qRow, { backgroundColor: base.border }]}
-                                    onPress={() => { if (!dragging) jump(realIndex); }}
-                                    activeOpacity={0.7}
-                                >
-                                    {showSongCovers && (
-                                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                                            {artMap[song.id]
-                                                ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
-                                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                            }
-                                        </View>
-                                    )}
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                                        <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
-                                    </View>
-                                    {showPlayCount && playCounts[song.id] > 0 && (
-                                        <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
-                                    )}
-                                </TouchableOpacity>
-                            </SwipeableRow>
-                        </Animated.View>
-                    </DraggableRow>
-                </ShrinkOutRow>
-            </GrowInRow>
-        );
-    };
+    const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
+        <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
+            <ShrinkOutRow removing={removingKeys.has(stableKey)}>
+                <SwipeableRow
+                    onSwipeLeft={() => remove(realIndex, stableKey)}
+                    onSwipeRight={() => promote(realIndex)}
+                    rightColor={theme.accent}
+                    leftColor="#dc2626"
+                >
+                    {/* Same shape as the All Songs / Playlist rows (rounded card,
+                        same padding/margins) — border tier instead of surface, since
+                        the sheet itself is already surface (using the same color for
+                        both left rows with no visible shape against their own
+                        container). Interaction (swipe feedback, glow, etc.) stays
+                        specific to the queue context. */}
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
+                        {showSongCovers && (
+                            <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                {artMap[song.id]
+                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                }
+                            </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                            <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
+                        </View>
+                        {showPlayCount && playCounts[song.id] > 0 && (
+                            <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
+                        )}
+                    </TouchableOpacity>
+                </SwipeableRow>
+            </ShrinkOutRow>
+        </GrowInRow>
+    );
 
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Queue</Text>}>
-            {rows.length === 0 && hasLoadedOnce ? (
-                <View style={{ flex: 1, justifyContent: 'center' }}>
-                    <Text style={s.empty}>Nothing up next</Text>
-                </View>
-            ) : rows.length === 0 ? (
-                // Loaded-once hasn't landed yet (still inside refresh()'s
-                // retry loop) — stay visually blank instead of claiming
-                // "Nothing up next" for a state we don't actually know is
-                // true yet. Sheet still opens instantly; this just stops it
-                // from asserting something false for that first stretch.
-                <View style={{ flex: 1 }} />
-            ) : (
-                <ScrollView
-                    ref={scrollViewRef}
-                    showsVerticalScrollIndicator={false}
-                    style={{ flex: 1 }}
-                    scrollEventThrottle={16}
-                    onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
-                    onLayout={() => {
-                        // Absolute on-screen Y of the ScrollView itself, used
-                        // by the edge auto-scroll loop to know where "near
-                        // the top/bottom of the visible area" actually is —
-                        // onLayout's own layout.y is relative to the parent,
-                        // not the screen, so this needs the native measure.
-                        scrollViewRef.current?.measureInWindow?.((x, y) => { scrollViewYRef.current = y; });
-                    }}
-                >
-                    <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
-                        <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
-                    </AnimatedSection>
-                    {displayedPriorityRows.length > 0 && displayedPriorityRows.map(renderRow)}
-                    <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
-                        <View style={s.divider} />
-                    </AnimatedSection>
-                    {displayedUpNextRows.length > 0 && (
-                        <>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
-                            {displayedUpNextRows.map(renderRow)}
-                        </>
-                    )}
-                </ScrollView>
-            )}
+            <>
+                {/* Not wrapped in the ScrollView below (sits pinned above it
+                    instead) so it's always visible regardless of whether
+                    anything's actually queued up — including the "Nothing up
+                    next" empty state, since there's still a currently playing
+                    song even when nothing follows it. Not tappable (plain
+                    View, not TouchableOpacity) — there's nothing meaningful
+                    to "jump to" on the song already playing. Swipe-right only
+                    (no onSwipeLeft prop at all — SwipeableRow disables the
+                    left-swipe reveal entirely when that's omitted, rather
+                    than showing a Remove affordance that would do nothing) so
+                    you can re-queue the current song to play again later,
+                    but there's nothing to remove it FROM here. */}
+                {currentTrack && (
+                    <View>
+                        <View style={s.groupPill}><Text style={s.groupLabel}>Now Playing</Text></View>
+                        <SwipeableRow onSwipeRight={() => addToQueue(currentTrack)} rightColor={theme.accent}>
+                            <View style={[s.qRow, { backgroundColor: base.border }]}>
+                                {showSongCovers && (
+                                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                        {currentTrack.artwork
+                                            ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
+                                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                        }
+                                    </View>
+                                )}
+                                <View style={{ flex: 1 }}>
+                                    <Text style={s.qTitle} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
+                                    <Text style={s.qArtist} numberOfLines={1}>{currentTrack.ourArtist ?? currentTrack.artist}</Text>
+                                </View>
+                            </View>
+                        </SwipeableRow>
+                    </View>
+                )}
+                {rows.length === 0 && hasLoadedOnce ? (
+                    <View style={{ flex: 1, justifyContent: 'center' }}>
+                        <Text style={s.empty}>Nothing up next</Text>
+                    </View>
+                ) : rows.length === 0 ? (
+                    // Loaded-once hasn't landed yet (still inside refresh()'s
+                    // retry loop) — stay visually blank instead of claiming
+                    // "Nothing up next" for a state we don't actually know is
+                    // true yet. Sheet still opens instantly; this just stops it
+                    // from asserting something false for that first stretch.
+                    <View style={{ flex: 1 }} />
+                ) : (
+                    <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                        <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
+                        </AnimatedSection>
+                        {priorityRows.length > 0 && priorityRows.map(renderRow)}
+                        <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
+                            <View style={s.divider} />
+                        </AnimatedSection>
+                        {upNextRows.length > 0 && (
+                            <>
+                                <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
+                                {upNextRows.map(renderRow)}
+                            </>
+                        )}
+                    </ScrollView>
+                )}
+            </>
         </BottomSheet>
     );
 }
