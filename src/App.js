@@ -14,6 +14,7 @@ import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
 import { LibraryContext } from './context/LibraryContext';
 import { useBackgroundArtLoader } from './hooks/useBackgroundArtLoader';
+import { useBackgroundTagLoader } from './hooks/useBackgroundTagLoader';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
@@ -111,6 +112,10 @@ function AppInner() {
     const { showSongCovers } = usePreferences();
 
     useBackgroundArtLoader(library.allSongs, playerReady && showSongCovers);
+    // Not gated on any display toggle like art is — title/artist/album feed
+    // sorting and search everywhere, not just an optional visual, so this
+    // always runs once the player's ready.
+    useBackgroundTagLoader(library.allSongs, playerReady);
 
     const reorderPlaylists = (newPlaylists) => {
         setLibrary(prev => ({ ...prev, playlists: newPlaylists }));

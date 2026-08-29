@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
+    getArtistSeparator, setArtistSeparator as persistArtistSeparator,
+    getLyricsMode, setLyricsMode as persistLyricsMode,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -14,15 +16,21 @@ import {
 const Ctx = createContext({
     showPlayCount: true, setShowPlayCount: () => { },
     showSongCovers: false, setShowSongCovers: () => { },
+    artistSeparator: ';', setArtistSeparator: () => { },
+    lyricsMode: 'off', setLyricsMode: () => { },
 });
 
 export function PreferencesProvider({ children }) {
     const [showPlayCount, setShowPlayCountState] = useState(true);
     const [showSongCovers, setShowSongCoversState] = useState(false);
+    const [artistSeparator, setArtistSeparatorState] = useState(';');
+    const [lyricsMode, setLyricsModeState] = useState('off');
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
+        getArtistSeparator().then(setArtistSeparatorState);
+        getLyricsMode().then(setLyricsModeState);
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -36,12 +44,26 @@ export function PreferencesProvider({ children }) {
         setShowSongCoversState(v);
         persistShowSongCovers(v);
     }, []);
+    const setArtistSeparator = useCallback((v) => {
+        setArtistSeparatorState(v);
+        persistArtistSeparator(v);
+    }, []);
+    const setLyricsMode = useCallback((v) => {
+        setLyricsModeState(v);
+        persistLyricsMode(v);
+    }, []);
 
     return (
-        <Ctx.Provider value={{ showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers }}>
+        <Ctx.Provider value={{
+            showPlayCount, setShowPlayCount,
+            showSongCovers, setShowSongCovers,
+            artistSeparator, setArtistSeparator,
+            lyricsMode, setLyricsMode,
+        }}>
             {children}
         </Ctx.Provider>
     );
 }
 
 export const usePreferences = () => useContext(Ctx);
+

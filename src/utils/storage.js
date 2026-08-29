@@ -6,6 +6,14 @@ const safe = async (fn, fallback) => { try { return await fn(); } catch { return
 export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:${path}` : 'eq:global').then(v => v ?? 'flat'), 'flat');
 export const getKeepPriorityOnPlaylistSwitch = () => safe(() => AsyncStorage.getItem('keep_priority_on_switch').then(v => v !== 'false'), true);
 export const setKeepPriorityOnPlaylistSwitch = (v) => safe(() => AsyncStorage.setItem('keep_priority_on_switch', String(v)), null);
+// When true, Album always comes from the containing folder name, same as
+// before real tag reading existed — real ALBUM tag values (when found) are
+// ignored entirely, not just deprioritized. Off by default now that real
+// tags are read, since a genuine ALBUM tag is normally more accurate than a
+// folder name, but folder structure is sometimes the more meaningful
+// grouping for how a library's actually organized, hence the toggle back.
+export const getAlbumFromFolder = () => safe(() => AsyncStorage.getItem('album_from_folder').then(v => v === 'true'), false);
+export const setAlbumFromFolder = (v) => safe(() => AsyncStorage.setItem('album_from_folder', String(v)), null);
 export const setEQPreset = (id, path) => safe(() => AsyncStorage.setItem(path ? `eq:${path}` : 'eq:global', id), null);
 // `shuffle_mode` now holds ONLY the algorithm preference (full_cycle /
 // true_random / smart) and is never written as 'off' going forward — that
@@ -23,18 +31,31 @@ export const setShuffleMode = (m) => safe(() => AsyncStorage.setItem('shuffle_mo
 // Whether shuffle is currently enabled, independent of which algorithm is
 // selected. Falls back to reading the legacy combined `shuffle_mode` value
 // on first read after updating (old 'off' -> false, any real mode -> true,
-// matching what those installs actually had turned on before).
+// matching what those installs actually had turned on before) — but if
+// NEITHER key has ever been written (a genuinely fresh install/session,
+// nothing to fall back to), this now defaults to false. It previously fell
+// through to `legacy !== 'off'` even with legacy === null, which evaluates
+// true — so a brand new install started shuffled with no shuffle ever
+// having been turned on anywhere, the opposite of "plays in order unless
+// last left on shuffle."
 export const getShuffleOn = () => safe(async () => {
     const v = await AsyncStorage.getItem('shuffle_on');
     if (v !== null) return v === 'true';
     const legacy = await AsyncStorage.getItem('shuffle_mode');
+    if (legacy === null) return false;
     return legacy !== 'off';
-}, true);
+}, false);
 export const setShuffleOn = (v) => safe(() => AsyncStorage.setItem('shuffle_on', String(v)), null);
-export const getCrossfade = () => safe(() => AsyncStorage.getItem('crossfade').then(v => v !== null ? parseFloat(v) : 3.0), 3.0);
-export const setCrossfade = (s) => safe(() => AsyncStorage.setItem('crossfade', String(s)), null);
-export const getSkipCrossfade = () => safe(() => AsyncStorage.getItem('skip_crossfade').then(v => v !== null ? parseFloat(v) : 0.5), 0.5);
-export const setSkipCrossfade = (s) => safe(() => AsyncStorage.setItem('skip_crossfade', String(s)), null);
+// Function names say "ramp" (there's no actual overlap between two tracks —
+// see the "Crossfade" comment in SettingsScreen.js). The AsyncStorage key
+// strings ('crossfade', 'skip_crossfade') are deliberately left as-is even
+// though the functions are renamed — changing the key itself would silently
+// reset anyone's already-saved value back to default on this update, since
+// AsyncStorage.getItem would just find nothing under the new key name.
+export const getEndOfTrackRamp = () => safe(() => AsyncStorage.getItem('crossfade').then(v => v !== null ? parseFloat(v) : 3.0), 3.0);
+export const setEndOfTrackRamp = (s) => safe(() => AsyncStorage.setItem('crossfade', String(s)), null);
+export const getSkipRamp = () => safe(() => AsyncStorage.getItem('skip_crossfade').then(v => v !== null ? parseFloat(v) : 0.5), 0.5);
+export const setSkipRamp = (s) => safe(() => AsyncStorage.setItem('skip_crossfade', String(s)), null);
 export const getSession = (path) => safe(() => AsyncStorage.getItem(`session:${path}`).then(v => v ? JSON.parse(v) : null), null);
 export const setSession = (path, data) => safe(() => AsyncStorage.setItem(`session:${path}`, JSON.stringify(data)), null);
 export const getVolNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
@@ -117,6 +138,44 @@ export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_pla
 // someone with a slow first load.
 export const getShowSongCovers = () => safe(() => AsyncStorage.getItem('show_song_covers').then(v => v === 'true'), false);
 export const setShowSongCovers = (v) => safe(() => AsyncStorage.setItem('show_song_covers', String(v)), null);
+
+// Splits a multi-artist tag string on a configurable separator ('none'
+// disables splitting entirely — the tag displays and matches as one whole
+// string, same as before this feature existed). Defaults to ';' rather
+// than ',' or '&' specifically because those two are common WITHIN a
+// single real artist/band name ("Earth, Wind & Fire"), so using either as
+// the default would misparse plenty of untagged-for-this libraries right
+// out of the box. ';' essentially never appears inside a real artist name,
+// so defaulting to it is safe even for a library that was never tagged
+// with multiple artists in mind — nothing with no ';' in it is affected.
+export const getArtistSeparator = () => safe(() => AsyncStorage.getItem('artist_separator').then(v => v ?? ';'), ';');
+export const setArtistSeparator = (v) => safe(() => AsyncStorage.setItem('artist_separator', v), null);
+
+// 'off' — feature entirely disabled, no .lrc lookup ever happens (no wasted
+// file I/O for anyone who doesn't want this). 'manual' — lyrics available
+// via the toggle button when a song has a matching .lrc file, defaulting to
+// the cover each time a new song starts. 'auto' — same, but defaults to
+// showing lyrics automatically whenever the new song has them, rather than
+// requiring a tap each time.
+export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'off'), 'off');
+export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode', v), null);
+
+// Previous button behavior. 'previous_track' — pressing it always skips to
+// the previous track, no matter where you are in the current one.
+// 'restart_or_previous' — pressing it restarts the CURRENT track from
+// 0:00 instead, UNLESS you're still within the first
+// `restart_threshold_sec` seconds of the track, in which case it skips to
+// the previous track — this is the conventional behavior most streaming
+// apps use (a quick double-tap-ish press near the start goes back, a press
+// once you're actually into the song just restarts it).
+export const getPrevButtonMode = () => safe(() => AsyncStorage.getItem('prev_button_mode').then(v => v ?? 'previous_track'), 'previous_track');
+export const setPrevButtonMode = (v) => safe(() => AsyncStorage.setItem('prev_button_mode', v), null);
+
+// Only read when prev_button_mode is 'restart_or_previous'. Seconds
+// (0-12) from the start of a track during which pressing Previous still
+// goes to the previous track instead of restarting the current one.
+export const getRestartThresholdSec = () => safe(() => AsyncStorage.getItem('restart_threshold_sec').then(v => v !== null ? parseFloat(v) : 3), 3);
+export const setRestartThresholdSec = (v) => safe(() => AsyncStorage.setItem('restart_threshold_sec', String(v)), null);
 
 // Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
 // separately, persisted across app restarts.

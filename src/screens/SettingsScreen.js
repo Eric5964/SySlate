@@ -13,9 +13,28 @@ import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
+
+// 'none' turns off multi-artist splitting entirely (see getArtistSeparator
+// in storage.js for the default-';' reasoning).
+const ARTIST_SEPARATORS = [
+    { id: ';', label: ';' },
+    { id: ',', label: ',' },
+    { id: '/', label: '/' },
+    { id: '&', label: '&' },
+    { id: 'none', label: 'None' },
+];
+// See getPrevButtonMode in storage.js — 'previous_track' is the simple,
+// always-the-same behavior; 'restart_or_previous' is the conventional
+// streaming-app behavior (restart if you're into the song, go back if
+// you're near the start of it), with its own threshold slider shown below
+// only when it's selected.
+const PREV_BUTTON_MODES = [
+    { id: 'previous_track', label: 'Always Previous Track' },
+    { id: 'restart_or_previous', label: 'Restart, Then Previous' },
+];
 import {
-    getCrossfade, setCrossfade,
-    getSkipCrossfade, setSkipCrossfade,
+    getEndOfTrackRamp, setEndOfTrackRamp,
+    getSkipRamp, setSkipRamp,
     getVolNorm, setVolNorm,
     getAudioRamp, setAudioRamp,
     getRampOnPause, setRampOnPause,
@@ -23,6 +42,9 @@ import {
     getHiddenPresets, setHiddenPresets,
     getShuffleMode,
     getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch,
+    getPrevButtonMode, setPrevButtonMode,
+    getRestartThresholdSec, setRestartThresholdSec,
+    getAlbumFromFolder, setAlbumFromFolder,
     exportAllSettings, importAllSettings,
 } from '../utils/storage';
 
@@ -41,8 +63,8 @@ export default function SettingsScreen() {
     const scrollRef = useRef(null);
     useScrollToTop(scrollRef);
 
-    const [cf, setCf] = useState(3.0);
-    const [skipCf, setSkipCf] = useState(0.5);
+    const [eotRamp, setEotRampState] = useState(3.0);
+    const [skipRamp, setSkipRampState] = useState(0.5);
     const [volNorm, setVN] = useState(true);
     const [ramp, setRamp] = useState(0);
     const [rampPause, setRampPause] = useState(false);
@@ -53,7 +75,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -66,11 +88,14 @@ export default function SettingsScreen() {
     // never 'off' (only the live state uses 'off').
     const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
     const [keepPriority, setKeepPriority] = useState(true);
+    const [albumFromFolder, setAlbumFromFolderState] = useState(false);
+    const [prevButtonMode, setPrevButtonModeState] = useState('previous_track');
+    const [restartThreshold, setRestartThresholdState] = useState(3);
 
     useEffect(() => {
         (async () => {
-            setCf(await getCrossfade());
-            setSkipCf(await getSkipCrossfade());
+            setEotRampState(await getEndOfTrackRamp());
+            setSkipRampState(await getSkipRamp());
             setVN(await getVolNorm());
             setRamp(await getAudioRamp());
             setRampPause(await getRampOnPause());
@@ -78,6 +103,9 @@ export default function SettingsScreen() {
             setHP(await getHiddenPresets());
             setShuffleTypePref(await getShuffleMode());
             setKeepPriority(await getKeepPriorityOnPlaylistSwitch());
+            setAlbumFromFolderState(await getAlbumFromFolder());
+            setPrevButtonModeState(await getPrevButtonMode());
+            setRestartThresholdState(await getRestartThresholdSec());
             setLoaded(true);
         })();
     }, []);
@@ -186,17 +214,17 @@ export default function SettingsScreen() {
                 <Section title="Audio">
                     <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
                     <Text style={s.sliderNote}>Fades out when a track ends naturally, fades the next one in</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{cf.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={cf}
-                        onValueChange={setCf} onSlidingComplete={v => { setCf(v); setCrossfade(v); }}
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
+                        onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
                     <Text style={s.sliderNote}>Softens manual skips, both out and back in</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{skipCf.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipCf}
-                        onValueChange={setSkipCf} onSlidingComplete={v => { setSkipCf(v); setSkipCrossfade(v); }}
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
+                    <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
+                        onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
 
@@ -275,6 +303,96 @@ export default function SettingsScreen() {
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
+
+                {/* Splits a tag's artist field into individual artists on this
+                     character before display/search, so "Artist A; Artist B"
+                     shows and searches as two artists instead of one long
+                     string. 'None' turns splitting off entirely — the tag
+                     displays exactly as stored, same as before this setting
+                     existed. Defaults to ';' (see getArtistSeparator's own
+                     comment for why that's the safe default) — songs with no
+                     separator character in their tag are never affected by
+                     this setting either way. */}
+                <Section title="Multiple Artists">
+                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                        <Text style={s.toggleSub}>Splits an artist tag like "A; B" into separate artists</Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {ARTIST_SEPARATORS.map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, artistSeparator === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => setArtistSeparator(opt.id)}
+                            >
+                                <Text style={[s.sortChipText, artistSeparator === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Section>
+
+                {/* Off by default: a real ALBUM tag (when tags.js finds one)
+                     is normally more accurate than a folder name, so it wins
+                     by default now that tags are actually read. Flip this on
+                     to go back to how it worked before — folder name always
+                     wins, real tag ignored for this field specifically —
+                     for anyone whose library is organized by folder more
+                     meaningfully than its actual tags are filled in. */}
+                <Section title="Album From Folder Name">
+                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                        <Text style={s.toggleSub}>Use the containing folder as Album instead of the song's own tag</Text>
+                    </View>
+                    <View style={s.toggleRow}>
+                        <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
+                            trackColor={{ true: theme.accent }} />
+                    </View>
+                </Section>
+
+                {/* Explains itself precisely rather than leaning on "unskip" /
+                     "rewind" — the button's real behavior is either "always go
+                     to the previous track" or "restart this one, except right
+                     near its start" — describing it in those terms up front
+                     avoids needing the label to also do the explaining. */}
+                <Section title="Previous Button">
+                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                        <Text style={s.toggleSub}>
+                            What pressing Previous does during playback — always jump to
+                            the previous track, or restart the current track (going to
+                            the previous one only if you're still near its start)
+                        </Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {PREV_BUTTON_MODES.map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, prevButtonMode === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => { setPrevButtonModeState(opt.id); setPrevButtonMode(opt.id); }}
+                            >
+                                <Text style={[s.sortChipText, prevButtonMode === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                    {prevButtonMode === 'restart_or_previous' && (
+                        <>
+                            <Text style={[s.sliderSub, { paddingTop: 6 }]}>Previous-Track Window</Text>
+                            <Text style={s.sliderNote}>
+                                Pressing Previous within this many seconds of the track
+                                starting goes to the previous track; pressing it any later
+                                restarts the current track instead
+                            </Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{restartThreshold.toFixed(0)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={1} value={restartThreshold}
+                                onValueChange={setRestartThresholdState}
+                                onSlidingComplete={v => { setRestartThresholdState(v); setRestartThresholdSec(v); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
+                        </>
+                    )}
+                </Section>
+
 
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
@@ -443,13 +561,22 @@ const s = StyleSheet.create({
     sliderSub: { color: '#888', fontSize: 13, fontWeight: '700', paddingHorizontal: 24, paddingTop: 14 },
     sliderNote: { color: '#555', fontSize: 12, paddingHorizontal: 24, marginTop: 2 },
     sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 6 },
-    slider: { marginHorizontal: 16, marginTop: 2 },
+    // Matches sliderSub/sliderNote/sliderEnds' paddingHorizontal (24) — was
+    // 16, meaning the slider extended 8px further out on each side than the
+    // text above and below it, instead of lining up with the same margin.
+    slider: { marginHorizontal: 24, marginTop: 2 },
     sliderEnds: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, paddingBottom: 12 },
     sliderEnd: { color: '#444', fontSize: 11 },
     toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
     swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
+    // Matches the sort-chip pattern used in All Songs / Playlist Detail —
+    // same shape, same interaction, for the same kind of "pick one of a
+    // few options" control.
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingBottom: 16, gap: 8 },
+    sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
+    sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
     swatch: { justifyContent: 'center', alignItems: 'center' },
     swatchActive: { borderWidth: 3, borderColor: '#fff' },
     eqGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 8, paddingHorizontal: 8 },

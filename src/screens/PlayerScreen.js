@@ -1,12 +1,14 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { usePreferences } from '../context/PreferencesContext';
+import { formatArtists } from '../utils/artists';
+import { getLyrics, activeLyricIndex } from '../utils/lyrics';
 import { useTheme } from '../context/ThemeContext';
-import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
+import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
@@ -77,7 +79,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -275,7 +277,7 @@ export default function PlayerScreen() {
     }, []);
 
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
-    const displayArtist = currentTrack?.ourArtist ?? currentTrack?.artist ?? '';
+    const displayArtist = formatArtists(currentTrack?.ourArtist ?? currentTrack?.artist ?? '', artistSeparator);
     // No per-song embedded-artwork (ID3/FLAC picture tag) extraction exists
     // anywhere in this codebase yet — currentTrack.artwork is never actually
     // populated, so "song covers" were always silently falling back to the
@@ -285,6 +287,54 @@ export default function PlayerScreen() {
     // bigger feature if you want it.
     const artwork = currentTrack?.artwork;
     const pct = justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0);
+
+    // Lyrics: 'off' never even attempts a .lrc lookup (no wasted file I/O
+    // for anyone who doesn't use this). 'manual' and 'auto' both look up
+    // lyrics for every new track; the only difference is whether
+    // `showingLyrics` starts true or false for a track that has them —
+    // 'auto' defaults to showing them, 'manual' still defaults to the
+    // cover but makes the toggle available. Either way this resets on
+    // every track change, not just once — a manual toggle from a previous
+    // song shouldn't carry over to the next one.
+    const [lyricsData, setLyricsData] = useState(null);
+    const [showingLyrics, setShowingLyrics] = useState(false);
+    useEffect(() => {
+        if (lyricsMode === 'off' || !currentTrack?.id) {
+            setLyricsData(null);
+            setShowingLyrics(false);
+            return;
+        }
+        let cancelled = false;
+        getLyrics(currentTrack).then(data => {
+            if (cancelled) return;
+            setLyricsData(data);
+            setShowingLyrics(lyricsMode === 'auto' && !!data);
+        });
+        return () => { cancelled = true; };
+    }, [currentTrack?.id, lyricsMode]);
+
+    // useProgress is already polling at 500ms for the progress bar above —
+    // reusing it here instead of a second position subscription. Lyric
+    // timestamps are usually a few seconds apart at minimum, so 500ms
+    // resolution is more than enough to catch each line change on time.
+    const activeLine = lyricsData ? activeLyricIndex(lyricsData, progress.position) : -1;
+
+    const lyricsFade = useRef(new Animated.Value(0)).current; // 0 = cover, 1 = lyrics
+    useEffect(() => {
+        Animated.timing(lyricsFade, { toValue: showingLyrics ? 1 : 0, duration: 280, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    }, [showingLyrics]);
+
+    const lyricsScrollRef = useRef(null);
+    const lyricsRowYRef = useRef(new Map());
+    useEffect(() => {
+        if (!showingLyrics || activeLine < 0) return;
+        const y = lyricsRowYRef.current.get(activeLine);
+        if (y === undefined) return;
+        // Centers the active line roughly a third of the way down the
+        // lyrics box rather than dead center — reads more naturally, closer
+        // to how lock-screen/streaming-app lyrics views usually scroll.
+        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 80) * 0.32), animated: true });
+    }, [activeLine, showingLyrics]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
     // switch, or if the running animation has drifted noticeably from what
@@ -332,12 +382,10 @@ export default function PlayerScreen() {
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
     useEffect(() => {
-        // Native driver — see onPressShuffle below for why this changed
-        // from false.
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [shuffleOn]);
     useEffect(() => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
@@ -349,26 +397,32 @@ export default function PlayerScreen() {
     // for shuffleOn/singleLoop changing from somewhere else entirely (e.g.
     // restoring a session), so nothing relies exclusively on this.
     //
-    // useNativeDriver is true now, for both — it was false, which meant the
-    // color fade ran on the JS thread. toggleShuffle() does real work right
-    // as this animation plays: reading the current track, reading the whole
-    // native queue, rebuilding and re-adding it (see reshuffleUpcoming) —
-    // several real bridge round trips. toggleSingleLoop() is a single
-    // setRepeatMode() call, comparatively nothing. Both animations were
-    // equally JS-driven, but only shuffle's tap also loads the JS thread
-    // down with that much concurrent work — which is exactly why loop's
-    // fade stayed smooth while shuffle's stuttered or seemed to not run at
-    // all, and part of why shuffle felt slower to react overall. Moving the
-    // color fade onto the native driver (color/backgroundColor interpolation
-    // is natively supported) takes it off the JS thread entirely, so
-    // reshuffleUpcoming's work running concurrently can't compete with it
-    // for frames anymore.
+    // Both back on the JS driver (useNativeDriver: false) — tried moving
+    // just these two onto the native driver to dodge the JS-thread
+    // congestion toggleShuffle's real queue work causes (see below), since
+    // color interpolation IS natively supported in general. But loop icon
+    // uses Animated.Text with the interpolation directly in its own style,
+    // while ShuffleIcon renders two separate Animated.Views and only
+    // receives the interpolation through a `color` prop — and on the
+    // native driver specifically, shuffle came out visibly wrong (loop,
+    // same change, stayed correct). Not confident enough in the exact
+    // mechanism there to leave it that way with no way to test it, so
+    // reverted to the driver that's actually known to render both
+    // correctly, and the congestion problem is addressed differently below
+    // instead.
     const onPressShuffle = () => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-        toggleShuffle();
+        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        // Deferred one tick so the animation's first, most important frames
+        // get a clear run on the JS thread before toggleShuffle's real
+        // native-queue work (reading the current track, reading the whole
+        // queue, rebuilding and re-adding it — see reshuffleUpcoming) starts
+        // competing with it. toggleSingleLoop below doesn't need this — it's
+        // one setRepeatMode() call, not enough concurrent work to visibly
+        // compete with an 180ms animation in the first place.
+        setTimeout(() => toggleShuffle(), 0);
     };
     const onPressLoop = () => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
         toggleSingleLoop();
     };
 
@@ -402,12 +456,61 @@ export default function PlayerScreen() {
             <View style={s.middle}>
                 <View style={s.artWrap}>
                     <View style={[s.art, { borderColor: theme.accentDim, shadowColor: theme.accent, borderRadius: squircle(width - 80) }]}>
-                        {artwork
-                            ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                            : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
-                        }
+                        {/* Cover and lyrics occupy the exact same box, cross-fading
+                            between them via opacity alone (native-driver-safe — no
+                            color interpolation involved, unlike the shuffle/loop
+                            icons elsewhere in this file that specifically had to
+                            avoid the native driver). pointerEvents keeps whichever
+                            one is currently invisible from intercepting the swipe-
+                            to-dismiss gesture that this whole box still needs to
+                            keep supporting. */}
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
+                            {artwork
+                                ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                            }
+                        </Animated.View>
+                        {lyricsData && (
+                            <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade }]} pointerEvents={showingLyrics ? 'auto' : 'none'}>
+                                <ScrollView
+                                    ref={lyricsScrollRef}
+                                    style={{ flex: 1 }}
+                                    contentContainerStyle={s.lyricsContent}
+                                    showsVerticalScrollIndicator={false}
+                                    scrollEnabled={false}
+                                >
+                                    {/* scrollEnabled false — the lyrics only ever move via
+                                        the sync-driven scrollTo above, never by a manual
+                                        drag. A user-scrollable ScrollView here would compete
+                                        with the swipe-to-dismiss gesture for the same
+                                        vertical touch, which is exactly what needed
+                                        avoiding for the control buttons lower on this
+                                        screen — same concern, same fix. */}
+                                    {lyricsData.map((line, i) => (
+                                        <Text
+                                            key={i}
+                                            onLayout={(e) => lyricsRowYRef.current.set(i, e.nativeEvent.layout.y)}
+                                            style={[s.lyricLine, i === activeLine ? { color: theme.accent, fontWeight: '700' } : { color: '#666' }]}
+                                        >
+                                            {line.text || '\u2026'}
+                                        </Text>
+                                    ))}
+                                </ScrollView>
+                            </Animated.View>
+                        )}
                     </View>
                 </View>
+
+                {/* Only shown when there's actually something to toggle to —
+                    feature off, or this specific song has no matching .lrc,
+                    both mean no button at all rather than a dead tap target. */}
+                {lyricsMode !== 'off' && lyricsData && (
+                    <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
+                        <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
+                            {showingLyrics ? 'Show cover' : 'Show lyrics'}
+                        </Text>
+                    </TouchableOpacity>
+                )}
 
                 <View style={s.trackInfoGroup}>
                     <View style={s.info}>
@@ -480,7 +583,7 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
                         <ShuffleIcon size={25} color={shuffleColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={s.skipBtn} hitSlop={HIT}>
+                    <TouchableOpacity onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipPrevIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -489,7 +592,7 @@ export default function PlayerScreen() {
                     >
                         {isPlaying ? <PauseIcon size={26} color={theme.onAccent} /> : <PlayIcon size={26} color={theme.onAccent} />}
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={s.skipBtn} hitSlop={HIT}>
+                    <TouchableOpacity onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipNextIcon size={28} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
@@ -519,6 +622,13 @@ const s = StyleSheet.create({
     art: { width: width - 80, height: width - 80, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
+    // Small text button matching the sort-label style used elsewhere
+    // (Playlist/All Songs sort buttons) — plain text, no background, no
+    // arrow, same visual weight as those.
+    lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 8, marginTop: 10 },
+    lyricsToggleText: { fontSize: 13, fontWeight: '600' },
+    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 22 },
+    lyricLine: { fontSize: 17, lineHeight: 26, fontWeight: '500', textAlign: 'center', marginVertical: 6 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

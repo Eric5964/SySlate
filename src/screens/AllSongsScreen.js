@@ -8,6 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
+import { formatArtists, artistMatches } from '../utils/artists';
 import SwipeableRow from '../components/SwipeableRow';
 // import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
@@ -43,7 +44,7 @@ export default function AllSongsScreen() {
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -79,24 +80,45 @@ export default function AllSongsScreen() {
     useEffect(() => { getPlayCounts(dedupedSongs).then(setPlayCounts); }, [dedupedSongs]);
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
 
+    // Precomputed once per song instead of inside the sort comparator —
+    // .sort() calls its comparator O(n log n) times, and recomputing
+    // .toLowerCase() on the same strings that many times over adds up on a
+    // real library. Also switched from .localeCompare() to plain string
+    // comparison (< / >): localeCompare does real locale-aware Unicode work
+    // under the hood and is well known to be substantially slower than a
+    // plain comparison in JS engines (including Hermes, which RN normally
+    // uses) — for a couple thousand songs, that difference across tens of
+    // thousands of comparisons is exactly what "sorting is slow" was.
+    const titleKeyMap = useMemo(() => {
+        const m = new Map();
+        for (const s of dedupedSongs) m.set(s.id, (s.title || '').toLowerCase());
+        return m;
+    }, [dedupedSongs]);
+
     const sorted = useMemo(() => {
         let songs = [...dedupedSongs];
         switch (sortId) {
-            case 'alpha': songs.sort((a, b) => a.title.localeCompare(b.title)); break;
-            case 'alpha_r': songs.sort((a, b) => b.title.localeCompare(a.title)); break;
+            case 'alpha': songs.sort((a, b) => {
+                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
+                return ta < tb ? -1 : ta > tb ? 1 : 0;
+            }); break;
+            case 'alpha_r': songs.sort((a, b) => {
+                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
+                return ta > tb ? -1 : ta < tb ? 1 : 0;
+            }); break;
             case 'plays': songs.sort((a, b) => (playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)); break;
             case 'plays_r': songs.sort((a, b) => (playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)); break;
         }
         return songs;
-    }, [dedupedSongs, sortId, playCounts]);
+    }, [dedupedSongs, sortId, playCounts, titleKeyMap]);
 
     const filtered = useMemo(() => {
         if (!search.trim()) return sorted;
         const q = search.toLowerCase();
         return sorted.filter(s =>
-            s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)
+            s.title.toLowerCase().includes(q) || artistMatches(s.artist, artistSeparator, q)
         );
-    }, [sorted, search]);
+    }, [sorted, search, artistSeparator]);
 
     const artMap = useListArt(filtered, showSongCovers);
 
@@ -185,7 +207,7 @@ export default function AllSongsScreen() {
                                 )}
                                 <View style={{ flex: 1 }}>
                                     <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
-                                    <Text style={s.rowSub} numberOfLines={1}>{item.artist}</Text>
+                                    <Text style={s.rowSub} numberOfLines={1}>{formatArtists(item.artist, artistSeparator)}</Text>
                                 </View>
                                 {showPlayCount && playCounts[item.id] > 0 && (
                                     <Text style={s.playCount}>{playCounts[item.id]}×</Text>

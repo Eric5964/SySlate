@@ -7,6 +7,7 @@ import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { usePreferences } from '../context/PreferencesContext';
+import { formatArtists } from '../utils/artists';
 import { getPlayCounts } from '../utils/storage';
 
 // Fixed estimate of a row's rendered height (thumb + padding + margins) —
@@ -150,7 +151,7 @@ const SECTION_DIVIDER_HEIGHT = 9;
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
-    const { showSongCovers, showPlayCount } = usePreferences();
+    const { showSongCovers, showPlayCount, artistSeparator } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
@@ -354,10 +355,29 @@ export default function QueueModal({ visible, onClose }) {
     // that this was only mildly wasteful; making cache hits apply instantly
     // removed that throttle and let it spin as fast as it could, which is
     // almost certainly what was starving the dismiss gesture of JS-thread
-    // time. `rows` is real state that only changes on an actual refresh, so
-    // memoizing on it keeps the array reference stable across the
-    // unrelated re-renders that were re-triggering this.
-    const songsForArt = useMemo(() => rows.map(r => r.song), [rows]);
+    // time.
+    //
+    // Memoizing on raw `rows` identity wasn't actually enough on its own
+    // once the sheet started refreshing itself live (see the
+    // PlaybackTrackChanged listener above, and the Now Playing swipe
+    // handler below) — `rows` is a brand new array from every refresh()
+    // call, EVEN when the actual songs and order in it haven't changed
+    // (e.g. a refresh that only affects priority, or one that's just a
+    // no-op re-sync), so memoizing on it still restarted the extraction
+    // phase constantly, which is what "covers take forever / stay black"
+    // actually was — genuinely slow real-file extractions kept getting
+    // cancelled and restarted from scratch before they ever finished.
+    // Comparing by an actual VALUE signature (the song ids in order) instead
+    // of by array identity means a refresh that doesn't change what's
+    // actually being shown keeps the same songsForArt reference, and
+    // useListArt's effect only restarts when the visible song list
+    // genuinely changed.
+    const songsForArtRef = useRef({ sig: '', arr: [] });
+    const songsForArtSig = rows.map(r => r.song.id).join('\u0001');
+    if (songsForArtRef.current.sig !== songsForArtSig) {
+        songsForArtRef.current = { sig: songsForArtSig, arr: rows.map(r => r.song) };
+    }
+    const songsForArt = songsForArtRef.current.arr;
     const artMap = useListArt(songsForArt, showSongCovers);
 
     useEffect(() => {
@@ -406,7 +426,7 @@ export default function QueueModal({ visible, onClose }) {
                         )}
                         <View style={{ flex: 1 }}>
                             <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                            <Text style={s.qArtist} numberOfLines={1}>{song.ourArtist ?? song.artist}</Text>
+                            <Text style={s.qArtist} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator)}</Text>
                         </View>
                         {showPlayCount && playCounts[song.id] > 0 && (
                             <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
@@ -420,69 +440,68 @@ export default function QueueModal({ visible, onClose }) {
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Queue</Text>}>
-            <>
-                {/* Not wrapped in the ScrollView below (sits pinned above it
-                    instead) so it's always visible regardless of whether
-                    anything's actually queued up — including the "Nothing up
-                    next" empty state, since there's still a currently playing
-                    song even when nothing follows it. Not tappable (plain
-                    View, not TouchableOpacity) — there's nothing meaningful
-                    to "jump to" on the song already playing. Swipe-right only
-                    (no onSwipeLeft prop at all — SwipeableRow disables the
-                    left-swipe reveal entirely when that's omitted, rather
-                    than showing a Remove affordance that would do nothing) so
-                    you can re-queue the current song to play again later,
-                    but there's nothing to remove it FROM here. */}
-                {currentTrack && (
-                    <View>
-                        <View style={s.groupPill}><Text style={s.groupLabel}>Now Playing</Text></View>
-                        <SwipeableRow onSwipeRight={() => addToQueue(currentTrack)} rightColor={theme.accent}>
-                            <View style={[s.qRow, { backgroundColor: base.border }]}>
-                                {showSongCovers && (
-                                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
-                                        {currentTrack.artwork
-                                            ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
-                                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                        }
+            {rows.length === 0 && hasLoadedOnce ? (
+                <View style={{ flex: 1, justifyContent: 'center' }}>
+                    <Text style={s.empty}>Nothing up next</Text>
+                </View>
+            ) : rows.length === 0 ? (
+                // Loaded-once hasn't landed yet (still inside refresh()'s
+                // retry loop) — stay visually blank instead of claiming
+                // "Nothing up next" for a state we don't actually know is
+                // true yet. Sheet still opens instantly; this just stops it
+                // from asserting something false for that first stretch.
+                <View style={{ flex: 1 }} />
+            ) : (
+                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                    {/* Just another section, scrolling with everything else
+                        below it — not pinned above the list. Not tappable
+                        (plain View, not TouchableOpacity) — there's nothing
+                        meaningful to "jump to" on the song already playing.
+                        Swipe-right only (no onSwipeLeft prop at all —
+                        SwipeableRow disables the left-swipe reveal entirely
+                        when that's omitted, rather than showing a Remove
+                        affordance that would do nothing) so you can re-queue
+                        the current song to play again later, but there's
+                        nothing to remove it FROM here. */}
+                    {currentTrack && (
+                        <>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Now Playing</Text></View>
+                            <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
+                                <View style={[s.qRow, { backgroundColor: base.border }]}>
+                                    {showSongCovers && (
+                                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                            {currentTrack.artwork
+                                                ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
+                                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                            }
+                                        </View>
+                                    )}
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={s.qTitle} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
+                                        <Text style={s.qArtist} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
                                     </View>
-                                )}
-                                <View style={{ flex: 1 }}>
-                                    <Text style={s.qTitle} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
-                                    <Text style={s.qArtist} numberOfLines={1}>{currentTrack.ourArtist ?? currentTrack.artist}</Text>
+                                    {showPlayCount && playCounts[currentTrack.id] > 0 && (
+                                        <Text style={s.qPlayCount}>{playCounts[currentTrack.id]}×</Text>
+                                    )}
                                 </View>
-                            </View>
-                        </SwipeableRow>
-                    </View>
-                )}
-                {rows.length === 0 && hasLoadedOnce ? (
-                    <View style={{ flex: 1, justifyContent: 'center' }}>
-                        <Text style={s.empty}>Nothing up next</Text>
-                    </View>
-                ) : rows.length === 0 ? (
-                    // Loaded-once hasn't landed yet (still inside refresh()'s
-                    // retry loop) — stay visually blank instead of claiming
-                    // "Nothing up next" for a state we don't actually know is
-                    // true yet. Sheet still opens instantly; this just stops it
-                    // from asserting something false for that first stretch.
-                    <View style={{ flex: 1 }} />
-                ) : (
-                    <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
-                        <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
-                        </AnimatedSection>
-                        {priorityRows.length > 0 && priorityRows.map(renderRow)}
-                        <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
-                            <View style={s.divider} />
-                        </AnimatedSection>
-                        {upNextRows.length > 0 && (
-                            <>
-                                <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
-                                {upNextRows.map(renderRow)}
-                            </>
-                        )}
-                    </ScrollView>
-                )}
-            </>
+                            </SwipeableRow>
+                        </>
+                    )}
+                    <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
+                        <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
+                    </AnimatedSection>
+                    {priorityRows.length > 0 && priorityRows.map(renderRow)}
+                    <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
+                        <View style={s.divider} />
+                    </AnimatedSection>
+                    {upNextRows.length > 0 && (
+                        <>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
+                            {upNextRows.map(renderRow)}
+                        </>
+                    )}
+                </ScrollView>
+            )}
         </BottomSheet>
     );
 }

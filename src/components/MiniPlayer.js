@@ -5,7 +5,7 @@ import { usePlaybackState, State, useProgress } from 'react-native-track-player'
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { skipWithCrossfade, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
+import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
@@ -94,7 +94,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 <Text style={styles.title} numberOfLines={1}>{title}</Text>
                 <Text style={styles.artist} numberOfLines={1}>{artist}</Text>
             </View>
-            <TouchableOpacity onPress={() => skipWithCrossfade('prev')} style={styles.btn} hitSlop={HIT}>
+            <TouchableOpacity onPress={() => skipWithRamp('prev')} style={styles.btn} hitSlop={HIT}>
                 <SkipPrevIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -103,7 +103,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             >
                 {isPlaying ? <PauseIcon size={20} color={theme.accent} /> : <PlayIcon size={18} color={theme.accent} />}
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => skipWithCrossfade('next')} style={styles.btn} hitSlop={HIT}>
+            <TouchableOpacity onPress={() => skipWithRamp('next')} style={styles.btn} hitSlop={HIT}>
                 <SkipNextIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
         </TouchableOpacity>
@@ -118,7 +118,10 @@ const styles = StyleSheet.create({
     info: { flex: 1, marginRight: 4 },
     title: { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },
     artist: { color: '#555', fontSize: 12, marginTop: 2 },
-    btn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    // marginHorizontal added — the three buttons sat directly adjacent with
+    // no gap at all, just their own 40px width apart, which read as too
+    // close together.
+    btn: { width: 40, height: 40, marginHorizontal: 3, justifyContent: 'center', alignItems: 'center' },
     miniProgressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 6, backgroundColor: 'transparent' },
     miniProgressFill: { height: 6, borderRadius: 0 },
 });

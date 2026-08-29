@@ -1,12 +1,5 @@
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert } from 'react-native';
-
-// TEMP DEBUG (remove once the covers bug is diagnosed): extractEmbeddedArt's
-// catch block below swallows every error silently via console.error, which
-// is invisible without a Metro/dev-server connection. This surfaces the
-// first real error via Alert so it's visible on-device with no dev tools.
-let hasShownDebugAlert = false;
 
 // Extracts embedded cover art (the PICTURE block in FLAC, the 'covr' atom in
 // MP4/ALAC) directly, with hand-rolled binary parsers instead of a metadata
@@ -29,16 +22,30 @@ let hasShownDebugAlert = false;
 //   for this app, but the same approach extends to ID3v2 APIC frames if
 //   ever needed.
 // - Results (including "no art found") are cached permanently per song, so
-//   this cost is paid once per song, not on every play.
+//   this cost is paid once per song, not on every play — but see the v6
+//   fingerprint note below: "permanently" now means "until the file at
+//   that path is actually replaced," not literally forever.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
-// v5: the tail-fallback for "moov at end" ALAC/m4a files was fundamentally
-// broken — it assumed a fixed-size chunk read from near EOF started exactly
-// at the 'moov' box boundary, which is essentially never true. Replaced
-// with a proper scan that locates 'moov' by its marker and re-reads the
-// exact box. Old cached "no art found" results for those files need to be
-// retried under the real logic.
-const CACHE_KEY = 'song_art_cache_v5';
+// v6: cache entries now store a lightweight fingerprint (file size +
+// modification time) alongside the resolved art URI/null, instead of just
+// the bare value. The cache key is `song.id`, which is the file's PATH —
+// replacing a file at that same path with a different one (different tags,
+// possibly newly-embedded art) used to be invisible to this cache: the old
+// path still matched, so whatever was cached for the OLD file kept getting
+// served forever, most commonly a cached `null` masking real art on the
+// replacement file. The fingerprint lets a lookup detect "the file here
+// isn't the one this entry was computed from" and treat it as unprocessed
+// instead of trusting a stale result. Bumped the key (not just the shape,
+// in place) because v5 entries are bare values with no fingerprint to
+// compare against — there's no meaningful way to validate them, so this is
+// a clean cutover rather than special-casing two entry shapes in one map.
+// Same precedent as the v5 bump above: a one-time full re-extraction pass
+// on first run after this update, which is why FRONT_PREFIX_BYTES and the
+// moov-scan sizing below matter — those are what keep that pass from being
+// the kind of concurrent CPU load that caused the CPU-limit kill this file
+// already documents having fixed once.
+const CACHE_KEY = 'song_art_cache_v6';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
 
 let cacheMapPromise = null;
@@ -53,6 +60,24 @@ async function saveCacheEntry(songId, value) {
     map[songId] = value;
     cacheMapPromise = Promise.resolve(map);
     AsyncStorage.setItem(CACHE_KEY, JSON.stringify(map)).catch(() => { });
+}
+
+// Stat-only (no file content read) — cheap enough to use on every cache
+// lookup, not just during real extraction. Returns null if the file can't
+// be stat'd, which callers treat as "can't verify, trust the existing
+// cache" rather than as a mismatch — a transient filesystem hiccup
+// shouldn't be able to wipe out an otherwise-correct cached result.
+async function getFingerprint(uri) {
+    try {
+        const info = await FileSystem.getInfoAsync(uri);
+        if (!info.exists) return null;
+        return { size: info.size, mtime: info.modificationTime };
+    } catch {
+        return null;
+    }
+}
+function fingerprintsMatch(a, b) {
+    return !!a && !!b && a.size === b.size && a.mtime === b.mtime;
 }
 
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -224,15 +249,27 @@ function hashCode(str) {
     return Math.abs(hash);
 }
 
-// Cache-only lookup — no file I/O, just checks what we already know. Returns
-// the cached URI, null (confirmed no art), or undefined (never processed).
-// Safe to call immediately with no delay, since there's no heavy work here —
-// callers use this to skip the artificial "don't compete with the ramp"
-// delay entirely for songs that are already cached.
+// Cache-only lookup — checks what we already know, plus one cheap stat call
+// to confirm the file at this path is still the one the cached entry was
+// computed from. Returns the cached URI, null (confirmed no art, and the
+// file hasn't changed since), or undefined (never processed, OR the file
+// has changed since it was — both mean "needs a real extraction pass").
+// Slightly more than "no file I/O" now (a stat call was added to catch
+// stale entries — see the v6 fingerprint note above), but still far
+// cheaper than the real read+decode extraction does, so callers can keep
+// using this to skip the artificial "don't compete with the ramp" delay
+// for anything that resolves here.
 export async function getCachedArt(song) {
     if (!song?.id) return undefined;
     const cache = await loadCacheMap();
-    return song.id in cache ? (cache[song.id] || null) : undefined;
+    const entry = cache[song.id];
+    if (entry === undefined) return undefined;
+    const current = await getFingerprint(song.url);
+    // current is null only when the stat itself failed (not when it
+    // succeeded and simply didn't match) — treat that as "can't verify,
+    // trust the cache" rather than as a mismatch.
+    if (current && !fingerprintsMatch(entry.fp, current)) return undefined;
+    return entry.uri ?? null;
 }
 
 // Returns a local file:// URI for the song's embedded cover art, or null if
@@ -320,7 +357,14 @@ async function extractEmbeddedArtUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {
         const cache = await loadCacheMap();
-        if (song.id in cache) return cache[song.id] || null;
+        // Computed once here and reused for both the "is the existing entry
+        // still valid" check below and the save at the end — no reason to
+        // stat the same file twice in one pass.
+        const fp = await getFingerprint(song.url);
+        const existing = cache[song.id];
+        if (existing !== undefined && fingerprintsMatch(existing?.fp, fp)) {
+            return existing.uri ?? null;
+        }
 
         const ext = (song.filename || song.id || '').split('.').pop().toLowerCase();
         let picture = null;
@@ -354,25 +398,37 @@ async function extractEmbeddedArtUncached(song) {
         }
 
         if (!picture?.data?.length) {
-            await saveCacheEntry(song.id, null);
+            await saveCacheEntry(song.id, { uri: null, fp });
             return null;
         }
 
         await FileSystem.makeDirectoryAsync(ART_DIR, { intermediates: true }).catch(() => { });
         const fileExt = picture.mime?.includes('png') ? 'png' : 'jpg';
-        const dest = `${ART_DIR}${hashCode(song.id)}.${fileExt}`;
+        // Filename includes the fingerprint, not just song.id — the fp check
+        // above already tells getCachedArt/extractEmbeddedArtUncached that a
+        // replaced file needs re-extracting, but writing the new art out to
+        // the SAME uri every time (as this used to, keyed on song.id alone)
+        // means the actual displayed URI string never changes even though
+        // the file content behind it does. If the OS or Image component
+        // caches by URI (common on iOS), a genuinely re-extracted new cover
+        // could still render the old one, which would look exactly like
+        // this whole fix not having worked. Baking the fingerprint into the
+        // filename means a replaced file always resolves to a brand new
+        // path, so there's nothing for a URI-keyed cache to serve stale.
+        const fpTag = fp ? `${fp.size}_${fp.mtime}` : 'nofp';
+        const dest = `${ART_DIR}${hashCode(song.id)}_${hashCode(fpTag)}.${fileExt}`;
         await FileSystem.writeAsStringAsync(dest, bytesToBase64(picture.data), { encoding: FileSystem.EncodingType.Base64 });
-        await saveCacheEntry(song.id, dest);
+        // Clean up the previous fingerprint's file for this song, if any,
+        // now that it's no longer reachable from the cache entry — avoids
+        // orphaned art files quietly accumulating in ART_DIR every time a
+        // song gets replaced.
+        if (existing?.uri && existing.uri !== dest) {
+            await FileSystem.deleteAsync(existing.uri, { idempotent: true }).catch(() => { });
+        }
+        await saveCacheEntry(song.id, { uri: dest, fp });
         return dest;
     } catch (e) {
         console.error('extractEmbeddedArt:', e);
-        if (!hasShownDebugAlert) {
-            hasShownDebugAlert = true;
-            Alert.alert(
-                'DEBUG: extractEmbeddedArt error',
-                `song: ${song?.filename || song?.id}\n\n${e?.message || e}\n\n${e?.stack || ''}`.slice(0, 1200)
-            );
-        }
         return null;
     }
 }

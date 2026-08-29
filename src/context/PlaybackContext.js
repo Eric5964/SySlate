@@ -8,7 +8,7 @@ import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
-    getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipCrossfade,
+    getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 
@@ -368,6 +368,24 @@ export function PlaybackProvider({ children }) {
             const preClaimedId = preClaimFadeForFreshStart();
 
             if (realIndex < priorityEnd) {
+                // Jumping to a row inside the priority zone itself (tapping
+                // the 2nd+ priority song in the Queue sheet, not just the
+                // first). The priority entries at priorityStart..realIndex
+                // (everything from the front of the priority list up to and
+                // including the one being jumped to) are about to end up
+                // BEHIND the new current index once this skip lands — they
+                // were "skipped past," not played, but either way they're no
+                // longer upcoming. Left untouched, priorityRef kept them
+                // forever, which threw off priorityCount (and therefore
+                // priorityEnd) for every add/promote/remove/jump after this.
+                // Trim them here; the ones still genuinely ahead
+                // (realIndex+1..priorityEnd-1) are untouched and stay
+                // priority, same as a normal "Up Next" jump leaves the rest
+                // of the queue untouched.
+                const skippedCount = realIndex - priorityStart + 1;
+                const next = priorityRef.current.slice(skippedCount);
+                priorityRef.current = next;
+                setPriorityQueue(next);
                 await playWithRamp(preClaimedId, () => TrackPlayer.skip(realIndex));
                 return;
             }
@@ -672,11 +690,11 @@ export function PlaybackProvider({ children }) {
 
         const queue = [song, ...rest];
 
-        // Uses the Skip crossfade duration here, not the general Audio
+        // Uses the Skip ramp duration here, not the general Audio
         // Ramp — tapping a song is conceptually closer to a skip (jump
         // straight to a specific song) than it is to a fresh "start
         // playback from nothing" moment.
-        await fadeOutCurrentIfPlaying(await getSkipCrossfade());
+        await fadeOutCurrentIfPlaying(await getSkipRamp());
         forceReleaseFade();
         const preClaimedId = preClaimFadeForFreshStart();
         await primeNativeQueue(queue, 0);

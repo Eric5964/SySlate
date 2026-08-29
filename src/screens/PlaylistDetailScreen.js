@@ -8,6 +8,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
+import { formatArtists, artistMatches } from '../utils/artists';
 import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
@@ -41,7 +42,7 @@ export default function PlaylistDetailScreen() {
     // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [cover, setCover] = useState(null);
-    const { showPlayCount, showSongCovers } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -49,25 +50,42 @@ export default function PlaylistDetailScreen() {
         getPlaylistSort(playlist.path).then(setSortId);
     }, []);
 
+    // Same precompute-once-avoid-localeCompare reasoning as All Songs'
+    // identical sort (see there for the full explanation) — playlists are
+    // usually small enough that this isn't very noticeable, but there's no
+    // reason for the same sort to be implemented two different ways, one
+    // fast and one not, between the two screens.
+    const titleKeyMap = useMemo(() => {
+        const m = new Map();
+        for (const s of playlist.songs) m.set(s.id, (s.ourTitle ?? s.title ?? '').toLowerCase());
+        return m;
+    }, [playlist.songs]);
+
     const sorted = useMemo(() => {
         let songs = [...playlist.songs];
         switch (sortId) {
-            case 'alpha': songs.sort((a, b) => (a.ourTitle ?? a.title).localeCompare(b.ourTitle ?? b.title)); break;
-            case 'alpha_r': songs.sort((a, b) => (b.ourTitle ?? b.title).localeCompare(a.ourTitle ?? a.title)); break;
+            case 'alpha': songs.sort((a, b) => {
+                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
+                return ta < tb ? -1 : ta > tb ? 1 : 0;
+            }); break;
+            case 'alpha_r': songs.sort((a, b) => {
+                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
+                return ta > tb ? -1 : ta < tb ? 1 : 0;
+            }); break;
             case 'plays': songs.sort((a, b) => (playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)); break;
             case 'plays_r': songs.sort((a, b) => (playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)); break;
         }
         return songs;
-    }, [playlist.songs, sortId, playCounts]);
+    }, [playlist.songs, sortId, playCounts, titleKeyMap]);
 
     const filtered = useMemo(() => {
         if (!search.trim()) return sorted;
         const q = search.toLowerCase();
         return sorted.filter(s =>
             (s.ourTitle ?? s.title ?? '').toLowerCase().includes(q) ||
-            (s.ourArtist ?? s.artist ?? '').toLowerCase().includes(q)
+            artistMatches(s.ourArtist ?? s.artist, artistSeparator, q)
         );
-    }, [sorted, search]);
+    }, [sorted, search, artistSeparator]);
 
     const artMap = useListArt(filtered, showSongCovers);
 
@@ -216,7 +234,7 @@ export default function PlaylistDetailScreen() {
                             )}
                             <View style={{ flex: 1 }}>
                                 <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                                <Text style={s.rowSub} numberOfLines={1}>{item.ourArtist ?? item.artist}</Text>
+                                <Text style={s.rowSub} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator)}</Text>
                             </View>
                             {showPlayCount && playCounts[item.id] > 0 && (
                                 <Text style={s.playCount}>{playCounts[item.id]}×</Text>

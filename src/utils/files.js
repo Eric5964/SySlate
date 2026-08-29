@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system';
-import { getPlaylistOrder } from './storage';
+import { getPlaylistOrder, getAlbumFromFolder } from './storage';
+import { getCachedTags } from './tags';
 
 const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape']);
 
@@ -16,6 +17,33 @@ function parseFilename(filename, album) {
 
 function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 
+// Real embedded tags override the filename-parsed guess for whichever
+// fields tags.js actually found — title/artist always win if present,
+// since they're the fields filename-parsing is guessing at in the first
+// place. Album only overrides the folder-name guess when albumFromFolder
+// is false (the "Album From Folder Name" setting) — when true, the folder
+// name wins outright and a real ALBUM tag is ignored entirely for this
+// field, same as before tag reading existed.
+//
+// Deliberately uses getCachedTags (cache-only, no file read) rather than a
+// real extraction — scanning the library must stay fast regardless of
+// library size, so the real read only ever happens in the background tag
+// loader (see hooks/useBackgroundTagLoader.js). A song whose tags haven't
+// been warmed into the cache yet just keeps its filename-based guess until
+// the next scan after the background loader reaches it.
+async function applyTags(track, albumFromFolder) {
+    const tags = await getCachedTags(track);
+    if (!tags) return track;
+    return {
+        ...track,
+        title: tags.title || track.title,
+        ourTitle: tags.title || track.ourTitle,
+        artist: tags.artist !== undefined && tags.artist !== '' ? tags.artist : track.artist,
+        ourArtist: tags.artist !== undefined && tags.artist !== '' ? tags.artist : track.ourArtist,
+        album: (!albumFromFolder && tags.album) || track.album,
+    };
+}
+
 // The 'id' field stays as the raw filesystem path (readable, stable, used
 // for our own matching). The 'url' field — what TrackPlayer actually loads —
 // needs proper URI encoding, since a literal '#', '%', '?', or space in a
@@ -28,7 +56,7 @@ function encodeFileUrl(path) {
     return scheme + rest.split('/').map(encodeURIComponent).join('/');
 }
 
-async function scanFolder(folderPath, folderName) {
+async function scanFolder(folderPath, folderName, albumFromFolder) {
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(folderPath); } catch { return []; }
     const tracks = [];
@@ -36,7 +64,7 @@ async function scanFolder(folderPath, folderName) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
         if (AUDIO_EXT.has(ext(item))) {
-            tracks.push({ id: fullPath, url: encodeFileUrl(fullPath), filename: item, ...parseFilename(item, folderName) });
+            tracks.push(await applyTags({ id: fullPath, url: encodeFileUrl(fullPath), filename: item, ...parseFilename(item, folderName) }, albumFromFolder));
         } else {
             try {
                 const info = await FileSystem.getInfoAsync(fullPath);
@@ -45,7 +73,7 @@ async function scanFolder(folderPath, folderName) {
                     for (const sub of subs) {
                         if (sub.startsWith('.') || !AUDIO_EXT.has(ext(sub))) continue;
                         const sp = normPath(fullPath) + sub;
-                        tracks.push({ id: sp, url: encodeFileUrl(sp), filename: sub, ...parseFilename(sub, item) });
+                        tracks.push(await applyTags({ id: sp, url: encodeFileUrl(sp), filename: sub, ...parseFilename(sub, item) }, albumFromFolder));
                     }
                 }
             } catch { }
@@ -72,6 +100,7 @@ export async function scanLibrary() {
     const playlists = [];
     const seenIds = new Set();
     const rootSongs = [];
+    const albumFromFolder = await getAlbumFromFolder();
 
     for (const item of items) {
         if (item.startsWith('.') || SKIP.has(item)) continue;
@@ -79,13 +108,13 @@ export async function scanLibrary() {
         let info;
         try { info = await FileSystem.getInfoAsync(path); } catch { continue; }
         if (info.isDirectory) {
-            const songs = await scanFolder(path, item);
+            const songs = await scanFolder(path, item, albumFromFolder);
             if (songs.length > 0) {
                 playlists.push({ name: item, path: normPath(path), songs });
                 songs.forEach(s => seenIds.add(s.id));
             }
         } else if (AUDIO_EXT.has(ext(item)) && !seenIds.has(path)) {
-            rootSongs.push({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') });
+            rootSongs.push(await applyTags({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') }, albumFromFolder));
             seenIds.add(path);
         }
     }

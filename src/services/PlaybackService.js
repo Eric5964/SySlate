@@ -1,5 +1,5 @@
 import TrackPlayer, { Event, State } from 'react-native-track-player';
-import { getCrossfade, getSkipCrossfade, getAudioRamp, getRampOnPause } from '../utils/storage';
+import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
 
 // --- Fade ownership -----------------------------------------------------
@@ -13,6 +13,12 @@ let activeFadeId = null;
 let naturalEndFadeOwner = null;
 let skipLock = false;
 let rampLock = false;
+// True only for the duration of the natural end-of-track ramp's fade-IN half (the
+// new/repeated track ramping 0->1 after the old one finished fading out) —
+// see pauseWithRamp, which checks this to interrupt that ramp immediately
+// instead of waiting for it to finish, unlike the fade-OUT half which is
+// left alone to complete on its own.
+let naturalFadeInActive = false;
 
 const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
 const isFadeOwner = (id) => activeFadeId === id;
@@ -96,20 +102,13 @@ async function waitForPlaying(timeoutMs = 2500) {
     return false;
 }
 
-// --- End-of-track crossfade watcher -----------------------------------
+// --- End-of-track ramp watcher -----------------------------------
 let progressSub = null;
 let fallbackTimer = null;
 
-async function checkCrossfadeWindow(position, duration) {
+async function checkRampWindow(position, duration) {
     try {
-        // Duration reported in the first couple seconds of a track can be a
-        // provisional/incorrect value while metadata is still loading, which
-        // was causing a false "we're near the end" trigger a few seconds
-        // into a fresh song (heard as a sudden volume dip that "fixed
-        // itself" once the real duration came through and cancelled it).
-        if (position < 3) return;
-
-        const cf = await getCrossfade();
+        const ramp = await getEndOfTrackRamp();
 
         // If we currently own a natural end-of-track fade but a seek moved
         // playback back OUT of the window (e.g. rewound), cancel it instead
@@ -128,21 +127,53 @@ async function checkCrossfadeWindow(position, duration) {
         // instead covers both cases: a genuine rewind recovers smoothly
         // instead of snapping, and a loop repeat now gets the same ramp-in
         // a real track change would have given it.
+        //
+        // Deliberately checked BEFORE the position<3 guard further down —
+        // that guard exists to stop a fresh track's still-loading duration
+        // metadata from falsely LOOKING like "near the end" and starting an
+        // unwanted fade-out (see below). It has nothing to do with THIS
+        // block, which only ever runs while recovering an existing fade —
+        // but it used to sit above this whole function and return early
+        // regardless, which meant this recovery code plain didn't run at
+        // all for the first 3 seconds after a loop restart (position is
+        // naturally under 3 there). That's 3 real seconds of silence before
+        // any ramp-in even started, which is exactly why the ramp itself
+        // then read as "too short" — it was never short, it just started 3
+        // seconds later than it should have.
         if (naturalEndFadeOwner !== null && activeFadeId === naturalEndFadeOwner) {
             const remaining = duration ? duration - position : Infinity;
-            if (cf <= 0 || !duration || remaining > cf + 0.5) {
+            if (ramp <= 0 || !duration || remaining > ramp + 0.5) {
                 const id = naturalEndFadeOwner;
                 naturalEndFadeOwner = null;
                 releaseFade(id);
                 const newId = claimFade();
-                try {
-                    const cur = await TrackPlayer.getVolume();
-                    if (cf > 0.05 && cur < 0.95) {
-                        await fadeVol(cur, 1, Math.min(cf, 2.5), newId);
-                    } else {
-                        try { await TrackPlayer.setVolume(1); } catch { }
+                // Always restarts from silence rather than trusting
+                // TrackPlayer.getVolume() to report where the fade-out left
+                // off — the native repeat/seek-to-0 that causes this whole
+                // path to run in the first place may itself reset volume as
+                // a side effect (same class of thing as TrackPlayer.reset()
+                // doing it elsewhere), so a "current volume" read here isn't
+                // reliable. Forcing 0 first guarantees the full configured
+                // duration actually covers the full silence-to-full
+                // distance, instead of occasionally starting partway up and
+                // making the audible ramp feel rushed. Also no longer capped
+                // at 2.5s — respects the real configured duration, matching
+                // what a genuine track-to-track transition gets.
+                if (ramp > 0.05) {
+                    naturalFadeInActive = true;
+                    try {
+                        try { await TrackPlayer.setVolume(0); } catch { }
+                        await fadeVol(0, 1, ramp, newId);
+                    } finally {
+                        // finally, not just a line after — fadeVol/setVolume
+                        // are already exception-safe internally so this
+                        // shouldn't be reachable via a throw in practice, but
+                        // a flag stuck at true here would silently break
+                        // every pause after it (see pauseWithRamp), so it's
+                        // worth the extra safety net regardless.
+                        naturalFadeInActive = false;
                     }
-                } catch {
+                } else {
                     try { await TrackPlayer.setVolume(1); } catch { }
                 }
                 releaseFade(newId);
@@ -151,10 +182,20 @@ async function checkCrossfadeWindow(position, duration) {
             return;
         }
 
+        // Duration reported in the first couple seconds of a track can be a
+        // provisional/incorrect value while metadata is still loading, which
+        // was causing a false "we're near the end" trigger a few seconds
+        // into a fresh song (heard as a sudden volume dip that "fixed
+        // itself" once the real duration came through and cancelled it).
+        // Only guards the "should a NEW fade-out start" check below —
+        // deliberately doesn't gate the recovery block above (see its own
+        // comment for why).
+        if (position < 3) return;
+
         if (activeFadeId !== null) return; // something else owns a fade right now
-        if (cf <= 0 || !duration || duration < 1) return;
+        if (ramp <= 0 || !duration || duration < 1) return;
         const remaining = duration - position;
-        if (remaining > 0.15 && remaining <= cf) {
+        if (remaining > 0.15 && remaining <= ramp) {
             const id = claimFade();
             naturalEndFadeOwner = id;
             // Wider safety margin so the fade reliably finishes BEFORE native
@@ -167,7 +208,7 @@ async function checkCrossfadeWindow(position, duration) {
 function startWatcher() {
     if (!progressSub) {
         progressSub = TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
-            checkCrossfadeWindow(position, duration);
+            checkRampWindow(position, duration);
         });
     }
     if (!fallbackTimer) {
@@ -176,7 +217,7 @@ function startWatcher() {
                 const state = await TrackPlayer.getState();
                 if (state !== State.Playing) return;
                 const p = await TrackPlayer.getProgress();
-                await checkCrossfadeWindow(p.position, p.duration);
+                await checkRampWindow(p.position, p.duration);
             } catch { }
         }, 400);
     }
@@ -188,7 +229,7 @@ function stopWatcher() {
 }
 
 // Fades out whatever's currently audible (if anything is), using the same
-// duration as skipWithCrossfade's fade-out. Used right before any "start
+// duration as skipWithRamp's fade-out. Used right before any "start
 // something new" action (tapping a song, tapping Play on a playlist,
 // jumping to a queue row) so the previous audio doesn't just cut — those
 // actions previously only ever faded the NEW track in, never faded the OLD
@@ -271,9 +312,35 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
 }
 
 export async function pauseWithRamp() {
+    if (naturalFadeInActive) {
+        // Pause requested while the natural end-of-track ramp's fade-IN (into the
+        // next or repeated track) is actively running. The fade-OUT half
+        // (further down, via the general isTransitionLocked queueing) is
+        // deliberately left alone to finish on its own — but this fade-IN
+        // is different: leaving IT to finish too meant playing the new song
+        // audibly for however long was left of its ramp before actually
+        // pausing, which was really the same "pauses way too late"
+        // complaint showing up on the other half of a natural transition.
+        // forceReleaseFade() supersedes the in-flight fadeVol loop, which
+        // checks fade ownership every ~40ms and bails the moment it's no
+        // longer the owner — effectively immediate. Pausing lands right
+        // where the ramp currently is instead of waiting for it to finish.
+        naturalFadeInActive = false;
+        forceReleaseFade();
+        rampLock = true;
+        try {
+            try { await TrackPlayer.pause(); } catch { }
+            try { await TrackPlayer.setVolume(1); } catch { }
+        } finally {
+            await sleep(60);
+            rampLock = false;
+            drainPending();
+        }
+        return;
+    }
     if (isTransitionLocked()) {
         // Whatever's currently ramping — a fresh start's ramp-in, a manual
-        // ramp-out already in flight, the natural end-of-track crossfade,
+        // ramp-out already in flight, the natural end-of-track ramp,
         // another skip — gets left to finish on its own; pause doesn't
         // interrupt it. This used to queue pauseWithRamp itself here, which
         // meant once that finished, IT would kick off its OWN full
@@ -321,14 +388,14 @@ async function pauseImmediate() {
 }
 
 // Skip. Two special cases beyond the normal fade-out/skip/fade-in:
-// - If a fade is already in flight (natural crossfade, or another skip),
+// - If a fade is already in flight (natural end-of-track ramp, or another skip),
 //   this call is ignored entirely rather than racing it.
 // - If playback is currently PAUSED, there's nothing to fade out — this now
 //   behaves like loading the new song and starting it with the Play ramp,
 //   not the Skip ramp (skipping while paused isn't really "crossfading"
 //   between two playing songs).
-export async function skipWithCrossfade(direction = 'next') {
-    // A skip that arrives while the NATURAL end-of-track crossfade is
+export async function skipWithRamp(direction = 'next') {
+    // A skip that arrives while the NATURAL end-of-track ramp is
     // running (naturalEndFadeOwner) is dropped entirely, not queued — that
     // fade is already about to move to the next song on its own, so
     // queueing a skip on top of it used to skip PAST that song to the one
@@ -339,31 +406,53 @@ export async function skipWithCrossfade(direction = 'next') {
     // that transition clears, just not this one specific case.
     if (isTransitionLocked()) {
         if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) return;
-        queueAction(() => skipWithCrossfade(direction));
+        queueAction(() => skipWithRamp(direction));
         return;
     }
     skipLock = true;
     try {
+        // For 'prev' specifically, decide up front — before any fade delay
+        // below eats real time — whether this press should actually go to
+        // the previous track or just restart the current one. Reading
+        // position now, at the moment the button was actually pressed,
+        // keeps the threshold check honest to when the tap happened rather
+        // than to whatever position playback has drifted to after a
+        // multi-hundred-ms fade-out.
+        let restartCurrent = false;
+        if (direction === 'prev') {
+            const mode = await getPrevButtonMode();
+            if (mode === 'restart_or_previous') {
+                const threshold = await getRestartThresholdSec();
+                try {
+                    const { position } = await TrackPlayer.getProgress();
+                    restartCurrent = position > threshold;
+                } catch { }
+            }
+        }
+        const doNativeSkip = () => {
+            if (direction === 'next') return TrackPlayer.skipToNext();
+            if (restartCurrent) return TrackPlayer.seekTo(0);
+            return TrackPlayer.skipToPrevious();
+        };
+
         const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
 
         if (!wasPlaying) {
             try {
-                if (direction === 'next') await withTimeout(TrackPlayer.skipToNext(), 5000);
-                else await withTimeout(TrackPlayer.skipToPrevious(), 5000);
+                await withTimeout(doNativeSkip(), 5000);
             } catch { return; }
             await playWithRamp();
             return;
         }
 
         const id = claimFade();
-        const dur = await getSkipCrossfade();
+        const dur = await getSkipRamp();
         try { await TrackPlayer.setVolume(1); } catch { }
         if (dur > 0.05) await fadeVol(1, 0, dur, id);
         if (!isFadeOwner(id)) return;
 
         try {
-            if (direction === 'next') await withTimeout(TrackPlayer.skipToNext(), 5000);
-            else await withTimeout(TrackPlayer.skipToPrevious(), 5000);
+            await withTimeout(doNativeSkip(), 5000);
         } catch {
             try { await TrackPlayer.setVolume(1); } catch { }
             releaseFade(id);
@@ -393,8 +482,8 @@ export async function PlaybackService() {
     TrackPlayer.addEventListener(Event.RemotePause, () => pauseWithRamp());
     TrackPlayer.addEventListener(Event.RemotePlay, () => playWithRamp());
     TrackPlayer.addEventListener(Event.RemoteStop, () => { stopWatcher(); TrackPlayer.stop(); });
-    TrackPlayer.addEventListener(Event.RemoteNext, () => skipWithCrossfade('next'));
-    TrackPlayer.addEventListener(Event.RemotePrevious, () => skipWithCrossfade('prev'));
+    TrackPlayer.addEventListener(Event.RemoteNext, () => skipWithRamp('next'));
+    TrackPlayer.addEventListener(Event.RemotePrevious, () => skipWithRamp('prev'));
 
     TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
         if (state === State.Playing) startWatcher();
@@ -430,8 +519,8 @@ export async function PlaybackService() {
             const id = naturalEndFadeOwner;
             naturalEndFadeOwner = null;
             try { await TrackPlayer.setVolume(0); } catch { }
-            const cf = await getCrossfade();
-            if (cf > 0.05) {
+            const ramp = await getEndOfTrackRamp();
+            if (ramp > 0.05) {
                 // Same issue as playWithRamp had: waitForPlaying's result
                 // was never checked, so if it timed out (audio not
                 // confirmed playing within 800ms — plausible right after a
@@ -446,7 +535,21 @@ export async function PlaybackService() {
                 if (!reallyPlaying) {
                     try { await TrackPlayer.setVolume(1); } catch { }
                 } else if (isFadeOwner(id)) {
-                    await fadeVol(0, 1, Math.min(cf, 2.5), id);
+                    naturalFadeInActive = true;
+                    try {
+                        // Previously capped at Math.min(ramp, 2.5) — a
+                        // leftover hidden cap that never got removed here
+                        // when the equivalent cap was removed from the
+                        // loop-repeat recovery path above in checkRampWindow.
+                        // That meant a real track-to-track ramp-in silently
+                        // maxed out at 2.5s even if the configured "Audio
+                        // Ramp — End of Track" duration was set higher, while
+                        // a loop-repeat (going through the other path) used
+                        // the full configured value. Now both agree.
+                        await fadeVol(0, 1, ramp, id);
+                    } finally {
+                        naturalFadeInActive = false;
+                    }
                 }
             } else {
                 try { await TrackPlayer.setVolume(1); } catch { }
