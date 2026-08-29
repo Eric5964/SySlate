@@ -14,6 +14,11 @@ export const setKeepPriorityOnPlaylistSwitch = (v) => safe(() => AsyncStorage.se
 // grouping for how a library's actually organized, hence the toggle back.
 export const getAlbumFromFolder = () => safe(() => AsyncStorage.getItem('album_from_folder').then(v => v === 'true'), false);
 export const setAlbumFromFolder = (v) => safe(() => AsyncStorage.setItem('album_from_folder', String(v)), null);
+// Keeps the screen from auto-locking while a song is actively playing
+// (paused doesn't count) — see hooks/useScreenAwake.js for where this
+// actually gets applied.
+export const getKeepScreenAwake = () => safe(() => AsyncStorage.getItem('keep_screen_awake').then(v => v === 'true'), false);
+export const setKeepScreenAwake = (v) => safe(() => AsyncStorage.setItem('keep_screen_awake', String(v)), null);
 export const setEQPreset = (id, path) => safe(() => AsyncStorage.setItem(path ? `eq:${path}` : 'eq:global', id), null);
 // `shuffle_mode` now holds ONLY the algorithm preference (full_cycle /
 // true_random / smart) and is never written as 'off' going forward — that
@@ -264,7 +269,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

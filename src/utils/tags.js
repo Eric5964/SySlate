@@ -261,6 +261,31 @@ function findAtom(bytes, start, end, fourcc) {
     }
     return null;
 }
+// Same walk as findAtom, but collects every sibling match instead of
+// stopping at the first — needed for multi-artist M4A files. There's no
+// single agreed-upon iTunes convention for representing several artists in
+// one file (unlike Vorbis comments' clearly-standard repeated ARTIST=
+// fields): some taggers write several 'data' children inside one '©ART'
+// atom, others write several sibling '©ART' atoms outright. Handles both by
+// collecting at both levels — see extractTagsFromMp4.
+function findAllAtoms(bytes, start, end, fourcc) {
+    const out = [];
+    let offset = start;
+    while (offset + 8 <= end) {
+        let size = readU32BE(bytes, offset);
+        const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+        let headerSize = 8;
+        if (size === 1) {
+            if (offset + 16 > end) break;
+            size = readU32BE(bytes, offset + 12);
+            headerSize = 16;
+        }
+        if (size < headerSize) break;
+        if (type === fourcc) out.push({ dataStart: offset + headerSize, dataEnd: Math.min(offset + size, end) });
+        offset += size;
+    }
+    return out;
+}
 function readIlstTextAtom(bytes, ilst, fourcc) {
     const atom = findAtom(bytes, ilst.dataStart, ilst.dataEnd, fourcc);
     if (!atom) return null;
@@ -269,6 +294,20 @@ function readIlstTextAtom(bytes, ilst, fourcc) {
     const payloadStart = dataAtom.dataStart + 8; // 4-byte type indicator + 4-byte locale
     if (payloadStart >= dataAtom.dataEnd) return null;
     return utf8Decode(bytes.slice(payloadStart, dataAtom.dataEnd));
+}
+// Collects text from every 'data' child of every matching parent atom —
+// see findAllAtoms above for why both levels matter here specifically.
+function readIlstTextAtomMulti(bytes, ilst, fourcc) {
+    const out = [];
+    for (const atom of findAllAtoms(bytes, ilst.dataStart, ilst.dataEnd, fourcc)) {
+        for (const dataAtom of findAllAtoms(bytes, atom.dataStart, atom.dataEnd, 'data')) {
+            const payloadStart = dataAtom.dataStart + 8;
+            if (payloadStart >= dataAtom.dataEnd) continue;
+            const text = utf8Decode(bytes.slice(payloadStart, dataAtom.dataEnd));
+            if (text) out.push(text);
+        }
+    }
+    return out;
 }
 function extractTagsFromMp4(bytes) {
     const moov = findAtom(bytes, 0, bytes.length, 'moov');
@@ -281,7 +320,9 @@ function extractTagsFromMp4(bytes) {
     if (!ilst) return null;
     const out = {};
     const title = readIlstTextAtom(bytes, ilst, '\u00A9nam'); if (title) out.title = title;
-    const artist = readIlstTextAtom(bytes, ilst, '\u00A9ART'); if (artist) out.artist = artist;
+    const artists = readIlstTextAtomMulti(bytes, ilst, '\u00A9ART');
+    if (artists.length === 1) out.artist = artists[0];
+    else if (artists.length > 1) out.artists = artists;
     const album = readIlstTextAtom(bytes, ilst, '\u00A9alb'); if (album) out.album = album;
     return Object.keys(out).length ? out : null;
 }

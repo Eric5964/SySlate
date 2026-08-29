@@ -7,13 +7,14 @@ import { createStackNavigator, TransitionPresets } from '@react-navigation/stack
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
-import TrackPlayer, { Capability } from 'react-native-track-player';
+import TrackPlayer, { Capability, usePlaybackState, State } from 'react-native-track-player';
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
 import { LibraryContext } from './context/LibraryContext';
 import { useBackgroundLibraryLoader } from './hooks/useBackgroundLibraryLoader';
+import { useScreenAwake } from './hooks/useScreenAwake';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
@@ -108,7 +109,12 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
-    const { showSongCovers } = usePreferences();
+    const { showSongCovers, keepScreenAwake } = usePreferences();
+    const playbackState = usePlaybackState();
+
+    // Only while actively playing (not paused, not just "app is open") —
+    // see useScreenAwake for why.
+    useScreenAwake(playerReady && keepScreenAwake && playbackState.state === State.Playing);
 
     // One shared background worker instead of two competing ones — see
     // useBackgroundLibraryLoader for why that matters. Tags aren't gated on

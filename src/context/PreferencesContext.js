@@ -4,6 +4,7 @@ import {
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
     getArtistSeparator, setArtistSeparator as persistArtistSeparator,
     getLyricsMode, setLyricsMode as persistLyricsMode,
+    getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -18,6 +19,7 @@ const Ctx = createContext({
     showSongCovers: false, setShowSongCovers: () => { },
     artistSeparator: ';', setArtistSeparator: () => { },
     lyricsMode: 'off', setLyricsMode: () => { },
+    keepScreenAwake: false, setKeepScreenAwake: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -25,12 +27,14 @@ export function PreferencesProvider({ children }) {
     const [showSongCovers, setShowSongCoversState] = useState(false);
     const [artistSeparator, setArtistSeparatorState] = useState(';');
     const [lyricsMode, setLyricsModeState] = useState('off');
+    const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
         getArtistSeparator().then(setArtistSeparatorState);
         getLyricsMode().then(setLyricsModeState);
+        getKeepScreenAwake().then(setKeepScreenAwakeState);
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -52,6 +56,10 @@ export function PreferencesProvider({ children }) {
         setLyricsModeState(v);
         persistLyricsMode(v);
     }, []);
+    const setKeepScreenAwake = useCallback((v) => {
+        setKeepScreenAwakeState(v);
+        persistKeepScreenAwake(v);
+    }, []);
 
     return (
         <Ctx.Provider value={{
@@ -59,6 +67,7 @@ export function PreferencesProvider({ children }) {
             showSongCovers, setShowSongCovers,
             artistSeparator, setArtistSeparator,
             lyricsMode, setLyricsMode,
+            keepScreenAwake, setKeepScreenAwake,
         }}>
             {children}
         </Ctx.Provider>
