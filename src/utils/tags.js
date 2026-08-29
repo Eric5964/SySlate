@@ -115,6 +115,51 @@ function latin1Decode(bytes) {
     return out;
 }
 
+// ID3v2.4 allows a single text frame to hold SEVERAL values separated by a
+// null terminator (0x00, or the wide 0x00 0x00 for UTF-16) — this is how a
+// multi-artist TPE1 frame is actually supposed to be tagged, rather than
+// one value with a delimiter character baked in. Splits on that null
+// separator first, then decodes each resulting segment. A frame with just
+// one value (the common case) comes back as a single-element array, same
+// as always.
+function splitOnNulls(bytes, wide) {
+    const parts = [];
+    let start = 0;
+    if (wide) {
+        for (let i = 0; i + 1 < bytes.length; i += 2) {
+            if (bytes[i] === 0 && bytes[i + 1] === 0) { parts.push(bytes.slice(start, i)); start = i + 2; }
+        }
+    } else {
+        for (let i = 0; i < bytes.length; i++) {
+            if (bytes[i] === 0) { parts.push(bytes.slice(start, i)); start = i + 1; }
+        }
+    }
+    parts.push(bytes.slice(start));
+    return parts.filter(p => p.length > 0);
+}
+function decodeId3TextMulti(bytes) {
+    if (!bytes.length) return [];
+    const enc = bytes[0];
+    const body = bytes.slice(1);
+    if (enc === 0) return splitOnNulls(body, false).map(latin1Decode);
+    if (enc === 3) return splitOnNulls(body, false).map(utf8Decode);
+    // UTF-16 (1 = with BOM, 2 = BE without BOM) — strip a leading BOM once,
+    // then split/decode as wide chars.
+    let b = body, be = enc === 2;
+    if (enc === 1 && b.length >= 2) {
+        if (b[0] === 0xFF && b[1] === 0xFE) { be = false; b = b.slice(2); }
+        else if (b[0] === 0xFE && b[1] === 0xFF) { be = true; b = b.slice(2); }
+    }
+    return splitOnNulls(b, true).map(seg => {
+        let out = '';
+        for (let i = 0; i + 1 < seg.length; i += 2) {
+            const code = be ? (seg[i] << 8) | seg[i + 1] : (seg[i + 1] << 8) | seg[i];
+            out += String.fromCharCode(code);
+        }
+        return out;
+    });
+}
+
 // --- FLAC: VORBIS_COMMENT metadata block (type 4) ----------------------
 // Same little-endian-length comment format as Ogg Vorbis/Opus below — FLAC
 // embeds the identical structure directly as a metadata block instead of
@@ -126,6 +171,7 @@ function parseVorbisCommentBlock(bytes, offset, end) {
     if (p + 4 > end) return null;
     const count = readU32LE(bytes, p); p += 4;
     const out = {};
+    const artists = [];
     for (let i = 0; i < count && p + 4 <= end; i++) {
         const len = readU32LE(bytes, p); p += 4;
         if (p + len > end) break;
@@ -136,10 +182,19 @@ function parseVorbisCommentBlock(bytes, offset, end) {
         const key = entry.slice(0, eq).toUpperCase();
         const val = entry.slice(eq + 1);
         if (key === 'TITLE' && !out.title) out.title = val;
-        else if (key === 'ARTIST' && !out.artist) out.artist = val;
+        // Vorbis comments represent multiple artists as several REPEATED
+        // ARTIST= fields (the standard convention — MusicBrainz Picard and
+        // most FLAC-focused taggers write it this way), not one field with
+        // a delimiter baked in. Collecting every occurrence here instead of
+        // keeping only the first is what actually makes multi-artist
+        // splitting work for FLAC/Opus/OGG — previously this silently
+        // dropped every artist past the first.
+        else if (key === 'ARTIST' && val) artists.push(val);
         else if (key === 'ALBUM' && !out.album) out.album = val;
         else if (key === 'TRACKNUMBER' && !out.track) out.track = val;
     }
+    if (artists.length === 1) out.artist = artists[0];
+    else if (artists.length > 1) out.artists = artists;
     return out;
 }
 
@@ -259,7 +314,11 @@ function extractTagsFromId3(bytes) {
         const frameStart = p + 10;
         if (size <= 0 || frameStart + size > tagEnd) break;
         if (id === 'TIT2' && !out.title) out.title = decodeId3Text(bytes.slice(frameStart, frameStart + size));
-        else if (id === 'TPE1' && !out.artist) out.artist = decodeId3Text(bytes.slice(frameStart, frameStart + size));
+        else if (id === 'TPE1' && !out.artist && !out.artists) {
+            const vals = decodeId3TextMulti(bytes.slice(frameStart, frameStart + size));
+            if (vals.length === 1) out.artist = vals[0];
+            else if (vals.length > 1) out.artists = vals;
+        }
         else if (id === 'TALB' && !out.album) out.album = decodeId3Text(bytes.slice(frameStart, frameStart + size));
         else if (id === 'TRCK' && !out.track) out.track = decodeId3Text(bytes.slice(frameStart, frameStart + size));
         p = frameStart + size;
@@ -294,9 +353,8 @@ async function extractTagsUncached(song) {
 // hasn't been replaced since. Returns the cached tags object, null
 // (confirmed no readable tags, file unchanged since), or undefined (never
 // processed, or the file changed — either way, needs a real extraction
-// pass). Deliberately the ONLY thing files.js calls during a scan — the
-// real, comparatively expensive read+parse (extractTags below) only runs in
-// the background loader, same division of labor as cover art.
+// pass). Used by the background loader, where the stat cost is fine — it's
+// not on any interactive path.
 export async function getCachedTags(song) {
     if (!song?.id || !song?.url) return undefined;
     try {
@@ -306,6 +364,25 @@ export async function getCachedTags(song) {
         const fp = await getFingerprint(song.url);
         if (!fingerprintsMatch(entry.fp, fp)) return undefined;
         return entry.tags ?? null;
+    } catch {
+        return undefined;
+    }
+}
+
+// No stat call at all — pure in-memory/AsyncStorage-map read. For anything
+// on an interactive or scan-blocking path (library scan, list screens):
+// those don't need to be the ones catching a replaced file, since the
+// background loader (using getCachedTags above, which DOES stat) already
+// does that continuously regardless of which screens get opened. A replaced
+// file's tags show the old cached value until the background loader
+// reaches it and re-extracts — same tradeoff already made for the scan
+// itself, just applied consistently to the read side too.
+export async function getCachedTagsFast(song) {
+    if (!song?.id) return undefined;
+    try {
+        const cache = await loadCacheMap();
+        const entry = cache[song.id];
+        return entry === undefined ? undefined : (entry.tags ?? null);
     } catch {
         return undefined;
     }

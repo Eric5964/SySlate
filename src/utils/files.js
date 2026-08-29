@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
-import { getPlaylistOrder, getAlbumFromFolder } from './storage';
-import { getCachedTags } from './tags';
+import { getPlaylistOrder, getAlbumFromFolder, getArtistSeparator } from './storage';
+import { getCachedTagsFast } from './tags';
 
 const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape']);
 
@@ -25,21 +25,38 @@ function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 // name wins outright and a real ALBUM tag is ignored entirely for this
 // field, same as before tag reading existed.
 //
-// Deliberately uses getCachedTags (cache-only, no file read) rather than a
-// real extraction — scanning the library must stay fast regardless of
-// library size, so the real read only ever happens in the background tag
-// loader (see hooks/useBackgroundTagLoader.js). A song whose tags haven't
-// been warmed into the cache yet just keeps its filename-based guess until
-// the next scan after the background loader reaches it.
-async function applyTags(track, albumFromFolder) {
-    const tags = await getCachedTags(track);
+// When the tag format stored multiple discrete artists (FLAC/Opus/OGG's
+// repeated ARTIST= fields, or an ID3v2.4 null-separated TPE1) rather than
+// one delimited string, they're joined here using the SAME separator the
+// Multiple Artists setting is configured with — that's what makes
+// splitArtists/formatArtists correctly re-split them later regardless of
+// which separator the user's actually chosen; joining with anything else
+// would only look right for whoever happens to have that exact separator
+// selected.
+//
+// Uses getCachedTagsFast (pure cache read, no stat, no file I/O) rather
+// than a real extraction — scanning the library must stay fast regardless
+// of library size, so the real read only ever happens in the background
+// tag loader. A song whose tags haven't been warmed into the cache yet
+// just keeps its filename-based guess until the next scan after the
+// background loader reaches it.
+async function applyTags(track, albumFromFolder, artistSeparator) {
+    const tags = await getCachedTagsFast(track);
     if (!tags) return track;
+    // If the separator's the literal "none" (Multiple Artists disabled), that
+    // means "don't split for display" — it's not a real delimiter, so
+    // joining with it as the actual character would glue names together as
+    // "Artist Anonesplit Artist B". Genuinely discrete tag-sourced artists
+    // still need SOME real separator between them; falls back to ';' the
+    // same way splitArtists' own default does.
+    const joinSep = (artistSeparator && artistSeparator !== 'none') ? artistSeparator : ';';
+    const artist = tags.artists?.length ? tags.artists.join(joinSep) : tags.artist;
     return {
         ...track,
         title: tags.title || track.title,
         ourTitle: tags.title || track.ourTitle,
-        artist: tags.artist !== undefined && tags.artist !== '' ? tags.artist : track.artist,
-        ourArtist: tags.artist !== undefined && tags.artist !== '' ? tags.artist : track.ourArtist,
+        artist: artist !== undefined && artist !== '' ? artist : track.artist,
+        ourArtist: artist !== undefined && artist !== '' ? artist : track.ourArtist,
         album: (!albumFromFolder && tags.album) || track.album,
     };
 }
@@ -56,7 +73,7 @@ function encodeFileUrl(path) {
     return scheme + rest.split('/').map(encodeURIComponent).join('/');
 }
 
-async function scanFolder(folderPath, folderName, albumFromFolder) {
+async function scanFolder(folderPath, folderName, albumFromFolder, artistSeparator) {
     let items = [];
     try { items = await FileSystem.readDirectoryAsync(folderPath); } catch { return []; }
     const tracks = [];
@@ -64,7 +81,7 @@ async function scanFolder(folderPath, folderName, albumFromFolder) {
         if (item.startsWith('.')) continue;
         const fullPath = normPath(folderPath) + item;
         if (AUDIO_EXT.has(ext(item))) {
-            tracks.push(await applyTags({ id: fullPath, url: encodeFileUrl(fullPath), filename: item, ...parseFilename(item, folderName) }, albumFromFolder));
+            tracks.push(await applyTags({ id: fullPath, url: encodeFileUrl(fullPath), filename: item, ...parseFilename(item, folderName) }, albumFromFolder, artistSeparator));
         } else {
             try {
                 const info = await FileSystem.getInfoAsync(fullPath);
@@ -73,7 +90,7 @@ async function scanFolder(folderPath, folderName, albumFromFolder) {
                     for (const sub of subs) {
                         if (sub.startsWith('.') || !AUDIO_EXT.has(ext(sub))) continue;
                         const sp = normPath(fullPath) + sub;
-                        tracks.push(await applyTags({ id: sp, url: encodeFileUrl(sp), filename: sub, ...parseFilename(sub, item) }, albumFromFolder));
+                        tracks.push(await applyTags({ id: sp, url: encodeFileUrl(sp), filename: sub, ...parseFilename(sub, item) }, albumFromFolder, artistSeparator));
                     }
                 }
             } catch { }
@@ -101,6 +118,7 @@ export async function scanLibrary() {
     const seenIds = new Set();
     const rootSongs = [];
     const albumFromFolder = await getAlbumFromFolder();
+    const artistSeparator = await getArtistSeparator();
 
     for (const item of items) {
         if (item.startsWith('.') || SKIP.has(item)) continue;
@@ -108,13 +126,13 @@ export async function scanLibrary() {
         let info;
         try { info = await FileSystem.getInfoAsync(path); } catch { continue; }
         if (info.isDirectory) {
-            const songs = await scanFolder(path, item, albumFromFolder);
+            const songs = await scanFolder(path, item, albumFromFolder, artistSeparator);
             if (songs.length > 0) {
                 playlists.push({ name: item, path: normPath(path), songs });
                 songs.forEach(s => seenIds.add(s.id));
             }
         } else if (AUDIO_EXT.has(ext(item)) && !seenIds.has(path)) {
-            rootSongs.push(await applyTags({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') }, albumFromFolder));
+            rootSongs.push(await applyTags({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') }, albumFromFolder, artistSeparator));
             seenIds.add(path);
         }
     }

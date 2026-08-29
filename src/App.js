@@ -13,8 +13,7 @@ import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { PreferencesProvider, usePreferences } from './context/PreferencesContext';
 import { LibraryContext } from './context/LibraryContext';
-import { useBackgroundArtLoader } from './hooks/useBackgroundArtLoader';
-import { useBackgroundTagLoader } from './hooks/useBackgroundTagLoader';
+import { useBackgroundLibraryLoader } from './hooks/useBackgroundLibraryLoader';
 import ErrorBoundary from './ErrorBoundary';
 import AllSongsScreen from './screens/AllSongsScreen';
 import PlaylistsScreen from './screens/PlaylistsScreen';
@@ -111,11 +110,12 @@ function AppInner() {
     const [playerReady, setPlayerReady] = useState(false);
     const { showSongCovers } = usePreferences();
 
-    useBackgroundArtLoader(library.allSongs, playerReady && showSongCovers);
-    // Not gated on any display toggle like art is — title/artist/album feed
-    // sorting and search everywhere, not just an optional visual, so this
-    // always runs once the player's ready.
-    useBackgroundTagLoader(library.allSongs, playerReady);
+    // One shared background worker instead of two competing ones — see
+    // useBackgroundLibraryLoader for why that matters. Tags aren't gated on
+    // showSongCovers like art is (title/artist/album feed sorting and
+    // search everywhere, not just an optional visual), so the two run under
+    // independent conditions even though they share one loop/budget.
+    useBackgroundLibraryLoader(library.allSongs, { art: playerReady && showSongCovers, tags: playerReady });
 
     const reorderPlaylists = (newPlaylists) => {
         setLibrary(prev => ({ ...prev, playlists: newPlaylists }));

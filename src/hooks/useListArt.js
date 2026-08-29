@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { InteractionManager } from 'react-native';
-import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArtFast } from '../utils/embeddedArt';
 
 // Returns { songId: uri | null } for whichever songs have resolved so far.
 //
@@ -50,7 +50,7 @@ export function useListArt(songs, enabled) {
                 if (isStale()) return;
                 if (resolved.has(song.id)) continue;
                 try {
-                    const cached = await getCachedArt(song);
+                    const cached = await getCachedArtFast(song);
                     if (isStale()) return;
                     if (cached !== undefined) {
                         resolved.add(song.id);

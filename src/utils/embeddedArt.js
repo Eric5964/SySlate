@@ -272,6 +272,22 @@ export async function getCachedArt(song) {
     return entry.uri ?? null;
 }
 
+// No stat call — pure in-memory/AsyncStorage-map read, for interactive
+// paths (useListArt's cache-only pass, run every time a list screen opens).
+// The stat above is real native-bridge I/O; multiplied across every song in
+// a playlist every time it's opened, that's exactly the ~1s-before-covers-
+// show delay. Freshness checking for a replaced file is left entirely to
+// the background loader (which still uses getCachedArt above, stat
+// included) — it runs continuously regardless of which screens get opened,
+// so a replaced file's cover still gets caught, just not necessarily the
+// instant you happen to open that playlist.
+export async function getCachedArtFast(song) {
+    if (!song?.id) return undefined;
+    const cache = await loadCacheMap();
+    const entry = cache[song.id];
+    return entry === undefined ? undefined : (entry.uri ?? null);
+}
+
 // Returns a local file:// URI for the song's embedded cover art, or null if
 // none was found/the format isn't supported. Safe to call repeatedly — the
 // result (including a miss) is cached, so only the first call per song does
