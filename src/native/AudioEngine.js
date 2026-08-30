@@ -71,15 +71,23 @@ const AudioEngine = {
     updateOptions: (options = {}) => NativeAudioEngine.updateOptions(options),
 
     add: (tracks, insertBeforeIndex = null) => NativeAudioEngine.add(tracks, insertBeforeIndex),
-    remove: (ids) => NativeAudioEngine.remove(ids),
+    // index-based (a single index, or an array of them), matching RNTP —
+    // NOT ids. See AudioEngine.swift's comment on remove() for why: every
+    // existing PlaybackContext.js call site already passes an index, and
+    // id-based matching breaks for a song genuinely queued more than once.
+    remove: (indexes) => NativeAudioEngine.remove(Array.isArray(indexes) ? indexes : [indexes]),
     removeUpcomingTracks: () => NativeAudioEngine.removeUpcomingTracks(),
-    skip: (id) => NativeAudioEngine.skip(id),
+    skip: (index) => NativeAudioEngine.skip(index),
     skipToNext: () => NativeAudioEngine.skipToNext(),
     skipToPrevious: () => NativeAudioEngine.skipToPrevious(),
     getQueue: () => NativeAudioEngine.getQueue(),
+    // Returns the queue INDEX, matching RNTP's real getCurrentTrack() —
+    // not the track's id. PlaybackContext.js does arithmetic on this value
+    // directly everywhere, so this has to stay a number.
     getCurrentTrack: () => NativeAudioEngine.getCurrentTrack(),
     reset: () => NativeAudioEngine.reset(),
-    updateMetadataForTrack: (id, metadata) => NativeAudioEngine.updateMetadataForTrack(id, metadata),
+    // index-based, matching RNTP's real updateMetadataForTrack(index, ...)
+    updateMetadataForTrack: (index, metadata) => NativeAudioEngine.updateMetadataForTrack(index, metadata),
 
     play: () => NativeAudioEngine.play(),
     pause: () => NativeAudioEngine.pause(),

@@ -14,9 +14,6 @@ import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
 
-// --- Native AudioEngine Import for Smoke Test ---
-import AudioEngine from '../native/AudioEngine';
-
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
 // in storage.js for the default-';' reasoning).
 const ARTIST_SEPARATORS = [
@@ -26,12 +23,15 @@ const ARTIST_SEPARATORS = [
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
-
+// See getPrevButtonMode in storage.js — 'previous_track' is the simple,
+// always-the-same behavior; 'restart_or_previous' is the conventional
+// streaming-app behavior (restart if you're into the song, go back if
+// you're near the start of it), with its own threshold slider shown below
+// only when it's selected.
 const PREV_BUTTON_MODES = [
     { id: 'previous_track', label: 'Always Previous Track' },
     { id: 'restart_or_previous', label: 'Restart, Then Previous' },
 ];
-
 import {
     getEndOfTrackRamp, setEndOfTrackRamp,
     getSkipRamp, setSkipRamp,
@@ -50,6 +50,9 @@ import {
 
 const SCREEN_W = Dimensions.get('window').width;
 const SWATCH_GAP = 12;
+// Fills the row edge-to-edge (space-between) instead of a smaller centered
+// cluster with empty margin on the sides — matches the EQ preset grid's
+// full-width feel.
 const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 3) / 4);
 
@@ -75,6 +78,14 @@ export default function SettingsScreen() {
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, keepScreenAwake, setKeepScreenAwake } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
+    // Separate from `shuffleMode` (from usePlayback) on purpose — that one
+    // reflects LIVE playback state and is legitimately 'off' whenever
+    // nothing's actively shuffling, which doesn't match any of the 3 radio
+    // options below and left the whole section showing nothing selected.
+    // This tracks the persisted TYPE preference instead, which stays one of
+    // the 3 real types regardless of whether shuffle happens to be on right
+    // now — shuffle_mode in storage is only ever written as one of those,
+    // never 'off' (only the live state uses 'off').
     const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
     const [keepPriority, setKeepPriority] = useState(true);
     const [albumFromFolder, setAlbumFromFolderState] = useState(false);
@@ -98,37 +109,6 @@ export default function SettingsScreen() {
             setLoaded(true);
         })();
     }, []);
-
-    // --- Smoke Test Implementation ---
-    const runAudioSmokeTest = async () => {
-        try {
-            console.log("=== STARTING AUDIOENGINE SMOKE TEST ===");
-
-            // Attach event listener for progress updates
-            AudioEngine.addEventListener('PlaybackProgressUpdated', (data) => {
-                console.log('[SmokeTest] PlaybackProgressUpdated:', data);
-            });
-
-            await AudioEngine.setupPlayer({});
-            
-            // Fallback URL or try to use scanPath if available
-            const testFileUrl = scanPath 
-                ? (scanPath.endsWith('/') ? `${scanPath}test.mp3` : `${scanPath}/test.mp3`)
-                : 'file:///path/to/a/real/song.mp3';
-
-            await AudioEngine.add([{ 
-                id: '1', 
-                url: testFileUrl, 
-                title: 'Test' 
-            }]);
-
-            await AudioEngine.play();
-            Alert.alert('Smoke Test Triggered', 'AudioEngine.play() called. Check Xcode console for logs.');
-        } catch (err) {
-            console.error('[SmokeTest] Error running AudioEngine smoke test:', err);
-            Alert.alert('Smoke Test Failed', String(err?.message || err));
-        }
-    };
 
     const togglePreset = async (id) => {
         const next = hiddenPresets.includes(id)
@@ -156,6 +136,7 @@ export default function SettingsScreen() {
         { id: 'smart', label: 'Smart', sub: 'Avoids same artist back to back' },
     ];
 
+    // Best-effort detection of which sideload tool is running this build.
     const pathLower = (scanPath ?? '').toLowerCase();
     const isLiveContainer = pathLower.includes('livecontainer');
     const isSideStore = !isLiveContainer && !!scanPath;
@@ -193,7 +174,43 @@ export default function SettingsScreen() {
             {!loaded ? null : (
                 <>
             <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 160 }}>
-                {/* 2. Audio */}
+                {/*
+                EQ hidden — not supported by react-native-track-player, so
+                presets never did anything audible.
+                <Section title="EQ Presets">
+                    <View style={s.eqGrid}>
+                        {BUILT_IN_PRESETS.map(p => (
+                            <TouchableOpacity key={p.id} style={s.eqChip} onPress={() => togglePreset(p.id)}>
+                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                                </View>
+                                <Text style={s.eqChipName} numberOfLines={1}>{p.name}</Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                    {customPresets.length > 0 && customPresets.map(p => (
+                        <View key={p.id} style={s.eqRow}>
+                            <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
+                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 12, fontWeight: '700' }}>✓</Text>}
+                                </View>
+                            </TouchableOpacity>
+                            <Text style={s.eqName}>{p.name}</Text>
+                            <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
+                                <Text style={s.eqDel}>✕</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ))}
+                    <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
+                        <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
+                    </TouchableOpacity>
+                </Section>
+                */}
+
+                {/* 2. Audio — everything that fades/ramps volume, plus normalization,
+                     all together under one heading in the spot Crossfade used to be.
+                     ("Crossfade" was a misnomer — nothing here overlaps two tracks,
+                     it's all fade/ramp, so it's named accordingly.) */}
                 <Section title="Audio">
                     <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
                     <Text style={s.sliderNote}>Fades out when a track ends naturally, fades the next one in</Text>
@@ -227,6 +244,18 @@ export default function SettingsScreen() {
                         <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    {/* Volume Normalization hidden — never actually wired to
+                        the playback pipeline anywhere; react-native-track-player
+                        has no built-in loudness normalization to hook it up to,
+                        so this toggle never did anything audible either. */}
+                    {/* <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Volume Normalization</Text>
+                            <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
+                        </View>
+                        <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View> */}
                 </Section>
 
                 {/* 3. Shuffle */}
@@ -253,6 +282,9 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* Between Shuffle and Accent Color, per request. Play counts are
+                     always tracked regardless of this setting — it only controls
+                     whether the number is shown. */}
                 <Section title="Visual Settings">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -280,6 +312,15 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* Splits a tag's artist field into individual artists on this
+                     character before display/search, so "Artist A; Artist B"
+                     shows and searches as two artists instead of one long
+                     string. 'None' turns splitting off entirely — the tag
+                     displays exactly as stored, same as before this setting
+                     existed. Defaults to ';' (see getArtistSeparator's own
+                     comment for why that's the safe default) — songs with no
+                     separator character in their tag are never affected by
+                     this setting either way. */}
                 <Section title="Multiple Artists">
                     <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
                         <Text style={s.toggleSub}>Splits an artist tag like "A; B" into separate artists</Text>
@@ -299,6 +340,13 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* Off by default: a real ALBUM tag (when tags.js finds one)
+                     is normally more accurate than a folder name, so it wins
+                     by default now that tags are actually read. Flip this on
+                     to go back to how it worked before — folder name always
+                     wins, real tag ignored for this field specifically —
+                     for anyone whose library is organized by folder more
+                     meaningfully than its actual tags are filled in. */}
                 <Section title="Album From Folder Name">
                     <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
                         <Text style={s.toggleSub}>Use the containing folder as Album instead of the song's own tag</Text>
@@ -309,6 +357,11 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* Explains itself precisely rather than leaning on "unskip" /
+                     "rewind" — the button's real behavior is either "always go
+                     to the previous track" or "restart this one, except right
+                     near its start" — describing it in those terms up front
+                     avoids needing the label to also do the explaining. */}
                 <Section title="Previous Button">
                     <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
                         <Text style={s.toggleSub}>
@@ -348,6 +401,9 @@ export default function SettingsScreen() {
                     )}
                 </Section>
 
+
+                {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
+                     size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Accent Color">
                     <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
                         {swatchRows.map((row, i) => (
@@ -366,6 +422,7 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* 5. Music location */}
                 <Section title="Music Location">
                     {(showBoth || isLiveContainer) && (
                         <View style={s.locBlock}>
@@ -403,14 +460,6 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                {/* TEMPORARY SMOKE TEST SECTION */}
-                <Section title="AudioEngine Smoke Test">
-                    <TouchableOpacity style={s.row} onPress={runAudioSmokeTest}>
-                        <Text style={[s.rowLabel, { color: theme.accent }]}>▶ Run AudioEngine Smoke Test</Text>
-                        <Text style={s.rowSub}>Triggers setupPlayer, add, play, and progress listener</Text>
-                    </TouchableOpacity>
-                </Section>
-
                 {/* 6. Rescan */}
                 <Section title="Library">
                     <TouchableOpacity style={s.row} onPress={reload}>
@@ -436,6 +485,35 @@ export default function SettingsScreen() {
             </ScrollView>
                 </>
             )}
+
+            {/*
+            <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>New EQ Preset</Text>}>
+                <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
+                    <TextInput
+                        style={[s.nameInput, { borderColor: theme.accent }]}
+                        value={newName} onChangeText={setNewName}
+                        placeholder="Preset name..." placeholderTextColor="#444"
+                    />
+                    <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                        {newBands.map((val, i) => (
+                            <View key={i} style={s.bandRow}>
+                                <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
+                                <PureSlider
+                                    style={{ flex: 1, marginHorizontal: 8 }}
+                                    minimumValue={-12} maximumValue={12} step={0.5} value={val}
+                                    onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
+                                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
+                                />
+                                <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
+                            </View>
+                        ))}
+                    </ScrollView>
+                    <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={saveNewPreset}>
+                        <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Save Preset</Text>
+                    </TouchableOpacity>
+                </KeyboardAvoidingView>
+            </BottomSheet>
+            */}
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
@@ -491,6 +569,9 @@ const s = StyleSheet.create({
     sliderSub: { color: '#888', fontSize: 13, fontWeight: '700', paddingHorizontal: 24, paddingTop: 14 },
     sliderNote: { color: '#555', fontSize: 12, paddingHorizontal: 24, marginTop: 2 },
     sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 6 },
+    // Matches sliderSub/sliderNote/sliderEnds' paddingHorizontal (24) — was
+    // 16, meaning the slider extended 8px further out on each side than the
+    // text above and below it, instead of lining up with the same margin.
     slider: { marginHorizontal: 24, marginTop: 2 },
     sliderEnds: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, paddingBottom: 12 },
     sliderEnd: { color: '#444', fontSize: 11 },
@@ -498,6 +579,9 @@ const s = StyleSheet.create({
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
     swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
+    // Matches the sort-chip pattern used in All Songs / Playlist Detail —
+    // same shape, same interaction, for the same kind of "pick one of a
+    // few options" control.
     sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingBottom: 16, gap: 8 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
     sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },

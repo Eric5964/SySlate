@@ -16,14 +16,14 @@ RCT_EXTERN_METHOD(add:(NSArray *)tracks
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(remove:(NSArray *)ids
+RCT_EXTERN_METHOD(remove:(NSArray *)indexes
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
 RCT_EXTERN_METHOD(removeUpcomingTracks:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(skip:(NSString *)identifier
+RCT_EXTERN_METHOD(skip:(nonnull NSNumber *)index
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
@@ -42,7 +42,7 @@ RCT_EXTERN_METHOD(getCurrentTrack:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(reset:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(updateMetadataForTrack:(NSString *)identifier
+RCT_EXTERN_METHOD(updateMetadataForTrack:(nonnull NSNumber *)index
                   metadata:(NSDictionary *)metadata
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

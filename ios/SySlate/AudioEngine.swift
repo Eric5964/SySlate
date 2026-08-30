@@ -90,9 +90,34 @@ class AudioEngine: RCTEventEmitter {
     private var progressTimer: Timer?
     private var progressIntervalSeconds: Double = 1.0
 
+    // Seconds into the file where the CURRENTLY scheduled segment begins —
+    // 0 for a normal track start, non-zero after a seek. AVAudioPlayerNode's
+    // own playerTime resets to 0 relative to whatever segment is currently
+    // scheduled (see currentPositionSeconds below), it does NOT track
+    // position within the underlying file when scheduleSegment was given a
+    // non-zero startingFrame. Without adding this back in, position/elapsed
+    // time would appear to snap back to 0 and count up from there every
+    // time you seek, while the audio itself correctly plays from the seeked
+    // position — a real, easy-to-miss AVAudioEngine gotcha.
+    private var segmentStartOffsetSeconds: Double = 0
+
     // MARK: - RCTEventEmitter
 
     override static func requiresMainQueueSetup() -> Bool { true }
+
+    // Without this, JS-bridge method calls (play/pause/skip/etc.) run on
+    // RN's default background method queue, while MPRemoteCommandCenter
+    // targets and the interruption/route-change notification handlers fire
+    // on the main thread — meaning `queue`/`currentIndex`/`playerNode`
+    // could be mutated from two different threads concurrently with no
+    // synchronization at all (a plain Swift Array isn't safe for that).
+    // requiresMainQueueSetup only affects module INIT timing, not this —
+    // forcing every exposed method onto the main thread too puts all of
+    // it (JS calls, remote commands, notifications, the scheduleSegment
+    // completion handler, which already explicitly hops to main) on one
+    // thread, which removes the race entirely rather than trying to guard
+    // each mutation site individually.
+    override var methodQueue: DispatchQueue! { return DispatchQueue.main }
 
     override func supportedEvents() -> [String]! {
         return [
@@ -257,8 +282,8 @@ class AudioEngine: RCTEventEmitter {
 
     private func currentPositionSeconds() -> Double {
         guard let nodeTime = playerNode.lastRenderTime,
-              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return 0 }
-        return Double(playerTime.sampleTime) / currentFileSampleRate
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return segmentStartOffsetSeconds }
+        return segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
     }
 
     private func loadAndScheduleCurrentTrack(startAtSeconds: Double = 0, autoPlay: Bool) {
@@ -272,6 +297,7 @@ class AudioEngine: RCTEventEmitter {
             let file = try AVAudioFile(forReading: track.url)
             currentFile = file
             currentFileSampleRate = file.processingFormat.sampleRate
+            segmentStartOffsetSeconds = startAtSeconds
 
             playerNode.stop()
             playbackToken &+= 1
@@ -451,12 +477,31 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // Index-based, matching RNTP's actual remove(indexes) — same reasoning
+    // as skip above: every call site passes an index (`TrackPlayer.remove
+    // (realIndex)`), and id-based matching breaks the moment a song is
+    // queued more than once. Removing by index also needs currentIndex
+    // shifted for whichever removed slots sat before it — process from
+    // highest index to lowest so earlier removals don't shift the meaning
+    // of indexes still waiting to be removed.
     @objc(remove:resolver:rejecter:)
-    func remove(_ ids: [String], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        let currentId = currentIndex.flatMap { queue[safe: $0]?.id }
-        queue.removeAll { ids.contains($0.id) }
-        if let currentId = currentId {
-            currentIndex = queue.firstIndex { $0.id == currentId }
+    func remove(_ indexes: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let sorted = indexes.map { $0.intValue }.filter { $0 >= 0 && $0 < queue.count }.sorted(by: >)
+        for idx in sorted {
+            queue.remove(at: idx)
+            if let current = currentIndex {
+                if idx < current {
+                    currentIndex = current - 1
+                } else if idx == current {
+                    // Removing the currently-playing slot itself — not a
+                    // case PlaybackContext.js's existing call sites
+                    // trigger today (removeFromQueue only ever targets
+                    // realIndex values after currentIndex), but handled
+                    // rather than left to silently corrupt state if
+                    // something ever does hit this path.
+                    currentIndex = nil
+                }
+            }
         }
         resolve(nil)
     }
@@ -470,9 +515,19 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // Index-based, matching RNTP's actual skip(index) — every existing call
+    // site in PlaybackService.js/PlaybackContext.js already passes a queue
+    // index (e.g. `TrackPlayer.skip(realIndex)`), never an id. Matching by
+    // id here would also independently be wrong for a duplicated song (the
+    // same song genuinely queued twice, which this app's priority-queue
+    // design explicitly relies on being able to do) — firstIndex(where:)
+    // would always resolve to whichever copy comes first, not necessarily
+    // the one actually being tapped. Both problems disappear by taking the
+    // index directly instead of searching for it.
     @objc(skip:resolver:rejecter:)
-    func skip(_ id: String, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        guard let idx = queue.firstIndex(where: { $0.id == id }) else {
+    func skip(_ index: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let idx = index.intValue
+        guard idx >= 0, idx < queue.count else {
             resolve(nil)
             return
         }
@@ -498,9 +553,15 @@ class AudioEngine: RCTEventEmitter {
         resolve(queue.map { $0.toDict() })
     }
 
+    // Index-based, matching RNTP's actual getCurrentTrack() — it returns
+    // the QUEUE INDEX, not the track's id. PlaybackContext.js does
+    // arithmetic directly on this value everywhere (currentIndex + 1,
+    // queue[currentIndex], realIndex <= currentIndex, ...) — returning the
+    // id here instead would silently break essentially all of that math
+    // the moment this module got wired in, not just this one call site.
     @objc(getCurrentTrack:rejecter:)
     func getCurrentTrack(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        resolve(currentIndex.flatMap { queue[safe: $0]?.id })
+        resolve(currentIndex.map { NSNumber(value: $0) })
     }
 
     @objc(reset:rejecter:)
@@ -511,9 +572,15 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // Index-based, matching RNTP's real updateMetadataForTrack(index,
+    // metadata) — PlaybackContext.js already calls this with the queue
+    // index it just resolved (`TrackPlayer.updateMetadataForTrack(idx,
+    // {artwork: uri})`), not an id. Same class of mismatch as
+    // getCurrentTrack/skip/remove above.
     @objc(updateMetadataForTrack:metadata:resolver:rejecter:)
-    func updateMetadataForTrack(_ id: String, metadata: NSDictionary, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        guard let idx = queue.firstIndex(where: { $0.id == id }) else {
+    func updateMetadataForTrack(_ index: NSNumber, metadata: NSDictionary, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let idx = index.intValue
+        guard idx >= 0, idx < queue.count else {
             resolve(nil)
             return
         }
