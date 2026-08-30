@@ -92,61 +92,16 @@ function ShrinkOutRow({ removing, children }) {
     );
 }
 
-// Grows/shrinks the "Priority" label + its divider in and out, SEQUENCED
-// after the row-level animations above rather than snapping in sync with
-// raw data changes: growing waits for the newly-added row's own 220ms
-// grow-in to finish before starting (see the setTimeout in the effect that
-// drives `shown`, below in QueueModal), and shrinking starts the moment the
-// last row is actually gone from `rows` — which, since ShrinkOutRow's own
-// animation always finishes BEFORE remove() ever touches `rows` (remove()
-// awaits REMOVE_ANIM_MS first, see below), is already after that row has
-// visually finished collapsing rather than racing it. `instant` is used
-// exactly once per direction, for whatever the section's real state is the
-// first time the sheet loads real data — that's a sync, not something the
-// user did, so it shouldn't animate any more than existing (non-new) rows
-// do on that same initial load.
-function AnimatedSection({ shown, instant, targetHeight, children }) {
-    const heightAnim = useRef(new Animated.Value(shown ? 1 : 0)).current;
-    const opacityAnim = useRef(new Animated.Value(shown ? 1 : 0)).current;
-    const [rendered, setRendered] = useState(shown);
-    useEffect(() => {
-        if (instant) {
-            heightAnim.setValue(shown ? 1 : 0);
-            opacityAnim.setValue(shown ? 1 : 0);
-            setRendered(shown);
-            return;
-        }
-        if (shown) {
-            setRendered(true);
-            // Both JS-driven, same reasoning as GrowInRow/ShrinkOutRow above
-            // — this used to run opacity on the native driver, which could
-            // desync from the (necessarily JS-driven) height under load and
-            // produce the same kind of gap.
-            Animated.parallel([
-                Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
-                Animated.timing(opacityAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
-            ]).start();
-        } else {
-            Animated.parallel([
-                Animated.timing(heightAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
-                Animated.timing(opacityAnim, { toValue: 0, duration: 220, useNativeDriver: false }),
-            ]).start(() => setRendered(false));
-        }
-    }, [shown, instant]);
-    if (!rendered) return null;
-    return (
-        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, targetHeight] }), overflow: 'hidden' }}>
-            <Animated.View style={{ opacity: opacityAnim }}>
-                {children}
-            </Animated.View>
-        </Animated.View>
-    );
-}
-// Rough rendered heights of the pill (marginTop 14 + paddingVertical 4*2 +
-// label line height + marginBottom 6) and the divider (marginTop 8 + its
-// own 1px) — same "close enough, not visibly off" reasoning as ROW_HEIGHT.
-const SECTION_PILL_HEIGHT = 56;
-const SECTION_DIVIDER_HEIGHT = 9;
+// The "Priority" and "Up Next" pills/dividers deliberately have no
+// section-level grow/shrink animation of their own — they render/unrender
+// atomically with their rows via plain conditionals, same as each other.
+// An earlier version animated the Priority pill independently (delayed
+// ~220ms relative to its rows, to sequence after GrowInRow above) — that
+// meant a newly-added priority row could appear for that whole window with
+// no "Priority" label above it yet, reading as if it had landed under "Now
+// Playing" instead. Matching Up Next's plain approach removes the
+// desync entirely rather than trying to keep two independent animations in
+// sync under load.
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
@@ -162,20 +117,6 @@ export default function QueueModal({ visible, onClose }) {
     // that first loading window too, which read as the queue being empty
     // rather than just not loaded yet.
     const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
-
-    // Drives AnimatedSection above. prioritySyncedOnceRef/prevHasPriorityRef
-    // track state across renders without needing them in refresh()'s own
-    // dependency array (refresh must stay stable — see the note on
-    // priorityQueueRef just below). instant starts true so the very first
-    // real load — which might already have priority items sitting in it
-    // from a restored session — reflects reality immediately with no
-    // animation, same as how existing rows skip GrowInRow's animation on
-    // that same initial load. It flips to false the first time a genuine
-    // add/remove happens, and stays false from then on.
-    const [prioritySectionShown, setPrioritySectionShown] = useState(false);
-    const [prioritySectionInstant, setPrioritySectionInstant] = useState(true);
-    const prioritySyncedOnceRef = useRef(false);
-    const prevHasPriorityRef = useRef(false);
 
     // remove()/promote() already call refresh() explicitly, right after
     // their own native change, with the correct priorityOverride for that
@@ -250,41 +191,8 @@ export default function QueueModal({ visible, onClose }) {
             });
             setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
             setRows(upcoming);
-            if (!prioritySyncedOnceRef.current) {
-                // First real data this sheet-lifetime has seen — sync the
-                // section's visibility to match instantly (AnimatedSection's
-                // `instant` prop, still true at this point, makes sure this
-                // doesn't animate), then hand off to the effect below for
-                // every genuine change after this one.
-                prioritySyncedOnceRef.current = true;
-                const anyPriority = upcoming.some(r => r.isPriority);
-                prevHasPriorityRef.current = anyPriority;
-                setPrioritySectionShown(anyPriority);
-            }
         } catch { setRows([]); } finally { setHasLoadedOnce(true); }
     }, []);
-
-    useEffect(() => {
-        if (!prioritySyncedOnceRef.current) return; // first sync above hasn't happened yet
-        const has = rows.some(r => r.isPriority);
-        if (has === prevHasPriorityRef.current) return;
-        prevHasPriorityRef.current = has;
-        setPrioritySectionInstant(false); // every transition from here is a real one — animate it
-        if (has) {
-            // Wait for the newly-added row's own 220ms grow-in (see
-            // GrowInRow) to finish before the header starts growing in
-            // too, so the two don't visually compete.
-            const t = setTimeout(() => setPrioritySectionShown(true), 220);
-            return () => clearTimeout(t);
-        }
-        // Shrinking needs no equivalent delay: by the time a row is
-        // actually gone from `rows`, ShrinkOutRow's own 220ms shrink has
-        // already fully played out (remove() awaits that BEFORE it ever
-        // touches `rows` — see remove() below), so this is already
-        // starting after the row has visually finished collapsing.
-        setPrioritySectionShown(false);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rows]);
 
     useEffect(() => {
         // Was deferred until the sheet's open animation settled, to stop
@@ -381,9 +289,19 @@ export default function QueueModal({ visible, onClose }) {
     const artMap = useListArt(songsForArt, showSongCovers);
 
     useEffect(() => {
-        if (!showPlayCount || !songsForArt.length) return;
-        getPlayCounts(songsForArt).then(setPlayCounts);
-    }, [songsForArt, showPlayCount]);
+        // songsForArt only ever holds the UPCOMING rows (priority + up
+        // next) — currentTrack was never included, so playCounts[current
+        // Track.id] was always undefined and the Now Playing row's count
+        // could never show, no matter the setting or the song's actual
+        // count. Fetching currentTrack alongside it here fixes that; the
+        // early-return also used to bail whenever songsForArt was empty
+        // (a queue with nothing but the currently-playing song), which
+        // would've skipped fetching currentTrack's count too even after
+        // adding it to the list below.
+        if (!showPlayCount || (!songsForArt.length && !currentTrack)) return;
+        const toFetch = currentTrack ? [currentTrack, ...songsForArt] : songsForArt;
+        getPlayCounts(toFetch).then(setPlayCounts);
+    }, [songsForArt, showPlayCount, currentTrack]);
 
     const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
     const remove = async (realIndex, stableKey) => {
@@ -487,13 +405,13 @@ export default function QueueModal({ visible, onClose }) {
                             </SwipeableRow>
                         </>
                     )}
-                    <AnimatedSection shown={prioritySectionShown} instant={prioritySectionInstant} targetHeight={SECTION_PILL_HEIGHT}>
-                        <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
-                    </AnimatedSection>
-                    {priorityRows.length > 0 && priorityRows.map(renderRow)}
-                    <AnimatedSection shown={prioritySectionShown && upNextRows.length > 0} instant={prioritySectionInstant} targetHeight={SECTION_DIVIDER_HEIGHT}>
-                        <View style={s.divider} />
-                    </AnimatedSection>
+                    {priorityRows.length > 0 && (
+                        <>
+                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
+                            {priorityRows.map(renderRow)}
+                        </>
+                    )}
+                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={s.divider} />}
                     {upNextRows.length > 0 && (
                         <>
                             <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>

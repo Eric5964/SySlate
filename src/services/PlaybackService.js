@@ -280,33 +280,40 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
         // whole ramp-in side — that was wrong scope, not intended.
         if (ramp > 0.05 && (preClaimedId || activeFadeId === null)) {
             const id = preClaimedId ?? claimFade();
-            try { await TrackPlayer.setVolume(0); } catch { }
-            try { await startAction(); } catch { }
-            const reallyPlaying = await waitForPlaying();
-            // If we never actually confirmed real playback within the
-            // timeout, ramping anyway means the volume climbs to full
-            // during what might still be silence/buffering — audio then
-            // starts late, already at full volume, sounding exactly like no
-            // fade happened at all even though the ramp genuinely ran. Skip
-            // stright to full rather than guess at timing we don't have.
-            if (!reallyPlaying) {
-                try { await TrackPlayer.setVolume(1); } catch { }
-                releaseFade(id);
-            } else {
-                // Longer settle margin than before (50ms) — State.Playing
-                // can fire slightly ahead of audio actually reaching the
-                // speaker, especially right after a queue reset, which is
-                // exactly when this runs. Too short a margin meant the ramp
-                // could start, and sometimes nearly finish, before there
-                // was anything audible for it to apply to.
-                await sleep(180);
-                rampInActive = true;
-                try {
+            // Set from here rather than just around fadeVol below — a pause
+            // request landing during waitForPlaying/the settle sleep (both
+            // BEFORE fadeVol actually starts) used to fall through to the
+            // generic isTransitionLocked hard-cut path instead of
+            // pauseWithRamp's dedicated ramp-in-interruption handling,
+            // since rampInActive wasn't true yet even though this WAS
+            // already committed to a ramped start. Narrow window, but real.
+            rampInActive = true;
+            try {
+                try { await TrackPlayer.setVolume(0); } catch { }
+                try { await startAction(); } catch { }
+                const reallyPlaying = await waitForPlaying();
+                // If we never actually confirmed real playback within the
+                // timeout, ramping anyway means the volume climbs to full
+                // during what might still be silence/buffering — audio then
+                // starts late, already at full volume, sounding exactly like no
+                // fade happened at all even though the ramp genuinely ran. Skip
+                // stright to full rather than guess at timing we don't have.
+                if (!reallyPlaying) {
+                    try { await TrackPlayer.setVolume(1); } catch { }
+                    releaseFade(id);
+                } else {
+                    // Longer settle margin than before (50ms) — State.Playing
+                    // can fire slightly ahead of audio actually reaching the
+                    // speaker, especially right after a queue reset, which is
+                    // exactly when this runs. Too short a margin meant the ramp
+                    // could start, and sometimes nearly finish, before there
+                    // was anything audible for it to apply to.
+                    await sleep(180);
                     await fadeVol(0, 1, ramp, id);
-                } finally {
-                    rampInActive = false;
+                    releaseFade(id);
                 }
-                releaseFade(id);
+            } finally {
+                rampInActive = false;
             }
         } else {
             if (preClaimedId) releaseFade(preClaimedId);
@@ -545,15 +552,22 @@ export async function PlaybackService() {
             if (ramp > 0.05) {
                 // Same issue as playWithRamp had: waitForPlaying's result
                 // was never checked, so if it timed out (audio not
-                // confirmed playing within 800ms — plausible right after a
-                // natural track change, loading the next file), the ramp
-                // still started anyway. It fading partway against
+                // confirmed playing within the timeout — plausible right
+                // after a natural track change, loading the next file), the
+                // ramp still started anyway. It fading partway against
                 // silence/buffering, then something else (the very next
                 // event, or this same handler firing again) setting volume
                 // outright, is exactly what "starts quiet then jumps" would
                 // sound like — a real ramp that got cut short, not a
-                // missing one.
-                const reallyPlaying = await waitForPlaying(800);
+                // missing one. The timeout itself was 800ms, notably
+                // tighter than playWithRamp's 2500ms default for what's
+                // fundamentally the same "confirm real playback before
+                // ramping" check — under any load, that's tight enough to
+                // false-negative into skipping the ramp (and the audio
+                // actually starting a moment later, unramped) more than
+                // occasionally, which reads exactly like "sometimes doesn't
+                // ramp in" plus a small silent gap right before it.
+                const reallyPlaying = await waitForPlaying(1800);
                 if (!reallyPlaying) {
                     try { await TrackPlayer.setVolume(1); } catch { }
                 } else if (isFadeOwner(id)) {

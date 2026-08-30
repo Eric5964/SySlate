@@ -43,7 +43,16 @@ export function PlaybackProvider({ children }) {
 
     const playlistRef = useRef(null);
     useEffect(() => { playlistRef.current = currentPlaylist; }, [currentPlaylist]);
-
+    // Mirrors shuffleOn/shuffleMode for topUpQueueIfNeeded — that function
+    // gets called from callbacks frozen with an empty dependency array
+    // (e.g. jumpToQueueIndex), so reading the state values directly there
+    // would close over whatever they were on the FIRST render forever, not
+    // whatever the user's actually got set now. Refs sidestep that the same
+    // way playlistRef already does above.
+    const shuffleOnRef = useRef(false);
+    useEffect(() => { shuffleOnRef.current = shuffleOn; }, [shuffleOn]);
+    const shuffleModeRef = useRef('full_cycle');
+    useEffect(() => { shuffleModeRef.current = shuffleMode; }, [shuffleMode]);
     const priorityRef = useRef([]);
     useEffect(() => { priorityRef.current = priorityQueue; }, [priorityQueue]);
 
@@ -400,6 +409,19 @@ export function PlaybackProvider({ children }) {
                 await TrackPlayer.add(priorityTracks, newTargetIndex + 1);
             }
             await playWithRamp(preClaimedId, () => TrackPlayer.skip(newTargetIndex));
+            // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
+            // call — enough for the steady-state "a song just finished,
+            // drip-feed a few more" case it was actually designed for, but
+            // jumping straight to a row well into "Up Next" can leave the
+            // window far short of a full QUEUE_WINDOW_SIZE (25) in one
+            // step; nothing here ever topped it back up afterward at all.
+            // Calling it repeatedly (bounded, not truly unbounded) restores
+            // a full window regardless of how big the jump was — each call
+            // re-reads the current state, so it naturally stops early once
+            // genuinely caught up or the logical queue itself runs out.
+            for (let i = 0; i < Math.ceil(QUEUE_WINDOW_SIZE / QUEUE_TOPUP_BATCH); i++) {
+                await topUpQueueIfNeeded();
+            }
         } catch (e) { console.error('jumpToQueueIndex:', e); }
     }, []);
 
@@ -500,7 +522,33 @@ export function PlaybackProvider({ children }) {
 
     const topUpQueueIfNeeded = async () => {
         try {
-            if (loadedThroughRef.current >= logicalQueueRef.current.length) return; // already fully loaded
+            if (loadedThroughRef.current >= logicalQueueRef.current.length) {
+                // Reached the true end of the logical playlist, not just the
+                // native window — previously this just returned here, so
+                // playback would eventually run out and stop once you'd
+                // actually played through everything, rather than looping
+                // back to the start the way a "playlist" is generally
+                // expected to. Extends the logical queue with a fresh pass
+                // over the same playlist instead of stopping.
+                //
+                // Only actually loops for a real full-playlist playthrough:
+                // this is the one place loadedThroughRef ever catches up to
+                // logicalQueueRef's length, which only happens once every
+                // song has actually been loaded through — a mid-playlist
+                // skip/jump can't accidentally trigger it early.
+                //
+                // Reshuffles fresh for the new pass (current shuffle mode,
+                // read live via the ref so a mode changed mid-playlist is
+                // respected) rather than reusing the exact same shuffled
+                // order the first pass used — the first pass's order stays
+                // exactly what it was throughout, unaffected by this, since
+                // logicalQueueRef only ever gets appended to here, never
+                // rewritten from the start.
+                const pl = playlistRef.current;
+                if (!pl?.songs?.length) return;
+                const nextPass = buildQueue(pl.songs, shuffleOnRef.current ? shuffleModeRef.current : 'off');
+                logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
+            }
             const currentIndex = await TrackPlayer.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
             const nativeLen = (await TrackPlayer.getQueue()).length;

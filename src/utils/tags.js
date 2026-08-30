@@ -24,7 +24,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // - UTF-16 ID3v2 frames are decoded assuming the BOM correctly signals
 //   endianness; a frame with no BOM at all falls back to big-endian.
 
-const CACHE_KEY = 'song_tags_cache_v1';
+// v3: bumped from v1 after two rounds of real bugs in the extraction logic
+// itself (FLAC/ID3 multi-artist fields were being collapsed to just the
+// first artist, then the same class of bug found in the M4A reader too) —
+// the cache is keyed by file fingerprint, so an unchanged file keeps
+// serving its old (bad) cached result forever regardless of how many times
+// the parsing code gets fixed. Bumping the key is what actually forces a
+// clean re-extraction; fixing the parser alone does nothing for a song
+// that was already scanned once. Bump again any time the extraction logic
+// itself changes in a way that should apply to already-scanned libraries.
+const CACHE_KEY = 'song_tags_cache_v3';
 const FRONT_PREFIX_BYTES = 1 * 1024 * 1024; // tags live at the front for every format handled here
 
 let cacheMapPromise = null;

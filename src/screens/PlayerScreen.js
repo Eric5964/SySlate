@@ -464,7 +464,7 @@ export default function PlayerScreen() {
                             one is currently invisible from intercepting the swipe-
                             to-dismiss gesture that this whole box still needs to
                             keep supporting. */}
-                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
                             {artwork
                                 ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                 : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
