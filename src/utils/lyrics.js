@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import { createBoundedCache } from './boundedCache';
 
 // Standard LRC timestamp tag: [mm:ss.xx] or [mm:ss:xx], fraction 1-3
 // digits. A single line can carry more than one timestamp (repeated
@@ -28,10 +29,12 @@ function parseLRC(text) {
 
 // In-memory only, not persisted — .lrc files are tiny text, re-parsing one
 // is cheap. This just avoids re-reading the same file repeatedly while
-// flipping between a few songs in one session. Keyed by song.id, cleared
-// on nothing (process lifetime only), same lifetime as the rest of the
-// app's in-memory-only state.
-const memCache = new Map();
+// flipping between a few songs in one session. Keyed by song.id. Capped so a
+// long session spent playing through a big library doesn't hold every
+// synced-lyrics array (some can be a few hundred timed lines) in memory for
+// the rest of the app's life — 40 is generous for "the songs you've had
+// open recently."
+const memCache = createBoundedCache(40);
 
 // Returns a sorted array of { time (seconds), text } entries, or null if
 // there's no matching .lrc file (or it has no parseable timed lines).

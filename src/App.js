@@ -109,6 +109,7 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
+    const { ready: themeReady } = useTheme();
     const { showSongCovers, keepScreenAwake } = usePreferences();
     const playbackState = usePlaybackState();
 
@@ -177,7 +178,11 @@ function AppInner() {
         })();
     }, []);
 
-    if (!playerReady) {
+    // Wait on theme too, not just the player — otherwise the real
+    // NavigationContainer/screens can mount for a frame or two using
+    // ThemeContext's purple/black placeholders before AsyncStorage resolves
+    // the user's actual pick.
+    if (!playerReady || !themeReady) {
         return <View style={{ flex: 1, backgroundColor: '#0a0a0a' }} />;
     }
 

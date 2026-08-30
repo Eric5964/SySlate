@@ -1,4 +1,4 @@
-package com.museplayer
+package com.patch.syslate
 
 import android.os.Build
 import android.os.Bundle

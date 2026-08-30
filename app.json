@@ -23,6 +23,9 @@
       "eas": {
         "projectId": "dbe03195-fa30-4124-858f-c4cbb712524b"
       }
+    },
+    "android": {
+      "package": "com.patch.syslate"
     }
   }
 }

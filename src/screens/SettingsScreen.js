@@ -23,6 +23,12 @@ const ARTIST_SEPARATORS = [
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
+
+const LYRICS_MODES = [
+    { id: 'off', label: 'Off' },
+    { id: 'auto', label: 'Auto-show' },
+    { id: 'manual', label: 'Manual' },
+];
 // See getPrevButtonMode in storage.js — 'previous_track' is the simple,
 // always-the-same behavior; 'restart_or_previous' is the conventional
 // streaming-app behavior (restart if you're into the song, go back if
@@ -75,7 +81,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, keepScreenAwake, setKeepScreenAwake } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, keepScreenAwake, setKeepScreenAwake } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -333,6 +339,31 @@ export default function SettingsScreen() {
                                 onPress={() => setArtistSeparator(opt.id)}
                             >
                                 <Text style={[s.sortChipText, artistSeparator === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Section>
+
+                {/* 'Off' never attempts a .lrc lookup on the Player screen at
+                     all. 'Auto-show' opens straight into lyrics (if a
+                     matching .lrc file exists) whenever a track with lyrics
+                     starts. 'Manual' still fetches lyrics in the background
+                     so the toggle button under the cover art appears, but
+                     leaves the cover showing until the user taps it. */}
+                <Section title="Lyrics">
+                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                        <Text style={s.toggleSub}>Synced lyrics from a matching .lrc file next to the song, shown on the Player screen</Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {LYRICS_MODES.map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, lyricsMode === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => setLyricsMode(opt.id)}
+                            >
+                                <Text style={[s.sortChipText, lyricsMode === opt.id && { color: theme.onAccent }]}>
                                     {opt.label}
                                 </Text>
                             </TouchableOpacity>

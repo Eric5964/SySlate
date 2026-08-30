@@ -35,30 +35,44 @@ export const BASE_COLORS = {
 const ThemeContext = createContext({
     theme: THEMES.purple, themeId: 'purple', setTheme: () => { },
     base: BASE_COLORS.black, baseId: 'black', setBase: () => { },
+    ready: false,
 });
 
 export function ThemeProvider({ children }) {
     const [themeId, setThemeId] = useState('purple');
     const [baseId, setBaseId] = useState('black');
+    // Real theme/base ids only exist in AsyncStorage, so themeId/baseId above
+    // are just placeholders until this resolves. Anything that reads
+    // theme.accent before `ready` is true (e.g. a component mounted during
+    // that very first frame) sees the purple/black placeholder regardless of
+    // what the user actually picked — this is the leading theory for the
+    // "purple flash near the start of a session" report. `ready` lets
+    // consumers (see App.js) hold off rendering themed UI until the real
+    // values are in, instead of rendering-then-correcting.
+    const [ready, setReady] = useState(false);
 
     useEffect(() => {
-        AsyncStorage.getItem('theme_id').then(id => {
-            if (id && THEMES[id]) { setThemeId(id); return; }
-            // Migrate old ids that no longer exist. "white" specifically
-            // becomes the new "pink" rather than falling back to rose,
-            // since pink is now its own distinct color again.
-            const migrate = { indigo: 'blue', lime: 'green', amber: 'orange', white: 'pink' };
-            if (id && migrate[id]) setThemeId(migrate[id]);
-        });
-        AsyncStorage.getItem('base_color_id').then(id => {
-            if (id && BASE_COLORS[id]) { setBaseId(id); return; }
-            // light_gray -> galaxy -> light_purple (chained through two
-            // renames); the old "gray" id held a purple (Nebula) by the time
-            // of this rename, so it continues on as dark_purple; dark_gray
-            // (near-black) is closest to the new flat black.
-            const migrate = { light_gray: 'light_purple', galaxy: 'light_purple', gray: 'dark_purple', dark_gray: 'black' };
-            if (id && migrate[id]) setBaseId(migrate[id]);
-        });
+        let cancelled = false;
+        Promise.all([
+            AsyncStorage.getItem('theme_id').then(id => {
+                if (id && THEMES[id]) { setThemeId(id); return; }
+                // Migrate old ids that no longer exist. "white" specifically
+                // becomes the new "pink" rather than falling back to rose,
+                // since pink is now its own distinct color again.
+                const migrate = { indigo: 'blue', lime: 'green', amber: 'orange', white: 'pink' };
+                if (id && migrate[id]) setThemeId(migrate[id]);
+            }),
+            AsyncStorage.getItem('base_color_id').then(id => {
+                if (id && BASE_COLORS[id]) { setBaseId(id); return; }
+                // light_gray -> galaxy -> light_purple (chained through two
+                // renames); the old "gray" id held a purple (Nebula) by the time
+                // of this rename, so it continues on as dark_purple; dark_gray
+                // (near-black) is closest to the new flat black.
+                const migrate = { light_gray: 'light_purple', galaxy: 'light_purple', gray: 'dark_purple', dark_gray: 'black' };
+                if (id && migrate[id]) setBaseId(migrate[id]);
+            }),
+        ]).finally(() => { if (!cancelled) setReady(true); });
+        return () => { cancelled = true; };
     }, []);
 
     const setTheme = async (id) => { setThemeId(id); await AsyncStorage.setItem('theme_id', id); };
@@ -68,6 +82,7 @@ export function ThemeProvider({ children }) {
         <ThemeContext.Provider value={{
             theme: THEMES[themeId], themeId, setTheme,
             base: BASE_COLORS[baseId], baseId, setBase,
+            ready,
         }}>
             {children}
         </ThemeContext.Provider>
