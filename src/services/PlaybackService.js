@@ -492,9 +492,24 @@ export async function skipWithRamp(direction = 'next') {
         if (!isFadeOwner(id)) return;
 
         if (dur > 0.05) {
-            try { await TrackPlayer.setVolume(0); } catch { }
-            try { await TrackPlayer.play(); } catch { }
-            await fadeVol(0, 1, dur, id);
+            // Same gap that playWithRamp's ramp-in already guards against
+            // (see rampInActive comment above): this ramp-in wasn't setting
+            // rampInActive at all, so a pause landing here fell through to
+            // isTransitionLocked's generic hard-cut path (queued
+            // pauseImmediate) instead of pauseWithRamp's dedicated
+            // ramp-in-interruption handling — the ramp-in was left to
+            // finish climbing to full volume on the new track, then cut
+            // dead with no ramp-out. That's the reported "ramps into the
+            // next song but then abruptly stops instead of ramping to a
+            // pause."
+            rampInActive = true;
+            try {
+                try { await TrackPlayer.setVolume(0); } catch { }
+                try { await TrackPlayer.play(); } catch { }
+                await fadeVol(0, 1, dur, id);
+            } finally {
+                rampInActive = false;
+            }
         } else {
             try { await TrackPlayer.setVolume(1); } catch { }
             try { await TrackPlayer.play(); } catch { }

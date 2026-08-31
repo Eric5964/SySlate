@@ -20,6 +20,13 @@ import { getPlayCounts } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
+// Opacity stops for the lyrics view's top/bottom edge fade, each covering
+// an 8px band — highest (most opaque, closest to fully hiding a line) right
+// at the edge, fading toward 0 (fully visible) moving inward. No gradient
+// library in this project (adding one means another native rebuild), so
+// this stacks flat bands as a rough approximation instead of a true blend.
+const EDGE_FADE_STOPS = [0.95, 0.8, 0.6, 0.4, 0.22, 0.08];
+
 function fmt(sec) {
     if (!sec || isNaN(sec)) return '0:00';
     return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
@@ -327,18 +334,31 @@ export default function PlayerScreen() {
         return () => { cancelled = true; };
     }, [currentTrack?.id, lyricsMode]);
 
-    // useProgress is already polling at 500ms for the progress bar above —
-    // reusing it here instead of a second position subscription. Lyric
-    // timestamps are usually a few seconds apart at minimum, so 500ms
-    // resolution is more than enough to catch each line change on time.
-    // Same "is progress real yet" gate used everywhere else in this file
-    // (pct, animPct, etc.) — useProgress reports position:0/duration:0 for
-    // a tick after mount before its first real poll lands. Without this,
-    // activeLine briefly computed against position 0 regardless of where
-    // the song actually is, so the lyrics view jumped to the very first
-    // line and then jumped again once the real position arrived a moment
-    // later — the reported "not synced when the player is just opened".
-    const activeLine = (lyricsData && progress.duration > 0) ? activeLyricIndex(lyricsData, progress.position + lyricsOffsetSec) : -1;
+    // useProgress's polling was the shared assumption here, but it appears
+    // to slow or stop updating while paused (reasonable for its own
+    // purpose — the progress bar isn't moving either) — which meant lyrics
+    // opened, or left, permanently unsynced any time the player was paused
+    // rather than actively playing. Lyrics need their own always-on read
+    // regardless of play state, so this polls TrackPlayer directly whenever
+    // lyrics are actually visible, independent of useProgress entirely.
+    const [lyricsProgress, setLyricsProgress] = useState({ position: 0, duration: 0 });
+    useEffect(() => {
+        if (!showingLyrics) return;
+        let cancelled = false;
+        const poll = () => TrackPlayer.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
+        poll();
+        const interval = setInterval(poll, 500);
+        return () => { cancelled = true; clearInterval(interval); };
+    }, [showingLyrics, currentTrack?.id]);
+
+    // Same "is progress real yet" gate used elsewhere in this file (pct,
+    // animPct, etc.) — position:0/duration:0 before the first real poll
+    // lands. Without this, activeLine briefly computed against position 0
+    // regardless of where the song actually is, so the lyrics view jumped
+    // to the very first line and then jumped again once the real position
+    // arrived a moment later — the reported "not synced when the player is
+    // just opened".
+    const activeLine = (lyricsData && lyricsProgress.duration > 0) ? activeLyricIndex(lyricsData, lyricsProgress.position + lyricsOffsetSec) : -1;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -492,24 +512,29 @@ export default function PlayerScreen() {
                 evenly spaced across whatever room is left so nothing bunches
                 up on a taller screen, instead of one big empty gap. */}
             <View style={s.middle}>
-                <View style={s.artWrap}>
-                    <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
-                        {/* Cover and lyrics occupy the exact same box, cross-fading
-                            between them via opacity alone (native-driver-safe — no
-                            color interpolation involved, unlike the shuffle/loop
-                            icons elsewhere in this file that specifically had to
-                            avoid the native driver). pointerEvents keeps whichever
-                            one is currently invisible from intercepting the swipe-
-                            to-dismiss gesture that this whole box still needs to
-                            keep supporting. */}
-                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
-                            {artwork
-                                ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                                : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
-                            }
-                        </Animated.View>
+                {/* Cover and lyrics are now separate boxes sharing the same
+                     slot (absolute-positioned over each other), not the
+                     lyrics view nested inside the cover's own box —
+                     previously the lyrics inherited the cover box's
+                     background/shadow (a slightly lighter gray, meant to
+                     read as a raised card of art), which looked wrong for
+                     plain text. Lyrics use the screen's own background
+                     instead, no shadow. */}
+                <View style={[s.artWrap, { paddingTop: 20 }]}>
+                    <View style={{ width: width - 56, height: width - 56 }}>
+                        <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
+                            <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
+                                {artwork
+                                    ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                    : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                                }
+                            </Animated.View>
+                        </View>
                         {lyricsData && (
-                            <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade }]} pointerEvents={showingLyrics ? 'auto' : 'none'}>
+                            <Animated.View
+                                style={[StyleSheet.absoluteFill, { opacity: lyricsFade, backgroundColor: base.bg, borderRadius: squircle(width - 56, coverShape), overflow: 'hidden' }]}
+                                pointerEvents={showingLyrics ? 'auto' : 'none'}
+                            >
                                 <ScrollView
                                     ref={lyricsScrollRef}
                                     style={{ flex: 1 }}
@@ -541,6 +566,20 @@ export default function PlayerScreen() {
                                         </Text>
                                     ))}
                                 </ScrollView>
+                                {/* Poor-man's top/bottom fade — no gradient library in
+                                     this project, and adding one means another native
+                                     rebuild, so this is stacked semi-transparent bands
+                                     in the screen's own background color instead of a
+                                     real gradient. Close enough at this size, and
+                                     pointerEvents none so it never eats the scroll. */}
+                                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                                    {EDGE_FADE_STOPS.map((opacity, i) => (
+                                        <View key={'t' + i} style={{ position: 'absolute', top: i * 8, left: 0, right: 0, height: 8, backgroundColor: base.bg, opacity }} />
+                                    ))}
+                                    {EDGE_FADE_STOPS.map((opacity, i) => (
+                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * 8, left: 0, right: 0, height: 8, backgroundColor: base.bg, opacity }} />
+                                    ))}
+                                </View>
                             </Animated.View>
                         )}
                     </View>

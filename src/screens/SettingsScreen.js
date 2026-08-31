@@ -81,7 +81,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, keepScreenAwake, setKeepScreenAwake } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -316,6 +316,14 @@ export default function SettingsScreen() {
                         <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Rounded Cover Art</Text>
+                            <Text style={s.toggleSub}>Player, mini player, playlists, and song lists — off for square, sharp corners</Text>
+                        </View>
+                        <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
                 </Section>
 
                 {/* Splits a tag's artist field into individual artists on this
@@ -328,7 +336,8 @@ export default function SettingsScreen() {
                      separator character in their tag are never affected by
                      this setting either way. */}
                 <Section title="Multiple Artists">
-                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Artist Separator</Text>
                         <Text style={s.toggleSub}>Splits an artist tag like "A; B" into separate artists</Text>
                     </View>
                     <View style={s.sortRow}>
@@ -353,8 +362,9 @@ export default function SettingsScreen() {
                      so the toggle button under the cover art appears, but
                      leaves the cover showing until the user taps it. */}
                 <Section title="Lyrics">
-                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
-                        <Text style={s.toggleSub}>Synced lyrics from a matching .lrc file next to the song, shown on the Player screen</Text>
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Show Lyrics</Text>
+                        <Text style={s.toggleSub}>Synced lyrics from a matching .lrc file next to the song, on the Player screen</Text>
                     </View>
                     <View style={s.sortRow}>
                         {LYRICS_MODES.map(opt => (
@@ -369,6 +379,32 @@ export default function SettingsScreen() {
                             </TouchableOpacity>
                         ))}
                     </View>
+                    {lyricsMode !== 'off' && (
+                        <>
+                            <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
+                            <Text style={s.sliderNote}>
+                                How long the lyrics view stays where you scrolled it before
+                                snapping back to follow the song automatically
+                            </Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncSec.toFixed(0)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={1} value={lyricsResyncSec}
+                                onSlidingComplete={setLyricsResyncSec}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
+                            <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
+                            <Text style={s.sliderNote}>
+                                If a song's lyrics are consistently early or late, nudge them —
+                                positive shows each line sooner, negative later
+                            </Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>
+                                {lyricsOffsetSec > 0 ? '+' : ''}{lyricsOffsetSec.toFixed(1)}s
+                            </Text>
+                            <PureSlider style={s.slider} minimumValue={-3} maximumValue={3} step={0.5} value={lyricsOffsetSec}
+                                onSlidingComplete={setLyricsOffsetSec}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
+                        </>
+                    )}
                 </Section>
 
                 {/* Off by default: a real ALBUM tag (when tags.js finds one)
@@ -379,12 +415,13 @@ export default function SettingsScreen() {
                      for anyone whose library is organized by folder more
                      meaningfully than its actual tags are filled in. */}
                 <Section title="Album From Folder Name">
-                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
-                        <Text style={s.toggleSub}>Use the containing folder as Album instead of the song's own tag</Text>
-                    </View>
                     <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
+                            <Text style={s.toggleSub}>Instead of the song's own Album tag</Text>
+                        </View>
                         <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
-                            trackColor={{ true: theme.accent }} />
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
 
@@ -394,11 +431,12 @@ export default function SettingsScreen() {
                      near its start" — describing it in those terms up front
                      avoids needing the label to also do the explaining. */}
                 <Section title="Previous Button">
-                    <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 }}>
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
-                            What pressing Previous does during playback — always jump to
-                            the previous track, or restart the current track (going to
-                            the previous one only if you're still near its start)
+                            Always jump to the previous track, or restart the current
+                            track (going to the previous one only if you're still near
+                            its start)
                         </Text>
                     </View>
                     <View style={s.sortRow}>
@@ -609,11 +647,15 @@ const s = StyleSheet.create({
     toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
     toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
+    // Header block for a multi-option setting (chips/slider below, so it
+    // can't collapse into a single toggleRow) — same label/sub typography
+    // and left inset as toggleRow, just without the switch on the right.
+    settingHeader: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 6 },
     swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
     // Matches the sort-chip pattern used in All Songs / Playlist Detail —
     // same shape, same interaction, for the same kind of "pick one of a
     // few options" control.
-    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingBottom: 16, gap: 8 },
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24, paddingBottom: 16, gap: 8 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
     sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
     swatch: { justifyContent: 'center', alignItems: 'center' },

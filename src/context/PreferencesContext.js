@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
@@ -85,17 +85,28 @@ export function PreferencesProvider({ children }) {
         persistKeepScreenAwake(v);
     }, []);
 
+    // This context now has more consumers than just SettingsScreen (art
+    // rendering across MiniPlayer, playlists, queue, etc. all read
+    // coverShape) — without this useMemo, every one of those re-renders on
+    // ANY single preference change, not just the one it actually reads,
+    // since the value object below was otherwise a brand new reference
+    // every render regardless of whether anything inside it changed.
+    const value = useMemo(() => ({
+        showPlayCount, setShowPlayCount,
+        showSongCovers, setShowSongCovers,
+        artistSeparator, setArtistSeparator,
+        lyricsMode, setLyricsMode,
+        lyricsResyncSec, setLyricsResyncSec,
+        lyricsOffsetSec, setLyricsOffsetSec,
+        keepScreenAwake, setKeepScreenAwake,
+        coverShape, setCoverShape,
+    }), [
+        showPlayCount, showSongCovers, artistSeparator, lyricsMode,
+        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape,
+    ]);
+
     return (
-        <Ctx.Provider value={{
-            showPlayCount, setShowPlayCount,
-            showSongCovers, setShowSongCovers,
-            artistSeparator, setArtistSeparator,
-            lyricsMode, setLyricsMode,
-            lyricsResyncSec, setLyricsResyncSec,
-            lyricsOffsetSec, setLyricsOffsetSec,
-            keepScreenAwake, setKeepScreenAwake,
-            coverShape, setCoverShape,
-        }}>
+        <Ctx.Provider value={value}>
             {children}
         </Ctx.Provider>
     );
