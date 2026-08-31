@@ -718,7 +718,7 @@ const s = StyleSheet.create({
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 8 },
     lyricsToggleText: { fontSize: 13, fontWeight: '600' },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 28 },
-    lyricLine: { fontSize: 17, lineHeight: 26, fontWeight: '500', textAlign: 'center', marginVertical: 6 },
+    lyricLine: { fontSize: 21, lineHeight: 30, fontWeight: '500', textAlign: 'center', marginVertical: 7 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

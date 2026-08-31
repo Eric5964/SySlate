@@ -329,7 +329,20 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
 }
 
 export async function pauseWithRamp() {
-    if (naturalFadeInActive || rampInActive) {
+    if (naturalFadeInActive || rampInActive || naturalEndFadeOwner !== null) {
+        // Third case added here: naturalEndFadeOwner covers the natural
+        // end-of-track ramp-OUT itself (and the brief gap while waiting for
+        // the native queue to actually advance), not just its ramp-IN half
+        // (naturalFadeInActive, above). That ramp-out phase wasn't in this
+        // condition at all, so pausing during it fell through to the
+        // isTransitionLocked branch below — which queues a plain
+        // pauseImmediate() that only runs once the WHOLE natural
+        // transition finishes, including the next song's ramp-in. Net
+        // effect: press pause while the old song is fading out, and it
+        // still continues on to ramp the next song in, THEN cuts it dead.
+        // Clearing naturalEndFadeOwner here also stops the recovery block
+        // above from later trying to continue/ramp-in a track after this
+        // has already paused.
         // An active ramp-IN — either the natural end-of-track transition's
         // fade-in, or a fresh start/resume's own ramp-in from playWithRamp —
         // is running when pause is requested. This used to let the ramp
@@ -347,7 +360,7 @@ export async function pauseWithRamp() {
         // transition.
         naturalFadeInActive = false;
         rampInActive = false;
-        forceReleaseFade();
+        forceReleaseFade(); // also clears naturalEndFadeOwner
         rampLock = true;
         try {
             let current = 1;

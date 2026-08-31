@@ -65,50 +65,29 @@ export function SkipPrevIcon({ size = 26, color = '#ccc', style }) {
 }
 
 export function ShuffleIcon({ size = 22, color = '#333', style }) {
-    // Two crossing lines, each with a small arrowhead at one end — a plain
-    // "X" (no arrowheads) reads as a close/cancel button, not shuffle.
-    // `color` may be a plain string or an Animated interpolation (the
-    // on/off fade), so every colored piece below is an Animated.View.
-    const bar = size * 0.78;
-    const arrow = size * 0.22;
-    const Strand = ({ rotate }) => (
-        <View style={{
-            position: 'absolute', width: bar, height: arrow,
-            alignItems: 'flex-end', justifyContent: 'center',
-            transform: [{ rotate }],
-        }}>
-            <Animated.View style={{ position: 'absolute', left: 0, right: arrow * 0.5, height: 2, backgroundColor: color, borderRadius: 1 }} />
-            <Animated.View style={{ width: arrow * 0.55, height: arrow * 0.55, backgroundColor: color, transform: [{ rotate: '45deg' }] }} />
-        </View>
-    );
+    // Simplified back down per feedback — the crossing-arrows version was
+    // "less minimalistic, more complicated" than wanted. Back to an X, but
+    // squashed (shallower angle, shorter bars) rather than a full 45°
+    // symmetric X, so it still reads distinctly from a close/cancel button.
+    const bar = size * 0.72;
     return (
         <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
-            <Strand rotate="26deg" />
-            <Strand rotate="-26deg" />
+            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '22deg' }] }} />
+            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-22deg' }] }} />
         </View>
     );
 }
 
 export function LoopIcon({ size = 22, color = '#333', single = false, style }) {
-    // Drawn (not a text glyph) to match the rest of this file — the old
-    // "↺¹" Unicode string rendered inconsistently across fonts, and always
-    // showed the "1" even while off, implying repeat-one was already
-    // active. The "1" badge now only renders when `single` is actually true.
-    // `color` may be a plain string or an Animated interpolation.
+    // Simplified back down per feedback, same as ShuffleIcon above — a
+    // plain ring ("O") instead of the gapped-ring-plus-arrowhead version.
+    // The "1" badge (repeat-one specifically) is the only thing that isn't
+    // pure decoration, so it stays.
     const ring = size * 0.72;
-    const bw = Math.max(2, size * 0.1);
+    const bw = Math.max(2, size * 0.11);
     return (
         <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
-            <Animated.View style={{
-                width: ring, height: ring, borderRadius: ring / 2, borderWidth: bw,
-                borderColor: color, borderTopColor: 'transparent', borderRightColor: 'transparent',
-                transform: [{ rotate: '45deg' }],
-            }} />
-            <Animated.View style={{
-                position: 'absolute', top: size * 0.06, right: size * 0.16,
-                width: size * 0.16, height: size * 0.16, backgroundColor: color,
-                transform: [{ rotate: '45deg' }],
-            }} />
+            <Animated.View style={{ width: ring, height: ring, borderRadius: ring / 2, borderWidth: bw, borderColor: color }} />
             {single && (
                 <Animated.Text style={{ position: 'absolute', bottom: -2, right: -4, fontSize: size * 0.42, fontWeight: '800', color }}>1</Animated.Text>
             )}
