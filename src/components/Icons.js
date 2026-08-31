@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Animated } from 'react-native';
+import { View, Animated, Text } from 'react-native';
 
 // Pure-CSS/View icons — no emoji, no SVG library dependency.
 // Sizes are the visual bounding box; colors passed as `color`.
@@ -65,11 +65,53 @@ export function SkipPrevIcon({ size = 26, color = '#ccc', style }) {
 }
 
 export function ShuffleIcon({ size = 22, color = '#333', style }) {
-    const bar = size * 0.86;
+    // Two crossing lines, each with a small arrowhead at one end — a plain
+    // "X" (no arrowheads) reads as a close/cancel button, not shuffle.
+    // `color` may be a plain string or an Animated interpolation (the
+    // on/off fade), so every colored piece below is an Animated.View.
+    const bar = size * 0.78;
+    const arrow = size * 0.22;
+    const Strand = ({ rotate }) => (
+        <View style={{
+            position: 'absolute', width: bar, height: arrow,
+            alignItems: 'flex-end', justifyContent: 'center',
+            transform: [{ rotate }],
+        }}>
+            <Animated.View style={{ position: 'absolute', left: 0, right: arrow * 0.5, height: 2, backgroundColor: color, borderRadius: 1 }} />
+            <Animated.View style={{ width: arrow * 0.55, height: arrow * 0.55, backgroundColor: color, transform: [{ rotate: '45deg' }] }} />
+        </View>
+    );
     return (
         <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
-            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '28deg' }] }} />
-            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-28deg' }] }} />
+            <Strand rotate="26deg" />
+            <Strand rotate="-26deg" />
+        </View>
+    );
+}
+
+export function LoopIcon({ size = 22, color = '#333', single = false, style }) {
+    // Drawn (not a text glyph) to match the rest of this file — the old
+    // "↺¹" Unicode string rendered inconsistently across fonts, and always
+    // showed the "1" even while off, implying repeat-one was already
+    // active. The "1" badge now only renders when `single` is actually true.
+    // `color` may be a plain string or an Animated interpolation.
+    const ring = size * 0.72;
+    const bw = Math.max(2, size * 0.1);
+    return (
+        <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
+            <Animated.View style={{
+                width: ring, height: ring, borderRadius: ring / 2, borderWidth: bw,
+                borderColor: color, borderTopColor: 'transparent', borderRightColor: 'transparent',
+                transform: [{ rotate: '45deg' }],
+            }} />
+            <Animated.View style={{
+                position: 'absolute', top: size * 0.06, right: size * 0.16,
+                width: size * 0.16, height: size * 0.16, backgroundColor: color,
+                transform: [{ rotate: '45deg' }],
+            }} />
+            {single && (
+                <Animated.Text style={{ position: 'absolute', bottom: -2, right: -4, fontSize: size * 0.42, fontWeight: '800', color }}>1</Animated.Text>
+            )}
         </View>
     );
 }

@@ -15,6 +15,7 @@ import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
 import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { useListArt } from '../hooks/useListArt';
+import { squircle } from '../utils/squircle';
 
 // Reuses the exact same 4 sorts as the playlist screen, for the same reason
 // they're offered there — this list is functionally "the All Songs
@@ -44,7 +45,7 @@ export default function AllSongsScreen() {
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers, artistSeparator } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -198,7 +199,7 @@ export default function AllSongsScreen() {
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
                             <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
                                 {showSongCovers && (
-                                    <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                    <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                         {artMap[item.id]
                                             ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
                                             : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
@@ -250,7 +251,7 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumb: { width: 42, height: 42, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },
 });

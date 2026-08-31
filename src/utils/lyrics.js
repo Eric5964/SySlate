@@ -36,6 +36,17 @@ function parseLRC(text) {
 // open recently."
 const memCache = createBoundedCache(40);
 
+// Synchronous cache check, no file I/O — lets a caller (PlayerScreen, on
+// mount/track-change) know the answer immediately if this song's lyrics
+// were already resolved earlier this session, instead of always waiting a
+// tick on getLyrics()'s promise even for a pure cache hit. Returns
+// undefined if unknown (never checked, or evicted), so the caller can tell
+// "no lyrics" (null) apart from "haven't looked yet".
+export function peekLyrics(songId) {
+    if (!songId || !memCache.has(songId)) return undefined;
+    return memCache.get(songId);
+}
+
 // Returns a sorted array of { time (seconds), text } entries, or null if
 // there's no matching .lrc file (or it has no parseable timed lines).
 // Looks for a sibling file with the same name, .lrc extension, next to the

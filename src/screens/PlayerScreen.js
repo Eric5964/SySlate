@@ -6,10 +6,10 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
-import { getLyrics, activeLyricIndex } from '../utils/lyrics';
+import { getLyrics, activeLyricIndex, peekLyrics } from '../utils/lyrics';
 import { useTheme } from '../context/ThemeContext';
 import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
-import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
+import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, LoopIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
 // import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
@@ -79,7 +79,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -296,12 +296,26 @@ export default function PlayerScreen() {
     // cover but makes the toggle available. Either way this resets on
     // every track change, not just once — a manual toggle from a previous
     // song shouldn't carry over to the next one.
-    const [lyricsData, setLyricsData] = useState(null);
-    const [showingLyrics, setShowingLyrics] = useState(false);
+    const initialLyricsPeek = lyricsMode !== 'off' ? peekLyrics(currentTrack?.id) : undefined;
+    const [lyricsData, setLyricsData] = useState(() => (initialLyricsPeek !== undefined ? initialLyricsPeek : null));
+    const [showingLyrics, setShowingLyrics] = useState(() => lyricsMode === 'auto' && !!initialLyricsPeek);
     useEffect(() => {
         if (lyricsMode === 'off' || !currentTrack?.id) {
             setLyricsData(null);
             setShowingLyrics(false);
+            return;
+        }
+        // Already resolved this song's lyrics earlier this session (common
+        // — reopening the Player, or a background prefetch already ran) —
+        // apply immediately instead of always going through the promise
+        // below, which was the actual source of the "cover shows for a
+        // split second before lyrics" report: even a cache-hit promise
+        // still resolves a tick after first paint, so the cover-first frame
+        // rendered every time regardless of how fast the real lookup was.
+        const cached = peekLyrics(currentTrack.id);
+        if (cached !== undefined) {
+            setLyricsData(cached);
+            setShowingLyrics(lyricsMode === 'auto' && !!cached);
             return;
         }
         let cancelled = false;
@@ -317,24 +331,48 @@ export default function PlayerScreen() {
     // reusing it here instead of a second position subscription. Lyric
     // timestamps are usually a few seconds apart at minimum, so 500ms
     // resolution is more than enough to catch each line change on time.
-    const activeLine = lyricsData ? activeLyricIndex(lyricsData, progress.position) : -1;
+    // Same "is progress real yet" gate used everywhere else in this file
+    // (pct, animPct, etc.) — useProgress reports position:0/duration:0 for
+    // a tick after mount before its first real poll lands. Without this,
+    // activeLine briefly computed against position 0 regardless of where
+    // the song actually is, so the lyrics view jumped to the very first
+    // line and then jumped again once the real position arrived a moment
+    // later — the reported "not synced when the player is just opened".
+    const activeLine = (lyricsData && progress.duration > 0) ? activeLyricIndex(lyricsData, progress.position + lyricsOffsetSec) : -1;
 
-    const lyricsFade = useRef(new Animated.Value(0)).current; // 0 = cover, 1 = lyrics
+    // Seeded from the same initial guess as showingLyrics above (not always
+    // 0/cover) so a cache-hit mount goes straight to lyrics without playing
+    // the 280ms crossfade on first paint — that fade is for a real
+    // cover<->lyrics transition, not something that should visibly happen
+    // every time the Player screen opens.
+    const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // 0 = cover, 1 = lyrics
+    const lyricsFadeMounted = useRef(false);
     useEffect(() => {
+        if (!lyricsFadeMounted.current) { lyricsFadeMounted.current = true; return; }
         Animated.timing(lyricsFade, { toValue: showingLyrics ? 1 : 0, duration: 280, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
     }, [showingLyrics]);
 
     const lyricsScrollRef = useRef(null);
     const lyricsRowYRef = useRef(new Map());
+    // Manual scroll support: dragging the lyrics view pauses auto-sync;
+    // after `lyricsResyncSec` idle seconds (Settings → Lyrics), it resumes
+    // and snaps back to the currently-playing line.
+    const [lyricsManualScroll, setLyricsManualScroll] = useState(false);
+    const lyricsResyncTimer = useRef(null);
+    const armResyncTimer = () => {
+        if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current);
+        lyricsResyncTimer.current = setTimeout(() => setLyricsManualScroll(false), lyricsResyncSec * 1000);
+    };
+    useEffect(() => () => { if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current); }, []);
     useEffect(() => {
-        if (!showingLyrics || activeLine < 0) return;
+        if (!showingLyrics || activeLine < 0 || lyricsManualScroll) return;
         const y = lyricsRowYRef.current.get(activeLine);
         if (y === undefined) return;
         // Centers the active line roughly a third of the way down the
         // lyrics box rather than dead center — reads more naturally, closer
         // to how lock-screen/streaming-app lyrics views usually scroll.
-        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 80) * 0.32), animated: true });
-    }, [activeLine, showingLyrics]);
+        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.32), animated: true });
+    }, [activeLine, showingLyrics, lyricsManualScroll]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
     // switch, or if the running animation has drifted noticeably from what
@@ -455,7 +493,7 @@ export default function PlayerScreen() {
                 up on a taller screen, instead of one big empty gap. */}
             <View style={s.middle}>
                 <View style={s.artWrap}>
-                    <View style={[s.art, { borderColor: theme.accentDim, shadowColor: theme.accent, borderRadius: squircle(width - 80) }]}>
+                    <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
                         {/* Cover and lyrics occupy the exact same box, cross-fading
                             between them via opacity alone (native-driver-safe — no
                             color interpolation involved, unlike the shuffle/loop
@@ -477,15 +515,22 @@ export default function PlayerScreen() {
                                     style={{ flex: 1 }}
                                     contentContainerStyle={s.lyricsContent}
                                     showsVerticalScrollIndicator={false}
-                                    scrollEnabled={false}
+                                    scrollEnabled={showingLyrics}
+                                    onScrollBeginDrag={() => {
+                                        if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current);
+                                        setLyricsManualScroll(true);
+                                    }}
+                                    onScrollEndDrag={armResyncTimer}
+                                    onMomentumScrollEnd={armResyncTimer}
                                 >
-                                    {/* scrollEnabled false — the lyrics only ever move via
-                                        the sync-driven scrollTo above, never by a manual
-                                        drag. A user-scrollable ScrollView here would compete
-                                        with the swipe-to-dismiss gesture for the same
-                                        vertical touch, which is exactly what needed
-                                        avoiding for the control buttons lower on this
-                                        screen — same concern, same fix. */}
+                                    {/* Was scrollEnabled={false} — the swipe-to-dismiss
+                                        gesture that used to be the concern is limited (via
+                                        gestureResponseDistance, set from the controls row
+                                        below) to starting above the control row, and a
+                                        RNGH-composed ScrollView generally yields to a
+                                        surrounding pan gesture at its own scroll bounds
+                                        anyway. If the two still fight in practice, that's
+                                        worth a follow-up report with which one wins. */}
                                     {lyricsData.map((line, i) => (
                                         <Text
                                             key={i}
@@ -501,16 +546,21 @@ export default function PlayerScreen() {
                     </View>
                 </View>
 
-                {/* Only shown when there's actually something to toggle to —
-                    feature off, or this specific song has no matching .lrc,
-                    both mean no button at all rather than a dead tap target. */}
-                {lyricsMode !== 'off' && lyricsData && (
-                    <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
-                        <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
-                            {showingLyrics ? 'Show cover' : 'Show lyrics'}
-                        </Text>
-                    </TouchableOpacity>
-                )}
+                {/* Always-reserved slot, whether or not the button inside it
+                     renders — otherwise `middle`'s space-evenly layout
+                     recalculates every gap the moment a song with/without
+                     lyrics loads, visibly shifting the title down (or up)
+                     depending on whether this song happens to have an .lrc
+                     file. The slot's height is fixed regardless. */}
+                <View style={s.lyricsToggleSlot}>
+                    {lyricsMode !== 'off' && lyricsData && (
+                        <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
+                            <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
+                                {showingLyrics ? 'Show cover' : 'Show lyrics'}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
 
                 <View style={s.trackInfoGroup}>
                     <View style={s.info}>
@@ -581,10 +631,10 @@ export default function PlayerScreen() {
                         an instant visual response the moment the finger
                         touches down, independent of everything else. */}
                     <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
-                        <ShuffleIcon size={25} color={shuffleColor} />
+                        <ShuffleIcon size={28} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipPrevIcon size={28} color={skipIconColor} />
+                        <SkipPrevIcon size={31} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity
                         onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
@@ -593,10 +643,10 @@ export default function PlayerScreen() {
                         {isPlaying ? <PauseIcon size={26} color={theme.onAccent} /> : <PlayIcon size={26} color={theme.onAccent} />}
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipNextIcon size={28} color={skipIconColor} />
+                        <SkipNextIcon size={31} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
-                        <Animated.Text style={[s.sideIcon, { color: loopColor }]}>↺¹</Animated.Text>
+                        <LoopIcon size={28} color={loopColor} single={singleLoop} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -619,15 +669,16 @@ const s = StyleSheet.create({
     topLabel: { color: '#444', fontSize: 13, flex: 1, textAlign: 'center' },
     middle: { flex: 1, justifyContent: 'space-evenly' },
     artWrap: { alignItems: 'center' },
-    art: { width: width - 80, height: width - 80, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
+    art: { width: width - 56, height: width - 56, backgroundColor: '#0f0f0f', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     // Small text button matching the sort-label style used elsewhere
     // (Playlist/All Songs sort buttons) — plain text, no background, no
     // arrow, same visual weight as those.
-    lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 8, marginTop: 10 },
+    lyricsToggleSlot: { height: 42, justifyContent: 'center', alignItems: 'center' },
+    lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 8 },
     lyricsToggleText: { fontSize: 13, fontWeight: '600' },
-    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 22 },
+    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 28 },
     lyricLine: { fontSize: 17, lineHeight: 26, fontWeight: '500', textAlign: 'center', marginVertical: 6 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },

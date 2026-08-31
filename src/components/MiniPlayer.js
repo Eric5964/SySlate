@@ -5,6 +5,7 @@ import { usePlaybackState, State, useProgress } from 'react-native-track-player'
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePreferences } from '../context/PreferencesContext';
 import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
@@ -18,6 +19,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack } = usePlayback();
     const { theme, base } = useTheme();
+    const { coverShape } = usePreferences();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
@@ -84,7 +86,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             <View pointerEvents="none" style={styles.miniProgressTrack}>
                 <Animated.View style={[styles.miniProgressFill, { width: animWidth, backgroundColor: theme.accent }]} />
             </View>
-            <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE) }]}>
+            <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                 {artwork
                     ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                     : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>

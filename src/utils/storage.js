@@ -165,6 +165,12 @@ export const setArtistSeparator = (v) => safe(() => AsyncStorage.setItem('artist
 export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'off'), 'off');
 export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode', v), null);
 
+// 'rounded' (squircle, matches the app's existing default everywhere) or
+// 'square' (sharp corners) — applies to every cover-art element app-wide
+// (see utils/squircle.js).
+export const getCoverShape = () => safe(() => AsyncStorage.getItem('cover_shape').then(v => v ?? 'rounded'), 'rounded');
+export const setCoverShape = (v) => safe(() => AsyncStorage.setItem('cover_shape', v), null);
+
 // Previous button behavior. 'previous_track' — pressing it always skips to
 // the previous track, no matter where you are in the current one.
 // 'restart_or_previous' — pressing it restarts the CURRENT track from
@@ -181,6 +187,20 @@ export const setPrevButtonMode = (v) => safe(() => AsyncStorage.setItem('prev_bu
 // goes to the previous track instead of restarting the current one.
 export const getRestartThresholdSec = () => safe(() => AsyncStorage.getItem('restart_threshold_sec').then(v => v !== null ? parseFloat(v) : 3), 3);
 export const setRestartThresholdSec = (v) => safe(() => AsyncStorage.setItem('restart_threshold_sec', String(v)), null);
+
+// How long a manual scroll through the lyrics view sits idle before it
+// snaps back to following the song automatically. 0 = never auto-follow
+// again until the user re-enables it — wait, 0 actually means "snap back
+// immediately", i.e. effectively no manual scrolling sticks at all.
+export const getLyricsResyncSec = () => safe(() => AsyncStorage.getItem('lyrics_resync_sec').then(v => v !== null ? parseFloat(v) : 4), 4);
+export const setLyricsResyncSec = (v) => safe(() => AsyncStorage.setItem('lyrics_resync_sec', String(v)), null);
+
+// Shifts which line counts as "active" earlier/later relative to the
+// song's real position, in seconds — some .lrc files are timed a beat off.
+// Positive = lyrics shown earlier (subtracted from playback position before
+// matching against the timestamps), negative = later.
+export const getLyricsOffsetSec = () => safe(() => AsyncStorage.getItem('lyrics_offset_sec').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics_offset_sec', String(v)), null);
 
 // Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
 // separately, persisted across app restarts.
@@ -269,7 +289,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

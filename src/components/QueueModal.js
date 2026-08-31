@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, Interactio
 import TrackPlayer, { Event } from 'react-native-track-player';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
+import { squircle } from '../utils/squircle';
 import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
@@ -106,7 +107,7 @@ function ShrinkOutRow({ removing, children }) {
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
-    const { showSongCovers, showPlayCount, artistSeparator } = usePreferences();
+    const { showSongCovers, showPlayCount, artistSeparator, coverShape } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
@@ -335,7 +336,7 @@ export default function QueueModal({ visible, onClose }) {
                         specific to the queue context. */}
                     <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
                         {showSongCovers && (
-                            <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                            <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                 {artMap[song.id]
                                     ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
                                     : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
@@ -387,7 +388,7 @@ export default function QueueModal({ visible, onClose }) {
                             <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
                                 <View style={[s.qRow, { backgroundColor: base.border }]}>
                                     {showSongCovers && (
-                                        <View style={[s.thumb, { backgroundColor: base.bg }]}>
+                                        <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                             {currentTrack.artwork
                                                 ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
                                                 : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
@@ -437,7 +438,7 @@ const s = StyleSheet.create({
     qTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     qArtist: { color: '#555', fontSize: 12, marginTop: 3 },
     qPlayCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, borderRadius: 8, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumb: { width: 42, height: 42, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },
 });

@@ -4,7 +4,10 @@ import {
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
     getArtistSeparator, setArtistSeparator as persistArtistSeparator,
     getLyricsMode, setLyricsMode as persistLyricsMode,
+    getLyricsResyncSec, setLyricsResyncSec as persistLyricsResyncSec,
+    getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
+    getCoverShape, setCoverShape as persistCoverShape,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -19,7 +22,10 @@ const Ctx = createContext({
     showSongCovers: false, setShowSongCovers: () => { },
     artistSeparator: ';', setArtistSeparator: () => { },
     lyricsMode: 'off', setLyricsMode: () => { },
+    lyricsResyncSec: 4, setLyricsResyncSec: () => { },
+    lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
+    coverShape: 'rounded', setCoverShape: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -27,14 +33,20 @@ export function PreferencesProvider({ children }) {
     const [showSongCovers, setShowSongCoversState] = useState(false);
     const [artistSeparator, setArtistSeparatorState] = useState(';');
     const [lyricsMode, setLyricsModeState] = useState('off');
+    const [lyricsResyncSec, setLyricsResyncSecState] = useState(4);
+    const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
+    const [coverShape, setCoverShapeState] = useState('rounded');
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
         getArtistSeparator().then(setArtistSeparatorState);
         getLyricsMode().then(setLyricsModeState);
+        getLyricsResyncSec().then(setLyricsResyncSecState);
+        getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
+        getCoverShape().then(setCoverShapeState);
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -56,6 +68,18 @@ export function PreferencesProvider({ children }) {
         setLyricsModeState(v);
         persistLyricsMode(v);
     }, []);
+    const setLyricsResyncSec = useCallback((v) => {
+        setLyricsResyncSecState(v);
+        persistLyricsResyncSec(v);
+    }, []);
+    const setLyricsOffsetSec = useCallback((v) => {
+        setLyricsOffsetSecState(v);
+        persistLyricsOffsetSec(v);
+    }, []);
+    const setCoverShape = useCallback((v) => {
+        setCoverShapeState(v);
+        persistCoverShape(v);
+    }, []);
     const setKeepScreenAwake = useCallback((v) => {
         setKeepScreenAwakeState(v);
         persistKeepScreenAwake(v);
@@ -67,7 +91,10 @@ export function PreferencesProvider({ children }) {
             showSongCovers, setShowSongCovers,
             artistSeparator, setArtistSeparator,
             lyricsMode, setLyricsMode,
+            lyricsResyncSec, setLyricsResyncSec,
+            lyricsOffsetSec, setLyricsOffsetSec,
             keepScreenAwake, setKeepScreenAwake,
+            coverShape, setCoverShape,
         }}>
             {children}
         </Ctx.Provider>

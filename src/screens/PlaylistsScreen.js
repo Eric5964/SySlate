@@ -6,6 +6,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePreferences } from '../context/PreferencesContext';
 import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import {
@@ -39,7 +40,7 @@ const FORMATS = [
 // Memoized so opening/closing the long-press menu (state lives in the parent)
 // doesn't force every visible row to re-render — that re-render of the whole
 // list was what made the long-press feel choppy.
-const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, onOpen, onLongPress }) {
+const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, coverShape, onOpen, onLongPress }) {
     const bg = playlistColor(item.name);
 
     const renderArt = (size, fontSize) => cover
@@ -53,7 +54,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
                 style={[s.gridItem, { width: size, margin: CELL_MARGIN, backgroundColor: base.surface }]}
                 onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}
             >
-                <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size) }]}>
+                <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size, coverShape) }]}>
                     {renderArt(numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
                 </View>
                 <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
@@ -64,7 +65,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
     return (
         <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}>
             {format === 'list_art' && (
-                <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(50) }]}>
+                <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(50, coverShape) }]}>
                     {renderArt(22, 22)}
                 </View>
             )}
@@ -80,6 +81,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
 export default function PlaylistsScreen() {
     const { playlists, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
+    const { coverShape } = usePreferences();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
     const [covers, setCovers] = useState({});
@@ -198,6 +200,7 @@ export default function PlaylistsScreen() {
                                 numCols={numCols}
                                 cover={covers[item.path]}
                                 base={base}
+                                coverShape={coverShape}
                                 onOpen={() => openPlaylist(item)}
                                 onLongPress={() => setMenuFor(item)}
                             />
