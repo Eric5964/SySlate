@@ -14,6 +14,7 @@ import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
 // import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
+import ScreenBackground from '../components/ScreenBackground';
 import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
@@ -334,22 +335,33 @@ export default function PlayerScreen() {
         return () => { cancelled = true; };
     }, [currentTrack?.id, lyricsMode]);
 
-    // useProgress's polling was the shared assumption here, but it appears
-    // to slow or stop updating while paused (reasonable for its own
-    // purpose — the progress bar isn't moving either) — which meant lyrics
-    // opened, or left, permanently unsynced any time the player was paused
-    // rather than actively playing. Lyrics need their own always-on read
-    // regardless of play state, so this polls TrackPlayer directly whenever
-    // lyrics are actually visible, independent of useProgress entirely.
+    // Only polls directly when useProgress doesn't yet have real data to
+    // offer — either genuinely paused (position isn't moving on its own, so
+    // one read per pause/track-change is enough), or playing but
+    // useProgress hasn't ticked yet since mount/track-change (its own poll
+    // interval hasn't landed once yet). That second case is why lyrics
+    // previously stayed on the wrong line until the NEXT natural line
+    // change caught it up — activeLine was gated on progress.duration but
+    // nothing seeded a real value in the meantime. Deliberately NOT
+    // continuous while progress.duration is already known and playing:
+    // getProgress() and setVolume() share the same JS-bridge queue, so a
+    // second poller running throughout playback could delay fadeVol's
+    // ~25/sec setVolume steps — audible as jitter, and very likely the
+    // actual cause of the newly-reported "ramping is glitchy/jumpy going
+    // into a song" after this was first added as an always-on interval.
     const [lyricsProgress, setLyricsProgress] = useState({ position: 0, duration: 0 });
+    const progressKnown = progress.duration > 0;
     useEffect(() => {
-        if (!showingLyrics) return;
+        if (!showingLyrics || (isPlaying && progressKnown)) return;
         let cancelled = false;
-        const poll = () => TrackPlayer.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
-        poll();
-        const interval = setInterval(poll, 500);
-        return () => { cancelled = true; clearInterval(interval); };
-    }, [showingLyrics, currentTrack?.id]);
+        TrackPlayer.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
+        return () => { cancelled = true; };
+    }, [showingLyrics, isPlaying, progressKnown, currentTrack?.id]);
+
+    // Prefer useProgress's own live value once it's actually populated;
+    // otherwise (paused, or playing but not populated yet) fall back to the
+    // one-shot read above.
+    const effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgress;
 
     // Same "is progress real yet" gate used elsewhere in this file (pct,
     // animPct, etc.) — position:0/duration:0 before the first real poll
@@ -358,7 +370,7 @@ export default function PlayerScreen() {
     // to the very first line and then jumped again once the real position
     // arrived a moment later — the reported "not synced when the player is
     // just opened".
-    const activeLine = (lyricsData && lyricsProgress.duration > 0) ? activeLyricIndex(lyricsData, lyricsProgress.position + lyricsOffsetSec) : -1;
+    const activeLine = (lyricsData && effectiveLyricsProgress.duration > 0) ? activeLyricIndex(lyricsData, effectiveLyricsProgress.position + lyricsOffsetSec) : -1;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -485,14 +497,14 @@ export default function PlayerScreen() {
     };
 
     return (
-        <View style={[s.container, { paddingTop: insets.top + 6, backgroundColor: base.bg }]}>
+        <ScreenBackground style={[s.container, { paddingTop: insets.top + 6 }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                 </TouchableOpacity>
-                <Text style={s.topLabel} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
+                <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} bgColor={base.bg} />
@@ -693,7 +705,7 @@ export default function PlayerScreen() {
             {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
             <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
-        </View>
+        </ScreenBackground>
     );
 }
 
@@ -705,7 +717,7 @@ const s = StyleSheet.create({
     topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     topIcon: { fontSize: 26 },
     topTag: { fontSize: 16, fontWeight: '700' },
-    topLabel: { color: '#444', fontSize: 13, flex: 1, textAlign: 'center' },
+    topLabel: { fontSize: 15, fontWeight: '500', flex: 1, textAlign: 'center' },
     middle: { flex: 1, justifyContent: 'space-evenly' },
     artWrap: { alignItems: 'center' },
     art: { width: width - 56, height: width - 56, backgroundColor: '#0f0f0f', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
@@ -714,10 +726,14 @@ const s = StyleSheet.create({
     // Small text button matching the sort-label style used elsewhere
     // (Playlist/All Songs sort buttons) — plain text, no background, no
     // arrow, same visual weight as those.
-    lyricsToggleSlot: { height: 42, justifyContent: 'center', alignItems: 'center' },
-    lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 14, paddingVertical: 8 },
-    lyricsToggleText: { fontSize: 13, fontWeight: '600' },
-    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 28 },
+    // Condensed and pulled up per feedback — was reading as a prominent
+    // standalone button (large tap padding, bold weight, full accent
+    // color); now smaller, thinner, and lighter so it sits closer to the
+    // title instead of announcing itself as separate control.
+    lyricsToggleSlot: { height: 28, justifyContent: 'flex-start', alignItems: 'center', marginTop: -6 },
+    lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
+    lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
+    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
     lyricLine: { fontSize: 21, lineHeight: 30, fontWeight: '500', textAlign: 'center', marginVertical: 7 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },

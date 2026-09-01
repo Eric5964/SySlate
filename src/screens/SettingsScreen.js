@@ -12,6 +12,7 @@ import { useTheme, THEMES, BASE_COLORS } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
+import ScreenBackground from '../components/ScreenBackground';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
@@ -52,7 +53,9 @@ import {
     getRestartThresholdSec, setRestartThresholdSec,
     getAlbumFromFolder, setAlbumFromFolder,
     exportAllSettings, importAllSettings,
+    persistCoverImage,
 } from '../utils/storage';
+import * as ImagePicker from 'expo-image-picker';
 
 const SCREEN_W = Dimensions.get('window').width;
 const SWATCH_GAP = 12;
@@ -81,7 +84,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -97,6 +100,20 @@ export default function SettingsScreen() {
     const [albumFromFolder, setAlbumFromFolderState] = useState(false);
     const [prevButtonMode, setPrevButtonModeState] = useState('previous_track');
     const [restartThreshold, setRestartThresholdState] = useState(3);
+    // Local mirrors for live drag feedback — lyricsResyncSec/lyricsOffsetSec
+    // themselves live in PreferencesContext (PlayerScreen needs them too),
+    // but PureSlider needs onValueChange to update something on every drag
+    // tick, not just onSlidingComplete on release. Using the context setter
+    // directly for onValueChange would work visually but fire an
+    // AsyncStorage write on every pixel of drag movement instead of once on
+    // release — mirroring locally and only persisting via onSlidingComplete
+    // avoids that. Resynced from context whenever it changes, so this still
+    // picks up the real value once PreferencesContext's own async load
+    // resolves, not just whatever it was at this component's mount.
+    const [lyricsResyncLocal, setLyricsResyncLocal] = useState(lyricsResyncSec);
+    useEffect(() => { setLyricsResyncLocal(lyricsResyncSec); }, [lyricsResyncSec]);
+    const [lyricsOffsetLocal, setLyricsOffsetLocal] = useState(lyricsOffsetSec);
+    useEffect(() => { setLyricsOffsetLocal(lyricsOffsetSec); }, [lyricsOffsetSec]);
 
     useEffect(() => {
         (async () => {
@@ -173,8 +190,25 @@ export default function SettingsScreen() {
         </TouchableOpacity>
     );
 
+    const pickBackgroundImage = async () => {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+            Alert.alert('Permission needed', 'Allow Photos access in Settings to set a background image.');
+            return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsEditing: false,
+            quality: 0.8,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        const permanentUri = await persistCoverImage(result.assets[0].uri);
+        setBackgroundImageUri(permanentUri);
+        setBackgroundImageEnabled(true);
+    };
+
     return (
-        <View style={[s.container, { backgroundColor: base.bg }]}>
+        <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}><Text style={s.title}>Settings</Text></View>
             {!loaded ? null : (
@@ -386,9 +420,10 @@ export default function SettingsScreen() {
                                 How long the lyrics view stays where you scrolled it before
                                 snapping back to follow the song automatically
                             </Text>
-                            <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncSec.toFixed(0)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={1} value={lyricsResyncSec}
-                                onSlidingComplete={setLyricsResyncSec}
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(0)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={1} value={lyricsResyncLocal}
+                                onValueChange={setLyricsResyncLocal}
+                                onSlidingComplete={v => { setLyricsResyncLocal(v); setLyricsResyncSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
                             <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
@@ -397,10 +432,11 @@ export default function SettingsScreen() {
                                 positive shows each line sooner, negative later
                             </Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>
-                                {lyricsOffsetSec > 0 ? '+' : ''}{lyricsOffsetSec.toFixed(1)}s
+                                {lyricsOffsetLocal > 0 ? '+' : ''}{lyricsOffsetLocal.toFixed(1)}s
                             </Text>
-                            <PureSlider style={s.slider} minimumValue={-3} maximumValue={3} step={0.5} value={lyricsOffsetSec}
-                                onSlidingComplete={setLyricsOffsetSec}
+                            <PureSlider style={s.slider} minimumValue={-3} maximumValue={3} step={0.5} value={lyricsOffsetLocal}
+                                onValueChange={setLyricsOffsetLocal}
+                                onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
                         </>
@@ -465,7 +501,7 @@ export default function SettingsScreen() {
                                 onValueChange={setRestartThresholdState}
                                 onSlidingComplete={v => { setRestartThresholdState(v); setRestartThresholdSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>24s</Text></View>
                         </>
                     )}
                 </Section>
@@ -488,6 +524,32 @@ export default function SettingsScreen() {
                         <View style={s.swatchRow}>
                             {baseEntries.map(renderBaseSwatch)}
                         </View>
+                    </View>
+                </Section>
+
+                <Section title="Custom Background">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Use Background Image</Text>
+                            <Text style={s.toggleSub}>Replaces the plain background on All Songs, Playlists, Settings, Playlist, and the Player — not other colors</Text>
+                        </View>
+                        <Switch value={backgroundImageEnabled} onValueChange={v => {
+                            if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
+                            setBackgroundImageEnabled(v);
+                        }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 14, gap: 10 }}>
+                        <TouchableOpacity onPress={pickBackgroundImage} style={[s.sortChip, { backgroundColor: theme.accent }]}>
+                            <Text style={[s.sortChipText, { color: theme.onAccent }]}>
+                                {backgroundImageUri ? 'Change Image' : 'Choose Image'}
+                            </Text>
+                        </TouchableOpacity>
+                        {backgroundImageUri && (
+                            <TouchableOpacity onPress={() => { setBackgroundImageEnabled(false); setBackgroundImageUri(null); }} style={s.sortChip}>
+                                <Text style={s.sortChipText}>Remove</Text>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 </Section>
 
@@ -605,7 +667,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </KeyboardAvoidingView>
             </BottomSheet>
-        </View>
+        </ScreenBackground>
     );
 }
 

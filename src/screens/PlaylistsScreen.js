@@ -15,6 +15,7 @@ import {
     getPlaylistCovers, setPlaylistCover, persistCoverImage,
 } from '../utils/storage';
 import BottomSheet from '../components/BottomSheet';
+import ScreenBackground from '../components/ScreenBackground';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GRID_PADDING = 8;
@@ -167,7 +168,7 @@ export default function PlaylistsScreen() {
     };
 
     return (
-        <View style={[s.container, { backgroundColor: base.bg }]}>
+        <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}>
                 <Text style={s.title}>Playlists</Text>
@@ -223,7 +224,7 @@ export default function PlaylistsScreen() {
                     </>
                 )}
             </BottomSheet>
-        </View>
+        </ScreenBackground>
     );
 }
 

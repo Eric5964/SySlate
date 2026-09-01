@@ -69,11 +69,16 @@ export function ShuffleIcon({ size = 22, color = '#333', style }) {
     // "less minimalistic, more complicated" than wanted. Back to an X, but
     // squashed (shallower angle, shorter bars) rather than a full 45°
     // symmetric X, so it still reads distinctly from a close/cancel button.
+    // Explicit top/left instead of relying on the parent's
+    // alignItems/justifyContent to center these — absolutely-positioned
+    // children honoring flex alignment is inconsistent across RN versions,
+    // which is why the two bars weren't crossing exactly at center (visibly
+    // lopsided/"not smooth" up close).
     const bar = size * 0.72;
     return (
-        <View style={[{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }, style]}>
-            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '22deg' }] }} />
-            <Animated.View style={{ position: 'absolute', width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-22deg' }] }} />
+        <View style={[{ width: size, height: size }, style]}>
+            <Animated.View style={{ position: 'absolute', top: size / 2 - 1, left: (size - bar) / 2, width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '22deg' }] }} />
+            <Animated.View style={{ position: 'absolute', top: size / 2 - 1, left: (size - bar) / 2, width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-22deg' }] }} />
         </View>
     );
 }

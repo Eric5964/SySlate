@@ -8,6 +8,8 @@ import {
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
     getCoverShape, setCoverShape as persistCoverShape,
+    getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
+    getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -26,6 +28,8 @@ const Ctx = createContext({
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
+    backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
+    backgroundImageUri: null, setBackgroundImageUri: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -37,6 +41,8 @@ export function PreferencesProvider({ children }) {
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
+    const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
+    const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
@@ -47,6 +53,8 @@ export function PreferencesProvider({ children }) {
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
         getCoverShape().then(setCoverShapeState);
+        getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
+        getBackgroundImageUri().then(setBackgroundImageUriState);
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -80,6 +88,14 @@ export function PreferencesProvider({ children }) {
         setCoverShapeState(v);
         persistCoverShape(v);
     }, []);
+    const setBackgroundImageEnabled = useCallback((v) => {
+        setBackgroundImageEnabledState(v);
+        persistBgImageEnabled(v);
+    }, []);
+    const setBackgroundImageUri = useCallback((v) => {
+        setBackgroundImageUriState(v);
+        persistBgImageUri(v);
+    }, []);
     const setKeepScreenAwake = useCallback((v) => {
         setKeepScreenAwakeState(v);
         persistKeepScreenAwake(v);
@@ -100,9 +116,12 @@ export function PreferencesProvider({ children }) {
         lyricsOffsetSec, setLyricsOffsetSec,
         keepScreenAwake, setKeepScreenAwake,
         coverShape, setCoverShape,
+        backgroundImageEnabled, setBackgroundImageEnabled,
+        backgroundImageUri, setBackgroundImageUri,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape,
+        backgroundImageEnabled, backgroundImageUri,
     ]);
 
     return (

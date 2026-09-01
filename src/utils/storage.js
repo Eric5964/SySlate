@@ -171,6 +171,14 @@ export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode
 export const getCoverShape = () => safe(() => AsyncStorage.getItem('cover_shape').then(v => v ?? 'rounded'), 'rounded');
 export const setCoverShape = (v) => safe(() => AsyncStorage.setItem('cover_shape', v), null);
 
+// Whole-app custom background image — off by default, and the URI is only
+// meaningful once persisted locally (see persistCoverImage/the same pattern
+// used for playlist covers; a raw picker URI lives in a volatile cache dir).
+export const getBackgroundImageEnabled = () => safe(() => AsyncStorage.getItem('bg_image_enabled').then(v => v === 'true'), false);
+export const setBackgroundImageEnabled = (v) => safe(() => AsyncStorage.setItem('bg_image_enabled', v ? 'true' : 'false'), null);
+export const getBackgroundImageUri = () => safe(() => AsyncStorage.getItem('bg_image_uri'), null);
+export const setBackgroundImageUri = (v) => safe(() => v ? AsyncStorage.setItem('bg_image_uri', v) : AsyncStorage.removeItem('bg_image_uri'), null);
+
 // Previous button behavior. 'previous_track' — pressing it always skips to
 // the previous track, no matter where you are in the current one.
 // 'restart_or_previous' — pressing it restarts the CURRENT track from
@@ -289,7 +297,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'bg_image_enabled', 'bg_image_uri'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

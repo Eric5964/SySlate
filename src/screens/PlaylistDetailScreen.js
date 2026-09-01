@@ -16,6 +16,7 @@ import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
 // import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
 import QueueModal from '../components/QueueModal';
+import ScreenBackground from '../components/ScreenBackground';
 import { EDGE_SWIPE_WIDTH } from '../utils/layout';
 import { useListArt } from '../hooks/useListArt';
 
@@ -131,7 +132,7 @@ export default function PlaylistDetailScreen() {
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
 
     return (
-        <View style={[s.container, { backgroundColor: base.bg }]}>
+        <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
@@ -246,7 +247,7 @@ export default function PlaylistDetailScreen() {
 
             {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
-        </View>
+        </ScreenBackground>
     );
 }
 

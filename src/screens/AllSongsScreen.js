@@ -16,6 +16,7 @@ import { MenuBarsIcon } from '../components/Icons';
 import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
+import ScreenBackground from '../components/ScreenBackground';
 
 // Reuses the exact same 4 sorts as the playlist screen, for the same reason
 // they're offered there — this list is functionally "the All Songs
@@ -132,7 +133,7 @@ export default function AllSongsScreen() {
 
     return (
         <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <View style={[s.container, { backgroundColor: base.bg }]}>
+        <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
 
             {/* Same top-bar layout as the playlist screen: title, then a row
@@ -221,7 +222,7 @@ export default function AllSongsScreen() {
 
             {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} /> */}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
-        </View>
+        </ScreenBackground>
         </TouchableWithoutFeedback>
     );
 }
