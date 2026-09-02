@@ -506,7 +506,7 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
-    @objc(removeUpcomingTracks:resolver:rejecter:)
+    @objc(removeUpcomingTracks:rejecter:)
     func removeUpcomingTracks(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         if let idx = currentIndex {
             queue.removeSubrange((idx + 1)...)
