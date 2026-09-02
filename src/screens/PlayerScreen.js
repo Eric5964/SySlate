@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import TrackPlayer, { useProgress, usePlaybackState, State } from 'react-native-track-player';
+import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { usePreferences } from '../context/PreferencesContext';
@@ -87,7 +87,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -192,7 +192,7 @@ export default function PlayerScreen() {
                 const duration = progress.duration;
                 seekChainRef.current = seekChainRef.current.then(async () => {
                     if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
-                    try { await TrackPlayer.seekTo(targetRatio * duration); } catch { }
+                    try { await AudioEngine.seekTo(targetRatio * duration); } catch { }
                 });
             }
         }
@@ -354,7 +354,7 @@ export default function PlayerScreen() {
     useEffect(() => {
         if (!showingLyrics || (isPlaying && progressKnown)) return;
         let cancelled = false;
-        TrackPlayer.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
+        AudioEngine.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
         return () => { cancelled = true; };
     }, [showingLyrics, isPlaying, progressKnown, currentTrack?.id]);
 
@@ -544,7 +544,7 @@ export default function PlayerScreen() {
                         </View>
                         {lyricsData && (
                             <Animated.View
-                                style={[StyleSheet.absoluteFill, { opacity: lyricsFade, backgroundColor: base.bg, borderRadius: squircle(width - 56, coverShape), overflow: 'hidden' }]}
+                                style={[StyleSheet.absoluteFill, { opacity: lyricsFade, backgroundColor: base.bg, overflow: 'hidden' }, backgroundImageEnabled && { borderWidth: 1, borderColor: base.border }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <ScrollView
@@ -712,7 +712,7 @@ export default function PlayerScreen() {
 const HIT = { top: 20, bottom: 20, left: 20, right: 20 };
 
 const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#0a0a0a' },
+    container: { flex: 1 },
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
     topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     topIcon: { fontSize: 26 },

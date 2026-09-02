@@ -1,4 +1,4 @@
-import TrackPlayer, { Event, State } from 'react-native-track-player';
+import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
 
@@ -37,7 +37,7 @@ const isFadeOwner = (id) => activeFadeId === id;
 const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
 
 // Claims the fade lock BEFORE the caller populates a fresh native queue
-// (TrackPlayer.reset()+add()). That add() can itself fire a native
+// (AudioEngine.reset()+add()). That add() can itself fire a native
 // PlaybackTrackChanged event — and the listener below has a fallback that
 // forces volume to 1 immediately if no fade is claimed yet. Previously
 // nothing claimed the lock until playWithRamp() actually started running,
@@ -71,7 +71,7 @@ export function forceReleaseFade() {
 // run automatically the moment the ramp finishes.
 let pendingAction = null; // { run: () => void }
 
-function queueAction(run) {
+export function queueAction(run) {
     pendingAction = { run };
 }
 
@@ -86,13 +86,13 @@ function drainPending() {
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fadeVol(from, to, sec, ownerId) {
-    if (sec <= 0.05) { if (isFadeOwner(ownerId)) { TrackPlayer.setVolume(to).catch(() => { }); } return; }
+    if (sec <= 0.05) { if (isFadeOwner(ownerId)) { AudioEngine.setVolume(to).catch(() => { }); } return; }
     const STEPS = Math.max(10, Math.round(sec * 25));
     const totalMs = sec * 1000;
     const start = Date.now();
     for (let i = 1; i <= STEPS; i++) {
         if (!isFadeOwner(ownerId)) return;
-        TrackPlayer.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))).catch(() => { });
+        AudioEngine.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))).catch(() => { });
         if (i < STEPS) {
             const targetElapsed = totalMs * (i / STEPS);
             const wait = Math.max(0, targetElapsed - (Date.now() - start));
@@ -105,7 +105,7 @@ async function waitForPlaying(timeoutMs = 2500) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         try {
-            const state = await TrackPlayer.getState();
+            const state = await AudioEngine.getState();
             if (state === State.Playing) return true;
             if (state === State.Paused || state === State.Stopped) return false;
         } catch { return false; }
@@ -160,10 +160,10 @@ async function checkRampWindow(position, duration) {
                 releaseFade(id);
                 const newId = claimFade();
                 // Always restarts from silence rather than trusting
-                // TrackPlayer.getVolume() to report where the fade-out left
+                // AudioEngine.getVolume() to report where the fade-out left
                 // off — the native repeat/seek-to-0 that causes this whole
                 // path to run in the first place may itself reset volume as
-                // a side effect (same class of thing as TrackPlayer.reset()
+                // a side effect (same class of thing as AudioEngine.reset()
                 // doing it elsewhere), so a "current volume" read here isn't
                 // reliable. Forcing 0 first guarantees the full configured
                 // duration actually covers the full silence-to-full
@@ -174,7 +174,7 @@ async function checkRampWindow(position, duration) {
                 if (ramp > 0.05) {
                     naturalFadeInActive = true;
                     try {
-                        try { await TrackPlayer.setVolume(0); } catch { }
+                        try { await AudioEngine.setVolume(0); } catch { }
                         await fadeVol(0, 1, ramp, newId);
                     } finally {
                         // finally, not just a line after — fadeVol/setVolume
@@ -186,7 +186,7 @@ async function checkRampWindow(position, duration) {
                         naturalFadeInActive = false;
                     }
                 } else {
-                    try { await TrackPlayer.setVolume(1); } catch { }
+                    try { await AudioEngine.setVolume(1); } catch { }
                 }
                 releaseFade(newId);
                 drainPending();
@@ -219,16 +219,16 @@ async function checkRampWindow(position, duration) {
 
 function startWatcher() {
     if (!progressSub) {
-        progressSub = TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
+        progressSub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
             checkRampWindow(position, duration);
         });
     }
     if (!fallbackTimer) {
         fallbackTimer = setInterval(async () => {
             try {
-                const state = await TrackPlayer.getState();
+                const state = await AudioEngine.getState();
                 if (state !== State.Playing) return;
-                const p = await TrackPlayer.getProgress();
+                const p = await AudioEngine.getProgress();
                 await checkRampWindow(p.position, p.duration);
             } catch { }
         }, 400);
@@ -263,17 +263,17 @@ function stopWatcher() {
 // both halves of the transition always agree.
 export async function fadeOutCurrentIfPlaying(dur) {
     try {
-        const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
+        const wasPlaying = (await AudioEngine.getState()) === State.Playing;
         if (!wasPlaying) return;
         const id = claimFade();
         if (dur > 0.05) {
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
             await fadeVol(1, 0, dur, id);
         }
     } catch { }
 }
 
-export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer.play()) {
+export async function playWithRamp(preClaimedId, startAction = () => AudioEngine.play()) {
     if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;
     try {
@@ -296,7 +296,7 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
             // already committed to a ramped start. Narrow window, but real.
             rampInActive = true;
             try {
-                try { await TrackPlayer.setVolume(0); } catch { }
+                try { await AudioEngine.setVolume(0); } catch { }
                 try { await startAction(); } catch { }
                 const reallyPlaying = await waitForPlaying();
                 // If we never actually confirmed real playback within the
@@ -306,7 +306,7 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
                 // fade happened at all even though the ramp genuinely ran. Skip
                 // stright to full rather than guess at timing we don't have.
                 if (!reallyPlaying) {
-                    try { await TrackPlayer.setVolume(1); } catch { }
+                    try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
                 } else {
                     // Longer settle margin than before (50ms) — State.Playing
@@ -324,7 +324,7 @@ export async function playWithRamp(preClaimedId, startAction = () => TrackPlayer
             }
         } else {
             if (preClaimedId) releaseFade(preClaimedId);
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
             try { await startAction(); } catch { }
         }
         startWatcher();
@@ -361,15 +361,15 @@ export async function pauseWithRamp() {
         rampLock = true;
         try {
             let current = 1;
-            try { current = await TrackPlayer.getVolume(); } catch { }
+            try { current = await AudioEngine.getVolume(); } catch { }
             const outDur = await getSkipRamp();
             if (outDur > 0.05 && current > 0.02) {
                 const id = claimFade();
                 await fadeVol(current, 0, outDur, id);
                 releaseFade(id);
             }
-            try { await TrackPlayer.pause(); } catch { }
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.pause(); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
         } finally {
             await sleep(60);
             rampLock = false;
@@ -399,10 +399,10 @@ export async function pauseWithRamp() {
             const id = claimFade();
             await fadeVol(1, 0, ramp, id);
             releaseFade(id);
-            try { await TrackPlayer.pause(); } catch { }
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.pause(); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
         } else {
-            try { await TrackPlayer.pause(); } catch { }
+            try { await AudioEngine.pause(); } catch { }
         }
     } finally {
         await sleep(60);
@@ -417,8 +417,8 @@ export async function pauseWithRamp() {
 async function pauseImmediate() {
     rampLock = true;
     try {
-        try { await TrackPlayer.pause(); } catch { }
-        try { await TrackPlayer.setVolume(1); } catch { }
+        try { await AudioEngine.pause(); } catch { }
+        try { await AudioEngine.setVolume(1); } catch { }
     } finally {
         await sleep(60);
         rampLock = false;
@@ -463,18 +463,18 @@ export async function skipWithRamp(direction = 'next') {
             if (mode === 'restart_or_previous') {
                 const threshold = await getRestartThresholdSec();
                 try {
-                    const { position } = await TrackPlayer.getProgress();
+                    const { position } = await AudioEngine.getProgress();
                     restartCurrent = position > threshold;
                 } catch { }
             }
         }
         const doNativeSkip = () => {
-            if (direction === 'next') return TrackPlayer.skipToNext();
-            if (restartCurrent) return TrackPlayer.seekTo(0);
-            return TrackPlayer.skipToPrevious();
+            if (direction === 'next') return AudioEngine.skipToNext();
+            if (restartCurrent) return AudioEngine.seekTo(0);
+            return AudioEngine.skipToPrevious();
         };
 
-        const wasPlaying = (await TrackPlayer.getState()) === State.Playing;
+        const wasPlaying = (await AudioEngine.getState()) === State.Playing;
 
         if (!wasPlaying) {
             try {
@@ -486,7 +486,7 @@ export async function skipWithRamp(direction = 'next') {
 
         const id = claimFade();
         const dur = await getSkipRamp();
-        try { await TrackPlayer.setVolume(1); } catch { }
+        try { await AudioEngine.setVolume(1); } catch { }
         if (dur > 0.05) {
             skipFadeOutActive = true;
             try {
@@ -500,7 +500,7 @@ export async function skipWithRamp(direction = 'next') {
         try {
             await withTimeout(doNativeSkip(), 5000);
         } catch {
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
             releaseFade(id);
             return;
         }
@@ -521,15 +521,15 @@ export async function skipWithRamp(direction = 'next') {
             // pause."
             rampInActive = true;
             try {
-                try { await TrackPlayer.setVolume(0); } catch { }
-                try { await TrackPlayer.play(); } catch { }
+                try { await AudioEngine.setVolume(0); } catch { }
+                try { await AudioEngine.play(); } catch { }
                 await fadeVol(0, 1, dur, id);
             } finally {
                 rampInActive = false;
             }
         } else {
-            try { await TrackPlayer.setVolume(1); } catch { }
-            try { await TrackPlayer.play(); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
+            try { await AudioEngine.play(); } catch { }
         }
         releaseFade(id);
     } finally {
@@ -540,21 +540,27 @@ export async function skipWithRamp(direction = 'next') {
 }
 
 export async function PlaybackService() {
-    TrackPlayer.addEventListener(Event.RemotePause, () => pauseWithRamp());
-    TrackPlayer.addEventListener(Event.RemotePlay, () => playWithRamp());
-    TrackPlayer.addEventListener(Event.RemoteStop, () => { stopWatcher(); TrackPlayer.stop(); });
-    TrackPlayer.addEventListener(Event.RemoteNext, () => skipWithRamp('next'));
-    TrackPlayer.addEventListener(Event.RemotePrevious, () => skipWithRamp('prev'));
+    AudioEngine.addEventListener(Event.RemotePause, () => pauseWithRamp());
+    AudioEngine.addEventListener(Event.RemotePlay, () => playWithRamp());
+    AudioEngine.addEventListener(Event.RemoteStop, () => { stopWatcher(); AudioEngine.stop(); });
+    AudioEngine.addEventListener(Event.RemoteNext, () => skipWithRamp('next'));
+    AudioEngine.addEventListener(Event.RemotePrevious, () => skipWithRamp('prev'));
 
-    TrackPlayer.addEventListener(Event.PlaybackState, ({ state }) => {
+    // Not an RNTP event — this module's own addition (see AudioEngine.js's
+    // comment on it). A real interruption (call, Siri, another app) should
+    // duck out the same way a manual pause tap does, not cut dead — so
+    // this reuses the exact same ramp path rather than a hard pause.
+    AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => pauseWithRamp());
+
+    AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => {
         if (state === State.Playing) startWatcher();
         else if (state === State.Paused || state === State.Stopped) stopWatcher();
     });
 
-    TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
+    AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
         if (nextTrack === null || nextTrack === undefined) {
             if (naturalEndFadeOwner !== null) { releaseFade(naturalEndFadeOwner); naturalEndFadeOwner = null; }
-            // TrackPlayer.reset() (the first half of primeNativeQueue, used
+            // AudioEngine.reset() (the first half of primeNativeQueue, used
             // any time playback is interrupted rather than left to end
             // naturally) fires THIS event with nextTrack null, since the
             // queue is briefly empty between reset() and the following
@@ -572,14 +578,14 @@ export async function PlaybackService() {
             // `activeFadeId === null` — this one just never got the same
             // guard when reset()'s null-nextTrack case was added.
             if (activeFadeId === null) {
-                try { await TrackPlayer.setVolume(1); } catch { }
+                try { await AudioEngine.setVolume(1); } catch { }
             }
             return;
         }
         if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) {
             const id = naturalEndFadeOwner;
             naturalEndFadeOwner = null;
-            try { await TrackPlayer.setVolume(0); } catch { }
+            try { await AudioEngine.setVolume(0); } catch { }
             const ramp = await getEndOfTrackRamp();
             if (ramp > 0.05) {
                 // Same issue as playWithRamp had: waitForPlaying's result
@@ -601,7 +607,7 @@ export async function PlaybackService() {
                 // ramp in" plus a small silent gap right before it.
                 const reallyPlaying = await waitForPlaying(1800);
                 if (!reallyPlaying) {
-                    try { await TrackPlayer.setVolume(1); } catch { }
+                    try { await AudioEngine.setVolume(1); } catch { }
                 } else if (isFadeOwner(id)) {
                     naturalFadeInActive = true;
                     try {
@@ -620,11 +626,11 @@ export async function PlaybackService() {
                     }
                 }
             } else {
-                try { await TrackPlayer.setVolume(1); } catch { }
+                try { await AudioEngine.setVolume(1); } catch { }
             }
             releaseFade(id);
         } else if (activeFadeId === null) {
-            try { await TrackPlayer.setVolume(1); } catch { }
+            try { await AudioEngine.setVolume(1); } catch { }
         }
         startWatcher();
         drainPending();

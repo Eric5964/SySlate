@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
-import TrackPlayer, { Event } from 'react-native-track-player';
+import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { squircle } from '../utils/squircle';
@@ -155,7 +155,7 @@ export default function QueueModal({ visible, onClose }) {
                 // attempt, which is most of what "queue takes a second to
                 // load" was: the sheet showing genuinely blank while this
                 // loop worked through its retries one slow step at a time.
-                [queue, currentIndex] = await Promise.all([TrackPlayer.getQueue(), TrackPlayer.getCurrentTrack()]);
+                [queue, currentIndex] = await Promise.all([AudioEngine.getQueue(), AudioEngine.getCurrentTrack()]);
                 if (currentIndex !== null && currentIndex !== undefined && queue.length > 0) break;
                 if (attempt < 4) await new Promise(r => setTimeout(r, 120));
             }
@@ -247,7 +247,7 @@ export default function QueueModal({ visible, onClose }) {
         // not the newer PlaybackActiveTrackChanged one, so staying
         // consistent with what's already proven to fire elsewhere in this
         // codebase rather than assuming the newer event is also available.
-        const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, () => refresh());
+        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => refresh());
         return () => sub.remove();
     }, [visible, refresh]);
 

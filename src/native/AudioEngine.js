@@ -12,6 +12,7 @@
 // until you're ready to do that swap deliberately.
 
 import { NativeModules, NativeEventEmitter } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
 
 const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
@@ -85,6 +86,17 @@ const AudioEngine = {
     // not the track's id. PlaybackContext.js does arithmetic on this value
     // directly everywhere, so this has to stay a number.
     getCurrentTrack: () => NativeAudioEngine.getCurrentTrack(),
+    // No dedicated native method — the native side only has getQueue(),
+    // so this derives a single track from it. Matches RNTP's real
+    // getTrack(index) contract: PlaybackContext.js's PlaybackTrackChanged
+    // listener calls this with the index the event just gave it and
+    // treats a missing/undefined result as "not loaded yet, retry
+    // shortly" (see its 80ms-retry block) — an out-of-range index here
+    // correctly resolves to undefined for that same reason, not an error.
+    getTrack: async (index) => {
+        const queue = await NativeAudioEngine.getQueue();
+        return queue[index];
+    },
     reset: () => NativeAudioEngine.reset(),
     // index-based, matching RNTP's real updateMetadataForTrack(index, ...)
     updateMetadataForTrack: (index, metadata) => NativeAudioEngine.updateMetadataForTrack(index, metadata),
@@ -103,3 +115,37 @@ const AudioEngine = {
 };
 
 export default AudioEngine;
+
+// Matches RNTP's real useProgress(updateInterval): plain JS polling of
+// getProgress() on the given interval (ms), independent of any native
+// event — same behavior the app was already built around (see
+// PlayerScreen.js's own note about "useProgress hasn't ticked yet since
+// mount/track-change" — that's this polling, not push-based).
+export function useProgress(updateInterval = 1000) {
+    const [progress, setProgress] = useState({ position: 0, duration: 0, buffered: 0 });
+    useEffect(() => {
+        let cancelled = false;
+        const tick = () => {
+            NativeAudioEngine.getProgress().then(p => { if (!cancelled) setProgress(p); }).catch(() => { });
+        };
+        tick();
+        const id = setInterval(tick, updateInterval);
+        return () => { cancelled = true; clearInterval(id); };
+    }, [updateInterval]);
+    return progress;
+}
+
+// Matches RNTP's real usePlaybackState(): initial value from getState(),
+// live-updated via the PlaybackState event. getState() resolves the bare
+// state string; the event body is already { state } (see AudioEngine.swift's
+// setState), so both paths are normalized to the same { state } shape here.
+export function usePlaybackState() {
+    const [playbackState, setPlaybackState] = useState({ state: State.None });
+    useEffect(() => {
+        let cancelled = false;
+        NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });
+        const sub = addEventListener(Event.PlaybackState, ({ state }) => setPlaybackState({ state }));
+        return () => { cancelled = true; sub.remove(); };
+    }, []);
+    return playbackState;
+}

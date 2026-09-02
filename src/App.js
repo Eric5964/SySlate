@@ -7,7 +7,7 @@ import { createStackNavigator, TransitionPresets } from '@react-navigation/stack
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
-import TrackPlayer, { Capability, usePlaybackState, State } from 'react-native-track-player';
+import AudioEngine, { Capability, usePlaybackState, State } from '../native/AudioEngine';
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
@@ -148,9 +148,9 @@ function AppInner() {
     useEffect(() => {
         (async () => {
             try {
-                await TrackPlayer.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
-                await TrackPlayer.setVolume(1);
-                await TrackPlayer.updateOptions({
+                await AudioEngine.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
+                await AudioEngine.setVolume(1);
+                await AudioEngine.updateOptions({
                     capabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop],
                     compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
                     // Was `progressUpdateEventThrottle: 150` — not a real
@@ -173,7 +173,7 @@ function AppInner() {
             // PlaybackProvider's own mount effect — child effects fire BEFORE
             // parent effects on initial mount, so a restore effect living
             // inside PlaybackProvider (a child of AppInner) would have run
-            // before TrackPlayer.setupPlayer() above ever finished.
+            // before AudioEngine.setupPlayer() above ever finished.
             setPlayerReady(true);
         })();
     }, []);

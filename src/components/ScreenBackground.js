@@ -17,12 +17,12 @@ export default function ScreenBackground({ style, children }) {
 
     if (backgroundImageEnabled && backgroundImageUri) {
         return (
-            <ImageBackground source={{ uri: backgroundImageUri }} style={[styles.flexFill, style]} resizeMode="cover">
+            <ImageBackground source={{ uri: backgroundImageUri }} style={styles.flexFill} resizeMode="cover">
                 {/* Scrim so existing text (styled assuming a plain dark
                      background) stays legible over an arbitrary photo —
                      explicitly asked not to harshly hurt legibility. */}
                 <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
-                <View style={styles.flexFill}>{children}</View>
+                <View style={[styles.flexFill, style]}>{children}</View>
             </ImageBackground>
         );
     }

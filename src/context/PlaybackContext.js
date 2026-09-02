@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { AppState } from 'react-native';
-import TrackPlayer, { Event } from 'react-native-track-player';
+import AudioEngine, { Event } from '../native/AudioEngine';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
-import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying } from '../services/PlaybackService';
+import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
@@ -15,7 +15,7 @@ import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 const Ctx = createContext(null);
 
 const setQueueLoop = async () => {
-    try { const { RepeatMode } = require('react-native-track-player'); await TrackPlayer.setRepeatMode(RepeatMode.Queue); } catch { }
+    try { const { RepeatMode } = require('react-native-track-player'); await AudioEngine.setRepeatMode(RepeatMode.Queue); } catch { }
 };
 
 // Every track that ever gets added to the native queue gets a unique _qid
@@ -72,9 +72,9 @@ export function PlaybackProvider({ children }) {
 
         const pushMetadataAndPrefetch = async (uri) => {
             try {
-                const queue = await TrackPlayer.getQueue();
+                const queue = await AudioEngine.getQueue();
                 const idx = queue.findIndex(t => t.id === currentTrack.id);
-                if (idx !== -1) await TrackPlayer.updateMetadataForTrack(idx, { artwork: uri });
+                if (idx !== -1) await AudioEngine.updateMetadataForTrack(idx, { artwork: uri });
                 // Warm the cache for what's coming up next. Sequential with a
                 // small stagger (not fired concurrently) — this used to be a
                 // fire-and-forget loop that kicked off both reads at once,
@@ -133,7 +133,7 @@ export function PlaybackProvider({ children }) {
     // forth across it.
     const playCreditedRef = useRef({ trackId: null, credited: false });
     useEffect(() => {
-        const sub = TrackPlayer.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
+        const sub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
             const track = currentTrackRef.current;
             if (!track?.id || !duration) return;
             if (playCreditedRef.current.trackId !== track.id) {
@@ -197,13 +197,13 @@ export function PlaybackProvider({ children }) {
 
 
     useEffect(() => {
-        const sub = TrackPlayer.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
+        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             if (nextTrack === null || nextTrack === undefined) return;
             try {
-                let track = await TrackPlayer.getTrack(nextTrack);
+                let track = await AudioEngine.getTrack(nextTrack);
                 if (!track) {
                     await new Promise(r => setTimeout(r, 80));
-                    track = await TrackPlayer.getTrack(nextTrack);
+                    track = await AudioEngine.getTrack(nextTrack);
                 }
                 if (!track) return;
                 if (track.id === currentTrackRef.current?.id) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
@@ -250,7 +250,7 @@ export function PlaybackProvider({ children }) {
     // Chained through addQueueLockRef so overlapping calls (swiping several
     // songs onto the queue in quick succession) can't race each other —
     // each add previously read currentIndex/priority and issued its native
-    // TrackPlayer.add() independently, so a fast second swipe could read the
+    // AudioEngine.add() independently, so a fast second swipe could read the
     // queue before the first swipe's add had landed and compute the same
     // insert position, effectively stepping on it. Chaining forces each add
     // to fully complete (including writing back to priorityRef) before the
@@ -259,7 +259,7 @@ export function PlaybackProvider({ children }) {
     const addToQueue = useCallback((song) => {
         const run = async () => {
             try {
-                const currentIndex = await TrackPlayer.getCurrentTrack();
+                const currentIndex = await AudioEngine.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
                 // Used to look for an existing copy of this song later in
                 // the queue and move it forward instead of adding a new
@@ -270,7 +270,7 @@ export function PlaybackProvider({ children }) {
                 // for the swipe-inside-the-queue-view version of this.
                 let priority = priorityRef.current;
                 const insertAt = currentIndex + 1 + priority.length;
-                await TrackPlayer.add(stampQid(song), insertAt);
+                await AudioEngine.add(stampQid(song), insertAt);
                 priority = [...priority, song.id];
                 priorityRef.current = priority;
                 setPriorityQueue(priority);
@@ -304,17 +304,17 @@ export function PlaybackProvider({ children }) {
     // ambiguity entirely — there's no lookup to get wrong.
     const promoteToQueue = useCallback(async (realIndex) => {
         try {
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return { priority: priorityRef.current, insertedAt: null };
             if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return { priority: priorityRef.current, insertedAt: null };
-            const queue = await TrackPlayer.getQueue();
+            const queue = await AudioEngine.getQueue();
             const track = queue[realIndex];
             if (!track) return { priority: priorityRef.current, insertedAt: null };
             // Keeps the original occurrence in place instead of moving it —
             // the song plays sooner via this new priority copy, but still
             // plays again later at its natural spot too.
             const insertAt = currentIndex + 1 + priorityRef.current.length;
-            await TrackPlayer.add(stampQid(track), insertAt);
+            await AudioEngine.add(stampQid(track), insertAt);
             const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
@@ -324,9 +324,9 @@ export function PlaybackProvider({ children }) {
 
     const removeFromQueue = useCallback(async (realIndex) => {
         try {
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-            await TrackPlayer.remove(realIndex);
+            await AudioEngine.remove(realIndex);
             const priorityCount = priorityRef.current.length;
             const priorityEnd = currentIndex + 1 + priorityCount;
             let next = priorityRef.current;
@@ -365,7 +365,7 @@ export function PlaybackProvider({ children }) {
     const jumpToQueueIndex = useCallback(async (realIndex) => {
         if (isTransitionLocked()) return;
         try {
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
             if (realIndex === currentIndex) return; // already playing this exact slot
             const priorityCount = priorityRef.current.length;
@@ -395,20 +395,20 @@ export function PlaybackProvider({ children }) {
                 const next = priorityRef.current.slice(skippedCount);
                 priorityRef.current = next;
                 setPriorityQueue(next);
-                await playWithRamp(preClaimedId, () => TrackPlayer.skip(realIndex));
+                await playWithRamp(preClaimedId, () => AudioEngine.skip(realIndex));
                 return;
             }
 
-            const queue = await TrackPlayer.getQueue();
+            const queue = await AudioEngine.getQueue();
             const priorityTracks = queue.slice(priorityStart, priorityEnd);
             for (let i = priorityEnd - 1; i >= priorityStart; i--) {
-                await TrackPlayer.remove(i);
+                await AudioEngine.remove(i);
             }
             const newTargetIndex = realIndex - priorityCount;
             if (priorityTracks.length) {
-                await TrackPlayer.add(priorityTracks, newTargetIndex + 1);
+                await AudioEngine.add(priorityTracks, newTargetIndex + 1);
             }
-            await playWithRamp(preClaimedId, () => TrackPlayer.skip(newTargetIndex));
+            await playWithRamp(preClaimedId, () => AudioEngine.skip(newTargetIndex));
             // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
             // call — enough for the steady-state "a song just finished,
             // drip-feed a few more" case it was actually designed for, but
@@ -426,7 +426,7 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     // Loading an entire large playlist into TrackPlayer's native queue in one
-    // TrackPlayer.add() call was both the "queue takes a while to load" and
+    // AudioEngine.add() call was both the "queue takes a while to load" and
     // (very likely) the "queue ends up empty at the end" bug: that add() is
     // wrapped in a 6s withTimeout, and for a big enough playlist the native
     // add can still be in flight past that window, silently leaving the
@@ -454,7 +454,7 @@ export function PlaybackProvider({ children }) {
     // separate "skip to index" step needed after this, unlike before.
     //
     // Only actually loads QUEUE_INITIAL_BATCH (10) up front now, not the
-    // full 25 — TrackPlayer.add() is a real native bridge call whose cost
+    // full 25 — AudioEngine.add() is a real native bridge call whose cost
     // scales with how many tracks are in it, so a smaller first batch means
     // less time between tapping something and it actually being ready to
     // play. The rest of the window (up to 25) gets topped up right after,
@@ -464,14 +464,14 @@ export function PlaybackProvider({ children }) {
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
         const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
-        await TrackPlayer.reset();
-        await withTimeout(TrackPlayer.add(batch), 6000);
+        await AudioEngine.reset();
+        await withTimeout(AudioEngine.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
         // Deliberately NOT calling fillRestOfWindow() here — callers that
         // also need to re-insert priority tracks (restorePriorityTracks) do
         // that FIRST and call fillRestOfWindow() themselves right after.
         // Firing it from in here would race that insert — both are
-        // TrackPlayer.add() calls, one inserting at a specific index and
+        // AudioEngine.add() calls, one inserting at a specific index and
         // one appending, and interleaving them is asking for a scrambled
         // queue order.
     };
@@ -480,7 +480,7 @@ export function PlaybackProvider({ children }) {
         try {
             const rest = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + (QUEUE_WINDOW_SIZE - QUEUE_INITIAL_BATCH)));
             if (rest.length) {
-                await withTimeout(TrackPlayer.add(rest), 6000);
+                await withTimeout(AudioEngine.add(rest), 6000);
                 loadedThroughRef.current += rest.length;
             }
         } catch (e) { console.error('fillRestOfWindow:', e); }
@@ -488,7 +488,7 @@ export function PlaybackProvider({ children }) {
 
     // Wrap around the ENTIRE body of loadPlaylist/playPlaylistOrdered/
     // playPlaylistShuffled/playSongFromPlaylist. The currently-RUNNING
-    // action always finishes (an in-flight TrackPlayer.reset/add can't be
+    // action always finishes (an in-flight AudioEngine.reset/add can't be
     // safely interrupted), but a NEW tap arriving while a previous one is
     // still just QUEUED (not yet started) replaces it entirely instead of
     // both running one after another. Without this, rapid taps queued up
@@ -549,9 +549,9 @@ export function PlaybackProvider({ children }) {
                 const nextPass = buildQueue(pl.songs, shuffleOnRef.current ? shuffleModeRef.current : 'off');
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
-            const nativeLen = (await TrackPlayer.getQueue()).length;
+            const nativeLen = (await AudioEngine.getQueue()).length;
             // Priority tracks live in this same native queue, right after
             // the current track, so they'd otherwise count toward
             // "remaining" too — meaning queuing a few priority songs could
@@ -563,7 +563,7 @@ export function PlaybackProvider({ children }) {
             if (remaining < QUEUE_TOPUP_THRESHOLD) {
                 const next = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH));
                 if (next.length) {
-                    await TrackPlayer.add(next);
+                    await AudioEngine.add(next);
                     loadedThroughRef.current += next.length;
                 }
             }
@@ -578,9 +578,9 @@ export function PlaybackProvider({ children }) {
     const capturePriorityTracks = async () => {
         try {
             if (!priorityRef.current.length) return [];
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return [];
-            const queue = await TrackPlayer.getQueue();
+            const queue = await AudioEngine.getQueue();
             return queue.slice(currentIndex + 1, currentIndex + 1 + priorityRef.current.length);
         } catch { return []; }
     };
@@ -592,7 +592,7 @@ export function PlaybackProvider({ children }) {
     // setting is off.
     const restorePriorityTracks = async (carried) => {
         if (carried.length) {
-            try { await TrackPlayer.add(carried, 1); } catch { }
+            try { await AudioEngine.add(carried, 1); } catch { }
             const ids = carried.map(t => t.id);
             priorityRef.current = ids;
             setPriorityQueue(ids);
@@ -603,11 +603,25 @@ export function PlaybackProvider({ children }) {
     };
 
     const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
-        if (isTransitionLocked()) return;
-        const mode = await getShuffleMode();
-        const isOn = await getShuffleOnStorage();
-        const eq = await getEQPreset(playlist.path);
+        // Previously just silently dropped the whole action if a transition
+        // (most commonly someone else's natural end-of-track fade, which
+        // isn't tied to runExclusivePlayAction's own lock at all) happened
+        // to be in flight at this exact instant — nothing played, nothing
+        // queued, no error, so tapping a playlist mid-transition looked
+        // like it simply didn't work (or, from the Player screen, like it
+        // was still showing the OLD playlist since nothing about the state
+        // ever actually changed). Retrying once the lock clears, the same
+        // way skipWithRamp already does, instead of dropping it.
+        if (isTransitionLocked()) { queueAction(() => loadPlaylist(playlist, forceIndex)); return; }
         const session = await getSession(playlist.path);
+        // This playlist's own remembered shuffle choice wins over the
+        // global default, same as its remembered queue/index already do —
+        // that's the whole point of per-playlist memory. Falls back to the
+        // global default for a playlist that's never been played before
+        // (no session yet, or an old session from before this existed).
+        const mode = session?.shuffleMode ?? await getShuffleMode();
+        const isOn = session?.shuffleOn ?? await getShuffleOnStorage();
+        const eq = await getEQPreset(playlist.path);
         let queue = session?.queue ?? (isOn ? buildQueue(playlist.songs, mode) : [...playlist.songs]);
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
@@ -636,11 +650,12 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(isOn);
         setEqPresetId(eq);
         setSingleLoop(false);
-        await setSession(playlist.path, { queue, index: startIndex });
+        await setSession(playlist.path, { queue, index: startIndex, shuffleOn: isOn, shuffleMode: mode });
     }), []);
 
     const playPlaylistOrdered = useCallback((playlist, orderedSongs) => runExclusivePlayAction(async () => {
-        if (isTransitionLocked()) return;
+        // See loadPlaylist above for why this retries instead of dropping.
+        if (isTransitionLocked()) { queueAction(() => playPlaylistOrdered(playlist, orderedSongs)); return; }
         const eq = await getEQPreset(playlist.path);
         const queue = [...orderedSongs];
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
@@ -664,11 +679,13 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(false);
         setEqPresetId(eq);
         setSingleLoop(false);
-        await setSession(playlist.path, { queue, index: 0 });
+        const existing = await getSession(playlist.path);
+        await setSession(playlist.path, { ...existing, queue, index: 0 });
     }), []);
 
     const playPlaylistShuffled = useCallback((playlist) => runExclusivePlayAction(async () => {
-        if (isTransitionLocked()) return;
+        // See loadPlaylist above for why this retries instead of dropping.
+        if (isTransitionLocked()) { queueAction(() => playPlaylistShuffled(playlist)); return; }
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         const queue = buildQueue(playlist.songs, useMode);
@@ -693,15 +710,21 @@ export function PlaybackProvider({ children }) {
         setShuffleOn(true);
         setEqPresetId(eq);
         setSingleLoop(false);
-        await setSession(playlist.path, { queue, index: 0 });
+        await setSession(playlist.path, { queue, index: 0, shuffleOn: true, shuffleMode: useMode });
         await setShuffleMode(useMode);
         await setShuffleOnStorage(true);
     }), []);
 
     const playSongFromPlaylist = useCallback((playlist, songId) => runExclusivePlayAction(async () => {
-        if (isTransitionLocked()) return;
-        const mode = await getShuffleMode();
-        const isOn = await getShuffleOnStorage();
+        // See loadPlaylist above for why this retries instead of dropping —
+        // this is the specific case from the report: tapping a song in a
+        // different playlist while the current one's song is mid-fade
+        // (natural end-of-track, or any other transition) used to just
+        // silently do nothing.
+        if (isTransitionLocked()) { queueAction(() => playSongFromPlaylist(playlist, songId)); return; }
+        const songSession = await getSession(playlist.path);
+        const mode = songSession?.shuffleMode ?? await getShuffleMode();
+        const isOn = songSession?.shuffleOn ?? await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         const song = playlist.songs.find(s => s.id === songId);
         if (!song) { console.warn('Song not found:', songId); return; }
@@ -769,7 +792,7 @@ export function PlaybackProvider({ children }) {
         // priority tracking is now fully owned by restorePriorityTracks
         // above (it clears it when there's nothing carried over, same as
         // when the setting is off) — no separate reset needed here.
-        await setSession(playlist.path, { queue, index: 0 });
+        await setSession(playlist.path, { queue, index: 0, shuffleOn: isOn, shuffleMode: mode });
     }), [currentPlaylist]);
 
     // Restores playback after a cold app launch. Uses the actual last-playing
@@ -792,9 +815,9 @@ export function PlaybackProvider({ children }) {
                 // Seeking immediately after skip was silently getting ignored —
                 // the native player hadn't finished preparing the track yet.
                 await new Promise(r => setTimeout(r, 300));
-                try { await TrackPlayer.seekTo(last.position); } catch { }
+                try { await AudioEngine.seekTo(last.position); } catch { }
                 await new Promise(r => setTimeout(r, 150));
-                try { await TrackPlayer.seekTo(last.position); } catch { } // retry once, cheap insurance
+                try { await AudioEngine.seekTo(last.position); } catch { } // retry once, cheap insurance
             }
             await setQueueLoop();
 
@@ -829,9 +852,9 @@ export function PlaybackProvider({ children }) {
         const pl = playlistRef.current;
         if (!pl?.songs?.length) return;
         try {
-            const currentIndex = await TrackPlayer.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
-            const queue = await TrackPlayer.getQueue();
+            const queue = await AudioEngine.getQueue();
             const keepEnd = currentIndex + 1 + priorityRef.current.length;
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
@@ -862,11 +885,11 @@ export function PlaybackProvider({ children }) {
             // color animation is fast but toggleShuffle awaits this whole
             // function before it's done. Priority-queued tracks get removed
             // by the bulk call too, so they're re-added right after.
-            await withTimeout(TrackPlayer.removeUpcomingTracks(), 4000);
-            if (priorityTracks.length) await withTimeout(TrackPlayer.add(priorityTracks), 4000);
+            await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
+            if (priorityTracks.length) await withTimeout(AudioEngine.add(priorityTracks), 4000);
 
             const batch = stampQids(rest.slice(0, QUEUE_WINDOW_SIZE));
-            if (batch.length) await withTimeout(TrackPlayer.add(batch), 6000);
+            if (batch.length) await withTimeout(AudioEngine.add(batch), 6000);
             const newQueue = [...queue.slice(0, keepEnd), ...rest];
             logicalQueueRef.current = newQueue;
             loadedThroughRef.current = keepEnd + batch.length;
@@ -881,6 +904,14 @@ export function PlaybackProvider({ children }) {
         const newOn = !shuffleOn;
         setShuffleOn(newOn);
         await setShuffleOnStorage(newOn);
+        // Also remembered per-playlist (merged into that playlist's
+        // existing session data alongside its queue/index) so switching
+        // back to this playlist later restores its own last shuffle
+        // choice, not just whatever's globally current.
+        if (playlistRef.current?.path) {
+            const existing = await getSession(playlistRef.current.path);
+            await setSession(playlistRef.current.path, { ...existing, shuffleOn: newOn });
+        }
         await reshuffleUpcoming(newOn ? shuffleMode : 'off');
     }, [shuffleOn, shuffleMode, reshuffleUpcoming]);
 
@@ -894,6 +925,10 @@ export function PlaybackProvider({ children }) {
     const changeShuffleMode = useCallback(async (mode) => {
         setShuffleModeState(mode);
         await setShuffleMode(mode);
+        if (playlistRef.current?.path) {
+            const existing = await getSession(playlistRef.current.path);
+            await setSession(playlistRef.current.path, { ...existing, shuffleMode: mode });
+        }
         if (shuffleOn) await reshuffleUpcoming(mode);
     }, [shuffleOn, reshuffleUpcoming]);
 
@@ -902,7 +937,7 @@ export function PlaybackProvider({ children }) {
         setSingleLoop(next);
         try {
             const { RepeatMode } = require('react-native-track-player');
-            await TrackPlayer.setRepeatMode(next ? RepeatMode.Track : RepeatMode.Queue);
+            await AudioEngine.setRepeatMode(next ? RepeatMode.Track : RepeatMode.Queue);
         } catch { }
     }, [singleLoop]);
 
@@ -915,11 +950,11 @@ export function PlaybackProvider({ children }) {
         const pl = playlistRef.current;
         if (!pl?.path) return;
         try {
-            const index = await TrackPlayer.getCurrentTrack();
+            const index = await AudioEngine.getCurrentTrack();
             if (index !== null) {
-                const queue = await TrackPlayer.getQueue();
+                const queue = await AudioEngine.getQueue();
                 let pos = 0;
-                try { const p = await TrackPlayer.getProgress(); pos = p?.position ?? 0; } catch { }
+                try { const p = await AudioEngine.getProgress(); pos = p?.position ?? 0; } catch { }
                 await setSession(pl.path, { queue, index });
                 // priorityCount is enough to reconstruct which of the
                 // tracks right after `index` were priority-queued on

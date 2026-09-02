@@ -320,7 +320,7 @@ class AudioEngine: RCTEventEmitter {
                 queue[idx] = trackWithDuration
             }
 
-            sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": trackWithDuration.toDict()])
+            sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
 
             if !engine.isRunning {
                 try engine.start()
@@ -569,6 +569,7 @@ class AudioEngine: RCTEventEmitter {
         stopInternal()
         queue.removeAll()
         currentIndex = nil
+        sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": NSNull()])
         resolve(nil)
     }
 
