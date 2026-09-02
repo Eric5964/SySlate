@@ -12,6 +12,8 @@
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.mm */; };
 		A9B3C2D1E0F4A5B6C7D8E9F0 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = B9C3D2E1F0A5B6C7D8E9F1A2 /* main.m */; };
+		FF212F1092E34B3A97D2A942 /* AudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10CA36D10752441CB5026200 /* AudioEngine.swift */; };
+		362E5064E6D44173905E04A7 /* AudioEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = 8AA4A261A4964799B818B48F /* AudioEngine.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +26,8 @@
 		F11748412D0307B40044C1D9 /* AppDelegate.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = AppDelegate.mm; path = SySlate/AppDelegate.mm; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* SySlate-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "SySlate-Bridging-Header.h"; path = "SySlate/SySlate-Bridging-Header.h"; sourceTree = "<group>"; };
 		B9C3D2E1F0A5B6C7D8E9F1A2 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = main.m; path = SySlate/main.m; sourceTree = "<group>"; };
+		10CA36D10752441CB5026200 /* AudioEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioEngine.swift; path = SySlate/AudioEngine.swift; sourceTree = "<group>"; };
+		8AA4A261A4964799B818B48F /* AudioEngine.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = AudioEngine.m; path = SySlate/AudioEngine.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,6 +47,8 @@
 				F11748412D0307B40044C1D9 /* AppDelegate.mm */,
 				F11748442D0722820044C1D9 /* SySlate-Bridging-Header.h */,
 				B9C3D2E1F0A5B6C7D8E9F1A2 /* main.m */,
+				10CA36D10752441CB5026200 /* AudioEngine.swift */,
+				8AA4A261A4964799B818B48F /* AudioEngine.m */,
 				BB2F792B24A3F905000567C9 /* Supporting */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
@@ -233,7 +239,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.mm in Sources */,
-				A9B3C2D1E0F4A5B6C7D8E9F0 /* main.m in Sources */,			);
+				A9B3C2D1E0F4A5B6C7D8E9F0 /* main.m in Sources */,
+				FF212F1092E34B3A97D2A942 /* AudioEngine.swift in Sources */,
+				362E5064E6D44173905E04A7 /* AudioEngine.m in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
