@@ -7,7 +7,7 @@ import { createStackNavigator, TransitionPresets } from '@react-navigation/stack
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
-import AudioEngine, { Capability, usePlaybackState, State } from '../native/AudioEngine';
+import AudioEngine, { Capability, usePlaybackState, State } from './native/AudioEngine';
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
