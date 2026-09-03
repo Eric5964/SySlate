@@ -544,7 +544,7 @@ export default function PlayerScreen() {
                         </View>
                         {lyricsData && (
                             <Animated.View
-                                style={[StyleSheet.absoluteFill, { opacity: lyricsFade, backgroundColor: base.bg, overflow: 'hidden' }, backgroundImageEnabled && { borderWidth: 1, borderColor: base.border }]}
+                                style={[{ position: 'absolute', top: -44, bottom: -44, left: 0, right: 0 }, { opacity: lyricsFade, backgroundColor: base.bg, overflow: 'hidden' }, backgroundImageEnabled && { borderWidth: 1, borderColor: base.border }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <ScrollView
@@ -603,17 +603,18 @@ export default function PlayerScreen() {
                      lyrics loads, visibly shifting the title down (or up)
                      depending on whether this song happens to have an .lrc
                      file. The slot's height is fixed regardless. */}
-                <View style={s.lyricsToggleSlot}>
-                    {lyricsMode !== 'off' && lyricsData && (
-                        <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
-                            <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
-                                {showingLyrics ? 'Show cover' : 'Show lyrics'}
-                            </Text>
-                        </TouchableOpacity>
-                    )}
-                </View>
+                <View>
+                    <View style={s.lyricsToggleSlot}>
+                        {lyricsMode !== 'off' && lyricsData && (
+                            <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
+                                <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
+                                    {showingLyrics ? 'Show cover' : 'Show lyrics'}
+                                </Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
 
-                <View style={s.trackInfoGroup}>
+                    <View style={[s.trackInfoGroup, { marginTop: 18 }]}>
                     <View style={s.info}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
@@ -651,6 +652,7 @@ export default function PlayerScreen() {
                             <Text style={s.time}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
                         </View>
                     </View>
+                </View>
                 </View>
 
                 <View
@@ -734,7 +736,7 @@ const s = StyleSheet.create({
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
-    lyricLine: { fontSize: 21, lineHeight: 30, fontWeight: '500', textAlign: 'center', marginVertical: 7 },
+    lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '500', textAlign: 'center', marginVertical: 7 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

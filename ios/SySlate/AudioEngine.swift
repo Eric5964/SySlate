@@ -224,27 +224,22 @@ class AudioEngine: RCTEventEmitter {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
-            self?.playInternal()
             self?.sendEvent(withName: "RemotePlay", body: nil)
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.pauseInternal()
             self?.sendEvent(withName: "RemotePause", body: nil)
             return .success
         }
         center.stopCommand.addTarget { [weak self] _ in
-            self?.stopInternal()
             self?.sendEvent(withName: "RemoteStop", body: nil)
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.skipToNextInternal()
             self?.sendEvent(withName: "RemoteNext", body: nil)
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.skipToPreviousInternal()
             self?.sendEvent(withName: "RemotePrevious", body: nil)
             return .success
         }
@@ -416,6 +411,12 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func pauseInternal() {
+        // Freeze the real position while it's still readable — once
+        // paused, lastRenderTime/playerTime go stale and
+        // currentPositionSeconds() falls back to this value, so it must
+        // be the actual current position, not whatever it was at last
+        // load/seek (was defaulting to 0, showing 0:00 while paused).
+        segmentStartOffsetSeconds = currentPositionSeconds()
         playerNode.pause()
         setState(.paused)
     }
@@ -616,8 +617,46 @@ class AudioEngine: RCTEventEmitter {
     @objc(seekTo:resolver:rejecter:)
     func seekTo(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let wasPlaying = state == .playing
-        loadAndScheduleCurrentTrack(startAtSeconds: seconds.doubleValue, autoPlay: wasPlaying)
+        seekWithinCurrentTrack(startAtSeconds: seconds.doubleValue, autoPlay: wasPlaying)
         resolve(nil)
+    }
+
+    // Same scheduling as loadAndScheduleCurrentTrack but reuses the
+    // already-open currentFile instead of reopening it from disk, and
+    // does NOT re-fire PlaybackTrackChanged or reset volume — this is a
+    // reposition within the SAME track, not a track change, and firing
+    // that event here made every single drag tick look like a track
+    // change to the JS side. Falls back to the full load path only if
+    // there's genuinely no file loaded yet (shouldn't normally happen —
+    // seekTo implies something is already current).
+    private func seekWithinCurrentTrack(startAtSeconds: Double, autoPlay: Bool) {
+        guard let idx = currentIndex, idx >= 0, idx < queue.count, let file = currentFile else {
+            loadAndScheduleCurrentTrack(startAtSeconds: startAtSeconds, autoPlay: autoPlay)
+            return
+        }
+        _ = idx
+        segmentStartOffsetSeconds = startAtSeconds
+        playerNode.stop()
+        playbackToken &+= 1
+        let token = playbackToken
+
+        let startFrame = AVAudioFramePosition(startAtSeconds * currentFileSampleRate)
+        let frameCount = AVAudioFrameCount(max(0, file.length - startFrame))
+
+        if frameCount > 0 {
+            playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
+                DispatchQueue.main.async {
+                    self?.handlePlaybackCompleted(token: token)
+                }
+            }
+        }
+
+        if autoPlay {
+            playerNode.play()
+            setState(.playing)
+        } else {
+            setState(.ready)
+        }
     }
 
     @objc(setVolume:resolver:rejecter:)

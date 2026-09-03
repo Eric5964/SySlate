@@ -71,7 +71,7 @@ const AudioEngine = {
     setupPlayer: (options = {}) => NativeAudioEngine.setupPlayer(options),
     updateOptions: (options = {}) => NativeAudioEngine.updateOptions(options),
 
-    add: (tracks, insertBeforeIndex = null) => NativeAudioEngine.add(tracks, insertBeforeIndex),
+    add: (tracks, insertBeforeIndex = null) => NativeAudioEngine.add(Array.isArray(tracks) ? tracks : [tracks], insertBeforeIndex),
     // index-based (a single index, or an array of them), matching RNTP —
     // NOT ids. See AudioEngine.swift's comment on remove() for why: every
     // existing PlaybackContext.js call site already passes an index, and
