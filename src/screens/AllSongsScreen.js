@@ -230,7 +230,7 @@ export default function AllSongsScreen() {
 const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#0a0a0a' },
+    container: { flex: 1 },
     topBar: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 10 },
     titleRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },

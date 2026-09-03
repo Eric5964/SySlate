@@ -684,7 +684,7 @@ function Section({ title, children }) {
 const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#0a0a0a' },
+    container: { flex: 1 },
     header: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 20 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     section: { marginBottom: 24 },

@@ -254,7 +254,7 @@ export default function PlaylistDetailScreen() {
 const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 
 const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#0a0a0a' },
+    container: { flex: 1 },
     topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     backIcon: { fontSize: 24 },

@@ -288,15 +288,33 @@ class AudioEngine: RCTEventEmitter {
         }
         let track = queue[idx]
 
+        playbackToken &+= 1
+        let token = playbackToken
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let file = try AVAudioFile(forReading: track.url)
+                DispatchQueue.main.async {
+                    guard let self = self, token == self.playbackToken else { return } // superseded by a newer load
+                    self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, token: token)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self = self, token == self.playbackToken else { return }
+                    NSLog("AudioEngine: failed to load track \(track.url): \(error)")
+                    self.setState(.stopped)
+                }
+            }
+        }
+    }
+
+    private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, token: UInt64) {
         do {
-            let file = try AVAudioFile(forReading: track.url)
             currentFile = file
             currentFileSampleRate = file.processingFormat.sampleRate
             segmentStartOffsetSeconds = startAtSeconds
 
             playerNode.stop()
-            playbackToken &+= 1
-            let token = playbackToken
 
             let startFrame = AVAudioFramePosition(startAtSeconds * currentFileSampleRate)
             let frameCount = AVAudioFrameCount(file.length - startFrame)
@@ -312,7 +330,7 @@ class AudioEngine: RCTEventEmitter {
             var trackWithDuration = track
             if trackWithDuration.duration == nil {
                 trackWithDuration.duration = Double(file.length) / file.processingFormat.sampleRate
-                queue[idx] = trackWithDuration
+                if idx < queue.count { queue[idx] = trackWithDuration }
             }
 
             sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
@@ -331,7 +349,7 @@ class AudioEngine: RCTEventEmitter {
             }
             startProgressTimer()
         } catch {
-            NSLog("AudioEngine: failed to load track \(track.url): \(error)")
+            NSLog("AudioEngine: failed to start engine for \(track.url): \(error)")
             setState(.stopped)
         }
     }

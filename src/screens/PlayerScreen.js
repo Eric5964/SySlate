@@ -544,7 +544,7 @@ export default function PlayerScreen() {
                         </View>
                         {lyricsData && (
                             <Animated.View
-                                style={[{ position: 'absolute', top: -44, bottom: -44, left: 0, right: 0 }, { opacity: lyricsFade, backgroundColor: base.bg, overflow: 'hidden' }, backgroundImageEnabled && { borderWidth: 1, borderColor: base.border }]}
+                                style={[{ position: 'absolute', top: -44, bottom: -44, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <ScrollView
@@ -572,7 +572,7 @@ export default function PlayerScreen() {
                                         <Text
                                             key={i}
                                             onLayout={(e) => lyricsRowYRef.current.set(i, e.nativeEvent.layout.y)}
-                                            style={[s.lyricLine, i === activeLine ? { color: theme.accent, fontWeight: '700' } : { color: '#666' }]}
+                                            style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, i === activeLine ? { color: theme.accent, fontWeight: '700' } : { color: '#666' }]}
                                         >
                                             {line.text || '\u2026'}
                                         </Text>
@@ -614,7 +614,7 @@ export default function PlayerScreen() {
                         )}
                     </View>
 
-                    <View style={[s.trackInfoGroup, { marginTop: 18 }]}>
+                    <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
                     <View style={s.info}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
