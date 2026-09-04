@@ -203,17 +203,34 @@ class AudioEngine: RCTEventEmitter {
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {
-        // Deprioritized per decision #3 — only the iOS-standard "pause on
-        // old device unavailable" (e.g. headphones physically unplugged)
-        // is handled, since leaving audio playing into silence is jarring
-        // and this is a one-line default. Nothing beyond that; the
-        // Bluetooth-reconnect ramp question is explicitly out of scope.
         guard let info = notification.userInfo,
               let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
+
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
                 self?.pauseInternal()
+            }
+            return
+        }
+
+        // A device connecting (e.g. Bluetooth) or the route otherwise
+        // reconfiguring — previously left alone entirely. AVAudioEngine
+        // can come out of one of these still reporting .playing and still
+        // advancing position, but no longer actually wired to the active
+        // output, which plays back completely silently despite every
+        // outward sign of working. Pausing and restarting the engine
+        // (NOT stopping it — that would drop the player node's scheduled
+        // buffer) re-establishes it against the new route.
+        if reason == .newDeviceAvailable || reason == .routeConfigurationChange || reason == .categoryChange {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.state == .playing else { return }
+                self.engine.pause()
+                do {
+                    try self.engine.start()
+                } catch {
+                    NSLog("AudioEngine: failed to restart engine after route change: \(error)")
+                }
             }
         }
     }

@@ -63,7 +63,7 @@ const SWATCH_GAP = 12;
 // cluster with empty margin on the sides — matches the EQ preset grid's
 // full-width feel.
 const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
-const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 3) / 4);
+const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 
 export default function SettingsScreen() {
     const { changeShuffleMode } = usePlayback();
@@ -84,7 +84,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, hidePlayerCover, setHidePlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -356,6 +356,14 @@ export default function SettingsScreen() {
                             <Text style={s.toggleSub}>Player, mini player, playlists, and song lists — off for square, sharp corners</Text>
                         </View>
                         <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Hide Player Cover</Text>
+                            <Text style={s.toggleSub}>Just the main Player screen — mini player, playlists, and song lists are unaffected. Works with or without a background image.</Text>
+                        </View>
+                        <Switch value={hidePlayerCover} onValueChange={setHidePlayerCover}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
@@ -713,7 +721,7 @@ const s = StyleSheet.create({
     // can't collapse into a single toggleRow) — same label/sub typography
     // and left inset as toggleRow, just without the switch on the right.
     settingHeader: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 6 },
-    swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
+    swatchRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: SWATCH_GAP },
     // Matches the sort-chip pattern used in All Songs / Playlist Detail —
     // same shape, same interaction, for the same kind of "pick one of a
     // few options" control.

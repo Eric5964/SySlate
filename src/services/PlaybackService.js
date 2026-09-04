@@ -309,13 +309,21 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                     try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
                 } else {
-                    // Longer settle margin than before (50ms) — State.Playing
-                    // can fire slightly ahead of audio actually reaching the
-                    // speaker, especially right after a queue reset, which is
-                    // exactly when this runs. Too short a margin meant the ramp
-                    // could start, and sometimes nearly finish, before there
-                    // was anything audible for it to apply to.
-                    await sleep(180);
+                    // Longer settle margin than before (50ms, then 180ms).
+                    // State.Playing can fire slightly ahead of audio
+                    // actually reaching the speaker, especially right
+                    // after a queue reset. Widened again: the native file
+                    // load this is waiting on now happens on a background
+                    // thread (moved off the main thread to fix a separate
+                    // "gap between songs" issue) before hopping back to
+                    // main to call playerNode.play()/setState(.playing) —
+                    // real, variable thread-hop + scheduling latency on
+                    // top of the original concern this margin already
+                    // covered, not just disk I/O time. Too short a margin
+                    // means the ramp can start, and sometimes nearly
+                    // finish, before there's anything audible for it to
+                    // apply to — sounding exactly like no ramp happened.
+                    await sleep(320);
                     await fadeVol(0, 1, ramp, id);
                     releaseFade(id);
                 }

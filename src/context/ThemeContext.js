@@ -26,10 +26,16 @@ export const THEMES = {
 // (more blue/violet, less gray mixed in) so they read as genuinely vibrant
 // rather than a slightly-tinted dark gray.
 export const BASE_COLORS = {
-    light_purple: { name: 'Light Purple', bg: '#221a38', surface: '#2c2247', border: '#3d2f63' },
-    dark_purple: { name: 'Dark Purple', bg: '#120e22', surface: '#191430', border: '#241d47' },
-    slate: { name: 'Gray', bg: '#1c1c1e', surface: '#242426', border: '#333335' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
+    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47' },
+    dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a' },
+    dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a' },
+    dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f' },
+    dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530' },
+    dark_yellow: { name: 'Yellow', bg: '#221c0a', surface: '#302810', border: '#473a18' },
+    dark_orange: { name: 'Orange', bg: '#221408', surface: '#301c0d', border: '#472a14' },
+    dark_red: { name: 'Red', bg: '#220e0e', surface: '#301414', border: '#471e1e' },
+    dark_rose: { name: 'Crimson', bg: '#1e0d0d', surface: '#2a1212', border: '#3d1a1a' },
 };
 
 const ThemeContext = createContext({
@@ -64,11 +70,16 @@ export function ThemeProvider({ children }) {
             }),
             AsyncStorage.getItem('base_color_id').then(id => {
                 if (id && BASE_COLORS[id]) { setBaseId(id); return; }
-                // light_gray -> galaxy -> light_purple (chained through two
-                // renames); the old "gray" id held a purple (Nebula) by the time
-                // of this rename, so it continues on as dark_purple; dark_gray
-                // (near-black) is closest to the new flat black.
-                const migrate = { light_gray: 'light_purple', galaxy: 'light_purple', gray: 'dark_purple', dark_gray: 'black' };
+                // Old chains that used to land on light_purple now go straight
+                // to dark_purple instead, since light_purple no longer exists
+                // (base colors expanded to match the 10 accent colors — kept
+                // only black and dark_purple from the old 4, dropped
+                // light_purple and slate). Direct light_purple/slate selections
+                // migrate the same way for the same reason.
+                const migrate = {
+                    light_gray: 'dark_purple', galaxy: 'dark_purple', gray: 'dark_purple', dark_gray: 'black',
+                    light_purple: 'dark_purple', slate: 'black',
+                };
                 if (id && migrate[id]) setBaseId(migrate[id]);
             }),
         ]).finally(() => { if (!cancelled) setReady(true); });

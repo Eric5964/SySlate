@@ -170,6 +170,8 @@ export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode
 // (see utils/squircle.js).
 export const getCoverShape = () => safe(() => AsyncStorage.getItem('cover_shape').then(v => v ?? 'rounded'), 'rounded');
 export const setCoverShape = (v) => safe(() => AsyncStorage.setItem('cover_shape', v), null);
+export const getHidePlayerCover = () => safe(() => AsyncStorage.getItem('hide_player_cover').then(v => v === 'true'), false);
+export const setHidePlayerCover = (v) => safe(() => AsyncStorage.setItem('hide_player_cover', String(v)), null);
 
 // Whole-app custom background image — off by default, and the URI is only
 // meaningful once persisted locally (see persistCoverImage/the same pattern

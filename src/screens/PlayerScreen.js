@@ -87,7 +87,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, hidePlayerCover } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -98,11 +98,11 @@ export default function PlayerScreen() {
     const controlsRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
-    const lastSeekAt = useRef(0);
-    const lastSeekRatio = useRef(null);
     const seekChainRef = useRef(Promise.resolve());
     const latestSeekRatioRef = useRef(null);
     const clearDragTimer = useRef(null);
+    const committedRef = useRef(false);
+    const gestureTrackIdRef = useRef(null);
     // Backstop: if no terminal gesture state ever arrives after a touch
     // starts (this has been the recurring symptom — the bar freezes and
     // STAYS frozen, even across later songs, only unstuck by a real drag),
@@ -158,71 +158,50 @@ export default function PlayerScreen() {
         stopAnim();
         animPct.setValue(ratio);
         animPctValueRef.current = ratio;
-        const now = Date.now();
-        if (progress.duration > 0) {
-            // Widened from 0.0015 — the actual repeat wasn't a race
-            // (the seek chain fully serializes; a later commit's `await`
-            // can't interleave before an earlier link's check runs, since
-            // nothing yields between them in a single synchronous
-            // stretch). It's simpler than that: dragging fires a live seek
-            // roughly every 110ms, and release essentially never lands on
-            // the EXACT same ratio as that last live tick — so both seeks
-            // were genuinely valid and both really ran, one right after
-            // the other, each a real seekTo the device actually executed.
-            // First the last live-drag position, then the release
-            // position, tens of ms apart — which is exactly "the audio
-            // repeats itself" from the listening end. Widening the
-            // closeness check catches the common case (release landing
-            // close to wherever the last live tick already put it) and
-            // skips the redundant second seek, instead of only catching
-            // literal same-spot duplicates like a tap's BEGAN+END.
-            const sameAsLast = lastSeekRatio.current !== null && Math.abs(ratio - lastSeekRatio.current) < 0.003;
-            const recentSeek = now - lastSeekAt.current < 110;
-            // On commit, position closeness is what actually matters here
-            // (see above) — timing isn't part of why the duplicate seek
-            // happened, so it's dropped from this specific check. Still
-            // used for the drag-time debounce below, which is a genuinely
-            // different concern (not flooding seekTo during a fast swipe).
-            const skip = commit ? sameAsLast : recentSeek;
-            if (!skip) {
-                lastSeekAt.current = now;
-                lastSeekRatio.current = ratio;
-                latestSeekRatioRef.current = ratio;
-                const targetRatio = ratio;
-                const duration = progress.duration;
-                seekChainRef.current = seekChainRef.current.then(async () => {
-                    if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
-                    try { await AudioEngine.seekTo(targetRatio * duration); } catch { }
-                });
-            }
-        }
-        if (commit) {
-            clearTimeout(stuckSafetyTimer.current);
-            // Hand off directly to the real-time animation from this exact
-            // ratio right now — waiting for the drag-clear timer and the
-            // next progress hook tick (which can be stale for up to another
-            // update cycle) was the cause of the visible jump right after
-            // letting go.
-            startRealTimeAnim(ratio);
-            clearTimeout(clearDragTimer.current);
-            clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
-        } else {
-            // Re-arm the stuck-safety backstop on every drag update instead
-            // of only once at BEGAN. It was firing 500ms after the touch
-            // STARTED, not 500ms after the last update — so any real drag
-            // that simply took longer than 500ms start-to-finish (easy to
-            // do dragging across the bar) hit this backstop mid-drag,
-            // committing a premature seek to wherever the finger happened
-            // to be at that instant. Then the real release fired its own
-            // seek moments later. That's the "starts in that location
-            // twice, about .5 sec apart" bug — two real commits, not one
-            // glitchy one. Resetting the timer on every update makes it a
-            // true "500ms since anything last happened" watchdog, which
-            // only ever fires for an actually-stuck gesture.
+
+        if (!commit) {
+            // Visual feedback only — nothing is seeked until release, so
+            // audio keeps playing from wherever it actually is while
+            // dragging. Re-arms the stuck-safety backstop on every update
+            // (not just once at BEGAN) so it's a true "500ms since
+            // anything last happened" watchdog rather than a fixed timeout
+            // from touch-start, which used to fire mid-drag on any gesture
+            // that simply took longer than 500ms start-to-finish.
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
                 onScrubRef.current(lastTouchX.current, true);
             }, 500);
+            return;
+        }
+
+        // Commit — release, a tap, or the stuck-safety backstop. Only
+        // fires once per gesture: without this guard, a real release
+        // landing right after the safety backstop already fired would
+        // seek twice to (almost) the same spot.
+        if (committedRef.current) return;
+        committedRef.current = true;
+        clearTimeout(stuckSafetyTimer.current);
+
+        startRealTimeAnim(ratio);
+        clearTimeout(clearDragTimer.current);
+        clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
+
+        // Abuse case flagged explicitly: held long enough that the track
+        // actually changed under us (natural end-of-track, a remote skip,
+        // etc.) while still dragging — the position being released at no
+        // longer corresponds to whatever's playing now, so drop the seek
+        // instead of applying it to the wrong track.
+        const nowTrackId = currentTrack?._qid ?? currentTrack?.id ?? null;
+        if (nowTrackId !== gestureTrackIdRef.current) return;
+
+        if (progress.duration > 0) {
+            const targetRatio = ratio;
+            const duration = progress.duration;
+            latestSeekRatioRef.current = targetRatio;
+            seekChainRef.current = seekChainRef.current.then(async () => {
+                if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
+                try { await AudioEngine.seekTo(targetRatio * duration); } catch { }
+            });
         }
     };
 
@@ -249,6 +228,8 @@ export default function PlayerScreen() {
         const { state, absoluteX } = e.nativeEvent;
         if (state === GHState.BEGAN) {
             measureProgress();
+            committedRef.current = false;
+            gestureTrackIdRef.current = currentTrack?._qid ?? currentTrack?.id ?? null;
             onScrubRef.current(absoluteX, false);
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
@@ -386,6 +367,19 @@ export default function PlayerScreen() {
 
     const lyricsScrollRef = useRef(null);
     const lyricsRowYRef = useRef(new Map());
+    // Bumped every time a row's real Y position lands via onLayout — the
+    // scroll-to-line effect below depends on this so it re-runs once the
+    // position it needs actually exists, instead of only reacting to
+    // activeLine/showingLyrics changes. Without it: onLayout for a given
+    // line can land a frame or two after lyrics are toggled on or a track
+    // just started (React Native's onLayout is inherently async), the
+    // effect finds nothing yet in the map for the current line, silently
+    // gives up, and — since nothing else re-triggers it — the view just
+    // sits wherever it was until activeLine naturally changes to a new
+    // line and the effect runs again with the position now populated.
+    // That's the reported "doesn't jump to the line until the next line
+    // change" — not a timing/animation issue, a dropped retry.
+    const [lyricsLayoutVersion, setLyricsLayoutVersion] = useState(0);
     // Manual scroll support: dragging the lyrics view pauses auto-sync;
     // after `lyricsResyncSec` idle seconds (Settings → Lyrics), it resumes
     // and snaps back to the currently-playing line.
@@ -404,7 +398,7 @@ export default function PlayerScreen() {
         // lyrics box rather than dead center — reads more naturally, closer
         // to how lock-screen/streaming-app lyrics views usually scroll.
         lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.32), animated: true });
-    }, [activeLine, showingLyrics, lyricsManualScroll]);
+    }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
     // switch, or if the running animation has drifted noticeably from what
@@ -507,7 +501,7 @@ export default function PlayerScreen() {
                 <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
-                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} bgColor={base.bg} />
+                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} />
                     </TouchableOpacity>
                     {/* EQ hidden — react-native-track-player doesn't support real
                         audio EQ, so this button never did anything audible. */}
@@ -534,14 +528,16 @@ export default function PlayerScreen() {
                      instead, no shadow. */}
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
-                        <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
-                            <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
-                                {artwork
-                                    ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                                    : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
-                                }
-                            </Animated.View>
-                        </View>
+                        {!hidePlayerCover && (
+                            <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
+                                <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
+                                    {artwork
+                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                        : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                                    }
+                                </Animated.View>
+                            </View>
+                        )}
                         {lyricsData && (
                             <Animated.View
                                 style={[{ position: 'absolute', top: -44, bottom: -44, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
@@ -571,8 +567,8 @@ export default function PlayerScreen() {
                                     {lyricsData.map((line, i) => (
                                         <Text
                                             key={i}
-                                            onLayout={(e) => lyricsRowYRef.current.set(i, e.nativeEvent.layout.y)}
-                                            style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, i === activeLine ? { color: theme.accent, fontWeight: '700' } : { color: '#666' }]}
+                                            onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); }}
+                                            style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : '#666' }]}
                                         >
                                             {line.text || '\u2026'}
                                         </Text>
@@ -586,10 +582,10 @@ export default function PlayerScreen() {
                                      pointerEvents none so it never eats the scroll. */}
                                 <View pointerEvents="none" style={StyleSheet.absoluteFill}>
                                     {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'t' + i} style={{ position: 'absolute', top: i * 8, left: 0, right: 0, height: 8, backgroundColor: base.bg, opacity }} />
+                                        <View key={'t' + i} style={{ position: 'absolute', top: i * 8, left: 0, right: 0, height: 8, backgroundColor: '#000', opacity }} />
                                     ))}
                                     {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * 8, left: 0, right: 0, height: 8, backgroundColor: base.bg, opacity }} />
+                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * 8, left: 0, right: 0, height: 8, backgroundColor: '#000', opacity }} />
                                     ))}
                                 </View>
                             </Animated.View>
@@ -736,7 +732,7 @@ const s = StyleSheet.create({
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
-    lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '500', textAlign: 'center', marginVertical: 7 },
+    lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '700', textAlign: 'center', marginVertical: 7 },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

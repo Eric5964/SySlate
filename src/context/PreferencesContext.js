@@ -8,6 +8,7 @@ import {
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
     getCoverShape, setCoverShape as persistCoverShape,
+    getHidePlayerCover, setHidePlayerCover as persistHidePlayerCover,
     getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
     getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
 } from '../utils/storage';
@@ -28,6 +29,7 @@ const Ctx = createContext({
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
+    hidePlayerCover: false, setHidePlayerCover: () => { },
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
 });
@@ -41,6 +43,7 @@ export function PreferencesProvider({ children }) {
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
+    const [hidePlayerCover, setHidePlayerCoverState] = useState(false);
     const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
 
@@ -53,6 +56,7 @@ export function PreferencesProvider({ children }) {
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
         getCoverShape().then(setCoverShapeState);
+        getHidePlayerCover().then(setHidePlayerCoverState);
         getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
         getBackgroundImageUri().then(setBackgroundImageUriState);
     }, []);
@@ -88,6 +92,10 @@ export function PreferencesProvider({ children }) {
         setCoverShapeState(v);
         persistCoverShape(v);
     }, []);
+    const setHidePlayerCover = useCallback((v) => {
+        setHidePlayerCoverState(v);
+        persistHidePlayerCover(v);
+    }, []);
     const setBackgroundImageEnabled = useCallback((v) => {
         setBackgroundImageEnabledState(v);
         persistBgImageEnabled(v);
@@ -116,11 +124,12 @@ export function PreferencesProvider({ children }) {
         lyricsOffsetSec, setLyricsOffsetSec,
         keepScreenAwake, setKeepScreenAwake,
         coverShape, setCoverShape,
+        hidePlayerCover, setHidePlayerCover,
         backgroundImageEnabled, setBackgroundImageEnabled,
         backgroundImageUri, setBackgroundImageUri,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
-        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape,
+        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, hidePlayerCover,
         backgroundImageEnabled, backgroundImageUri,
     ]);
 
