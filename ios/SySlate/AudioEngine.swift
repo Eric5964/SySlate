@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 import MediaPlayer
 
 // MARK: - Track model
@@ -69,7 +70,36 @@ class AudioEngine: RCTEventEmitter {
 
     // MARK: - Engine graph
     private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
+    // Two player nodes instead of one — a real overlapping crossfade needs
+    // both the outgoing and incoming track's audio playing simultaneously,
+    // which a single AVAudioPlayerNode fundamentally can't do (it's one
+    // audio stream). activeNode is whichever one is currently the "real"
+    // track for every existing purpose (position, pause, seek, progress);
+    // the other is idle except during the brief crossfade overlap window.
+    // They swap roles at the end of each crossfade rather than either one
+    // being permanently "the" player node.
+    private let nodeA = AVAudioPlayerNode()
+    private let nodeB = AVAudioPlayerNode()
+    private var activeNode: AVAudioPlayerNode!
+    private var idleNode: AVAudioPlayerNode { activeNode === nodeA ? nodeB : nodeA }
+    // Both nodes feed into this before EQ/normalization — AVAudioUnitEQ
+    // and AVAudioUnitEffect each only take one input, so two simultaneous
+    // player nodes need a mixer ahead of them regardless of crossfade
+    // being active at that moment or not.
+    private let preMixNode = AVAudioMixerNode()
+    // 10-band graphic EQ, frequencies matching src/utils/eq.js's presets
+    // exactly (32/64/125/250/500/1k/2k/4k/8k/16k) so a preset's `bands`
+    // array maps directly onto eqNode.bands by index with no translation.
+    private let eqNode = AVAudioUnitEQ(numberOfBands: 10)
+    // Apple's built-in dynamics processor AudioUnit — used here as a
+    // volume-normalization approximation (consistent perceived loudness
+    // across tracks recorded at different levels) since these are local
+    // files with no embedded loudness metadata (ReplayGain etc.) to read
+    // instead. Real per-track loudness analysis would need decoding each
+    // full file up front, which isn't practical to add on top of
+    // everything else this pass — this is a legitimate, standard
+    // alternative (this is literally what it's for), not a placeholder.
+    private var normalizerNode: AVAudioUnitEffect!
     private var currentFile: AVAudioFile?
     private var currentFileSampleRate: Double = 44100
 
@@ -79,6 +109,14 @@ class AudioEngine: RCTEventEmitter {
     private var repeatMode: RepeatModeValue = .off
     private var state: PlaybackStateValue = .none
     private var volume: Float = 1.0
+    private var crossfadeEnabled: Bool = false
+    private var crossfadeDurationSeconds: Double = 0
+    // True only for the duration of an actual overlap — guards against
+    // starting a second crossfade (e.g. a rapid double-skip) while one is
+    // already using the idle node, which would need a THIRD node to do
+    // correctly. A skip/natural-end that lands mid-crossfade just falls
+    // back to the plain instant swap instead.
+    private var isCrossfading: Bool = false
 
     // Guards the specific race RNTP's own completion callback used to hit:
     // scheduleFile's completion handler firing after we've already moved
@@ -140,8 +178,45 @@ class AudioEngine: RCTEventEmitter {
 
     override init() {
         super.init()
-        engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        activeNode = nodeA
+
+        var normalizerDesc = AudioComponentDescription()
+        normalizerDesc.componentType = kAudioUnitType_Effect
+        normalizerDesc.componentSubType = kAudioUnitSubType_DynamicsProcessor
+        normalizerDesc.componentManufacturer = kAudioUnitManufacturer_Apple
+        normalizerDesc.componentFlags = 0
+        normalizerDesc.componentFlagsMask = 0
+        normalizerNode = AVAudioUnitEffect(audioComponentDescription: normalizerDesc)
+
+        engine.attach(nodeA)
+        engine.attach(nodeB)
+        engine.attach(preMixNode)
+        engine.attach(eqNode)
+        engine.attach(normalizerNode)
+
+        engine.connect(nodeA, to: preMixNode, format: nil)
+        engine.connect(nodeB, to: preMixNode, format: nil)
+        engine.connect(preMixNode, to: eqNode, format: nil)
+        engine.connect(eqNode, to: normalizerNode, format: nil)
+        engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
+
+        // Frequencies match src/utils/eq.js's BAND_HZ exactly (index-for-
+        // index) so a preset's bands array can be applied directly with
+        // no remapping. .parametric gives each band a bell/peaking curve,
+        // the standard shape for a graphic EQ band.
+        let eqFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        for (i, freq) in eqFrequencies.enumerated() where i < eqNode.bands.count {
+            eqNode.bands[i].filterType = .parametric
+            eqNode.bands[i].frequency = freq
+            eqNode.bands[i].bandwidth = 1.0
+            eqNode.bands[i].gain = 0
+            eqNode.bands[i].bypass = false
+        }
+        eqNode.bypass = false
+        // Normalization off by default until a preference explicitly
+        // turns it on — see setNormalizationEnabled.
+        normalizerNode.bypass = true
+
         configureAudioSession()
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
@@ -293,12 +368,12 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func currentPositionSeconds() -> Double {
-        guard let nodeTime = playerNode.lastRenderTime,
-              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else { return segmentStartOffsetSeconds }
+        guard let nodeTime = activeNode.lastRenderTime,
+              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return segmentStartOffsetSeconds }
         return segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
     }
 
-    private func loadAndScheduleCurrentTrack(startAtSeconds: Double = 0, autoPlay: Bool) {
+    private func loadAndScheduleCurrentTrack(startAtSeconds: Double = 0, autoPlay: Bool, announceChange: Bool = true) {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             setState(.stopped)
             return
@@ -313,7 +388,7 @@ class AudioEngine: RCTEventEmitter {
                 let file = try AVAudioFile(forReading: track.url)
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return } // superseded by a newer load
-                    self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, token: token)
+                    self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, announceChange: announceChange, token: token)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -325,19 +400,19 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
-    private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, token: UInt64) {
+    private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64) {
         do {
             currentFile = file
             currentFileSampleRate = file.processingFormat.sampleRate
             segmentStartOffsetSeconds = startAtSeconds
 
-            playerNode.stop()
+            activeNode.stop()
 
             let startFrame = AVAudioFramePosition(startAtSeconds * currentFileSampleRate)
             let frameCount = AVAudioFrameCount(file.length - startFrame)
 
             if frameCount > 0 {
-                playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
+                activeNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
                     DispatchQueue.main.async {
                         self?.handlePlaybackCompleted(token: token)
                     }
@@ -350,16 +425,18 @@ class AudioEngine: RCTEventEmitter {
                 if idx < queue.count { queue[idx] = trackWithDuration }
             }
 
-            sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+            if announceChange {
+                sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+            }
 
             if !engine.isRunning {
                 try engine.start()
             }
             activateSession()
-            playerNode.volume = volume
+            activeNode.volume = volume
 
             if autoPlay {
-                playerNode.play()
+                activeNode.play()
                 setState(.playing)
             } else {
                 setState(.ready)
@@ -384,7 +461,7 @@ class AudioEngine: RCTEventEmitter {
             // watcher depends on that exact absence to tell a real repeat
             // apart from a real track change. Preserve that: reschedule
             // silently, no PlaybackTrackChanged event here.
-            loadAndScheduleCurrentTrack(startAtSeconds: 0, autoPlay: true)
+            loadAndScheduleCurrentTrack(startAtSeconds: 0, autoPlay: true, announceChange: false)
             return
         }
 
@@ -410,12 +487,114 @@ class AudioEngine: RCTEventEmitter {
         }
         if newIndex < 0 || newIndex >= queue.count {
             currentIndex = nil
-            playerNode.stop()
+            activeNode.stop()
             setState(.ended)
             return
         }
+
+        if crossfadeEnabled, crossfadeDurationSeconds > 0.05, autoPlay, direction == 1, !isCrossfading, state == .playing {
+            currentIndex = newIndex
+            startCrossfade(toIndex: newIndex)
+            return
+        }
+
         currentIndex = newIndex
         loadAndScheduleCurrentTrack(autoPlay: autoPlay)
+    }
+
+    // MARK: - Crossfade
+
+    private func startCrossfade(toIndex idx: Int) {
+        guard idx >= 0, idx < queue.count else { return }
+        let track = queue[idx]
+        let outgoingNode = activeNode!
+        let incomingNode = idleNode
+        let outgoingVolumeStart = outgoingNode.volume
+
+        playbackToken &+= 1
+        let token = playbackToken
+        isCrossfading = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let file = try AVAudioFile(forReading: track.url)
+                DispatchQueue.main.async {
+                    guard let self = self, token == self.playbackToken else {
+                        self?.isCrossfading = false
+                        return
+                    }
+                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, token: token)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.isCrossfading = false
+                    NSLog("AudioEngine: crossfade load failed for \(track.url): \(error)")
+                    // Falls back to a plain load so playback doesn't just
+                    // silently stop because specifically the crossfade
+                    // path failed (missing file, unreadable format, etc).
+                    guard token == self.playbackToken else { return }
+                    self.loadAndScheduleCurrentTrack(autoPlay: true)
+                }
+            }
+        }
+    }
+
+    private func runCrossfade(file: AVAudioFile, track: Track, idx: Int, outgoingNode: AVAudioPlayerNode, incomingNode: AVAudioPlayerNode, outgoingVolumeStart: Float, token: UInt64) {
+        let sampleRate = file.processingFormat.sampleRate
+        incomingNode.stop()
+        incomingNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil) { [weak self] in
+            DispatchQueue.main.async {
+                self?.handlePlaybackCompleted(token: token)
+            }
+        }
+        incomingNode.volume = 0
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        activateSession()
+        incomingNode.play()
+
+        let duration = crossfadeDurationSeconds
+        let steps = max(10, Int(duration * 25))
+        let stepInterval = duration / Double(steps)
+        var currentStep = 0
+        let targetVolume = volume
+
+        // Coarse timer-driven fade controlling both nodes in lockstep —
+        // done natively rather than via the usual JS setVolume() calls
+        // because those go over the bridge one at a time; a real
+        // crossfade needs both nodes' volumes moving together on every
+        // step, which bridge round-trip latency can't guarantee.
+        let fadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
+            guard let self = self, token == self.playbackToken else { timer.invalidate(); return }
+            currentStep += 1
+            let t = Float(currentStep) / Float(steps)
+            outgoingNode.volume = outgoingVolumeStart * (1 - t)
+            incomingNode.volume = targetVolume * t
+            if currentStep >= steps {
+                timer.invalidate()
+                outgoingNode.stop()
+                outgoingNode.volume = targetVolume
+
+                self.activeNode = incomingNode
+                self.isCrossfading = false
+                self.currentFile = file
+                self.currentFileSampleRate = sampleRate
+                self.segmentStartOffsetSeconds = 0
+
+                var trackWithDuration = track
+                if trackWithDuration.duration == nil {
+                    trackWithDuration.duration = Double(file.length) / sampleRate
+                    if idx < self.queue.count { self.queue[idx] = trackWithDuration }
+                }
+
+                self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+                self.setState(.playing)
+                self.startProgressTimer()
+            }
+        }
+        RunLoop.main.add(fadeTimer, forMode: .common)
     }
 
     private func startProgressTimer() {
@@ -441,7 +620,7 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         activateSession()
-        playerNode.play()
+        activeNode.play()
         setState(.playing)
     }
 
@@ -452,13 +631,13 @@ class AudioEngine: RCTEventEmitter {
         // be the actual current position, not whatever it was at last
         // load/seek (was defaulting to 0, showing 0:00 while paused).
         segmentStartOffsetSeconds = currentPositionSeconds()
-        playerNode.pause()
+        activeNode.pause()
         setState(.paused)
     }
 
     private func stopInternal() {
         playbackToken &+= 1
-        playerNode.stop()
+        activeNode.stop()
         progressTimer?.invalidate()
         setState(.stopped)
         deactivateSession()
@@ -671,7 +850,7 @@ class AudioEngine: RCTEventEmitter {
         }
         _ = idx
         segmentStartOffsetSeconds = startAtSeconds
-        playerNode.stop()
+        activeNode.stop()
         playbackToken &+= 1
         let token = playbackToken
 
@@ -679,7 +858,7 @@ class AudioEngine: RCTEventEmitter {
         let frameCount = AVAudioFrameCount(max(0, file.length - startFrame))
 
         if frameCount > 0 {
-            playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
+            activeNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
                 DispatchQueue.main.async {
                     self?.handlePlaybackCompleted(token: token)
                 }
@@ -687,7 +866,7 @@ class AudioEngine: RCTEventEmitter {
         }
 
         if autoPlay {
-            playerNode.play()
+            activeNode.play()
             setState(.playing)
         } else {
             setState(.ready)
@@ -697,7 +876,7 @@ class AudioEngine: RCTEventEmitter {
     @objc(setVolume:resolver:rejecter:)
     func setVolume(_ vol: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         volume = vol.floatValue
-        playerNode.volume = volume
+        activeNode.volume = volume
         resolve(nil)
     }
 
@@ -721,6 +900,38 @@ class AudioEngine: RCTEventEmitter {
     @objc(setRepeatMode:resolver:rejecter:)
     func setRepeatMode(_ mode: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         repeatMode = RepeatModeValue(rawValue: mode.intValue) ?? .off
+        resolve(nil)
+    }
+
+    // MARK: - EQ / normalization / crossfade
+
+    // `bands` is 10 gain values in dB, index-matched to eq.js's BAND_HZ
+    // (32Hz..16kHz). A "flat" preset is just all zeros — no special-casing
+    // needed, the EQ node stays attached and active either way, it's just
+    // a no-op at that point.
+    @objc(setEQBands:resolver:rejecter:)
+    func setEQBands(_ bands: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        for (i, gain) in bands.enumerated() where i < eqNode.bands.count {
+            eqNode.bands[i].gain = gain.floatValue
+        }
+        resolve(nil)
+    }
+
+    @objc(setNormalizationEnabled:resolver:rejecter:)
+    func setNormalizationEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        normalizerNode.bypass = !enabled.boolValue
+        resolve(nil)
+    }
+
+    @objc(setCrossfadeEnabled:resolver:rejecter:)
+    func setCrossfadeEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        crossfadeEnabled = enabled.boolValue
+        resolve(nil)
+    }
+
+    @objc(setCrossfadeDuration:resolver:rejecter:)
+    func setCrossfadeDuration(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        crossfadeDurationSeconds = max(0, seconds.doubleValue)
         resolve(nil)
     }
 }

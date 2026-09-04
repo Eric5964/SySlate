@@ -4,6 +4,10 @@ import * as FileSystem from 'expo-file-system';
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
 export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:${path}` : 'eq:global').then(v => v ?? 'flat'), 'flat');
+export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v === 'true'), false);
+export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
+export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('crossfade_duration').then(v => v !== null ? parseFloat(v) : 4), 4);
+export const setCrossfadeDuration = (v) => safe(() => AsyncStorage.setItem('crossfade_duration', String(v)), null);
 export const getKeepPriorityOnPlaylistSwitch = () => safe(() => AsyncStorage.getItem('keep_priority_on_switch').then(v => v !== 'false'), true);
 export const setKeepPriorityOnPlaylistSwitch = (v) => safe(() => AsyncStorage.setItem('keep_priority_on_switch', String(v)), null);
 // When true, Album always comes from the containing folder name, same as

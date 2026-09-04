@@ -110,6 +110,10 @@ const AudioEngine = {
     getProgress: () => NativeAudioEngine.getProgress(),
     getState: () => NativeAudioEngine.getState(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
+    setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
+    setNormalizationEnabled: (enabled) => NativeAudioEngine.setNormalizationEnabled(enabled),
+    setCrossfadeEnabled: (enabled) => NativeAudioEngine.setCrossfadeEnabled(enabled),
+    setCrossfadeDuration: (seconds) => NativeAudioEngine.setCrossfadeDuration(seconds),
 
     addEventListener,
 };

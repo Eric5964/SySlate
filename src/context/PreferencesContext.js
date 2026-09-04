@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import AudioEngine from '../native/AudioEngine';
 import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
@@ -11,6 +12,9 @@ import {
     getHidePlayerCover, setHidePlayerCover as persistHidePlayerCover,
     getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
     getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
+    getCrossfadeEnabled, setCrossfadeEnabled as persistCrossfadeEnabled,
+    getCrossfadeDuration, setCrossfadeDuration as persistCrossfadeDuration,
+    getVolNorm, setVolNorm as persistVolNorm,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -32,6 +36,9 @@ const Ctx = createContext({
     hidePlayerCover: false, setHidePlayerCover: () => { },
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
+    crossfadeEnabled: false, setCrossfadeEnabled: () => { },
+    crossfadeDuration: 4, setCrossfadeDuration: () => { },
+    normalizationEnabled: true, setNormalizationEnabled: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -46,6 +53,9 @@ export function PreferencesProvider({ children }) {
     const [hidePlayerCover, setHidePlayerCoverState] = useState(false);
     const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
+    const [crossfadeEnabled, setCrossfadeEnabledState] = useState(false);
+    const [crossfadeDuration, setCrossfadeDurationState] = useState(4);
+    const [normalizationEnabled, setNormalizationEnabledState] = useState(true);
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
@@ -59,6 +69,14 @@ export function PreferencesProvider({ children }) {
         getHidePlayerCover().then(setHidePlayerCoverState);
         getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
         getBackgroundImageUri().then(setBackgroundImageUriState);
+        // These three also need to reach the native engine on cold start,
+        // not just local state — App.js's own setup effect races this one,
+        // so it also independently pushes these same three to native once
+        // it knows setupPlayer has actually finished; harmless to set
+        // twice, but must not be ONLY set here in case this runs first.
+        getCrossfadeEnabled().then((v) => { setCrossfadeEnabledState(v); AudioEngine.setCrossfadeEnabled(v).catch(() => { }); });
+        getCrossfadeDuration().then((v) => { setCrossfadeDurationState(v); AudioEngine.setCrossfadeDuration(v).catch(() => { }); });
+        getVolNorm().then((v) => { setNormalizationEnabledState(v); AudioEngine.setNormalizationEnabled(v).catch(() => { }); });
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -108,6 +126,21 @@ export function PreferencesProvider({ children }) {
         setKeepScreenAwakeState(v);
         persistKeepScreenAwake(v);
     }, []);
+    const setCrossfadeEnabled = useCallback((v) => {
+        setCrossfadeEnabledState(v);
+        persistCrossfadeEnabled(v);
+        AudioEngine.setCrossfadeEnabled(v).catch(() => { });
+    }, []);
+    const setCrossfadeDuration = useCallback((v) => {
+        setCrossfadeDurationState(v);
+        persistCrossfadeDuration(v);
+        AudioEngine.setCrossfadeDuration(v).catch(() => { });
+    }, []);
+    const setNormalizationEnabled = useCallback((v) => {
+        setNormalizationEnabledState(v);
+        persistVolNorm(v);
+        AudioEngine.setNormalizationEnabled(v).catch(() => { });
+    }, []);
 
     // This context now has more consumers than just SettingsScreen (art
     // rendering across MiniPlayer, playlists, queue, etc. all read
@@ -127,10 +160,14 @@ export function PreferencesProvider({ children }) {
         hidePlayerCover, setHidePlayerCover,
         backgroundImageEnabled, setBackgroundImageEnabled,
         backgroundImageUri, setBackgroundImageUri,
+        crossfadeEnabled, setCrossfadeEnabled,
+        crossfadeDuration, setCrossfadeDuration,
+        normalizationEnabled, setNormalizationEnabled,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, hidePlayerCover,
         backgroundImageEnabled, backgroundImageUri,
+        crossfadeEnabled, crossfadeDuration, normalizationEnabled,
     ]);
 
     return (
@@ -141,4 +178,3 @@ export function PreferencesProvider({ children }) {
 }
 
 export const usePreferences = () => useContext(Ctx);
-

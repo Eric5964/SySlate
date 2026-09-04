@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { AppState } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
+import { getPresetById } from '../utils/eq';
+import { getCustomPresets } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
@@ -30,6 +32,13 @@ const setQueueLoop = async () => {
 // that changes.
 let qidCounter = 0;
 const stampQid = (track) => ({ ...track, _qid: `q${++qidCounter}` });
+async function applyEQPreset(id) {
+    try {
+        const custom = await getCustomPresets();
+        const preset = getPresetById(id, custom);
+        await AudioEngine.setEQBands(preset.bands);
+    } catch { }
+}
 const stampQids = (tracks) => tracks.map(stampQid);
 
 export function PlaybackProvider({ children }) {
@@ -622,6 +631,7 @@ export function PlaybackProvider({ children }) {
         const mode = session?.shuffleMode ?? await getShuffleMode();
         const isOn = session?.shuffleOn ?? await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
+        applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         let queue = session?.queue ?? (isOn ? buildQueue(playlist.songs, mode) : [...playlist.songs]);
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
@@ -657,6 +667,7 @@ export function PlaybackProvider({ children }) {
         // See loadPlaylist above for why this retries instead of dropping.
         if (isTransitionLocked()) { queueAction(() => playPlaylistOrdered(playlist, orderedSongs)); return; }
         const eq = await getEQPreset(playlist.path);
+        applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         const queue = [...orderedSongs];
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
@@ -688,6 +699,7 @@ export function PlaybackProvider({ children }) {
         if (isTransitionLocked()) { queueAction(() => playPlaylistShuffled(playlist)); return; }
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
+        applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         const queue = buildQueue(playlist.songs, useMode);
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
@@ -726,6 +738,7 @@ export function PlaybackProvider({ children }) {
         const mode = songSession?.shuffleMode ?? await getShuffleMode();
         const isOn = songSession?.shuffleOn ?? await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
+        applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         const song = playlist.songs.find(s => s.id === songId);
         if (!song) { console.warn('Song not found:', songId); return; }
 
@@ -811,6 +824,7 @@ export function PlaybackProvider({ children }) {
             const on = await getShuffleOnStorage();
             await primeNativeQueue(queue, last.index);
             fillRestOfWindow();
+            applyEQPreset(await getEQPreset(last.playlist?.path));
             if (last.position > 2) {
                 // Seeking immediately after skip was silently getting ignored —
                 // the native player hadn't finished preparing the track yet.
@@ -944,6 +958,7 @@ export function PlaybackProvider({ children }) {
     const changeEQPreset = useCallback(async (id, path) => {
         setEqPresetId(id);
         await setEQPreset(id, path);
+        await applyEQPreset(id);
     }, []);
 
     const saveSession = useCallback(async () => {

@@ -42,7 +42,6 @@ const PREV_BUTTON_MODES = [
 import {
     getEndOfTrackRamp, setEndOfTrackRamp,
     getSkipRamp, setSkipRamp,
-    getVolNorm, setVolNorm,
     getAudioRamp, setAudioRamp,
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
@@ -74,7 +73,6 @@ export default function SettingsScreen() {
 
     const [eotRamp, setEotRampState] = useState(3.0);
     const [skipRamp, setSkipRampState] = useState(0.5);
-    const [volNorm, setVN] = useState(true);
     const [ramp, setRamp] = useState(0);
     const [rampPause, setRampPause] = useState(false);
     const [customPresets, setCP] = useState([]);
@@ -84,7 +82,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, hidePlayerCover, setHidePlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, hidePlayerCover, setHidePlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, normalizationEnabled, setNormalizationEnabled } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -119,7 +117,6 @@ export default function SettingsScreen() {
         (async () => {
             setEotRampState(await getEndOfTrackRamp());
             setSkipRampState(await getSkipRamp());
-            setVN(await getVolNorm());
             setRamp(await getAudioRamp());
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
@@ -247,10 +244,8 @@ export default function SettingsScreen() {
                 </Section>
                 */}
 
-                {/* 2. Audio — everything that fades/ramps volume, plus normalization,
-                     all together under one heading in the spot Crossfade used to be.
-                     ("Crossfade" was a misnomer — nothing here overlaps two tracks,
-                     it's all fade/ramp, so it's named accordingly.) */}
+                {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
+                     all together under one heading. */}
                 <Section title="Audio">
                     <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
                     <Text style={s.sliderNote}>Fades out when a track ends naturally, fades the next one in</Text>
@@ -284,18 +279,33 @@ export default function SettingsScreen() {
                         <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    {/* Volume Normalization hidden — never actually wired to
-                        the playback pipeline anywhere; react-native-track-player
-                        has no built-in loudness normalization to hook it up to,
-                        so this toggle never did anything audible either. */}
-                    {/* <View style={s.toggleRow}>
+                    <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Volume Normalization</Text>
                             <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
                         </View>
-                        <Switch value={volNorm} onValueChange={v => { setVN(v); setVolNorm(v); }}
+                        <Switch value={normalizationEnabled} onValueChange={setNormalizationEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View> */}
+                    </View>
+
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Crossfade</Text>
+                            <Text style={s.toggleSub}>Real overlap between tracks (not a fade-out-then-in) — replaces the End of Track ramp above for natural transitions and the Skip button, while it's on</Text>
+                        </View>
+                        <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    {crossfadeEnabled && (
+                        <>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration</Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDuration.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDuration}
+                                onValueChange={setCrossfadeDuration} onSlidingComplete={setCrossfadeDuration}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
+                        </>
+                    )}
                 </Section>
 
                 {/* 3. Shuffle */}

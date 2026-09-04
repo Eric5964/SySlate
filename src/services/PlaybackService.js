@@ -1,5 +1,5 @@
 import AudioEngine, { Event, State } from '../native/AudioEngine';
-import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec } from '../utils/storage';
+import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getCrossfadeEnabled, getCrossfadeDuration } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
 
 // --- Fade ownership -----------------------------------------------------
@@ -121,6 +121,18 @@ let fallbackTimer = null;
 async function checkRampWindow(position, duration) {
     try {
         const ramp = await getEndOfTrackRamp();
+        // When crossfade is on, the native side handles the ENTIRE
+        // transition itself (both tracks' volumes, in lockstep, on the
+        // actual overlapping audio) for a genuine track-to-track advance —
+        // this JS fade-out must NOT also run for that case, or by the time
+        // native's crossfade starts the outgoing track is already silent
+        // and there's nothing left to audibly overlap with the incoming
+        // one, defeating the entire point. Does NOT gate the recovery
+        // block below, which is specifically for single-track repeat —
+        // native crossfade only ever applies to a genuine index change
+        // (see AudioEngine.swift's advance()), never a same-track loop, so
+        // JS still owns fading a repeat regardless of this setting.
+        const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
 
         // If we currently own a natural end-of-track fade but a seek moved
         // playback back OUT of the window (e.g. rewound), cancel it instead
@@ -205,6 +217,7 @@ async function checkRampWindow(position, duration) {
         if (position < 3) return;
 
         if (activeFadeId !== null) return; // something else owns a fade right now
+        if (crossfading) return; // native crossfade owns this transition instead
         if (ramp <= 0 || !duration || duration < 1) return;
         const remaining = duration - position;
         if (remaining > 0.15 && remaining <= ramp) {
@@ -266,9 +279,13 @@ export async function fadeOutCurrentIfPlaying(dur) {
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
         if (!wasPlaying) return;
         const id = claimFade();
-        if (dur > 0.05) {
-            try { await AudioEngine.setVolume(1); } catch { }
-            await fadeVol(1, 0, dur, id);
+        try {
+            if (dur > 0.05) {
+                try { await AudioEngine.setVolume(1); } catch { }
+                await fadeVol(1, 0, dur, id);
+            }
+        } finally {
+            releaseFade(id);
         }
     } catch { }
 }
@@ -458,6 +475,13 @@ export async function skipWithRamp(direction = 'next') {
     }
     skipLock = true;
     try {
+        if (direction === 'next') {
+            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
+            if (crossfading) {
+                try { await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
+                return;
+            }
+        }
         // For 'prev' specifically, decide up front — before any fade delay
         // below eats real time — whether this press should actually go to
         // the previous track or just restart the current one. Reading

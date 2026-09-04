@@ -10,7 +10,7 @@ import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import SwipeableRow from '../components/SwipeableRow';
-// import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
+import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
 import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
@@ -41,7 +41,7 @@ export default function AllSongsScreen() {
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
-    // const [showEQ, setShowEQ] = useState(false); // EQ hidden
+    const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
@@ -174,10 +174,9 @@ export default function AllSongsScreen() {
                             </TouchableOpacity>
                         )}
                     </View>
-                    {/* EQ hidden — not supported by react-native-track-player */}
-                    {/* <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity> */}
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
@@ -220,7 +219,7 @@ export default function AllSongsScreen() {
                 />
             )}
 
-            {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} /> */}
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </ScreenBackground>
         </TouchableWithoutFeedback>
