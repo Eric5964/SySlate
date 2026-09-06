@@ -1,8 +1,7 @@
 import React, { useContext, useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Alert, Dimensions, Animated,
+    View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated,
 } from 'react-native';
-import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
@@ -46,7 +45,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
     const bg = playlistColor(item.name);
 
     const renderArt = (size, fontSize) => cover
-        ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" transition={0} />
+        ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
         : <Text style={{ fontSize, color: 'rgba(255,255,255,0.4)' }}>♪</Text>;
 
     if (format.startsWith('grid')) {

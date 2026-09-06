@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing, ScrollView } from 'react-native';
-import { Image } from 'expo-image';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -599,7 +598,7 @@ export default function PlayerScreen() {
                             <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
                                 <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
                                     {artwork
-                                        ? <Image source={{ uri: artwork }} style={s.artImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
+                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                         : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
                                     }
                                 </Animated.View>

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing } from 'react-native';
-import { Image } from 'expo-image';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State, useProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
@@ -94,7 +93,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             {showSongCovers && (
                 <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                     {artwork
-                        ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" transition={0} />
+                        ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                         : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
                     }
                 </View>

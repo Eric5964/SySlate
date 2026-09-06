@@ -1,7 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
-import { View, Text, Dimensions } from 'react-native';
-import { Image } from 'expo-image';
+import { View, Text, Dimensions, Image } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -133,9 +132,7 @@ function AppInner() {
 
     // Same reasoning as the playlist-cover prefetch in reload() below —
     // the background image previously had no prefetch at all, so its very
-    // first paint each app launch always flashed in even after the
-    // ScreenBackground/expo-image caching fix (that only helps on repeat
-    // views of an already-cached URI, not the first one).
+    // first paint each app launch always flashed in.
     useEffect(() => {
         if (backgroundImageEnabled && backgroundImageUri) {
             Image.prefetch(backgroundImageUri).catch(() => { });
@@ -150,13 +147,8 @@ function AppInner() {
                 const covers = await getPlaylistCovers();
                 // Actually WAIT for these instead of firing-and-forgetting —
                 // the whole point is the UI doesn't render until images are
-                // already cached, otherwise this preload step does nothing
-                // to prevent the first-render flash it's meant to fix. Now
-                // prefetches into expo-image's cache specifically, since
-                // that's what actually renders these (see ScreenBackground/
-                // MiniPlayer/etc.) — prefetching into plain RN Image's
-                // separate cache, as this did before, doesn't help a
-                // component that isn't reading from that cache.
+                // already in RN's cache, otherwise this preload step does
+                // nothing to prevent the first-render flash it's meant to fix.
                 await Promise.all(
                     Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
                 );

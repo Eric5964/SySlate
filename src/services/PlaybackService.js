@@ -662,7 +662,22 @@ export async function PlaybackService() {
             }
             releaseFade(id);
         } else if (activeFadeId === null) {
-            try { await AudioEngine.setVolume(1); } catch { }
+            // Real bug found here: this used to unconditionally force
+            // volume to 1 on every track change with no active JS fade —
+            // which includes every crossfade completion, since crossfade is
+            // entirely native-side and was never something this JS branch
+            // knew to check for. Native had already ramped the incoming
+            // track's volume to the correct target smoothly, over the
+            // whole crossfade duration; this then immediately snapped it to
+            // flat 1 the instant the completion event arrived — audible as
+            // a real ramp cut off by an abrupt jump, not a smooth
+            // continuation, even on the rare occasion "1" happened to
+            // already be the right target. Crossfade owns this transition's
+            // volume start to finish; JS has no business touching it here.
+            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
+            if (!crossfading) {
+                try { await AudioEngine.setVolume(1); } catch { }
+            }
         }
         startWatcher();
         drainPending();
