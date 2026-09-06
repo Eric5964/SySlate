@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
-    StyleSheet, TextInput, StatusBar, Image, Alert,
+    StyleSheet, TextInput, StatusBar, Alert,
 } from 'react-native';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
@@ -177,7 +178,7 @@ export default function PlaylistDetailScreen() {
                                 activeOpacity={0.85}
                             >
                                 {cover
-                                    ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                                    ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                     : <Text style={s.coverNote}>♪</Text>
                                 }
                             </TouchableOpacity>
@@ -227,7 +228,7 @@ export default function PlaylistDetailScreen() {
                             {showSongCovers && (
                                 <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                     {artMap[item.id]
-                                        ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
+                                        ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                         : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
                                     }
                                 </View>

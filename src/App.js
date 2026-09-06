@@ -1,6 +1,7 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
-import { View, Text, Dimensions, Image } from 'react-native';
+import { View, Text, Dimensions } from 'react-native';
+import { Image } from 'expo-image';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -36,8 +37,9 @@ const PlaylistsStack = createStackNavigator();
 // at the top-level Root stack) keeps the tab bar visible while viewing a
 // playlist, since the tab bar chrome lives outside this nested navigator.
 function PlaylistsStackScreen() {
+    const { base } = useTheme();
     return (
-        <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
+        <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: base.bg } }}>
             <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
             <PlaylistsStack.Screen
                 name="PlaylistDetail"
@@ -98,8 +100,9 @@ function Tabs() {
 }
 
 function MainLayout() {
+    const { base } = useTheme();
     return (
-        <View style={{ flex: 1, backgroundColor: '#0a0a0a' }}>
+        <View style={{ flex: 1, backgroundColor: base.bg }}>
             <Tabs />
             <MiniPlayer />
         </View>
@@ -109,8 +112,8 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
     const [playerReady, setPlayerReady] = useState(false);
-    const { ready: themeReady } = useTheme();
-    const { showSongCovers, keepScreenAwake } = usePreferences();
+    const { ready: themeReady, base } = useTheme();
+    const { showSongCovers, keepScreenAwake, backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const playbackState = usePlaybackState();
 
     // Only while actively playing (not paused, not just "app is open") —
@@ -128,6 +131,17 @@ function AppInner() {
         setLibrary(prev => ({ ...prev, playlists: newPlaylists }));
     };
 
+    // Same reasoning as the playlist-cover prefetch in reload() below —
+    // the background image previously had no prefetch at all, so its very
+    // first paint each app launch always flashed in even after the
+    // ScreenBackground/expo-image caching fix (that only helps on repeat
+    // views of an already-cached URI, not the first one).
+    useEffect(() => {
+        if (backgroundImageEnabled && backgroundImageUri) {
+            Image.prefetch(backgroundImageUri).catch(() => { });
+        }
+    }, [backgroundImageEnabled, backgroundImageUri]);
+
     const reload = async () => {
         try {
             const lib = await scanLibrary();
@@ -136,8 +150,13 @@ function AppInner() {
                 const covers = await getPlaylistCovers();
                 // Actually WAIT for these instead of firing-and-forgetting —
                 // the whole point is the UI doesn't render until images are
-                // already in RN's cache, otherwise this preload step does
-                // nothing to prevent the first-render flash it's meant to fix.
+                // already cached, otherwise this preload step does nothing
+                // to prevent the first-render flash it's meant to fix. Now
+                // prefetches into expo-image's cache specifically, since
+                // that's what actually renders these (see ScreenBackground/
+                // MiniPlayer/etc.) — prefetching into plain RN Image's
+                // separate cache, as this did before, doesn't help a
+                // component that isn't reading from that cache.
                 await Promise.all(
                     Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
                 );
@@ -183,14 +202,14 @@ function AppInner() {
     // ThemeContext's purple/black placeholders before AsyncStorage resolves
     // the user's actual pick.
     if (!playerReady || !themeReady) {
-        return <View style={{ flex: 1, backgroundColor: '#0a0a0a' }} />;
+        return <View style={{ flex: 1, backgroundColor: base.bg }} />;
     }
 
     return (
         <LibraryContext.Provider value={{ ...library, reload, reorderPlaylists }}>
             <PlaybackProvider>
                 <NavigationContainer>
-                    <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: '#0a0a0a' } }}>
+                    <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: base.bg } }}>
                         <Root.Screen name="Main" component={MainLayout} />
                         <Root.Screen
                             name="Player"

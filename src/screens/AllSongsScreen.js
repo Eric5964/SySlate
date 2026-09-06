@@ -1,8 +1,9 @@
 import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, Image,
+    View, Text, FlatList, TouchableOpacity,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useNavigation, useScrollToTop } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
@@ -201,7 +202,7 @@ export default function AllSongsScreen() {
                                 {showSongCovers && (
                                     <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                         {artMap[item.id]
-                                            ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
+                                            ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                             : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
                                         }
                                     </View>

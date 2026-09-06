@@ -9,12 +9,14 @@ import {
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
     getCoverShape, setCoverShape as persistCoverShape,
-    getHidePlayerCover, setHidePlayerCover as persistHidePlayerCover,
+    getShowPlayerCover, setShowPlayerCover as persistShowPlayerCover,
     getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
     getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
     getCrossfadeEnabled, setCrossfadeEnabled as persistCrossfadeEnabled,
     getCrossfadeDuration, setCrossfadeDuration as persistCrossfadeDuration,
-    getVolNorm, setVolNorm as persistVolNorm,
+    getWithinTrackNorm, setWithinTrackNorm as persistWithinTrackNorm,
+    getBetweenTrackNorm, setBetweenTrackNorm as persistBetweenTrackNorm,
+    getSilenceTrim, setSilenceTrim as persistSilenceTrim,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -33,12 +35,14 @@ const Ctx = createContext({
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
-    hidePlayerCover: false, setHidePlayerCover: () => { },
+    showPlayerCover: true, setShowPlayerCover: () => { },
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
     crossfadeEnabled: false, setCrossfadeEnabled: () => { },
     crossfadeDuration: 4, setCrossfadeDuration: () => { },
-    normalizationEnabled: true, setNormalizationEnabled: () => { },
+    withinTrackNorm: true, setWithinTrackNorm: () => { },
+    betweenTrackNorm: false, setBetweenTrackNorm: () => { },
+    silenceTrim: false, setSilenceTrim: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -50,12 +54,14 @@ export function PreferencesProvider({ children }) {
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
-    const [hidePlayerCover, setHidePlayerCoverState] = useState(false);
+    const [showPlayerCover, setShowPlayerCoverState] = useState(true);
     const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
     const [crossfadeEnabled, setCrossfadeEnabledState] = useState(false);
     const [crossfadeDuration, setCrossfadeDurationState] = useState(4);
-    const [normalizationEnabled, setNormalizationEnabledState] = useState(true);
+    const [withinTrackNorm, setWithinTrackNormState] = useState(true);
+    const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
+    const [silenceTrim, setSilenceTrimState] = useState(false);
 
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
@@ -66,17 +72,19 @@ export function PreferencesProvider({ children }) {
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
         getCoverShape().then(setCoverShapeState);
-        getHidePlayerCover().then(setHidePlayerCoverState);
+        getShowPlayerCover().then(setShowPlayerCoverState);
         getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
         getBackgroundImageUri().then(setBackgroundImageUriState);
-        // These three also need to reach the native engine on cold start,
-        // not just local state — App.js's own setup effect races this one,
-        // so it also independently pushes these same three to native once
-        // it knows setupPlayer has actually finished; harmless to set
-        // twice, but must not be ONLY set here in case this runs first.
+        // These also need to reach the native engine on cold start, not
+        // just local state — App.js's own setup effect races this one, so
+        // it also independently pushes these same values to native once it
+        // knows setupPlayer has actually finished; harmless to set twice,
+        // but must not be ONLY set here in case this runs first.
         getCrossfadeEnabled().then((v) => { setCrossfadeEnabledState(v); AudioEngine.setCrossfadeEnabled(v).catch(() => { }); });
         getCrossfadeDuration().then((v) => { setCrossfadeDurationState(v); AudioEngine.setCrossfadeDuration(v).catch(() => { }); });
-        getVolNorm().then((v) => { setNormalizationEnabledState(v); AudioEngine.setNormalizationEnabled(v).catch(() => { }); });
+        getWithinTrackNorm().then((v) => { setWithinTrackNormState(v); AudioEngine.setWithinTrackNormEnabled(v).catch(() => { }); });
+        getBetweenTrackNorm().then((v) => { setBetweenTrackNormState(v); AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { }); });
+        getSilenceTrim().then((v) => { setSilenceTrimState(v); AudioEngine.setSilenceTrimEnabled(v).catch(() => { }); });
     }, []);
 
     // Updates local state immediately (every consumer re-renders right
@@ -110,9 +118,9 @@ export function PreferencesProvider({ children }) {
         setCoverShapeState(v);
         persistCoverShape(v);
     }, []);
-    const setHidePlayerCover = useCallback((v) => {
-        setHidePlayerCoverState(v);
-        persistHidePlayerCover(v);
+    const setShowPlayerCover = useCallback((v) => {
+        setShowPlayerCoverState(v);
+        persistShowPlayerCover(v);
     }, []);
     const setBackgroundImageEnabled = useCallback((v) => {
         setBackgroundImageEnabledState(v);
@@ -136,10 +144,20 @@ export function PreferencesProvider({ children }) {
         persistCrossfadeDuration(v);
         AudioEngine.setCrossfadeDuration(v).catch(() => { });
     }, []);
-    const setNormalizationEnabled = useCallback((v) => {
-        setNormalizationEnabledState(v);
-        persistVolNorm(v);
-        AudioEngine.setNormalizationEnabled(v).catch(() => { });
+    const setWithinTrackNorm = useCallback((v) => {
+        setWithinTrackNormState(v);
+        persistWithinTrackNorm(v);
+        AudioEngine.setWithinTrackNormEnabled(v).catch(() => { });
+    }, []);
+    const setBetweenTrackNorm = useCallback((v) => {
+        setBetweenTrackNormState(v);
+        persistBetweenTrackNorm(v);
+        AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { });
+    }, []);
+    const setSilenceTrim = useCallback((v) => {
+        setSilenceTrimState(v);
+        persistSilenceTrim(v);
+        AudioEngine.setSilenceTrimEnabled(v).catch(() => { });
     }, []);
 
     // This context now has more consumers than just SettingsScreen (art
@@ -157,17 +175,19 @@ export function PreferencesProvider({ children }) {
         lyricsOffsetSec, setLyricsOffsetSec,
         keepScreenAwake, setKeepScreenAwake,
         coverShape, setCoverShape,
-        hidePlayerCover, setHidePlayerCover,
+        showPlayerCover, setShowPlayerCover,
         backgroundImageEnabled, setBackgroundImageEnabled,
         backgroundImageUri, setBackgroundImageUri,
         crossfadeEnabled, setCrossfadeEnabled,
         crossfadeDuration, setCrossfadeDuration,
-        normalizationEnabled, setNormalizationEnabled,
+        withinTrackNorm, setWithinTrackNorm,
+        betweenTrackNorm, setBetweenTrackNorm,
+        silenceTrim, setSilenceTrim,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
-        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, hidePlayerCover,
+        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover,
         backgroundImageEnabled, backgroundImageUri,
-        crossfadeEnabled, crossfadeDuration, normalizationEnabled,
+        crossfadeEnabled, crossfadeDuration, withinTrackNorm, betweenTrackNorm, silenceTrim,
     ]);
 
     return (

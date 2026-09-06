@@ -111,6 +111,15 @@ class AudioEngine: RCTEventEmitter {
     private var volume: Float = 1.0
     private var crossfadeEnabled: Bool = false
     private var crossfadeDurationSeconds: Double = 0
+    // Between-track normalization: a rough per-file gain correction so a
+    // notably quiet or loud track doesn't stand out next to its neighbors.
+    // Separate from normalizerNode above (Apple's DynamicsProcessor,
+    // compression WITHIN a track) — this instead nudges playback volume
+    // per-file based on a cheap sampled loudness estimate. Off by default.
+    private var betweenTrackNormEnabled: Bool = false
+    // Silence trim: skip detected leading/trailing silence on a track's
+    // natural start/end. Off by default.
+    private var silenceTrimEnabled: Bool = false
     // True only for the duration of an actual overlap — guards against
     // starting a second crossfade (e.g. a rapid double-skip) while one is
     // already using the idle node, which would need a THIRD node to do
@@ -138,6 +147,10 @@ class AudioEngine: RCTEventEmitter {
     // time you seek, while the audio itself correctly plays from the seeked
     // position — a real, easy-to-miss AVAudioEngine gotcha.
     private var segmentStartOffsetSeconds: Double = 0
+    // Frozen position snapshot for display while paused — separate from
+    // segmentStartOffsetSeconds, see pauseInternal below for why conflating
+    // the two caused a real "jumps forward" bug on resume.
+    private var frozenPositionSeconds: Double?
 
     // MARK: - RCTEventEmitter
 
@@ -367,9 +380,122 @@ class AudioEngine: RCTEventEmitter {
         updateNowPlayingInfo()
     }
 
+    // MARK: - File analysis (silence trim + between-track loudness)
+    //
+    // One-time-per-file scan, not a full decode: silence trim only samples
+    // bounded chunks in from each end (capped at 20s of scanning either
+    // way), and the loudness estimate only samples a handful of chunks
+    // spread across the file. Both were explicitly asked to stay cheap —
+    // this is deliberately a rough estimate, not accurate LUFS/ReplayGain-
+    // style analysis, which would mean decoding the whole file. Result is
+    // cached per file path (invalidated if the file's size changes) in
+    // UserDefaults, so a given file is only ever scanned once, not on every
+    // play — same spirit as the existing tag/art caches, just native-side
+    // since this needs actual PCM samples.
+    private struct FileAnalysis: Codable {
+        let fileSize: Int64
+        let leadInSeconds: Double
+        let trailingCutSeconds: Double
+        let gainCorrection: Float
+    }
+    private static var analysisCache: [String: FileAnalysis] = {
+        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCache"),
+              let decoded = try? JSONDecoder().decode([String: FileAnalysis].self, from: data) else { return [:] }
+        return decoded
+    }()
+    private func saveAnalysisCache() {
+        guard let data = try? JSONEncoder().encode(AudioEngine.analysisCache) else { return }
+        UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCache")
+    }
+    // Rough reference level the gain-correction estimate below aims for —
+    // not a real loudness standard (LUFS etc.), just an internally
+    // consistent target across files given how it's measured.
+    private let targetSampleRms: Float = 0.09
+
+    private func analyzeFile(_ file: AVAudioFile, path: String) -> FileAnalysis {
+        let sizeKey = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 ?? 0) ?? 0
+        if let cached = AudioEngine.analysisCache[path], cached.fileSize == sizeKey {
+            return cached
+        }
+        let format = file.processingFormat
+        let sampleRate = format.sampleRate
+        let totalFrames = file.length
+        let chunkFrames: AVAudioFrameCount = 4096
+        let silenceThreshold: Float = 0.006 // roughly -44 dBFS
+        let channels = Int(format.channelCount)
+
+        func rms(atFrame frame: AVAudioFramePosition) -> Float? {
+            guard frame >= 0, frame < totalFrames, channels > 0,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else { return nil }
+            file.framePosition = frame
+            guard (try? file.read(into: buffer, frameCount: chunkFrames)) != nil,
+                  buffer.frameLength > 0, let data = buffer.floatChannelData else { return nil }
+            var sumSquares: Float = 0
+            var count = 0
+            for ch in 0..<channels {
+                let ptr = data[ch]
+                for i in 0..<Int(buffer.frameLength) {
+                    let s = ptr[i]
+                    sumSquares += s * s
+                    count += 1
+                }
+            }
+            guard count > 0 else { return nil }
+            return sqrtf(sumSquares / Float(count))
+        }
+
+        var leadInFrames: AVAudioFramePosition = 0
+        var trailingCutFrames: AVAudioFramePosition = 0
+        if silenceTrimEnabled, totalFrames > 0 {
+            let scanCap = AVAudioFramePosition(sampleRate * 20) // don't scan more than 20s in from either end
+            var pos: AVAudioFramePosition = 0
+            leadInFrames = min(totalFrames, scanCap)
+            while pos < min(totalFrames, scanCap) {
+                guard let r = rms(atFrame: pos) else { break }
+                if r > silenceThreshold { leadInFrames = pos; break }
+                pos += AVAudioFramePosition(chunkFrames)
+            }
+            let trailCap = max(0, totalFrames - scanCap)
+            pos = totalFrames
+            trailingCutFrames = totalFrames - trailCap
+            while pos > trailCap {
+                let chunkStart = max(0, pos - AVAudioFramePosition(chunkFrames))
+                guard let r = rms(atFrame: chunkStart) else { break }
+                if r > silenceThreshold { trailingCutFrames = totalFrames - pos; break }
+                pos = chunkStart
+            }
+        }
+
+        var gain: Float = 1.0
+        if betweenTrackNormEnabled, totalFrames > 0 {
+            let sampleCount = 12
+            var rmsSum: Float = 0
+            var rmsSamples = 0
+            for i in 0..<sampleCount {
+                let framePos = AVAudioFramePosition(Double(totalFrames) * (Double(i) + 0.5) / Double(sampleCount))
+                if let r = rms(atFrame: framePos), r > 0.0005 { // skip near-silent chunks so they don't drag the average down
+                    rmsSum += r
+                    rmsSamples += 1
+                }
+            }
+            let measured = rmsSamples > 0 ? rmsSum / Float(rmsSamples) : targetSampleRms
+            gain = min(max(targetSampleRms / max(measured, 0.0005), 0.4), 2.5) // keep corrections modest — rough estimate, not exact
+        }
+
+        let result = FileAnalysis(
+            fileSize: sizeKey,
+            leadInSeconds: Double(leadInFrames) / sampleRate,
+            trailingCutSeconds: Double(trailingCutFrames) / sampleRate,
+            gainCorrection: gain
+        )
+        AudioEngine.analysisCache[path] = result
+        saveAnalysisCache()
+        return result
+    }
+
     private func currentPositionSeconds() -> Double {
         guard let nodeTime = activeNode.lastRenderTime,
-              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return segmentStartOffsetSeconds }
+              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return frozenPositionSeconds ?? segmentStartOffsetSeconds }
         return segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
     }
 
@@ -404,12 +530,37 @@ class AudioEngine: RCTEventEmitter {
         do {
             currentFile = file
             currentFileSampleRate = file.processingFormat.sampleRate
-            segmentStartOffsetSeconds = startAtSeconds
+
+            // Analysis (silence trim points + loudness gain) only runs when
+            // at least one of the two features is actually on, and only
+            // costs anything the first time a given file is seen — see
+            // analyzeFile's cache. startAtSeconds == 0 specifically means a
+            // genuine fresh start (tapped a song, natural advance, repeat) —
+            // NOT a session-restore or a manual seek (seeks use a separate,
+            // lighter reschedule path and never call this), so silence trim
+            // only ever applies to a track's real natural start/end, never
+            // second-guessing a position the user or a restored session
+            // explicitly asked for.
+            var effectiveStartAtSeconds = startAtSeconds
+            var trailingCutSeconds: Double = 0
+            var gainCorrection: Float = 1.0
+            if silenceTrimEnabled || betweenTrackNormEnabled {
+                let analysis = analyzeFile(file, path: track.url.path)
+                if silenceTrimEnabled && startAtSeconds == 0 {
+                    effectiveStartAtSeconds = analysis.leadInSeconds
+                    trailingCutSeconds = analysis.trailingCutSeconds
+                }
+                if betweenTrackNormEnabled {
+                    gainCorrection = analysis.gainCorrection
+                }
+            }
+            segmentStartOffsetSeconds = effectiveStartAtSeconds
 
             activeNode.stop()
 
-            let startFrame = AVAudioFramePosition(startAtSeconds * currentFileSampleRate)
-            let frameCount = AVAudioFrameCount(file.length - startFrame)
+            let startFrame = AVAudioFramePosition(effectiveStartAtSeconds * currentFileSampleRate)
+            let trailingCutFrames = AVAudioFramePosition(trailingCutSeconds * currentFileSampleRate)
+            let frameCount = AVAudioFrameCount(max(0, file.length - startFrame - trailingCutFrames))
 
             if frameCount > 0 {
                 activeNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
@@ -433,7 +584,7 @@ class AudioEngine: RCTEventEmitter {
                 try engine.start()
             }
             activateSession()
-            activeNode.volume = volume
+            activeNode.volume = volume * gainCorrection
 
             if autoPlay {
                 activeNode.play()
@@ -518,12 +669,19 @@ class AudioEngine: RCTEventEmitter {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let file = try AVAudioFile(forReading: track.url)
+                // Analysis (when either feature is on) runs here, off the
+                // main thread, same reasoning as the file open itself —
+                // doing this synchronously in runCrossfade below would
+                // block the main thread on first-time PCM sampling for a
+                // file that hasn't been cached yet.
+                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || self?.betweenTrackNormEnabled == true)
+                    ? self?.analyzeFile(file, path: track.url.path) : nil
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else {
                         self?.isCrossfading = false
                         return
                     }
-                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, token: token)
+                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, gainCorrection: analysis?.gainCorrection ?? 1.0, token: token)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -540,7 +698,7 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
-    private func runCrossfade(file: AVAudioFile, track: Track, idx: Int, outgoingNode: AVAudioPlayerNode, incomingNode: AVAudioPlayerNode, outgoingVolumeStart: Float, token: UInt64) {
+    private func runCrossfade(file: AVAudioFile, track: Track, idx: Int, outgoingNode: AVAudioPlayerNode, incomingNode: AVAudioPlayerNode, outgoingVolumeStart: Float, gainCorrection: Float, token: UInt64) {
         let sampleRate = file.processingFormat.sampleRate
         incomingNode.stop()
         incomingNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil) { [weak self] in
@@ -559,7 +717,13 @@ class AudioEngine: RCTEventEmitter {
         let steps = max(10, Int(duration * 25))
         let stepInterval = duration / Double(steps)
         var currentStep = 0
-        let targetVolume = volume
+        // Same between-track gain correction as the plain-load path
+        // (finishLoadingTrack) — otherwise a track that needed a gain
+        // correction would fade in at the wrong final volume specifically
+        // when it arrives via crossfade instead of a plain track change.
+        // Computed on the background thread by the caller (startCrossfade),
+        // not here — see its comment for why.
+        let targetVolume = volume * gainCorrection
 
         // Coarse timer-driven fade controlling both nodes in lockstep —
         // done natively rather than via the usual JS setVolume() calls
@@ -602,7 +766,11 @@ class AudioEngine: RCTEventEmitter {
         progressTimer = Timer.scheduledTimer(withTimeInterval: progressIntervalSeconds, repeats: true) { [weak self] _ in
             guard let self = self, self.state == .playing else { return }
             let position = self.currentPositionSeconds()
-            let duration = self.currentIndex.flatMap { self.queue[safe: $0]?.duration } ?? 0
+            // Same fix as getProgress above — derive from currentFile, not
+            // queue[currentIndex], so this can't pair mismatched track data
+            // during a crossfade's currentIndex-flips-early window either.
+            let duration = self.currentFile.map { Double($0.length) / self.currentFileSampleRate }
+                ?? (self.currentIndex.flatMap { self.queue[safe: $0]?.duration } ?? 0)
             self.sendEvent(withName: "PlaybackProgressUpdated", body: [
                 "position": position,
                 "duration": duration,
@@ -620,17 +788,34 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         activateSession()
+        frozenPositionSeconds = nil
         activeNode.play()
         setState(.playing)
     }
 
     private func pauseInternal() {
-        // Freeze the real position while it's still readable — once
-        // paused, lastRenderTime/playerTime go stale and
-        // currentPositionSeconds() falls back to this value, so it must
-        // be the actual current position, not whatever it was at last
-        // load/seek (was defaulting to 0, showing 0:00 while paused).
-        segmentStartOffsetSeconds = currentPositionSeconds()
+        // Freeze the real position for display while paused — activeNode's
+        // lastRenderTime/playerTime go nil/stale once paused, so
+        // currentPositionSeconds() needs a snapshot to fall back to.
+        //
+        // Real bug found here: this used to overwrite
+        // segmentStartOffsetSeconds itself with that snapshot.
+        // segmentStartOffsetSeconds is the ORIGIN a scheduled segment's
+        // playerTime is measured relative to — that origin does NOT change
+        // across a plain pause/resume (nothing gets rescheduled; the same
+        // segment just keeps counting from its original start once resumed,
+        // playerTime included). Overwriting it added the elapsed-at-pause
+        // time a SECOND time on top of playerTime's own already-correct
+        // count the moment playback resumed — e.g. pausing at 60s set
+        // segmentStartOffsetSeconds to 60, and on resume playerTime
+        // continued reporting ~60s+ on its own (it was never reset), so
+        // currentPositionSeconds() read 60 + 60+ instead of just 60+. That's
+        // exactly "hitting play jumps forward greatly" — and identical
+        // in-app or via a remote/lock-screen Play, since both go through
+        // this same pause/resume path. Storing the snapshot separately
+        // instead leaves segmentStartOffsetSeconds untouched, so resuming
+        // counts correctly from the same original origin it always had.
+        frozenPositionSeconds = currentPositionSeconds()
         activeNode.pause()
         setState(.paused)
     }
@@ -888,7 +1073,18 @@ class AudioEngine: RCTEventEmitter {
     @objc(getProgress:rejecter:)
     func getProgress(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let position = currentPositionSeconds()
-        let duration = currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0
+        // Was `queue[currentIndex].duration` — but currentIndex is bumped
+        // to the INCOMING track the moment a crossfade starts (see advance/
+        // startCrossfade), well before the handoff itself completes. For
+        // the whole crossfade window, that paired the OUTGOING track's real
+        // position (still correct — activeNode hasn't swapped yet) with the
+        // INCOMING track's duration, a genuinely inconsistent reading. Since
+        // currentFile only gets reassigned at the same moment activeNode/
+        // segmentStartOffsetSeconds do (see loadAndScheduleCurrentTrack and
+        // runCrossfade's handoff), deriving duration from it instead keeps
+        // position and duration always describing the same track.
+        let duration = currentFile.map { Double($0.length) / currentFileSampleRate }
+            ?? (currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0)
         resolve(["position": position, "duration": duration, "buffered": duration])
     }
 
@@ -932,6 +1128,27 @@ class AudioEngine: RCTEventEmitter {
     @objc(setCrossfadeDuration:resolver:rejecter:)
     func setCrossfadeDuration(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         crossfadeDurationSeconds = max(0, seconds.doubleValue)
+        resolve(nil)
+    }
+
+    // Renamed on the JS side to make clear this is the per-track dynamics
+    // compressor (WITHIN a track), as distinct from setBetweenTrackNormEnabled
+    // below (loudness matching ACROSS tracks) — see PreferencesContext.js.
+    @objc(setWithinTrackNormEnabled:resolver:rejecter:)
+    func setWithinTrackNormEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        normalizerNode.bypass = !enabled.boolValue
+        resolve(nil)
+    }
+
+    @objc(setBetweenTrackNormEnabled:resolver:rejecter:)
+    func setBetweenTrackNormEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        betweenTrackNormEnabled = enabled.boolValue
+        resolve(nil)
+    }
+
+    @objc(setSilenceTrimEnabled:resolver:rejecter:)
+    func setSilenceTrimEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        silenceTrimEnabled = enabled.boolValue
         resolve(nil)
     }
 }

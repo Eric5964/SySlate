@@ -82,7 +82,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, hidePlayerCover, setHidePlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, normalizationEnabled, setNormalizationEnabled } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -112,6 +112,14 @@ export default function SettingsScreen() {
     useEffect(() => { setLyricsResyncLocal(lyricsResyncSec); }, [lyricsResyncSec]);
     const [lyricsOffsetLocal, setLyricsOffsetLocal] = useState(lyricsOffsetSec);
     useEffect(() => { setLyricsOffsetLocal(lyricsOffsetSec); }, [lyricsOffsetSec]);
+    // Crossfade Duration was the one slider in this screen calling the real
+    // (persisting + native-bridge) setter directly from onValueChange,
+    // instead of mirroring locally like every other slider here and only
+    // committing on release — meaning every tick of the drag wrote to
+    // AsyncStorage and crossed the native bridge, not just the one value on
+    // release. Same local-mirror pattern as lyricsResyncLocal/lyricsOffsetLocal above.
+    const [crossfadeDurationLocal, setCrossfadeDurationLocal] = useState(crossfadeDuration);
+    useEffect(() => { setCrossfadeDurationLocal(crossfadeDuration); }, [crossfadeDuration]);
 
     useEffect(() => {
         (async () => {
@@ -281,10 +289,31 @@ export default function SettingsScreen() {
                     </View>
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Volume Normalization</Text>
-                            <Text style={s.toggleSub}>Equalizes loudness between tracks</Text>
+                            <Text style={s.toggleLabel}>Volume Normalization (Within Track)</Text>
+                            {/* This label used to say "Equalizes loudness between
+                                tracks" — but the actual implementation (Apple's
+                                Dynamics Processor) is compression WITHIN a
+                                track, not loudness matching across tracks. Split
+                                into two real, separate settings below. */}
+                            <Text style={s.toggleSub}>Evens out loud/quiet moments within a single track (compression)</Text>
                         </View>
-                        <Switch value={normalizationEnabled} onValueChange={setNormalizationEnabled}
+                        <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Volume Normalization (Between Tracks)</Text>
+                            <Text style={s.toggleSub}>Matches loudness across different tracks, so a notably quiet or loud song doesn't stand out — a lightweight sampled estimate per file, not full loudness analysis, cached after the first play so it doesn't cost anything after that</Text>
+                        </View>
+                        <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Trim Silence</Text>
+                            <Text style={s.toggleSub}>Skips detected silence at the very start/end of a track — not gaps in the middle</Text>
+                        </View>
+                        <Switch value={silenceTrim} onValueChange={setSilenceTrim}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
 
@@ -299,9 +328,10 @@ export default function SettingsScreen() {
                     {crossfadeEnabled && (
                         <>
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration</Text>
-                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDuration.toFixed(1)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDuration}
-                                onValueChange={setCrossfadeDuration} onSlidingComplete={setCrossfadeDuration}
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationLocal}
+                                onValueChange={setCrossfadeDurationLocal}
+                                onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
                         </>
@@ -370,10 +400,10 @@ export default function SettingsScreen() {
                     </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Hide Player Cover</Text>
-                            <Text style={s.toggleSub}>Just the main Player screen — mini player, playlists, and song lists are unaffected. Works with or without a background image.</Text>
+                            <Text style={s.toggleLabel}>Show Player Cover</Text>
+                            <Text style={s.toggleSub}>Just the main Player screen — mini player, playlists, and song lists are unaffected. On by default; turn off to keep the Player screen text-only.</Text>
                         </View>
-                        <Switch value={hidePlayerCover} onValueChange={setHidePlayerCover}
+                        <Switch value={showPlayerCover} onValueChange={setShowPlayerCover}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
@@ -693,7 +723,13 @@ function Section({ title, children }) {
     const { base } = useTheme();
     return (
         <View style={s.section}>
-            <Text style={s.sectionLabel}>{title}</Text>
+            {/* Small backing chip behind the label, same fill as the section
+                body below it — otherwise the label is bare text straight over
+                whatever's behind the screen (including a custom background
+                image, where it was reported as barely readable). */}
+            <View style={[s.sectionLabelWrap, { backgroundColor: base.surface }]}>
+                <Text style={s.sectionLabel}>{title}</Text>
+            </View>
             <View style={[s.sectionBody, { backgroundColor: base.surface, borderColor: base.border }]}>{children}</View>
         </View>
     );
@@ -706,7 +742,8 @@ const s = StyleSheet.create({
     header: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 20 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     section: { marginBottom: 24 },
-    sectionLabel: { color: '#555', fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase', paddingHorizontal: 24, marginBottom: 6 },
+    sectionLabelWrap: { alignSelf: 'flex-start', marginLeft: 24, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
+    sectionLabel: { color: '#888', fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
     sectionBody: { backgroundColor: '#0f0f0f', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1a1a1a' },
     row: { paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#141414' },
     rowLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },

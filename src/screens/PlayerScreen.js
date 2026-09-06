@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Animated, Easing, ScrollView } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -87,7 +88,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, hidePlayerCover } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -103,6 +104,12 @@ export default function PlayerScreen() {
     const clearDragTimer = useRef(null);
     const committedRef = useRef(false);
     const gestureTrackIdRef = useRef(null);
+    // Set on commit to the ratio we just asked the native side to seek to;
+    // cleared once the polled position actually agrees (see the
+    // convergence effect below) rather than on a fixed timer. See onScrub's
+    // commit branch for why the fixed timer this replaced caused a visible
+    // "jumps back" glitch.
+    const pendingSeekRatioRef = useRef(null);
     // Backstop: if no terminal gesture state ever arrives after a touch
     // starts (this has been the recurring symptom — the bar freezes and
     // STAYS frozen, even across later songs, only unstuck by a real drag),
@@ -184,7 +191,6 @@ export default function PlayerScreen() {
 
         startRealTimeAnim(ratio);
         clearTimeout(clearDragTimer.current);
-        clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
 
         // Abuse case flagged explicitly: held long enough that the track
         // actually changed under us (natural end-of-track, a remote skip,
@@ -192,16 +198,37 @@ export default function PlayerScreen() {
         // longer corresponds to whatever's playing now, so drop the seek
         // instead of applying it to the wrong track.
         const nowTrackId = currentTrack?._qid ?? currentTrack?.id ?? null;
-        if (nowTrackId !== gestureTrackIdRef.current) return;
+        if (nowTrackId !== gestureTrackIdRef.current) { setDragRatio(null); return; }
 
         if (progress.duration > 0) {
             const targetRatio = ratio;
             const duration = progress.duration;
             latestSeekRatioRef.current = targetRatio;
+            // Was: clearDragTimer fired unconditionally 300ms after commit,
+            // regardless of whether this seek had actually landed natively
+            // yet. Once dragRatio cleared, the drift-correction effect
+            // re-armed immediately — and if the polled position (500ms
+            // interval) hadn't caught up to the seek yet, it read that
+            // STALE pre-seek position as "drift" and snapped the bar back
+            // to it, then snapped forward again once the next poll finally
+            // agreed. That's the "shows the movement but then jumps back"
+            // symptom. Now dragRatio stays held (bar shows the target
+            // position) until the polled position actually agrees — see
+            // the convergence effect below — with this timer only as a
+            // backstop in case a seek silently fails to land.
+            pendingSeekRatioRef.current = targetRatio;
+            clearDragTimer.current = setTimeout(() => {
+                pendingSeekRatioRef.current = null;
+                setDragRatio(null);
+            }, 2500);
             seekChainRef.current = seekChainRef.current.then(async () => {
                 if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
                 try { await AudioEngine.seekTo(targetRatio * duration); } catch { }
             });
+        } else {
+            // No known duration to seek within — nothing was actually
+            // asked of native, so there's nothing to wait on converging.
+            clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
         }
     };
 
@@ -405,8 +432,11 @@ export default function PlayerScreen() {
     // the real progress hook reports (e.g. after a system hiccup). Anything
     // else, the animation just keeps running uninterrupted at real-time speed
     // — no restart, no stutter.
+    const lastSyncedTrackIdRef = useRef(currentTrack?.id);
     useEffect(() => {
         if (dragRatio !== null) return; // scrubbing owns the value right now
+        const trackChanged = lastSyncedTrackIdRef.current !== currentTrack?.id;
+        lastSyncedTrackIdRef.current = currentTrack?.id;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
         // since a drift-gated check skips the stop() call whenever drift
         // happens to be near-zero at the moment of pausing — which is the
@@ -417,12 +447,49 @@ export default function PlayerScreen() {
             animPctValueRef.current = pct;
             return;
         }
+        if (trackChanged) {
+            // Real bug found via screen recording during crossfade: a track
+            // change can land in a render where `pct` is a stale/mismatched
+            // value from a different song — `progress` (position/duration)
+            // comes from a separate 500ms poll and can lag one tick behind
+            // `currentTrack` updating, and during a crossfade specifically,
+            // native briefly reports the OUTGOING track's position paired
+            // with the INCOMING track's duration (see AudioEngine.swift's
+            // getProgress — currentIndex already points at the incoming
+            // track for the whole crossfade, while position still tracks
+            // the outgoing node until the handoff completes). Trusting
+            // `pct` here is what made the bar briefly jump to some unrelated
+            // high position right as the crossfade handed off, before
+            // snapping back down once a fresh poll landed. Resetting
+            // straight to 0 instead — a track change always starts the
+            // visual bar fresh anyway, same as `justSwitched` already does
+            // for the position text above — never shows that wrong
+            // intermediate value; the very next real poll corrects it via
+            // the ordinary drift check below, same as always.
+            startRealTimeAnim(0);
+            return;
+        }
         const drift = Math.abs(animPctValueRef.current - pct);
         if (!animRunRef.current || drift > 0.02) {
             startRealTimeAnim(pct);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
+
+    // Clears the post-seek drag overlay once the polled position actually
+    // agrees with where we told native to seek to — see the commit branch
+    // in onScrub above for why this replaced a fixed timer. Independent of
+    // the drift-correction effect above (which stays disabled the whole
+    // time dragRatio is non-null, so the two can't fight each other).
+    useEffect(() => {
+        if (pendingSeekRatioRef.current === null) return;
+        if (Math.abs(pct - pendingSeekRatioRef.current) < 0.02) {
+            pendingSeekRatioRef.current = null;
+            clearTimeout(clearDragTimer.current);
+            setDragRatio(null);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [Math.round(pct * 200)]);
 
     useEffect(() => {
         return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); };
@@ -528,11 +595,11 @@ export default function PlayerScreen() {
                      instead, no shadow. */}
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
-                        {!hidePlayerCover && (
+                        {showPlayerCover && (
                             <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
                                 <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
                                     {artwork
-                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                        ? <Image source={{ uri: artwork }} style={s.artImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                         : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
                                     }
                                 </Animated.View>

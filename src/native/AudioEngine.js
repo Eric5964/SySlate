@@ -111,7 +111,14 @@ const AudioEngine = {
     getState: () => NativeAudioEngine.getState(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
     setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
-    setNormalizationEnabled: (enabled) => NativeAudioEngine.setNormalizationEnabled(enabled),
+    // Split from one "Volume Normalization" toggle into two distinct
+    // features: setWithinTrackNormEnabled is the original per-track
+    // dynamics compressor; setBetweenTrackNormEnabled is the new sampled
+    // loudness-matching gain across tracks. setSilenceTrimEnabled is also
+    // new — leading/trailing silence trim on a track's natural start/end.
+    setWithinTrackNormEnabled: (enabled) => NativeAudioEngine.setWithinTrackNormEnabled(enabled),
+    setBetweenTrackNormEnabled: (enabled) => NativeAudioEngine.setBetweenTrackNormEnabled(enabled),
+    setSilenceTrimEnabled: (enabled) => NativeAudioEngine.setSilenceTrimEnabled(enabled),
     setCrossfadeEnabled: (enabled) => NativeAudioEngine.setCrossfadeEnabled(enabled),
     setCrossfadeDuration: (seconds) => NativeAudioEngine.setCrossfadeDuration(seconds),
 

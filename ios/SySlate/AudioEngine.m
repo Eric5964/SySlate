@@ -81,7 +81,15 @@ RCT_EXTERN_METHOD(setEQBands:(NSArray *)bands
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
-RCT_EXTERN_METHOD(setNormalizationEnabled:(nonnull NSNumber *)enabled
+RCT_EXTERN_METHOD(setWithinTrackNormEnabled:(nonnull NSNumber *)enabled
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(setBetweenTrackNormEnabled:(nonnull NSNumber *)enabled
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(setSilenceTrimEnabled:(nonnull NSNumber *)enabled
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

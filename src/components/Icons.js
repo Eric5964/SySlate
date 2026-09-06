@@ -131,12 +131,21 @@ export function TrashIcon({ size = 20, color = '#fff', style }) {
 }
 
 export function MoonIcon({ size = 20, color = '#fff', style }) {
+    // Was two overlapping circles with a translucent black "cutout" —
+    // the only icon in this file relying on background showing through a
+    // semi-transparent fill instead of pure solid geometry. That reads as a
+    // muddy smudge rather than a crisp crescent depending on what's behind
+    // it (a photo background, a lighter theme, etc.), unlike every other
+    // icon here. Rebuilt as an open ring (same technique as LoopIcon's "O"),
+    // so the gap is genuinely transparent — whatever's behind it just shows
+    // through unaltered, the same way the middle of LoopIcon's ring does.
+    const bw = Math.max(2, size * 0.17);
     return (
         <View style={[{ width: size, height: size }, style]}>
-            <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: color }} />
             <View style={{
-                position: 'absolute', top: -size * 0.08, left: size * 0.32,
-                width: size, height: size, borderRadius: size / 2, backgroundColor: 'rgba(0,0,0,0.55)',
+                width: size, height: size, borderRadius: size / 2, borderWidth: bw,
+                borderColor: color, borderRightColor: 'transparent', borderBottomColor: 'transparent',
+                transform: [{ rotate: '135deg' }],
             }} />
         </View>
     );

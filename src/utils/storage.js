@@ -67,8 +67,17 @@ export const getSkipRamp = () => safe(() => AsyncStorage.getItem('skip_crossfade
 export const setSkipRamp = (s) => safe(() => AsyncStorage.setItem('skip_crossfade', String(s)), null);
 export const getSession = (path) => safe(() => AsyncStorage.getItem(`session:${path}`).then(v => v ? JSON.parse(v) : null), null);
 export const setSession = (path, data) => safe(() => AsyncStorage.setItem(`session:${path}`, JSON.stringify(data)), null);
-export const getVolNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
-export const setVolNorm = (v) => safe(() => AsyncStorage.setItem('vol_norm', String(v)), null);
+// Split into two distinct features per user request: this one is the
+// original per-track dynamics compressor (WITHIN a track) — kept on the
+// same 'vol_norm' storage key so nobody's existing setting gets reset.
+// getBetweenTrackNorm/getSilenceTrim below are the new ones, both new
+// keys defaulting off.
+export const getWithinTrackNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
+export const setWithinTrackNorm = (v) => safe(() => AsyncStorage.setItem('vol_norm', String(v)), null);
+export const getBetweenTrackNorm = () => safe(() => AsyncStorage.getItem('between_track_norm').then(v => v === 'true'), false);
+export const setBetweenTrackNorm = (v) => safe(() => AsyncStorage.setItem('between_track_norm', String(v)), null);
+export const getSilenceTrim = () => safe(() => AsyncStorage.getItem('silence_trim').then(v => v === 'true'), false);
+export const setSilenceTrim = (v) => safe(() => AsyncStorage.setItem('silence_trim', String(v)), null);
 export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 0), 0);
 export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);
 export const getRampOnPause = () => safe(() => AsyncStorage.getItem('ramp_on_pause').then(v => v === 'true'), false);
@@ -174,8 +183,19 @@ export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode
 // (see utils/squircle.js).
 export const getCoverShape = () => safe(() => AsyncStorage.getItem('cover_shape').then(v => v ?? 'rounded'), 'rounded');
 export const setCoverShape = (v) => safe(() => AsyncStorage.setItem('cover_shape', v), null);
-export const getHidePlayerCover = () => safe(() => AsyncStorage.getItem('hide_player_cover').then(v => v === 'true'), false);
-export const setHidePlayerCover = (v) => safe(() => AsyncStorage.setItem('hide_player_cover', String(v)), null);
+// Renamed + inverted from the old "Hide Player Cover" (hide_player_cover,
+// default false meaning shown — a double-negative toggle) to "Show Player
+// Cover" (show_player_cover, default true, auto-enabled). Migrates an
+// existing hide_player_cover value once rather than silently re-showing the
+// cover for anyone who'd already turned it off under the old key.
+export const getShowPlayerCover = () => safe(async () => {
+    const v = await AsyncStorage.getItem('show_player_cover');
+    if (v !== null) return v === 'true';
+    const legacyHide = await AsyncStorage.getItem('hide_player_cover');
+    if (legacyHide !== null) return legacyHide !== 'true';
+    return true;
+}, true);
+export const setShowPlayerCover = (v) => safe(() => AsyncStorage.setItem('show_player_cover', String(v)), null);
 
 // Whole-app custom background image — off by default, and the URI is only
 // meaningful once persisted locally (see persistCoverImage/the same pattern
@@ -303,7 +323,7 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'skip_crossfade', 'vol_norm', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'bg_image_enabled', 'bg_image_uri'];
+    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

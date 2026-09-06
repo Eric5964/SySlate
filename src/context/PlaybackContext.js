@@ -316,6 +316,23 @@ export function PlaybackProvider({ children }) {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return { priority: priorityRef.current, insertedAt: null };
             if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return { priority: priorityRef.current, insertedAt: null };
+            // Real bug found via screen recording: this had no check for
+            // realIndex already sitting inside the priority zone itself.
+            // QueueModal's swipe-right ("+Next") affordance was wired
+            // identically for Priority rows and Up Next rows, so swiping an
+            // already-priority row called this anyway — and since the logic
+            // above only ever knows how to ADD another copy (see the
+            // comment below on why that's correct for genuine Up Next ->
+            // Priority promotion), it inserted a second, genuinely
+            // redundant copy of a song that was already in Priority. Both
+            // then existed as separate queue slots, and removing one but
+            // not the other read as "deleting one song deleted two" once a
+            // subsequent removal changed the priority-zone boundary out
+            // from under the surviving copy. Promoting something already in
+            // Priority isn't a meaningful action, so this now no-ops
+            // instead of duplicating.
+            const priorityEnd = currentIndex + 1 + priorityRef.current.length;
+            if (realIndex < priorityEnd) return { priority: priorityRef.current, insertedAt: null };
             const queue = await AudioEngine.getQueue();
             const track = queue[realIndex];
             if (!track) return { priority: priorityRef.current, insertedAt: null };

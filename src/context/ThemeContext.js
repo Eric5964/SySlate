@@ -21,21 +21,32 @@ export const THEMES = {
     mono: { name: 'Mono', accent: '#9ca3af', accentDim: '#26282c', onAccent: '#000' },
 };
 
-// Four base palettes: light purple, dark purple, gray, black. The purples
-// were flagged as too muddy/desaturated before — pushed more saturated
-// (more blue/violet, less gray mixed in) so they read as genuinely vibrant
-// rather than a slightly-tinted dark gray.
+// Ten base palettes, one per accent color (plus a neutral black standing in
+// for Mono's slot). Reordered to match the accent grid position-for-position
+// — pink/purple/blue/teal/green on row 1, yellow/orange/red/rose/black on
+// row 2 — same as THEMES below. It used to lead with "black", which bumped
+// every other color one slot off from where its matching accent sits, so
+// the two grids didn't line up column-to-column like they were meant to.
+// Also pushed the warm end (yellow/orange/red/rose) further apart from each
+// other — at the old low-saturation values they all read as near-identical
+// dark brown/maroon smudges, the same complaint the purples got fixed for
+// previously (kept the purple/blue/teal/green values as-is, those already
+// read distinctly).
 export const BASE_COLORS = {
-    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
-    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47' },
     dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a' },
+    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47' },
     dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a' },
     dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f' },
     dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530' },
-    dark_yellow: { name: 'Yellow', bg: '#221c0a', surface: '#302810', border: '#473a18' },
-    dark_orange: { name: 'Orange', bg: '#221408', surface: '#301c0d', border: '#472a14' },
-    dark_red: { name: 'Red', bg: '#220e0e', surface: '#301414', border: '#471e1e' },
-    dark_rose: { name: 'Crimson', bg: '#1e0d0d', surface: '#2a1212', border: '#3d1a1a' },
+    dark_yellow: { name: 'Yellow', bg: '#241f04', surface: '#332b08', border: '#4a3d10' },
+    dark_orange: { name: 'Orange', bg: '#291404', surface: '#3a1d09', border: '#522a10' },
+    dark_red: { name: 'Red', bg: '#270707', surface: '#390d0d', border: '#521212' },
+    // Crimson sits between Red and Pink in hue (a bit of magenta mixed into
+    // the red, short of Pink's actual magenta) rather than landing on
+    // almost the same value as either — that's what made Red/Crimson hard
+    // to tell apart before, and briefly during a first pass at this fix.
+    dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029' },
+    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
 };
 
 const ThemeContext = createContext({

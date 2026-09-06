@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State, useProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
@@ -19,7 +20,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack } = usePlayback();
     const { theme, base } = useTheme();
-    const { coverShape } = usePreferences();
+    const { coverShape, showSongCovers } = usePreferences();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
@@ -86,12 +87,18 @@ export default function MiniPlayer({ withTabBar = true }) {
             <View pointerEvents="none" style={styles.miniProgressTrack}>
                 <Animated.View style={[styles.miniProgressFill, { width: animWidth, backgroundColor: theme.accent }]} />
             </View>
-            <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
-                {artwork
-                    ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                    : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
-                }
-            </View>
+            {/* "Show Song Covers In Lists" previously only applied to All
+                Songs/Playlist rows and the Queue sheet — the mini player
+                always showed art regardless, unlike everywhere else covers
+                appear. */}
+            {showSongCovers && (
+                <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
+                    {artwork
+                        ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} contentFit="cover" cachePolicy="memory-disk" transition={0} />
+                        : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
+                    }
+                </View>
+            )}
             <View style={styles.info}>
                 <Text style={styles.title} numberOfLines={1}>{title}</Text>
                 <Text style={styles.artist} numberOfLines={1}>{artist}</Text>

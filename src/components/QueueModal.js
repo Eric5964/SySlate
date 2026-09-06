@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
+import { Image } from 'expo-image';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -324,7 +325,14 @@ export default function QueueModal({ visible, onClose }) {
             <ShrinkOutRow removing={removingKeys.has(stableKey)}>
                 <SwipeableRow
                     onSwipeLeft={() => remove(realIndex, stableKey)}
-                    onSwipeRight={() => promote(realIndex)}
+                    // Only meaningful for Up Next rows — "promote to
+                    // Priority" doesn't mean anything for a row that's
+                    // already in Priority (see promoteToQueue's guard for
+                    // the duplicate-queue-entry bug this used to cause).
+                    // Omitting the prop entirely disables the swipe-right
+                    // reveal for these rows, same as Now Playing's row
+                    // below omits onSwipeLeft.
+                    onSwipeRight={isPriority ? undefined : () => promote(realIndex)}
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
@@ -338,7 +346,7 @@ export default function QueueModal({ visible, onClose }) {
                         {showSongCovers && (
                             <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                 {artMap[song.id]
-                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
+                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                     : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
                                 }
                             </View>
@@ -390,7 +398,7 @@ export default function QueueModal({ visible, onClose }) {
                                     {showSongCovers && (
                                         <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                             {currentTrack.artwork
-                                                ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
+                                                ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} contentFit="cover" cachePolicy="memory-disk" transition={0} />
                                                 : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
                                             }
                                         </View>
