@@ -12,7 +12,7 @@ import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackS
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, LoopIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
-// import EQModal from '../components/EQModal'; // EQ hidden — not supported by react-native-track-player
+import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
 import GradientCap from '../components/GradientCap';
@@ -76,6 +76,7 @@ export default function PlayerScreen() {
     // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [showSleepTimer, setShowSleepTimer] = useState(false);
+    const [showEQ, setShowEQ] = useState(false);
     const [playCount, setPlayCount] = useState(0);
     // This used to be its own local `useState(true)`, loaded once on mount
     // via getShowPlayCount() and never touched again — every OTHER screen
@@ -246,7 +247,14 @@ export default function PlayerScreen() {
     // directly would freeze `progress` at whatever it was on the very first
     // render (duration likely still 0), which is why dragging updated the
     // visual position but never actually called seekTo.
+    // Set the moment the PAN handler actually reports movement (which only
+    // happens once real dragging has crossed activeOffsetX below) — lets
+    // the tap handler's onTapStateChange know a real drag is already
+    // underway, so it can bail out below instead of double-committing.
+    const realDragMovedRef = useRef(false);
+
     const onProgressGestureEvent = useRef((e) => {
+        realDragMovedRef.current = true;
         onScrubRef.current(e.nativeEvent.absoluteX, false);
     }).current;
 
@@ -255,6 +263,7 @@ export default function PlayerScreen() {
         if (state === GHState.BEGAN) {
             measureProgress();
             committedRef.current = false;
+            realDragMovedRef.current = false;
             gestureTrackIdRef.current = currentTrack?._qid ?? currentTrack?.id ?? null;
             onScrubRef.current(absoluteX, false);
             clearTimeout(stuckSafetyTimer.current);
@@ -276,10 +285,25 @@ export default function PlayerScreen() {
     // the pan handler's own state transitions do for a zero-movement touch,
     // and simply fails (no-op here) for anything that turns into a real
     // drag, since the pan handler already covers that case above.
+    //
+    // Real bug found here: "fails for anything that turns into a real drag"
+    // was the intent, but TapGestureHandler has no maxDist/maxDeltaX
+    // configured, so its default recognition window was loose enough to
+    // still fire ACTIVE for the first moment of a genuine drag — before
+    // enough movement had accrued to fail it out. That meant a drag could
+    // trigger an early, premature commit here (seeking to wherever the
+    // finger was in that first instant) via this handler, and then the
+    // pan handler's OWN later END commit got silently dropped by
+    // committedRef's already-committed guard — audible as the position
+    // jumping to the wrong place first, then not responding to the actual
+    // release ("double-plays when dragging"). Checking realDragMovedRef
+    // here — set the moment the pan handler reports any real movement —
+    // closes that window: once a real drag has started, this handler is
+    // never allowed to commit, full stop, regardless of its own state.
     const panRef = useRef(null);
     const tapRef = useRef(null);
     const onTapStateChange = useRef((e) => {
-        if (e.nativeEvent.state === GHState.ACTIVE) {
+        if (e.nativeEvent.state === GHState.ACTIVE && !realDragMovedRef.current) {
             measureProgress();
             onScrubRef.current(e.nativeEvent.absoluteX, true);
         }
@@ -566,14 +590,18 @@ export default function PlayerScreen() {
                 </TouchableOpacity>
                 <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
+                    {/* EQ used to be hidden here with a comment saying
+                        react-native-track-player didn't support real audio
+                        EQ — true when that comment was written, but the
+                        engine was replaced with the custom AudioEngine
+                        (which DOES support EQ) several rounds ago and this
+                        was never un-hidden. */}
+                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={[s.topBtn, { marginRight: 4 }]}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} />
                     </TouchableOpacity>
-                    {/* EQ hidden — react-native-track-player doesn't support real
-                        audio EQ, so this button never did anything audible. */}
-                    {/* <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
-                        <Text style={[s.topTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity> */}
+                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
@@ -766,7 +794,7 @@ export default function PlayerScreen() {
                 </View>
             </View>
 
-            {/* <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} /> */}
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
             <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
         </ScreenBackground>
@@ -779,6 +807,7 @@ const s = StyleSheet.create({
     container: { flex: 1 },
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
     topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
+    eqTag: { fontSize: 14, fontWeight: '700' },
     topIcon: { fontSize: 26 },
     topTag: { fontSize: 16, fontWeight: '700' },
     topLabel: { fontSize: 15, fontWeight: '500', flex: 1, textAlign: 'center' },

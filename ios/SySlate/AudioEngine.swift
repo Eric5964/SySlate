@@ -404,8 +404,15 @@ class AudioEngine: RCTEventEmitter {
         return decoded
     }()
     private func saveAnalysisCache() {
-        guard let data = try? JSONEncoder().encode(AudioEngine.analysisCache) else { return }
-        UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCache")
+        // Don't let the disk write add to a track's actual load time — the
+        // caller (analyzeFile, on the load path) only needs the freshly
+        // computed result back, not confirmation this persisted. Encoding
+        // and writing the whole growing dictionary happens off to the side.
+        let snapshot = AudioEngine.analysisCache
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCache")
+        }
     }
     // Rough reference level the gain-correction estimate below aims for —
     // not a real loudness standard (LUFS etc.), just an internally
