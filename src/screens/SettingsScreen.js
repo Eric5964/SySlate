@@ -219,9 +219,15 @@ export default function SettingsScreen() {
             {!loaded ? null : (
                 <>
             <ScrollView ref={scrollRef} contentContainerStyle={{ paddingBottom: 160 }}>
-                {/*
-                EQ hidden — not supported by react-native-track-player, so
-                presets never did anything audible.
+                {/* EQ now runs for real through AudioEngine's AVAudioUnitEQ —
+                    this whole section was left commented out from the old
+                    react-native-track-player era (which had no real EQ) and
+                    never un-hidden. Un-hidden now, kept at the top of
+                    Settings. Checking a preset here hides it from the
+                    picker in EQModal; it doesn't change what's currently
+                    playing. "+ Add Custom Preset" opens the band-by-band
+                    builder below (sliders per BAND_HZ), already wired to
+                    getCustomPresets/setCustomPresets. */}
                 <Section title="EQ Presets">
                     <View style={s.eqGrid}>
                         {BUILT_IN_PRESETS.map(p => (
@@ -250,7 +256,6 @@ export default function SettingsScreen() {
                         <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                     </TouchableOpacity>
                 </Section>
-                */}
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
                      all together under one heading. */}

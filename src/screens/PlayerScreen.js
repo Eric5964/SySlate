@@ -440,6 +440,20 @@ export default function PlayerScreen() {
         lyricsResyncTimer.current = setTimeout(() => setLyricsManualScroll(false), lyricsResyncSec * 1000);
     };
     useEffect(() => () => { if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current); }, []);
+    // "Lyrics don't reset to the top on a new song" — lyricsRowYRef never
+    // got cleared on a track change, so a new song's ScrollView could start
+    // out using stale row-Y values left over from the *previous* song's
+    // layout (same index, different line, different height) until its own
+    // onLayout calls landed and overwrote them one by one. Also explicitly
+    // snap the scroll position itself back to the top and drop manual-scroll
+    // mode, so a song switch always starts from a clean, unscrolled view
+    // instead of wherever the last song's lyrics happened to leave it.
+    useEffect(() => {
+        lyricsRowYRef.current.clear();
+        setLyricsLayoutVersion(v => v + 1);
+        setLyricsManualScroll(false);
+        lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
+    }, [currentTrack?.id]);
     useEffect(() => {
         if (!showingLyrics || activeLine < 0 || lyricsManualScroll) return;
         const y = lyricsRowYRef.current.get(activeLine);
@@ -623,14 +637,21 @@ export default function PlayerScreen() {
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
                         {showPlayerCover && (
-                            <View style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }]}>
-                                <Animated.View style={[StyleSheet.absoluteFill, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), justifyContent: 'center', alignItems: 'center' }]} pointerEvents={showingLyrics ? 'none' : 'auto'}>
-                                    {artwork
-                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                                        : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
-                                    }
-                                </Animated.View>
-                            </View>
+                            // The whole box (background/shadow/rounded corners) now
+                            // fades with lyricsFade too, not just the artwork inside
+                            // it — previously only the inner content faded, so the
+                            // box's own dark background + shadow stayed visible as a
+                            // flat square sitting behind the lyrics text. Fully
+                            // transparent (and non-interactive) once lyrics are showing.
+                            <Animated.View
+                                style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+                                pointerEvents={showingLyrics ? 'none' : 'auto'}
+                            >
+                                {artwork
+                                    ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                    : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                                }
+                            </Animated.View>
                         )}
                         {lyricsData && (
                             <Animated.View
