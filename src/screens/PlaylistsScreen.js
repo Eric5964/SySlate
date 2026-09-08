@@ -193,7 +193,13 @@ export default function PlaylistsScreen() {
                         data={playlists}
                         keyExtractor={item => item.path}
                         numColumns={numCols}
-                        contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0, paddingTop: isGrid ? 8 : 0 }}
+                        {/* Grid rows already get top spacing from each cell's own
+                             CELL_MARGIN (applied on every side, top included) —
+                             the extra paddingTop this used to add on top of that
+                             was double-spacing, showing up as a noticeably
+                             fatter gap above the grid than above the list rows
+                             (which only rely on their own marginVertical). */}
+                        contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
                         renderItem={({ item }) => (
                             <PlaylistRow
                                 item={item}

@@ -303,14 +303,31 @@ class AudioEngine: RCTEventEmitter {
         }
 
         // A device connecting (e.g. Bluetooth) or the route otherwise
-        // reconfiguring — previously left alone entirely. AVAudioEngine
-        // can come out of one of these still reporting .playing and still
-        // advancing position, but no longer actually wired to the active
-        // output, which plays back completely silently despite every
-        // outward sign of working. Pausing and restarting the engine
-        // (NOT stopping it — that would drop the player node's scheduled
-        // buffer) re-establishes it against the new route.
-        if reason == .newDeviceAvailable || reason == .routeConfigurationChange || reason == .categoryChange {
+        // reconfiguring. AVAudioEngine can come out of one of these still
+        // reporting .playing and still advancing position, but no longer
+        // actually wired to the active output, which plays back completely
+        // silently despite every outward sign of working — pausing and
+        // restarting the engine (NOT stopping it — that would drop the
+        // player node's scheduled buffer) re-establishes it against the new
+        // route. That fix is what's now suspected of CAUSING a different
+        // bug: "connecting Bluetooth permanently skips/glitches the
+        // current song." Plausible mechanism — if engine.start() throws
+        // here (quite possible mid route-reconfiguration on a real
+        // device), the engine is left not-running with nothing to retry it
+        // (now guarded against in playInternal, see its comment), or the
+        // pause/restart itself disrupts the player node's scheduled-buffer
+        // timing enough to misfire its completion handler early, which
+        // would look exactly like an unwanted skip.
+        //
+        // Trying his suggestion: skip the reset specifically for
+        // .newDeviceAvailable (a device connecting — the Bluetooth case he
+        // described) while still doing it for the other two reasons, which
+        // are different situations (nothing connecting, just the route or
+        // category changing under an already-connected output). If the
+        // Bluetooth silent-audio bug this was originally added for comes
+        // back, that tells us which of the two bugs is real/worse and we
+        // can revert just this one condition.
+        if reason == .routeConfigurationChange || reason == .categoryChange {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.state == .playing else { return }
                 self.engine.pause()
@@ -743,6 +760,25 @@ class AudioEngine: RCTEventEmitter {
             let t = Float(currentStep) / Float(steps)
             outgoingNode.volume = outgoingVolumeStart * (1 - t)
             incomingNode.volume = targetVolume * t
+
+            // Requested: the title/art should switch partway through the
+            // crossfade, not only once it's fully done. currentIndex is
+            // already flipped to the incoming track the moment the
+            // crossfade starts (see advance()) — what was missing is
+            // telling JS. PlaybackTrackChanged only fired at the very end
+            // (below), so setCurrentTrack() in PlaybackContext.js had
+            // nothing to react to until then. Firing it here too, at the
+            // halfway point, updates JS's displayed track while leaving
+            // getProgress/progressTimer alone — those deliberately keep
+            // reading the OUTGOING track's real position via currentFile
+            // (see getProgress's comment) until the handoff below actually
+            // completes, so the progress bar stays correct the whole time.
+            // JS already no-ops a same-track re-fire (currentTrackRef check
+            // in PlaybackContext.js), so firing it twice here is harmless.
+            if currentStep == steps / 2 {
+                self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+            }
+
             if currentStep >= steps {
                 timer.invalidate()
                 outgoingNode.stop()
@@ -796,6 +832,22 @@ class AudioEngine: RCTEventEmitter {
         }
         activateSession()
         frozenPositionSeconds = nil
+        // Real bug: unlike finishLoadingTrack and runCrossfade (both check
+        // this before calling play()), this never checked whether `engine`
+        // itself was actually running before telling the node to play.
+        // Calling AVAudioPlayerNode.play() while the ENGINE isn't running
+        // marks the node as wanting to play but produces no audio at all —
+        // state still flips to .playing (everything downstream looks
+        // correct), it's just silent. handleRouteChange pauses/restarts the
+        // engine on a Bluetooth connect or route change and only logs if
+        // that restart throws, with nothing to retry it afterward — so a
+        // failed restart there leaves the engine permanently not-running
+        // until this guard exists. That matches "doesn't unpause once
+        // fading finishes" exactly: any pause→play cycle after that silent
+        // failure hits this same path, fade timing or not.
+        if !engine.isRunning {
+            try? engine.start()
+        }
         activeNode.play()
         setState(.playing)
     }

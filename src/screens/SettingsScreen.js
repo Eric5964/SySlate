@@ -260,21 +260,35 @@ export default function SettingsScreen() {
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
                      all together under one heading. */}
                 <Section title="Audio">
-                    <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
-                    <Text style={s.sliderNote}>Fades out at the end of a track, fades in the next</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
-                        onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
+                    {/* Crossfade and the two TRANSITION ramps (End of Track,
+                        On Skip) do the same job — smoothing one song into the
+                        next — so only one can actually be in effect; the
+                        engine already steps the ramp aside when crossfade is
+                        on (see checkRampWindow). What was missing was the UI
+                        actually SHOWING that, instead of leaving both sets of
+                        controls live and interactive at once, which is what
+                        made it look like a real "mutually exclusive" setting
+                        was needed. Ramp on Pause / Ramp on Play are a
+                        different thing (they respond to play/pause, not
+                        track transitions) and are deliberately NOT part of
+                        this — left fully independent below. */}
+                    <View style={{ opacity: crossfadeEnabled ? 0.35 : 1 }} pointerEvents={crossfadeEnabled ? 'none' : 'auto'}>
+                        <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
+                        <Text style={s.sliderNote}>{crossfadeEnabled ? 'Off while Crossfade is on' : 'Fades out at the end of a track, fades in the next'}</Text>
+                        <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
+                        <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
+                            onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
+                            minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                        <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
-                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
-                    <Text style={s.sliderNote}>Softens manual skips</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
-                    <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
-                        onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                        <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
+                        <Text style={s.sliderNote}>{crossfadeEnabled ? 'Off while Crossfade is on' : 'Softens manual skips'}</Text>
+                        <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
+                        <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
+                            onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
+                            minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                        <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                    </View>
 
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Play</Text>
                     <Text style={s.sliderNote}>Fades in whenever playback starts</Text>
@@ -325,7 +339,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Crossfade</Text>
-                            <Text style={s.toggleSub}>Overlaps tracks instead of fading between them — replaces the ramp settings above while it's on</Text>
+                            <Text style={s.toggleSub}>Overlaps tracks instead of fading between them — turns off the End of Track / On Skip ramps above while it's on (Ramp on Pause/Play are unaffected)</Text>
                         </View>
                         <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -668,7 +682,11 @@ export default function SettingsScreen() {
                 </>
             )}
 
-            {/*
+            {/* This was still commented out even after the EQ Presets *list*
+                section above got un-hidden — "+ Add Custom Preset" flipped
+                showNewEQ to true, but the sheet it's supposed to open was
+                dead code, so nothing ever appeared. That's the actual
+                "adding a custom preset doesn't work" bug. */}
             <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>New EQ Preset</Text>}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
                     <TextInput
@@ -695,7 +713,6 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </KeyboardAvoidingView>
             </BottomSheet>
-            */}
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>

@@ -21,12 +21,21 @@ import { getPlayCounts } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
 
-// Opacity stops for the lyrics view's top/bottom edge fade, each covering
-// an 8px band — highest (most opaque, closest to fully hiding a line) right
-// at the edge, fading toward 0 (fully visible) moving inward. No gradient
-// library in this project (adding one means another native rebuild), so
-// this stacks flat bands as a rough approximation instead of a true blend.
-const EDGE_FADE_STOPS = [0.95, 0.8, 0.6, 0.4, 0.22, 0.08];
+// Opacity stops for the lyrics view's top/bottom edge fade, each covering a
+// thin band — highest (most opaque, closest to fully hiding a line) right at
+// the edge, fading toward 0 (fully visible) moving inward. No gradient
+// library in this project (adding one means another native rebuild), so this
+// stacks flat bands as an approximation instead of a true blend. Still
+// reads as a visible dark rectangle against a busy background image —
+// "the boundary box" — because the previous version was only 6 bands at 8px
+// each (48px total): too coarse a step size for the eye not to catch,
+// especially over a photo instead of a flat color. Widened to 20 bands at
+// 3px each (60px total) with an eased (not linear) falloff, so consecutive
+// bands differ by only a few percent opacity near the visible end instead of
+// jumping in big visible increments — same "no real gradient" mechanism,
+// finer-grained enough to stop reading as a hard edge.
+const EDGE_FADE_BAND_PX = 3;
+const EDGE_FADE_STOPS = Array.from({ length: 20 }, (_, i) => Math.pow(1 - i / 19, 1.7));
 
 function fmt(sec) {
     if (!sec || isNaN(sec)) return '0:00';
@@ -655,7 +664,7 @@ export default function PlayerScreen() {
                         )}
                         {lyricsData && (
                             <Animated.View
-                                style={[{ position: 'absolute', top: -44, bottom: -44, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
+                                style={[{ position: 'absolute', top: -60, bottom: -60, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <ScrollView
@@ -697,10 +706,10 @@ export default function PlayerScreen() {
                                      pointerEvents none so it never eats the scroll. */}
                                 <View pointerEvents="none" style={StyleSheet.absoluteFill}>
                                     {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'t' + i} style={{ position: 'absolute', top: i * 8, left: 0, right: 0, height: 8, backgroundColor: '#000', opacity }} />
+                                        <View key={'t' + i} style={{ position: 'absolute', top: i * EDGE_FADE_BAND_PX, left: 0, right: 0, height: EDGE_FADE_BAND_PX, backgroundColor: '#000', opacity }} />
                                     ))}
                                     {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * 8, left: 0, right: 0, height: 8, backgroundColor: '#000', opacity }} />
+                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * EDGE_FADE_BAND_PX, left: 0, right: 0, height: EDGE_FADE_BAND_PX, backgroundColor: '#000', opacity }} />
                                     ))}
                                 </View>
                             </Animated.View>
@@ -725,7 +734,15 @@ export default function PlayerScreen() {
                         )}
                     </View>
 
-                    <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
+                    {/* Sat at the top of its 28px slot before (flex-start),
+                         leaving ~5px of dead space below the button on top
+                         of trackInfoGroup's own 16px gap — worked out to
+                         roughly 21px of separation from the title, a bit
+                         past the requested 10-20px band. Now anchored to the
+                         bottom of the slot (flex-end) with a slightly
+                         tighter 14px group gap, landing in the middle of
+                         that range. Still horizontally centered either way. */}
+                    <View style={[s.trackInfoGroup, { marginTop: 14 }]}>
                     <View style={s.info}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
@@ -844,7 +861,7 @@ const s = StyleSheet.create({
     // standalone button (large tap padding, bold weight, full accent
     // color); now smaller, thinner, and lighter so it sits closer to the
     // title instead of announcing itself as separate control.
-    lyricsToggleSlot: { height: 28, justifyContent: 'flex-start', alignItems: 'center', marginTop: -6 },
+    lyricsToggleSlot: { height: 28, justifyContent: 'flex-end', alignItems: 'center', marginTop: -6 },
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
