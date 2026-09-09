@@ -351,11 +351,11 @@ export default function QueueModal({ visible, onClose }) {
                             </View>
                         )}
                         <View style={{ flex: 1 }}>
-                            <Text style={s.qTitle} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                            <Text style={s.qArtist} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator)}</Text>
+                            <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                            <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator)}</Text>
                         </View>
                         {showPlayCount && playCounts[song.id] > 0 && (
-                            <Text style={s.qPlayCount}>{playCounts[song.id]}×</Text>
+                            <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[song.id]}×</Text>
                         )}
                     </TouchableOpacity>
                 </SwipeableRow>
@@ -365,10 +365,10 @@ export default function QueueModal({ visible, onClose }) {
 
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Queue</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>}>
             {rows.length === 0 && hasLoadedOnce ? (
                 <View style={{ flex: 1, justifyContent: 'center' }}>
-                    <Text style={s.empty}>Nothing up next</Text>
+                    <Text style={[s.empty, { color: base.textFaint }]}>Nothing up next</Text>
                 </View>
             ) : rows.length === 0 ? (
                 // Loaded-once hasn't landed yet (still inside refresh()'s
@@ -391,7 +391,7 @@ export default function QueueModal({ visible, onClose }) {
                         nothing to remove it FROM here. */}
                     {currentTrack && (
                         <>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Now Playing</Text></View>
+                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Now Playing</Text></View>
                             <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
                                 <View style={[s.qRow, { backgroundColor: base.border }]}>
                                     {showSongCovers && (
@@ -403,26 +403,32 @@ export default function QueueModal({ visible, onClose }) {
                                         </View>
                                     )}
                                     <View style={{ flex: 1 }}>
-                                        <Text style={s.qTitle} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
-                                        <Text style={s.qArtist} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
+                                        <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
+                                        <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
                                     </View>
                                     {showPlayCount && playCounts[currentTrack.id] > 0 && (
-                                        <Text style={s.qPlayCount}>{playCounts[currentTrack.id]}×</Text>
+                                        <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[currentTrack.id]}×</Text>
                                     )}
                                 </View>
                             </SwipeableRow>
                         </>
                     )}
-                    {priorityRows.length > 0 && (
-                        <>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Priority</Text></View>
-                            {priorityRows.map(renderRow)}
-                        </>
-                    )}
-                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={s.divider} />}
+                    {/* "Keep the Priority pill there no matter what, even
+                         when there's no songs & when you just open the
+                         app" — was gated behind priorityRows.length > 0
+                         entirely (pill included), so it only ever appeared
+                         once something had actually been added. Pill now
+                         always renders; only the empty-state hint under it
+                         is conditional. */}
+                    <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Priority</Text></View>
+                    {priorityRows.length > 0
+                        ? priorityRows.map(renderRow)
+                        : <Text style={[s.emptyPriorityHint, { color: base.textFaint }]}>Nothing queued next yet</Text>
+                    }
+                    {upNextRows.length > 0 && <View style={[s.divider, { backgroundColor: base.border }]} />}
                     {upNextRows.length > 0 && (
                         <>
-                            <View style={s.groupPill}><Text style={s.groupLabel}>Up Next</Text></View>
+                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Up Next</Text></View>
                             {upNextRows.map(renderRow)}
                         </>
                     )}
@@ -439,6 +445,7 @@ const s = StyleSheet.create({
     sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
     groupPill: { marginHorizontal: 24, marginTop: 14, marginBottom: 6, alignSelf: 'flex-start', backgroundColor: '#1a1a1a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+    emptyPriorityHint: { color: '#555', fontSize: 13, paddingHorizontal: 24, paddingBottom: 10 },
     divider: { height: 1, backgroundColor: '#1e1e1e', marginHorizontal: 24, marginTop: 8 },
     empty: { color: '#333', fontSize: 14, textAlign: 'center' },
     qRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12 },

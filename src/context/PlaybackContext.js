@@ -13,6 +13,7 @@ import {
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
+import { getLyrics } from '../utils/lyrics';
 
 const Ctx = createContext(null);
 
@@ -47,6 +48,23 @@ export function PlaybackProvider({ children }) {
     const [shuffleOn, setShuffleOn] = useState(false);
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
     const [eqPresetId, setEqPresetId] = useState('flat');
+
+    // Lyrics were only ever fetched lazily by PlayerScreen itself, on
+    // mount/track-change — meaning the very first time any given song's
+    // lyrics were needed, there was nothing in cache yet and a real
+    // fetch had to happen after first paint no matter what, showing the
+    // cover for however long that took ("flash the cover first," still
+    // reproducible for any song that hadn't already been looked up this
+    // session). PlayerScreen's own cache-first logic already handles a
+    // WARM cache correctly; this is what warms it. Firing this here,
+    // centrally, means the cache is very likely already warm by the time
+    // a track actually becomes current in normal use (skip, auto-advance,
+    // Player already open) — leaving only the literal first song of a
+    // cold app launch as a residual, genuinely-unavoidable case.
+    useEffect(() => {
+        if (!currentTrack?.id) return;
+        getLyrics(currentTrack).catch(() => {});
+    }, [currentTrack?.id]);
     const [singleLoop, setSingleLoop] = useState(false);
     const [priorityQueue, setPriorityQueue] = useState([]); // array of song ids, in insertion order
 

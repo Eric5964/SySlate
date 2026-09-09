@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { Image } from 'react-native';
 import AudioEngine from '../native/AudioEngine';
 import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
@@ -74,7 +75,20 @@ export function PreferencesProvider({ children }) {
         getCoverShape().then(setCoverShapeState);
         getShowPlayerCover().then(setShowPlayerCoverState);
         getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
-        getBackgroundImageUri().then(setBackgroundImageUriState);
+        // "Flicker each time" — every screen mounts its own ScreenBackground
+        // <Image> for the same local file:// URI, and with no request-level
+        // cache warmed yet, each one decodes it fresh from disk, which is
+        // slow enough to show a blank frame first. Image.prefetch is core
+        // React Native (no new native dependency — the last attempt at
+        // fixing this added one and broke gesture handling app-wide, see
+        // ScreenBackground.js) and populates the native image loader's own
+        // cache, so warming it once here, right at cold start before any
+        // screen has even mounted, means every subsequent <Image> for this
+        // exact uri hits that cache instead of decoding from disk again.
+        getBackgroundImageUri().then(uri => {
+            setBackgroundImageUriState(uri);
+            if (uri) Image.prefetch(uri).catch(() => { });
+        });
         // These also need to reach the native engine on cold start, not
         // just local state — App.js's own setup effect races this one, so
         // it also independently pushes these same values to native once it
@@ -129,6 +143,7 @@ export function PreferencesProvider({ children }) {
     const setBackgroundImageUri = useCallback((v) => {
         setBackgroundImageUriState(v);
         persistBgImageUri(v);
+        if (v) Image.prefetch(v).catch(() => { });
     }, []);
     const setKeepScreenAwake = useCallback((v) => {
         setKeepScreenAwakeState(v);

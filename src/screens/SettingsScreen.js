@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, TextInput,
@@ -67,7 +67,8 @@ const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 export default function SettingsScreen() {
     const { changeShuffleMode } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
-    const { themeId, setTheme, theme, baseId, setBase, base } = useTheme();
+    const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
+    const s = useMemo(() => makeStyles(base), [base]);
     const scrollRef = useRef(null);
     useScrollToTop(scrollRef);
 
@@ -172,7 +173,9 @@ export default function SettingsScreen() {
 
     const themeEntries = Object.entries(THEMES);
     const swatchRows = [themeEntries.slice(0, 5), themeEntries.slice(5, 10)];
-    const baseEntries = Object.entries(BASE_COLORS);
+    // 'light' has its own dedicated toggle below rather than sitting in this
+    // grid alongside the ten dark bases — one clear way to reach it, not two.
+    const baseEntries = Object.entries(BASE_COLORS).filter(([id]) => id !== 'light');
 
     const renderSwatch = ([id, t]) => (
         <TouchableOpacity key={id} onPress={() => setTheme(id)}
@@ -260,35 +263,52 @@ export default function SettingsScreen() {
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
                      all together under one heading. */}
                 <Section title="Audio">
-                    {/* Crossfade and the two TRANSITION ramps (End of Track,
-                        On Skip) do the same job — smoothing one song into the
-                        next — so only one can actually be in effect; the
-                        engine already steps the ramp aside when crossfade is
-                        on (see checkRampWindow). What was missing was the UI
-                        actually SHOWING that, instead of leaving both sets of
-                        controls live and interactive at once, which is what
-                        made it look like a real "mutually exclusive" setting
-                        was needed. Ramp on Pause / Ramp on Play are a
-                        different thing (they respond to play/pause, not
-                        track transitions) and are deliberately NOT part of
-                        this — left fully independent below. */}
-                    <View style={{ opacity: crossfadeEnabled ? 0.35 : 1 }} pointerEvents={crossfadeEnabled ? 'none' : 'auto'}>
-                        <Text style={s.sliderSub}>Audio Ramp — End of Track</Text>
-                        <Text style={s.sliderNote}>{crossfadeEnabled ? 'Off while Crossfade is on' : 'Fades out at the end of a track, fades in the next'}</Text>
-                        <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
-                        <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
-                            onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
-                            minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                        <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
-
-                        <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
-                        <Text style={s.sliderNote}>{crossfadeEnabled ? 'Off while Crossfade is on' : 'Softens manual skips'}</Text>
-                        <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
-                        <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
-                            onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
-                            minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                        <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                    {/* Moved Crossfade to the top of the section, and now
+                        actually REPLACES the End of Track / On Skip ramp
+                        controls when it's on, instead of just graying them
+                        out in place — those two ramps do the same job as
+                        Crossfade (smoothing a track transition) so showing
+                        both at once was clutter once one was chosen. Ramp
+                        on Pause / Ramp on Play are a different thing (they
+                        respond to play/pause, not track transitions) and
+                        stay fully independent, further down. */}
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Crossfade</Text>
+                            <Text style={s.toggleSub}>Overlaps tracks instead of fading between them — replaces the End of Track / On Skip ramps below while it's on (Ramp on Pause/Play are unaffected)</Text>
+                        </View>
+                        <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    {crossfadeEnabled ? (
+                        <>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration</Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationLocal}
+                                onValueChange={setCrossfadeDurationLocal}
+                                onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
+                        </>
+                    ) : (
+                        <>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — End of Track</Text>
+                            <Text style={s.sliderNote}>Fades out at the end of a track, fades in the next</Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
+                                onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
+
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
+                            <Text style={s.sliderNote}>Softens manual skips</Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
+                                onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                        </>
+                    )}
 
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Play</Text>
                     <Text style={s.sliderNote}>Fades in whenever playback starts</Text>
@@ -319,7 +339,7 @@ export default function SettingsScreen() {
                         <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Match Volume Between Songs</Text>
                             <Text style={s.toggleSub}>Keeps different songs at a similar volume — a quick estimate, not exact, and only runs once per song</Text>
@@ -327,7 +347,7 @@ export default function SettingsScreen() {
                         <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Trim Silence</Text>
                             <Text style={s.toggleSub}>Skips silence at the start and end of a track</Text>
@@ -335,26 +355,6 @@ export default function SettingsScreen() {
                         <Switch value={silenceTrim} onValueChange={setSilenceTrim}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Crossfade</Text>
-                            <Text style={s.toggleSub}>Overlaps tracks instead of fading between them — turns off the End of Track / On Skip ramps above while it's on (Ramp on Pause/Play are unaffected)</Text>
-                        </View>
-                        <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    {crossfadeEnabled && (
-                        <>
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration</Text>
-                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationLocal}
-                                onValueChange={setCrossfadeDurationLocal}
-                                onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
-                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
-                        </>
-                    )}
                 </Section>
 
                 {/* 3. Shuffle */}
@@ -393,7 +393,7 @@ export default function SettingsScreen() {
                         <Switch value={showSongCovers} onValueChange={setShowSongCovers}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Play Count</Text>
                             <Text style={s.toggleSub}>Next to songs in a playlist, and on the player</Text>
@@ -401,7 +401,7 @@ export default function SettingsScreen() {
                         <Switch value={showPlayCount} onValueChange={setShowPlayCount}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Screen Awake</Text>
                             <Text style={s.toggleSub}>Only while a song is playing</Text>
@@ -409,7 +409,7 @@ export default function SettingsScreen() {
                         <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Rounded Cover Art</Text>
                             <Text style={s.toggleSub}>Rounds corners on art throughout the app</Text>
@@ -417,7 +417,7 @@ export default function SettingsScreen() {
                         <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: '#1a1a1a' }]}>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Player Cover</Text>
                             <Text style={s.toggleSub}>Shows the album art on the Player screen</Text>
@@ -585,7 +585,15 @@ export default function SettingsScreen() {
                 </Section>
 
                 <Section title="Base Color">
-                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Light Mode</Text>
+                            <Text style={s.toggleSub}>Switches to a light background — remembers your dark base color and restores it when you turn this back off</Text>
+                        </View>
+                        <Switch value={isLight} onValueChange={toggleLightMode}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16, opacity: isLight ? 0.35 : 1 }} pointerEvents={isLight ? 'none' : 'auto'}>
                         <View style={s.swatchRow}>
                             {baseEntries.map(renderBaseSwatch)}
                         </View>
@@ -717,7 +725,7 @@ export default function SettingsScreen() {
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
                     <Text style={s.sheetTitle}>Import Settings</Text>
-                    <Text style={{ color: '#555', fontSize: 13, marginBottom: 12 }}>Paste exported JSON:</Text>
+                    <Text style={{ color: base.textFaint, fontSize: 13, marginBottom: 12 }}>Paste exported JSON:</Text>
                     <TextInput
                         style={[s.nameInput, { height: 120, textAlignVertical: 'top', borderColor: theme.accent }]}
                         value={importText} onChangeText={setImportText}
@@ -741,6 +749,7 @@ export default function SettingsScreen() {
 
 function Section({ title, children }) {
     const { base } = useTheme();
+    const s = useMemo(() => makeStyles(base), [base]);
     return (
         <View style={s.section}>
             {/* Small backing chip behind the label, same fill as the section
@@ -757,33 +766,33 @@ function Section({ title, children }) {
 
 const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
-const s = StyleSheet.create({
+const makeStyles = (base) => StyleSheet.create({
     container: { flex: 1 },
     header: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 20 },
-    title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
+    title: { color: base.text, fontSize: 28, fontWeight: '700' },
     section: { marginBottom: 24 },
     sectionLabelWrap: { alignSelf: 'flex-start', marginLeft: 24, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6 },
-    sectionLabel: { color: '#888', fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
-    sectionBody: { backgroundColor: '#0f0f0f', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#1a1a1a' },
-    row: { paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#141414' },
-    rowLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
-    rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
-    modeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#141414' },
-    modeLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
-    modeSub: { color: '#555', fontSize: 12, marginTop: 2 },
-    radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#333' },
-    sliderSub: { color: '#888', fontSize: 13, fontWeight: '700', paddingHorizontal: 24, paddingTop: 14 },
-    sliderNote: { color: '#555', fontSize: 12, paddingHorizontal: 24, marginTop: 2 },
+    sectionLabel: { color: base.textDim, fontSize: 11, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
+    sectionBody: { backgroundColor: base.surface, borderTopWidth: 1, borderBottomWidth: 1, borderColor: base.border },
+    row: { paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: base.border },
+    rowLabel: { color: base.text, fontSize: 15, fontWeight: '500' },
+    rowSub: { color: base.textFaint, fontSize: 12, marginTop: 3 },
+    modeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: base.border },
+    modeLabel: { color: base.text, fontSize: 15, fontWeight: '500' },
+    modeSub: { color: base.textFaint, fontSize: 12, marginTop: 2 },
+    radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: base.border },
+    sliderSub: { color: base.textDim, fontSize: 13, fontWeight: '700', paddingHorizontal: 24, paddingTop: 14 },
+    sliderNote: { color: base.textFaint, fontSize: 12, paddingHorizontal: 24, marginTop: 2 },
     sliderVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginTop: 6 },
     // Matches sliderSub/sliderNote/sliderEnds' paddingHorizontal (24) — was
     // 16, meaning the slider extended 8px further out on each side than the
     // text above and below it, instead of lining up with the same margin.
     slider: { marginHorizontal: 24, marginTop: 2 },
     sliderEnds: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 24, paddingBottom: 12 },
-    sliderEnd: { color: '#444', fontSize: 11 },
-    toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: '#141414' },
-    toggleLabel: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
-    toggleSub: { color: '#555', fontSize: 12, marginTop: 3 },
+    sliderEnd: { color: base.textFaint, fontSize: 11 },
+    toggleRow: { flexDirection: 'row', alignItems: 'center', padding: 18, paddingHorizontal: 24, borderTopWidth: 1, borderTopColor: base.border },
+    toggleLabel: { color: base.text, fontSize: 15, fontWeight: '500' },
+    toggleSub: { color: base.textFaint, fontSize: 12, marginTop: 3 },
     // Header block for a multi-option setting (chips/slider below, so it
     // can't collapse into a single toggleRow) — same label/sub typography
     // and left inset as toggleRow, just without the switch on the right.
@@ -793,30 +802,30 @@ const s = StyleSheet.create({
     // same shape, same interaction, for the same kind of "pick one of a
     // few options" control.
     sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24, paddingBottom: 16, gap: 8 },
-    sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
-    sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
+    sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: base.border },
+    sortChipText: { color: base.textDim, fontSize: 13, fontWeight: '600' },
     swatch: { justifyContent: 'center', alignItems: 'center' },
-    swatchActive: { borderWidth: 3, borderColor: '#fff' },
+    swatchActive: { borderWidth: 3, borderColor: base.text },
     eqGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 8, paddingHorizontal: 8 },
     eqChip: { width: '50%', flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12 },
-    eqChipName: { color: '#e5e5e5', fontSize: 14, marginLeft: 10, flexShrink: 1 },
-    eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: '#141414' },
+    eqChipName: { color: base.text, fontSize: 14, marginLeft: 10, flexShrink: 1 },
+    eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: base.border },
     checkWrap: { marginRight: 14 },
     checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
-    eqName: { flex: 1, color: '#e5e5e5', fontSize: 15 },
-    eqDel: { color: '#555', fontSize: 16 },
+    eqName: { flex: 1, color: base.text, fontSize: 15 },
+    eqDel: { color: base.textFaint, fontSize: 16 },
     addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
     addBtnText: { fontSize: 15, fontWeight: '600' },
-    locBlock: { padding: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#141414' },
-    locHeading: { color: '#888', fontSize: 12, fontWeight: '700', marginBottom: 4 },
-    locBody: { color: '#555', fontSize: 13, lineHeight: 20 },
+    locBlock: { padding: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: base.border },
+    locHeading: { color: base.textDim, fontSize: 12, fontWeight: '700', marginBottom: 4 },
+    locBody: { color: base.textFaint, fontSize: 13, lineHeight: 20 },
     locPath: { fontSize: 11, marginTop: 4, lineHeight: 16 },
-    locNote: { color: '#333', fontSize: 11, marginTop: 8, lineHeight: 16 },
-    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4 },
-    nameInput: { backgroundColor: '#1a1a1a', borderRadius: 10, padding: 14, color: '#e5e5e5', fontSize: 15, borderWidth: 1, marginBottom: 12 },
+    locNote: { color: base.textFaint, fontSize: 11, marginTop: 8, lineHeight: 16 },
+    sheetTitle: { color: base.text, fontSize: 16, fontWeight: '700', marginBottom: 4 },
+    nameInput: { backgroundColor: base.border, borderRadius: 10, padding: 14, color: base.text, fontSize: 15, borderWidth: 1, marginBottom: 12 },
     bandRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },
-    bandHz: { color: '#555', fontSize: 11, width: 36, textAlign: 'right', marginRight: 4 },
-    bandVal: { color: '#888', fontSize: 11, width: 40, textAlign: 'right' },
+    bandHz: { color: base.textFaint, fontSize: 11, width: 36, textAlign: 'right', marginRight: 4 },
+    bandVal: { color: base.textDim, fontSize: 11, width: 40, textAlign: 'right' },
     saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 14 },
     saveBtnText: { fontSize: 16, fontWeight: '700' },
 });

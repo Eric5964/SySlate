@@ -470,6 +470,17 @@ export async function skipWithRamp(direction = 'next') {
     // that transition clears, just not this one specific case.
     if (isTransitionLocked()) {
         if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) return;
+        // A second skip tap landing while the FIRST skip's own fade is
+        // still running used to queue here and re-fire once that fade
+        // cleared — landing on a SECOND song. "Tapping skip twice doesn't
+        // skip the next song" (i.e. shouldn't skip past it) — drop it
+        // instead, same as the natural-end-fade case above: the first skip
+        // already represents the user's most recent "go to the next song"
+        // intent, a rapid double-tap on the same button isn't a request
+        // for two. Other locks (a pause/play ramp, some other fade) still
+        // queue as before — those are a different, genuinely separate
+        // intent from the skip itself.
+        if (skipLock) return;
         queueAction(() => skipWithRamp(direction));
         return;
     }

@@ -33,25 +33,53 @@ export const THEMES = {
 // previously (kept the purple/blue/teal/green values as-is, those already
 // read distinctly).
 export const BASE_COLORS = {
-    dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a' },
-    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47' },
-    dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a' },
-    dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f' },
-    dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530' },
-    dark_yellow: { name: 'Yellow', bg: '#241f04', surface: '#332b08', border: '#4a3d10' },
-    dark_orange: { name: 'Orange', bg: '#291404', surface: '#3a1d09', border: '#522a10' },
-    dark_red: { name: 'Red', bg: '#270707', surface: '#390d0d', border: '#521212' },
+    // text/textDim/textFaint are new: every screen used to hardcode its own
+    // literal grays (#f0f0f0, #999, #666, #555...) directly rather than
+    // reading them from here, which is exactly why a light mode couldn't
+    // just swap `bg` before — none of that hardcoded text would have
+    // followed it. Values below match what was already ambient across the
+    // app for dark, so existing dark themes look pixel-identical; only
+    // `light` at the bottom is new, with its OWN distinct grays rather than
+    // reusing the dark set. Reusing the same mid-grays for light was the
+    // actual old bug, not the light/dark concept itself — a value like
+    // #999 sits in a contrast no-man's-land, mediocre against black AND
+    // against white, so it read as "illegible no matter the base/accent."
+    // Light's textDim/textFaint are deliberately darker than you might
+    // expect a "dim" gray to be, specifically to keep real contrast against
+    // a white surface.
+    dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_yellow: { name: 'Yellow', bg: '#241f04', surface: '#332b08', border: '#4a3d10', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_orange: { name: 'Orange', bg: '#291404', surface: '#3a1d09', border: '#522a10', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_red: { name: 'Red', bg: '#270707', surface: '#390d0d', border: '#521212', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
     // Crimson sits between Red and Pink in hue (a bit of magenta mixed into
     // the red, short of Pink's actual magenta) rather than landing on
     // almost the same value as either — that's what made Red/Crimson hard
     // to tell apart before, and briefly during a first pass at this fix.
-    dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029' },
-    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616' },
+    dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    // The new light mode. One clean variant, not ten — a toggle, not a
+    // whole second grid of per-accent bases to maintain (accent colors
+    // stay exactly as they are; all ten already read fine on a light
+    // surface without adjustment, being fully saturated rather than
+    // near-black). #f7f7f8 instead of pure #fff so surface/border still
+    // read as distinct steps rather than flat white-on-white.
+    light: { name: 'Light', bg: '#f7f7f8', surface: '#ffffff', border: '#e2e2e5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
 };
+
+// Whether a given base id is the light one — screens that need to invert
+// something base.text/textDim/textFaint doesn't already cover (an icon
+// tinted to a literal color, an image overlay scrim meant for a dark photo)
+// can check this rather than hardcoding 'light' as a string.
+export const isLightBase = (id) => id === 'light';
 
 const ThemeContext = createContext({
     theme: THEMES.purple, themeId: 'purple', setTheme: () => { },
     base: BASE_COLORS.black, baseId: 'black', setBase: () => { },
+    isLight: false, toggleLightMode: () => { },
     ready: false,
 });
 
@@ -100,10 +128,24 @@ export function ThemeProvider({ children }) {
     const setTheme = async (id) => { setThemeId(id); await AsyncStorage.setItem('theme_id', id); };
     const setBase = async (id) => { setBaseId(id); await AsyncStorage.setItem('base_color_id', id); };
 
+    // Simple toggle rather than making the user pick "Light" out of the
+    // same grid as the ten dark bases — remembers whichever dark base was
+    // active before switching to Light, so flipping back doesn't lose it.
+    const toggleLightMode = async () => {
+        if (baseId === 'light') {
+            const prev = (await AsyncStorage.getItem('base_color_id_pre_light')) || 'black';
+            await setBase(BASE_COLORS[prev] ? prev : 'black');
+        } else {
+            await AsyncStorage.setItem('base_color_id_pre_light', baseId);
+            await setBase('light');
+        }
+    };
+
     return (
         <ThemeContext.Provider value={{
             theme: THEMES[themeId], themeId, setTheme,
             base: BASE_COLORS[baseId], baseId, setBase,
+            isLight: baseId === 'light', toggleLightMode,
             ready,
         }}>
             {children}

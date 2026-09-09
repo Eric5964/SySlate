@@ -58,8 +58,8 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
                 <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size, coverShape) }]}>
                     {renderArt(numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
                 </View>
-                <Text style={s.gridName} numberOfLines={2}>{item.name}</Text>
-                <Text style={s.gridCount}>{item.songs.length} tracks</Text>
+                <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>
+                <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>
             </TouchableOpacity>
         );
     }
@@ -71,10 +71,10 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
                 </View>
             )}
             <View style={{ flex: 1 }}>
-                <Text style={s.rowName}>{item.name}</Text>
-                <Text style={s.rowCount}>{item.songs.length} tracks</Text>
+                <Text style={[s.rowName, { color: base.text }]}>{item.name}</Text>
+                <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>
             </View>
-            <Text style={s.arrow}>›</Text>
+            <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>
         </TouchableOpacity>
     );
 });
@@ -171,7 +171,7 @@ export default function PlaylistsScreen() {
         <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
             <View style={s.header}>
-                <Text style={s.title}>Playlists</Text>
+                <Text style={[s.title, { color: base.text }]}>Playlists</Text>
                 <View style={{ flexDirection: 'row' }}>
                     <TouchableOpacity onPress={cycleFormat} style={s.btn} hitSlop={HIT}>
                         <Text style={[s.btnText, { color: theme.accent }]}>{fmtIcon}</Text>
@@ -183,8 +183,8 @@ export default function PlaylistsScreen() {
             </View>
             {playlists.length === 0 ? (
                 <View style={s.empty}>
-                    <Text style={s.emptyTitle}>No playlists yet</Text>
-                    <Text style={s.emptyText}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
+                    <Text style={[s.emptyTitle, { color: base.text }]}>No playlists yet</Text>
+                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
                 </View>
             ) : (
                 <Animated.View style={{ flex: 1, opacity: listOpacity }}>
@@ -219,7 +219,7 @@ export default function PlaylistsScreen() {
             <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)}>
                 {displayedMenuFor && (
                     <>
-                        <Text style={s.menuTitle} numberOfLines={1}>{displayedMenuFor.name}</Text>
+                        <Text style={[s.menuTitle, { color: base.textFaint }]} numberOfLines={1}>{displayedMenuFor.name}</Text>
                         <MenuRow label="Change Cover Image" onPress={() => changeCover(displayedMenuFor)} />
                         {covers[displayedMenuFor.path] && <MenuRow label="Remove Cover Image" onPress={() => removeCover(displayedMenuFor)} />}
                         <MenuRow label="Move to Top" onPress={() => moveItem(displayedMenuFor, 'top')} />
@@ -235,9 +235,10 @@ export default function PlaylistsScreen() {
 }
 
 function MenuRow({ label, onPress, muted }) {
+    const { base } = useTheme();
     return (
         <TouchableOpacity style={s.menuRow} onPress={onPress}>
-            <Text style={[s.menuRowText, muted && { color: '#555' }]}>{label}</Text>
+            <Text style={[s.menuRowText, { color: base.text }, muted && { color: base.textFaint }]}>{label}</Text>
         </TouchableOpacity>
     );
 }

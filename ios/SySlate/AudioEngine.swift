@@ -530,6 +530,14 @@ class AudioEngine: RCTEventEmitter {
         }
         let track = queue[idx]
 
+        // Belt-and-suspenders version of the same crossfade-orphan bug
+        // fixed at each individual call site (advance(), skip(), seek()) —
+        // this is the common choke point nearly all of them funnel
+        // through, so guarding here too means any OTHER path that ends up
+        // loading a track (present or future) can't reintroduce the same
+        // leak by forgetting to call this first. Harmless to call twice —
+        // it's a no-op once isCrossfading is already false.
+        cancelCrossfadeIfNeeded()
         playbackToken &+= 1
         let token = playbackToken
 
@@ -643,7 +651,26 @@ class AudioEngine: RCTEventEmitter {
         advance(direction: 1, wrap: repeatMode == .queue, autoPlay: true)
     }
 
+    // A skip/advance while a crossfade is still running bumps
+    // playbackToken, which makes the fade timer's own guard invalidate
+    // itself on its very next tick — but that early-exit path (see
+    // runCrossfade below) never reaches the node cleanup lines further
+    // down (outgoingNode.stop(), flipping activeNode to the incoming
+    // node), since those only run on NORMAL completion. Both nodes
+    // involved in the interrupted crossfade were left playing forever,
+    // unmanaged — the reported "stacking, never gets rid of the old
+    // song." There are only ever two nodes total (nodeA/nodeB), so
+    // stopping both unconditionally here is always safe — whichever one
+    // becomes active next gets a fresh schedule right after this runs.
+    private func cancelCrossfadeIfNeeded() {
+        guard isCrossfading else { return }
+        nodeA.stop()
+        nodeB.stop()
+        isCrossfading = false
+    }
+
     private func advance(direction: Int, wrap: Bool, autoPlay: Bool) {
+        cancelCrossfadeIfNeeded()
         guard !queue.isEmpty else {
             currentIndex = nil
             setState(.stopped)
@@ -880,6 +907,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func stopInternal() {
+        cancelCrossfadeIfNeeded()
         playbackToken &+= 1
         activeNode.stop()
         progressTimer?.invalidate()
@@ -990,6 +1018,7 @@ class AudioEngine: RCTEventEmitter {
             resolve(nil)
             return
         }
+        cancelCrossfadeIfNeeded()
         currentIndex = idx
         loadAndScheduleCurrentTrack(autoPlay: true)
         resolve(nil)
@@ -1093,6 +1122,15 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         _ = idx
+        // Same bug class as the skip-during-crossfade fix — this bumps
+        // playbackToken further down without ever cleaning up an in-flight
+        // crossfade first. Seeking only ever touches `activeNode`; if a
+        // crossfade is running, the OTHER node (still fading in or out)
+        // is left completely untouched, both scheduled and audible at
+        // once from before the seek — "with crossfade, doesn't do
+        // anything except move [visually]" is that: the seek genuinely
+        // only affects one of the two currently-sounding nodes.
+        cancelCrossfadeIfNeeded()
         segmentStartOffsetSeconds = startAtSeconds
         activeNode.stop()
         playbackToken &+= 1
@@ -1172,9 +1210,39 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // Toggling .bypass on an AVAudioUnitEffect while audio is actively
+    // flowing through it is a well-known click/pop source — the unit's
+    // internal DSP state (the Dynamics Processor's attack/release envelope
+    // history) gets abruptly cut in or out of the signal path mid-stream,
+    // which is exactly what "pops like plugging in an audio device"
+    // describes. Ducking preMixNode (shared downstream of both player
+    // nodes) briefly around the toggle means the discontinuity happens
+    // while the signal is silent instead of live.
+    private func toggleNormalizerBypass(_ bypassed: Bool) {
+        let duckMs = 15.0
+        let settleMs = 40.0
+        let startVol = preMixNode.outputVolume
+        let steps = 4
+        for i in 0...steps {
+            let delay = duckMs * Double(i) / Double(steps) / 1000.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.preMixNode.outputVolume = startVol * Float(1 - Double(i) / Double(steps))
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duckMs / 1000.0) { [weak self] in
+            self?.normalizerNode.bypass = bypassed
+        }
+        for i in 0...steps {
+            let delay = (duckMs + settleMs) / 1000.0 + (duckMs * Double(i) / Double(steps) / 1000.0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.preMixNode.outputVolume = startVol * Float(Double(i) / Double(steps))
+            }
+        }
+    }
+
     @objc(setNormalizationEnabled:resolver:rejecter:)
     func setNormalizationEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        normalizerNode.bypass = !enabled.boolValue
+        toggleNormalizerBypass(!enabled.boolValue)
         resolve(nil)
     }
 
@@ -1195,7 +1263,7 @@ class AudioEngine: RCTEventEmitter {
     // below (loudness matching ACROSS tracks) — see PreferencesContext.js.
     @objc(setWithinTrackNormEnabled:resolver:rejecter:)
     func setWithinTrackNormEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        normalizerNode.bypass = !enabled.boolValue
+        toggleNormalizerBypass(!enabled.boolValue)
         resolve(nil)
     }
 

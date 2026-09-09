@@ -97,7 +97,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                     failOffsetX={[-20, 20]}
                 >
                     <Animated.View style={s.handleZone}>
-                        <View style={s.handleBar} />
+                        <View style={[s.handleBar, { backgroundColor: base.border }]} />
                         <View style={s.headerZone}>{header}</View>
                     </Animated.View>
                 </PanGestureHandler>

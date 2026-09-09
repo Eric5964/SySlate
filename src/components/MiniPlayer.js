@@ -91,7 +91,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 always showed art regardless, unlike everywhere else covers
                 appear. */}
             {showSongCovers && (
-                <View style={[styles.art, { borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
+                <View style={[styles.art, { backgroundColor: base.surface, borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                     {artwork
                         ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                         : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
@@ -99,8 +99,8 @@ export default function MiniPlayer({ withTabBar = true }) {
                 </View>
             )}
             <View style={styles.info}>
-                <Text style={styles.title} numberOfLines={1}>{title}</Text>
-                <Text style={styles.artist} numberOfLines={1}>{artist}</Text>
+                <Text style={[styles.title, { color: base.text }]} numberOfLines={1}>{title}</Text>
+                <Text style={[styles.artist, { color: base.textFaint }]} numberOfLines={1}>{artist}</Text>
             </View>
             <TouchableOpacity onPress={() => skipWithRamp('prev')} style={styles.btn} hitSlop={HIT}>
                 <SkipPrevIcon size={20} color={SKIP_ICON_COLOR} />

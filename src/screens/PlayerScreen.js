@@ -8,7 +8,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
 import { getLyrics, activeLyricIndex, peekLyrics } from '../utils/lyrics';
 import { useTheme } from '../context/ThemeContext';
-import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
+import { skipWithRamp, playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, LoopIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
@@ -20,22 +20,6 @@ import { squircle } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
 
 const { width, height } = Dimensions.get('window');
-
-// Opacity stops for the lyrics view's top/bottom edge fade, each covering a
-// thin band — highest (most opaque, closest to fully hiding a line) right at
-// the edge, fading toward 0 (fully visible) moving inward. No gradient
-// library in this project (adding one means another native rebuild), so this
-// stacks flat bands as an approximation instead of a true blend. Still
-// reads as a visible dark rectangle against a busy background image —
-// "the boundary box" — because the previous version was only 6 bands at 8px
-// each (48px total): too coarse a step size for the eye not to catch,
-// especially over a photo instead of a flat color. Widened to 20 bands at
-// 3px each (60px total) with an eased (not linear) falloff, so consecutive
-// bands differ by only a few percent opacity near the visible end instead of
-// jumping in big visible increments — same "no real gradient" mechanism,
-// finer-grained enough to stop reading as a hard edge.
-const EDGE_FADE_BAND_PX = 3;
-const EDGE_FADE_STOPS = Array.from({ length: 20 }, (_, i) => Math.pow(1 - i / 19, 1.7));
 
 function fmt(sec) {
     if (!sec || isNaN(sec)) return '0:00';
@@ -213,6 +197,22 @@ export default function PlayerScreen() {
             const targetRatio = ratio;
             const duration = progress.duration;
             latestSeekRatioRef.current = targetRatio;
+            // "Double-plays when sliding the bar" with ramping on: seekTo
+            // never checked for an in-flight ramp before running. Native
+            // seekTo reschedules and immediately resumes playback at
+            // whatever volume the node is CURRENTLY at (mid-fade, e.g.
+            // 0.4) — but the JS ramp timer that was already running had no
+            // idea a seek just happened, and kept firing its own volume
+            // steps / its own eventual pause() on top of the freshly
+            // resumed audio. Releasing the fade lock (its remaining steps
+            // check ownership before touching volume, so this makes them
+            // no-op cleanly — see forceReleaseFade above) and restoring
+            // full volume before the seek lands means there's exactly one
+            // thing driving playback state through a seek, not two.
+            if (isTransitionLocked()) {
+                forceReleaseFade();
+                AudioEngine.setVolume(1).catch(() => { });
+            }
             // Was: clearDragTimer fired unconditionally 300ms after commit,
             // regardless of whether this seek had actually landed natively
             // yet. Once dragRatio cleared, the drift-correction effect
@@ -393,9 +393,29 @@ export default function PlayerScreen() {
     const progressKnown = progress.duration > 0;
     useEffect(() => {
         if (!showingLyrics || (isPlaying && progressKnown)) return;
+        // Was a single one-shot getProgress() call, not a repeating poll —
+        // fine as long as (isPlaying && progressKnown) flips true shortly
+        // after (useProgress's own poll catches up) and this effect stops
+        // being the source of truth. But if progressKnown never becomes
+        // true for a given track (useProgress's poll firing but duration
+        // never validated — a metadata thing worth its own look, but not
+        // reproducible from here), this fallback was never called again
+        // either, since none of its dependencies change while stuck in
+        // that state — lyricsProgress just froze at whatever position it
+        // caught on that first, one-time fetch. That's the "sometimes
+        // doesn't follow the song, stays at start" report: whatever
+        // position happened to be current at that single fetch (often
+        // near the very start) is what the lyrics view was stuck showing
+        // forever. Polling here too, same as useProgress's own interval,
+        // means lyrics keep tracking regardless of whether the primary
+        // progress source ever recovers.
         let cancelled = false;
-        AudioEngine.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
-        return () => { cancelled = true; };
+        const tick = () => {
+            AudioEngine.getProgress().then(p => { if (!cancelled) setLyricsProgress(p); }).catch(() => { });
+        };
+        tick();
+        const id = setInterval(tick, 500);
+        return () => { cancelled = true; clearInterval(id); };
     }, [showingLyrics, isPlaying, progressKnown, currentTrack?.id]);
 
     // Prefer useProgress's own live value once it's actually populated;
@@ -425,6 +445,9 @@ export default function PlayerScreen() {
     }, [showingLyrics]);
 
     const lyricsScrollRef = useRef(null);
+    // Drives the per-line opacity fade (Spotify-style — replaces the old
+    // box-edge gradient overlay entirely, see the lyrics map() below).
+    const lyricsScrollY = useRef(new Animated.Value(0)).current;
     const lyricsRowYRef = useRef(new Map());
     // Bumped every time a row's real Y position lands via onLayout — the
     // scroll-to-line effect below depends on this so it re-runs once the
@@ -464,7 +487,22 @@ export default function PlayerScreen() {
         lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
     }, [currentTrack?.id]);
     useEffect(() => {
-        if (!showingLyrics || activeLine < 0 || lyricsManualScroll) return;
+        if (!showingLyrics) return;
+        // Before the song reaches its first timed line (activeLine === -1,
+        // e.g. a [00:00]-style intro gap, or seeking back to the very
+        // start), this used to just no-op and leave the view wherever it
+        // last was — "should automatically go to the start if the song
+        // hasn't started the lyrics yet." Scroll to top for that case too,
+        // not just skip it, and release manual-scroll so a deliberate
+        // scroll-up-to-the-top by the user doesn't immediately get
+        // overridden by the very next tick before the position has
+        // actually caught up.
+        if (activeLine < 0) {
+            if (lyricsManualScroll) return;
+            lyricsScrollRef.current?.scrollTo({ y: 0, animated: true });
+            return;
+        }
+        if (lyricsManualScroll) return;
         const y = lyricsRowYRef.current.get(activeLine);
         if (y === undefined) return;
         // Centers the active line roughly a third of the way down the
@@ -543,7 +581,7 @@ export default function PlayerScreen() {
 
     const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
     const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
-    const skipIconColor = '#ccc'; // fixed regardless of accent, including white
+    const skipIconColor = base.textDim; // fixed regardless of ACCENT (not base) — still needs to adapt light/dark
 
     // Shuffle/loop previously swapped color INSTANTLY on state change while
     // TouchableOpacity's own built-in press-dim (opacity 1 -> 0.2 -> 1) was
@@ -564,8 +602,8 @@ export default function PlayerScreen() {
     useEffect(() => {
         Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     }, [singleLoop]);
-    const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
-    const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: ['#333', theme.accent] });
+    const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
+    const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
 
     // Triggers the animation immediately, synchronously, right at the tap —
     // not waiting on the setShuffleOn -> re-render -> useEffect round trip
@@ -620,7 +658,7 @@ export default function PlayerScreen() {
                         (which DOES support EQ) several rounds ago and this
                         was never un-hidden. */}
                     <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={[s.topBtn, { marginRight: 4 }]}>
-                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : '#555'} />
+                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : base.textFaint} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
@@ -653,7 +691,7 @@ export default function PlayerScreen() {
                             // flat square sitting behind the lyrics text. Fully
                             // transparent (and non-interactive) once lyrics are showing.
                             <Animated.View
-                                style={[s.art, { shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+                                style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
                                 pointerEvents={showingLyrics ? 'none' : 'auto'}
                             >
                                 {artwork
@@ -667,12 +705,17 @@ export default function PlayerScreen() {
                                 style={[{ position: 'absolute', top: -60, bottom: -60, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
-                                <ScrollView
+                                <Animated.ScrollView
                                     ref={lyricsScrollRef}
                                     style={{ flex: 1 }}
                                     contentContainerStyle={s.lyricsContent}
                                     showsVerticalScrollIndicator={false}
                                     scrollEnabled={showingLyrics}
+                                    onScroll={Animated.event(
+                                        [{ nativeEvent: { contentOffset: { y: lyricsScrollY } } }],
+                                        { useNativeDriver: true }
+                                    )}
+                                    scrollEventThrottle={16}
                                     onScrollBeginDrag={() => {
                                         if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current);
                                         setLyricsManualScroll(true);
@@ -688,30 +731,40 @@ export default function PlayerScreen() {
                                         surrounding pan gesture at its own scroll bounds
                                         anyway. If the two still fight in practice, that's
                                         worth a follow-up report with which one wins. */}
-                                    {lyricsData.map((line, i) => (
-                                        <Text
-                                            key={i}
-                                            onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); }}
-                                            style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : '#666' }]}
-                                        >
-                                            {line.text || '\u2026'}
-                                        </Text>
-                                    ))}
-                                </ScrollView>
-                                {/* Poor-man's top/bottom fade — no gradient library in
-                                     this project, and adding one means another native
-                                     rebuild, so this is stacked semi-transparent bands
-                                     in the screen's own background color instead of a
-                                     real gradient. Close enough at this size, and
-                                     pointerEvents none so it never eats the scroll. */}
-                                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-                                    {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'t' + i} style={{ position: 'absolute', top: i * EDGE_FADE_BAND_PX, left: 0, right: 0, height: EDGE_FADE_BAND_PX, backgroundColor: '#000', opacity }} />
-                                    ))}
-                                    {EDGE_FADE_STOPS.map((opacity, i) => (
-                                        <View key={'b' + i} style={{ position: 'absolute', bottom: i * EDGE_FADE_BAND_PX, left: 0, right: 0, height: EDGE_FADE_BAND_PX, backgroundColor: '#000', opacity }} />
-                                    ))}
-                                </View>
+                                    {lyricsData.map((line, i) => {
+                                        // Requested Spotify-style: fade the LINES
+                                        // themselves near the top/bottom edges, not a
+                                        // dark box sitting over them (removed the two
+                                        // GradientCap overlays below). A line's own Y
+                                        // (lyricsRowYRef, only known after its own
+                                        // onLayout) minus the live scroll offset is its
+                                        // position within the visible box; interpolating
+                                        // THAT against a fixed [0, FADE, boxH-FADE, boxH]
+                                        // shape gives each line an independent fade as it
+                                        // crosses the edges, driven by the same shared
+                                        // scrollY value. Before the first layout pass,
+                                        // lineY is unknown — render fully opaque rather
+                                        // than guessing, onLayout + lyricsLayoutVersion
+                                        // corrects it within a frame.
+                                        const lineY = lyricsRowYRef.current.get(i);
+                                        const boxH = width - 56;
+                                        const FADE = 60;
+                                        const opacityStyle = lineY === undefined ? 1 : lyricsScrollY.interpolate({
+                                            inputRange: [lineY - boxH, lineY - boxH + FADE, lineY - FADE, lineY],
+                                            outputRange: [0, 1, 1, 0],
+                                            extrapolate: 'clamp',
+                                        });
+                                        return (
+                                            <Animated.Text
+                                                key={i}
+                                                onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); }}
+                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : base.textDim, opacity: opacityStyle }]}
+                                            >
+                                                {line.text || '\u2026'}
+                                            </Animated.Text>
+                                        );
+                                    })}
+                                </Animated.ScrollView>
                             </Animated.View>
                         )}
                     </View>
@@ -724,7 +777,20 @@ export default function PlayerScreen() {
                      depending on whether this song happens to have an .lrc
                      file. The slot's height is fixed regardless. */}
                 <View>
-                    <View style={s.lyricsToggleSlot}>
+                    {/* Real cause of the toggle looking untouched by the
+                         earlier margin tweak: it was a SEPARATE sibling of
+                         trackInfoGroup, both direct children of `middle`,
+                         which uses justifyContent: 'space-evenly' — that
+                         inserts its own (much bigger) flexible gap between
+                         every top-level child regardless of any marginTop
+                         set on either one. Moving the toggle to be the
+                         first child INSIDE trackInfoGroup instead of a
+                         sibling before it means it's now part of the same
+                         single flex item as the title, so the only thing
+                         controlling their distance is the marginBottom set
+                         here directly — no more competing flex gap. */}
+                    <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
+                    <View style={[s.lyricsToggleSlot, { marginBottom: 14 }]}>
                         {lyricsMode !== 'off' && lyricsData && (
                             <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
                                 <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
@@ -733,23 +799,13 @@ export default function PlayerScreen() {
                             </TouchableOpacity>
                         )}
                     </View>
-
-                    {/* Sat at the top of its 28px slot before (flex-start),
-                         leaving ~5px of dead space below the button on top
-                         of trackInfoGroup's own 16px gap — worked out to
-                         roughly 21px of separation from the title, a bit
-                         past the requested 10-20px band. Now anchored to the
-                         bottom of the slot (flex-end) with a slightly
-                         tighter 14px group gap, landing in the middle of
-                         that range. Still horizontally centered either way. */}
-                    <View style={[s.trackInfoGroup, { marginTop: 14 }]}>
                     <View style={s.info}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.trackTitle} numberOfLines={2}>{displayTitle}</Text>
+                            <Text style={[s.trackTitle, { color: base.text }]} numberOfLines={2}>{displayTitle}</Text>
                             <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
                         </View>
                         {showPlayCount && playCount > 0 && (
-                            <Text style={s.playCount}>{playCount}×</Text>
+                            <Text style={[s.playCount, { color: base.textFaint }]}>{playCount}×</Text>
                         )}
                     </View>
 
@@ -768,7 +824,7 @@ export default function PlayerScreen() {
                                     style={s.progressTouch}
                                     onLayout={measureProgress}
                                 >
-                                    <View style={s.progressTrack}>
+                                    <View style={[s.progressTrack, { backgroundColor: base.border }]}>
                                         <Animated.View style={[s.progressFill, { width: animWidth, backgroundColor: theme.accent }]} />
                                     </View>
                                     <Animated.View style={[s.progressThumb, { left: animLeft, marginLeft: -10, backgroundColor: theme.accent }]} />
@@ -776,8 +832,8 @@ export default function PlayerScreen() {
                             </PanGestureHandler>
                         </TapGestureHandler>
                         <View style={s.times}>
-                            <Text style={s.time}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? 0 : progress.position))}</Text>
-                            <Text style={s.time}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? 0 : progress.position))}</Text>
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
                         </View>
                     </View>
                 </View>
@@ -861,7 +917,7 @@ const s = StyleSheet.create({
     // standalone button (large tap padding, bold weight, full accent
     // color); now smaller, thinner, and lighter so it sits closer to the
     // title instead of announcing itself as separate control.
-    lyricsToggleSlot: { height: 28, justifyContent: 'flex-end', alignItems: 'center', marginTop: -6 },
+    lyricsToggleSlot: { height: 28, justifyContent: 'flex-end', alignItems: 'center' },
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
