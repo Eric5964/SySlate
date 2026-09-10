@@ -83,7 +83,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -121,6 +121,12 @@ export default function SettingsScreen() {
     // release. Same local-mirror pattern as lyricsResyncLocal/lyricsOffsetLocal above.
     const [crossfadeDurationLocal, setCrossfadeDurationLocal] = useState(crossfadeDuration);
     useEffect(() => { setCrossfadeDurationLocal(crossfadeDuration); }, [crossfadeDuration]);
+    // Same local-mirror pattern, now for the split-out End of Track
+    // crossfade duration (was one shared "Crossfade Duration" slider —
+    // split to match the Audio Ramp section's On Skip / End of Track
+    // granularity just below it).
+    const [crossfadeDurationEotLocal, setCrossfadeDurationEotLocal] = useState(crossfadeDurationEndOfTrack);
+    useEffect(() => { setCrossfadeDurationEotLocal(crossfadeDurationEndOfTrack); }, [crossfadeDurationEndOfTrack]);
 
     useEffect(() => {
         (async () => {
@@ -282,7 +288,27 @@ export default function SettingsScreen() {
                     </View>
                     {crossfadeEnabled ? (
                         <>
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration</Text>
+                            {/* Split from one shared "Crossfade Duration" slider
+                                into On Skip / End of Track, mirroring the Audio
+                                Ramp section right below (same two triggers, same
+                                reasoning for why they're worth separate values —
+                                a natural track-ending transition and a manual
+                                skip are different enough moments). There's no
+                                Crossfade equivalent of "On Play" — crossfade only
+                                ever runs on a forward track change (see
+                                AudioEngine.swift's advance()), so there's nothing
+                                for a fresh play to overlap FROM. */}
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — End of Track</Text>
+                            <Text style={s.sliderNote}>Overlaps into the next track as this one ends</Text>
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationEotLocal.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationEotLocal}
+                                onValueChange={setCrossfadeDurationEotLocal}
+                                onSlidingComplete={v => { setCrossfadeDurationEotLocal(v); setCrossfadeDurationEndOfTrack(v); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
+
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — On Skip</Text>
+                            <Text style={s.sliderNote}>Overlaps into the next track on a manual skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
                             <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationLocal}
                                 onValueChange={setCrossfadeDurationLocal}

@@ -7,7 +7,7 @@ import { getCustomPresets, getHiddenPresets } from '../utils/storage';
 import BottomSheet from './BottomSheet';
 
 export default function EQModal({ visible, onClose, playlistPath }) {
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const { eqPresetId, changeEQPreset } = usePlayback();
     const [eqPresets, setEqPresets] = useState(BUILT_IN_PRESETS);
 
@@ -21,15 +21,15 @@ export default function EQModal({ visible, onClose, playlistPath }) {
     }, [visible]);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>EQ Preset</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>EQ Preset</Text>}>
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {eqPresets.length === 0
-                    ? <Text style={s.empty}>No presets visible — manage in Settings</Text>
+                    ? <Text style={[s.empty, { color: base.textFaint }]}>No presets visible — manage in Settings</Text>
                     : eqPresets.map(p => (
-                        <TouchableOpacity key={p.id} style={s.presetRow}
+                        <TouchableOpacity key={p.id} style={[s.presetRow, { borderBottomColor: base.border }]}
                             onPress={() => { changeEQPreset(p.id, playlistPath); onClose(); }}
                         >
-                            <Text style={[s.presetName, eqPresetId === p.id && { color: '#f0f0f0', fontWeight: '700' }]}>{p.name}</Text>
+                            <Text style={[s.presetName, { color: base.textFaint }, eqPresetId === p.id && { color: base.text, fontWeight: '700' }]}>{p.name}</Text>
                             {eqPresetId === p.id && <Text style={{ color: theme.accent, fontSize: 20 }}>✓</Text>}
                         </TouchableOpacity>
                     ))
@@ -40,8 +40,8 @@ export default function EQModal({ visible, onClose, playlistPath }) {
 }
 
 const s = StyleSheet.create({
-    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
-    presetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-    presetName: { color: '#555', fontSize: 17 },
-    empty: { color: '#333', fontSize: 14, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 24 },
+    sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
+    presetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1 },
+    presetName: { fontSize: 17 },
+    empty: { fontSize: 14, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 24 },
 });

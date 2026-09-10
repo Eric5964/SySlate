@@ -1,5 +1,5 @@
 import AudioEngine, { Event, State } from '../native/AudioEngine';
-import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getCrossfadeEnabled, getCrossfadeDuration } from '../utils/storage';
+import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getCrossfadeEnabled, getCrossfadeDurationSkip, getCrossfadeDurationEndOfTrack } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
 
 // --- Fade ownership -----------------------------------------------------
@@ -101,7 +101,7 @@ async function fadeVol(from, to, sec, ownerId) {
     }
 }
 
-async function waitForPlaying(timeoutMs = 2500) {
+async function waitForPlaying(timeoutMs = 4000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         try {
@@ -132,7 +132,16 @@ async function checkRampWindow(position, duration) {
         // native crossfade only ever applies to a genuine index change
         // (see AudioEngine.swift's advance()), never a same-track loop, so
         // JS still owns fading a repeat regardless of this setting.
-        const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
+        //
+        // Real bug found while splitting Crossfade Duration into On Skip /
+        // End of Track: this used to read the single old
+        // getCrossfadeDuration(), which no longer tracks what the Settings
+        // screen actually writes. This check only ever runs near a
+        // NATURAL end of track, so it needs the End of Track duration
+        // specifically — reading the wrong one here would mean this JS
+        // fade-out either double-fires alongside native's own crossfade or
+        // fails to back off for it.
+        const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDurationEndOfTrack()) > 0.05;
 
         // If we currently own a natural end-of-track fade but a seek moved
         // playback back OUT of the window (e.g. rewound), cancel it instead
@@ -316,13 +325,21 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                 try { await AudioEngine.setVolume(0); } catch { }
                 try { await startAction(); } catch { }
                 const reallyPlaying = await waitForPlaying();
-                // If we never actually confirmed real playback within the
-                // timeout, ramping anyway means the volume climbs to full
-                // during what might still be silence/buffering — audio then
-                // starts late, already at full volume, sounding exactly like no
-                // fade happened at all even though the ramp genuinely ran. Skip
-                // stright to full rather than guess at timing we don't have.
+                // Widened timeout (was 2500ms) plus this changed from an
+                // instant setVolume(1) to a short catch-up fade — on a
+                // sideloaded/LiveContainer build especially, the timeout
+                // itself firing doesn't necessarily mean playback never
+                // started; getState() polling is itself bridge round-trips
+                // that can be slow to catch up under load, so audio may
+                // well have started moments before the timeout gave up on
+                // it. Snapping straight to full volume right at that
+                // moment is audibly identical to "ramp didn't happen at
+                // all" even on the runs where it basically did — a quick
+                // fade here is a safe middle ground either way (still
+                // clearly not the FULL configured ramp if this really was
+                // a genuine failure, but not a jarring cut either).
                 if (!reallyPlaying) {
+                    await fadeVol(0, 1, Math.min(0.4, ramp), id);
                     try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
                 } else {
@@ -487,7 +504,11 @@ export async function skipWithRamp(direction = 'next') {
     skipLock = true;
     try {
         if (direction === 'next') {
-            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
+            // Manual skip — this one specifically needs the On Skip
+            // duration (same bug/fix as checkRampWindow's End of Track
+            // one above — was reading the now-stale combined
+            // getCrossfadeDuration() here too).
+            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDurationSkip()) > 0.05;
             if (crossfading) {
                 try { await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
                 return;
@@ -588,6 +609,14 @@ export async function PlaybackService() {
     AudioEngine.addEventListener(Event.RemoteStop, () => { stopWatcher(); AudioEngine.stop(); });
     AudioEngine.addEventListener(Event.RemoteNext, () => skipWithRamp('next'));
     AudioEngine.addEventListener(Event.RemotePrevious, () => skipWithRamp('prev'));
+    // Lock screen / Control Center scrubber — see AudioEngine.swift's
+    // changePlaybackPositionCommand comment for why this was silently
+    // inert before (the command was never registered natively, not a JS
+    // issue). Routes through the same seekTo() the in-app progress bar
+    // already uses rather than a separate remote-seek code path.
+    AudioEngine.addEventListener(Event.RemoteSeek, ({ position }) => {
+        AudioEngine.seekTo(position).catch(() => { });
+    });
 
     // Not an RNTP event — this module's own addition (see AudioEngine.js's
     // comment on it). A real interruption (call, Siri, another app) should
@@ -685,7 +714,16 @@ export async function PlaybackService() {
             // continuation, even on the rare occasion "1" happened to
             // already be the right target. Crossfade owns this transition's
             // volume start to finish; JS has no business touching it here.
-            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDuration()) > 0.05;
+            //
+            // This listener can't tell WHICH trigger caused the track
+            // change (manual skip vs. the native lead-in timer firing for
+            // a natural end — see AudioEngine.swift's
+            // scheduleCrossfadeLeadIn), so unlike the two call sites above
+            // it has to check both durations rather than one specific one
+            // — either being enabled means SOME crossfade may have just
+            // owned this transition.
+            const crossfading = (await getCrossfadeEnabled())
+                && (((await getCrossfadeDurationSkip()) > 0.05) || ((await getCrossfadeDurationEndOfTrack()) > 0.05));
             if (!crossfading) {
                 try { await AudioEngine.setVolume(1); } catch { }
             }

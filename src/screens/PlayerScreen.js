@@ -505,10 +505,16 @@ export default function PlayerScreen() {
         if (lyricsManualScroll) return;
         const y = lyricsRowYRef.current.get(activeLine);
         if (y === undefined) return;
-        // Centers the active line roughly a third of the way down the
-        // lyrics box rather than dead center — reads more naturally, closer
-        // to how lock-screen/streaming-app lyrics views usually scroll.
-        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.32), animated: true });
+        // Was 0.32 (a third of the way down) — with only a few short lines
+        // around the active one (typical for this box's height), anchoring
+        // near the top third left most of the box empty below it, since
+        // there usually isn't enough surrounding lyric text to fill the
+        // rest of the frame either way. The box is exactly the same size as
+        // the cover art it swaps places with, so centering the active line
+        // instead means the used/empty space splits evenly top and bottom —
+        // matching how the cover fills that box symmetrically, which is the
+        // actual ask ("symmetrical around the song cover").
+        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: true });
     }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
@@ -758,7 +764,15 @@ export default function PlayerScreen() {
                                             <Animated.Text
                                                 key={i}
                                                 onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); }}
-                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : base.textDim, opacity: opacityStyle }]}
+                                                // "Doesn't pop enough when it's their turn" — only
+                                                // the active line gets heavier/larger here (idle
+                                                // lines keep s.lyricLine's normal 700/24 untouched,
+                                                // so nothing about the resting state changes). iOS's
+                                                // system font renders 700 and 900 as genuinely
+                                                // distinct weights (not synthesized), so this reads
+                                                // as a real emphasis jump rather than a same-weight
+                                                // color change.
+                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : base.textDim, opacity: opacityStyle }, i === activeLine && s.lyricLineActive]}
                                             >
                                                 {line.text || '\u2026'}
                                             </Animated.Text>
@@ -922,6 +936,7 @@ const s = StyleSheet.create({
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
     lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '700', textAlign: 'center', marginVertical: 7 },
+    lyricLineActive: { fontSize: 26, lineHeight: 36, fontWeight: '900' },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

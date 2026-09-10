@@ -14,7 +14,8 @@ import {
     getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
     getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
     getCrossfadeEnabled, setCrossfadeEnabled as persistCrossfadeEnabled,
-    getCrossfadeDuration, setCrossfadeDuration as persistCrossfadeDuration,
+    getCrossfadeDurationSkip, setCrossfadeDurationSkip as persistCrossfadeDurationSkip,
+    getCrossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack as persistCrossfadeDurationEndOfTrack,
     getWithinTrackNorm, setWithinTrackNorm as persistWithinTrackNorm,
     getBetweenTrackNorm, setBetweenTrackNorm as persistBetweenTrackNorm,
     getSilenceTrim, setSilenceTrim as persistSilenceTrim,
@@ -40,7 +41,15 @@ const Ctx = createContext({
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
     crossfadeEnabled: false, setCrossfadeEnabled: () => { },
+    // Renamed in meaning, not in name: this is now specifically the "on
+    // skip" crossfade duration (see AudioEngine.swift's advance()) — kept
+    // as `crossfadeDuration`/`setCrossfadeDuration` rather than adding yet
+    // another differently-named field, since every existing call site
+    // (SettingsScreen's slider, the native setter, the AsyncStorage key)
+    // already lines up with "the skip one" once End of Track gets its own
+    // field below.
     crossfadeDuration: 4, setCrossfadeDuration: () => { },
+    crossfadeDurationEndOfTrack: 4, setCrossfadeDurationEndOfTrack: () => { },
     withinTrackNorm: true, setWithinTrackNorm: () => { },
     betweenTrackNorm: false, setBetweenTrackNorm: () => { },
     silenceTrim: false, setSilenceTrim: () => { },
@@ -60,6 +69,7 @@ export function PreferencesProvider({ children }) {
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
     const [crossfadeEnabled, setCrossfadeEnabledState] = useState(false);
     const [crossfadeDuration, setCrossfadeDurationState] = useState(4);
+    const [crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrackState] = useState(4);
     const [withinTrackNorm, setWithinTrackNormState] = useState(true);
     const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
     const [silenceTrim, setSilenceTrimState] = useState(false);
@@ -95,7 +105,12 @@ export function PreferencesProvider({ children }) {
         // knows setupPlayer has actually finished; harmless to set twice,
         // but must not be ONLY set here in case this runs first.
         getCrossfadeEnabled().then((v) => { setCrossfadeEnabledState(v); AudioEngine.setCrossfadeEnabled(v).catch(() => { }); });
-        getCrossfadeDuration().then((v) => { setCrossfadeDurationState(v); AudioEngine.setCrossfadeDuration(v).catch(() => { }); });
+        // Was getCrossfadeDuration() — that key is now only read as the
+        // migration fallback INSIDE getCrossfadeDurationSkip (see
+        // storage.js), not directly here, now that On Skip and End of
+        // Track are tracked separately.
+        getCrossfadeDurationSkip().then((v) => { setCrossfadeDurationState(v); AudioEngine.setCrossfadeDuration(v).catch(() => { }); });
+        getCrossfadeDurationEndOfTrack().then((v) => { setCrossfadeDurationEndOfTrackState(v); AudioEngine.setCrossfadeDurationEndOfTrack(v).catch(() => { }); });
         getWithinTrackNorm().then((v) => { setWithinTrackNormState(v); AudioEngine.setWithinTrackNormEnabled(v).catch(() => { }); });
         getBetweenTrackNorm().then((v) => { setBetweenTrackNormState(v); AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { }); });
         getSilenceTrim().then((v) => { setSilenceTrimState(v); AudioEngine.setSilenceTrimEnabled(v).catch(() => { }); });
@@ -156,8 +171,13 @@ export function PreferencesProvider({ children }) {
     }, []);
     const setCrossfadeDuration = useCallback((v) => {
         setCrossfadeDurationState(v);
-        persistCrossfadeDuration(v);
+        persistCrossfadeDurationSkip(v);
         AudioEngine.setCrossfadeDuration(v).catch(() => { });
+    }, []);
+    const setCrossfadeDurationEndOfTrack = useCallback((v) => {
+        setCrossfadeDurationEndOfTrackState(v);
+        persistCrossfadeDurationEndOfTrack(v);
+        AudioEngine.setCrossfadeDurationEndOfTrack(v).catch(() => { });
     }, []);
     const setWithinTrackNorm = useCallback((v) => {
         setWithinTrackNormState(v);
@@ -195,6 +215,7 @@ export function PreferencesProvider({ children }) {
         backgroundImageUri, setBackgroundImageUri,
         crossfadeEnabled, setCrossfadeEnabled,
         crossfadeDuration, setCrossfadeDuration,
+        crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack,
         withinTrackNorm, setWithinTrackNorm,
         betweenTrackNorm, setBetweenTrackNorm,
         silenceTrim, setSilenceTrim,
@@ -202,7 +223,7 @@ export function PreferencesProvider({ children }) {
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover,
         backgroundImageEnabled, backgroundImageUri,
-        crossfadeEnabled, crossfadeDuration, withinTrackNorm, betweenTrackNorm, silenceTrim,
+        crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, betweenTrackNorm, silenceTrim,
     ]);
 
     return (

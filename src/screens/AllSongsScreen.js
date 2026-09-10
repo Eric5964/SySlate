@@ -140,7 +140,7 @@ export default function AllSongsScreen() {
                 with centered search (+ clear button), EQ tag, queue icon. */}
             <View style={s.topBar}>
                 <View style={s.titleRow}>
-                    <Text style={s.title}>All Songs</Text>
+                    <Text style={[s.title, { color: base.text }]}>All Songs</Text>
                     <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                         <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
                     </TouchableOpacity>
@@ -150,10 +150,10 @@ export default function AllSongsScreen() {
                         {SORTS.map(opt => (
                             <TouchableOpacity
                                 key={opt.id}
-                                style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
+                                style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
                                 onPress={() => { setSortId(opt.id); setPlaylistSort(ALL_SONGS_KEY, opt.id); setShowSort(false); }}
                             >
-                                <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
+                                <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                     {opt.label}
                                 </Text>
                             </TouchableOpacity>
@@ -163,14 +163,14 @@ export default function AllSongsScreen() {
                 <View style={s.searchRow}>
                     <View style={{ flex: 1, justifyContent: 'center' }}>
                         <TextInput
-                            style={[s.searchBar, { backgroundColor: base.surface }]}
+                            style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
                             value={search} onChangeText={setSearch}
                             placeholder="Search songs, artists..."
                             placeholderTextColor="#444"
                         />
                         {search.length > 0 && (
                             <TouchableOpacity style={s.clearBtn} onPress={() => { setSearch(''); Keyboard.dismiss(); }} hitSlop={HIT}>
-                                <Text style={s.clearBtnText}>✕</Text>
+                                <Text style={[s.clearBtnText, { color: base.textFaint }]}>✕</Text>
                             </TouchableOpacity>
                         )}
                     </View>
@@ -185,8 +185,8 @@ export default function AllSongsScreen() {
 
             {allSongs.length === 0 ? (
                 <View style={s.empty}>
-                    <Text style={s.emptyTitle}>No songs found</Text>
-                    <Text style={s.emptyText}>Add music folders or files to{'\n'}Files → On My iPhone → SySlate</Text>
+                    <Text style={[s.emptyTitle, { color: base.text }]}>No songs found</Text>
+                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add music folders or files to{'\n'}Files → On My iPhone → SySlate</Text>
                 </View>
             ) : (
                 <FlatList
@@ -207,11 +207,11 @@ export default function AllSongsScreen() {
                                     </View>
                                 )}
                                 <View style={{ flex: 1 }}>
-                                    <Text style={s.rowTitle} numberOfLines={1}>{item.title}</Text>
-                                    <Text style={s.rowSub} numberOfLines={1}>{formatArtists(item.artist, artistSeparator)}</Text>
+                                    <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.title}</Text>
+                                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator)}</Text>
                                 </View>
                                 {showPlayCount && playCounts[item.id] > 0 && (
-                                    <Text style={s.playCount}>{playCounts[item.id]}×</Text>
+                                    <Text style={[s.playCount, { color: base.textFaint }]}>{playCounts[item.id]}×</Text>
                                 )}
                             </TouchableOpacity>
                         </SwipeableRow>

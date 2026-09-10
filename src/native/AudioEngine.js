@@ -26,6 +26,9 @@ export const Event = {
     RemoteStop: 'RemoteStop',
     RemoteNext: 'RemoteNext',
     RemotePrevious: 'RemotePrevious',
+    // Lock screen / Control Center scrubber drag — see
+    // AudioEngine.swift's changePlaybackPositionCommand.
+    RemoteSeek: 'RemoteSeek',
     // New vs. RNTP — see decision #2 in the spec doc. JS's existing
     // pause-with-ramp function should be called from these, same as it's
     // called on a manual pause tap, so interruptions fade out instead of
@@ -120,7 +123,11 @@ const AudioEngine = {
     setBetweenTrackNormEnabled: (enabled) => NativeAudioEngine.setBetweenTrackNormEnabled(enabled),
     setSilenceTrimEnabled: (enabled) => NativeAudioEngine.setSilenceTrimEnabled(enabled),
     setCrossfadeEnabled: (enabled) => NativeAudioEngine.setCrossfadeEnabled(enabled),
+    // Kept name — this is now specifically the "on skip" duration (see
+    // AudioEngine.swift), the JS-facing name stays the same for backward
+    // compatibility with the AsyncStorage key it's paired with.
     setCrossfadeDuration: (seconds) => NativeAudioEngine.setCrossfadeDuration(seconds),
+    setCrossfadeDurationEndOfTrack: (seconds) => NativeAudioEngine.setCrossfadeDurationEndOfTrack(seconds),
 
     addEventListener,
 };

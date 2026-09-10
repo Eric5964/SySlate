@@ -157,6 +157,17 @@ export default function PlaylistsScreen() {
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
         const permanentUri = await persistCoverImage(result.assets[0].uri);
+        // Real gap found here: App.js's reload() prefetches every playlist
+        // cover, but only the ones already saved at COLD START — a cover
+        // set or changed mid-session (right here) never went through
+        // Image.prefetch at all, so its first paint (this row re-rendering
+        // with the new uri right below) always decoded fresh from disk.
+        // That's "sometimes the playlist covers [aren't cached]" — it was
+        // never about the covers that existed at launch, only ones changed
+        // during the session. Same wait-before-render reasoning as reload()
+        // itself: awaiting this (not fire-and-forget) means the image is
+        // actually in cache by the time setCovers below triggers the render.
+        await Image.prefetch(permanentUri).catch(() => { });
         const next = await setPlaylistCover(item.path, permanentUri);
         setCovers(next);
     };

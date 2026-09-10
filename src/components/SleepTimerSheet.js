@@ -14,7 +14,7 @@ function formatRemaining(ms) {
 }
 
 export default function SleepTimerSheet({ visible, onClose }) {
-    const { theme } = useTheme();
+    const { theme, base } = useTheme();
     const { sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer } = usePlayback();
     const [now, setNow] = useState(Date.now());
 
@@ -34,10 +34,10 @@ export default function SleepTimerSheet({ visible, onClose }) {
     const active = !!sleepTimerEndAt || sleepAtTrackEnd;
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={s.sheetTitle}>Sleep Timer</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}>
             {active && (
-                <View style={s.activeRow}>
-                    <Text style={s.activeLabel}>
+                <View style={[s.activeRow, { borderBottomColor: base.border }]}>
+                    <Text style={[s.activeLabel, { color: base.textDim }]}>
                         {sleepAtTrackEnd ? 'Pausing at the end of this track' : `Pausing in ${formatRemaining(sleepTimerEndAt - now)}`}
                     </Text>
                     <TouchableOpacity onPress={() => { cancelSleepTimer(); onClose(); }}>
@@ -46,26 +46,26 @@ export default function SleepTimerSheet({ visible, onClose }) {
                 </View>
             )}
             {DURATIONS.map(min => (
-                <TouchableOpacity key={min} style={s.row}
+                <TouchableOpacity key={min} style={[s.row, { borderBottomColor: base.border }]}
                     onPress={() => { setSleepTimer(min); onClose(); }}
                 >
-                    <Text style={s.rowText}>{min} minutes</Text>
+                    <Text style={[s.rowText, { color: base.text }]}>{min} minutes</Text>
                 </TouchableOpacity>
             ))}
-            <TouchableOpacity style={s.row}
+            <TouchableOpacity style={[s.row, { borderBottomColor: base.border }]}
                 onPress={() => { setSleepTimerAtTrackEnd(); onClose(); }}
             >
-                <Text style={s.rowText}>End of current track</Text>
+                <Text style={[s.rowText, { color: base.text }]}>End of current track</Text>
             </TouchableOpacity>
         </BottomSheet>
     );
 }
 
 const s = StyleSheet.create({
-    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
-    activeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#1a1a1a', marginBottom: 4 },
-    activeLabel: { color: '#999', fontSize: 14 },
+    sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
+    activeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, marginBottom: 4 },
+    activeLabel: { fontSize: 14 },
     cancelText: { fontSize: 14, fontWeight: '700' },
-    row: { paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-    rowText: { color: '#e5e5e5', fontSize: 17 },
+    row: { paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1 },
+    rowText: { fontSize: 17 },
 });

@@ -8,6 +8,18 @@ export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossf
 export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
 export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('crossfade_duration').then(v => v !== null ? parseFloat(v) : 4), 4);
 export const setCrossfadeDuration = (v) => safe(() => AsyncStorage.setItem('crossfade_duration', String(v)), null);
+// Split from the single Crossfade Duration above to match Audio Ramp's
+// granularity (On Skip / End of Track each get their own duration — see
+// AudioEngine.swift's advance() comment for why there's no "On Play" one
+// for crossfade specifically). Each new getter falls back to the OLD
+// single 'crossfade_duration' value the first time it's read (before
+// either new key has ever been written), so an existing install's
+// already-configured duration carries over as the starting point for
+// both instead of silently resetting to a fresh default of 4.
+export const getCrossfadeDurationSkip = () => safe(() => AsyncStorage.getItem('crossfade_duration_skip').then(v => v !== null ? parseFloat(v) : getCrossfadeDuration()), 4);
+export const setCrossfadeDurationSkip = (v) => safe(() => AsyncStorage.setItem('crossfade_duration_skip', String(v)), null);
+export const getCrossfadeDurationEndOfTrack = () => safe(() => AsyncStorage.getItem('crossfade_duration_eot').then(v => v !== null ? parseFloat(v) : getCrossfadeDuration()), 4);
+export const setCrossfadeDurationEndOfTrack = (v) => safe(() => AsyncStorage.setItem('crossfade_duration_eot', String(v)), null);
 export const getKeepPriorityOnPlaylistSwitch = () => safe(() => AsyncStorage.getItem('keep_priority_on_switch').then(v => v !== 'false'), true);
 export const setKeepPriorityOnPlaylistSwitch = (v) => safe(() => AsyncStorage.setItem('keep_priority_on_switch', String(v)), null);
 // When true, Album always comes from the containing folder name, same as

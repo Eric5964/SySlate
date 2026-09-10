@@ -101,4 +101,15 @@ RCT_EXTERN_METHOD(setCrossfadeDuration:(nonnull NSNumber *)seconds
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// Real gap found here: AudioEngine.swift's setCrossfadeDurationEndOfTrack
+// (@objc, added alongside the Crossfade Duration split) has no matching
+// RCT_EXTERN_METHOD entry — without this, the JS-side
+// AudioEngine.setCrossfadeDurationEndOfTrack() call would reject/no-op at
+// the bridge with "method not found" rather than actually reaching
+// Swift, same class of thing as any other native method that's
+// implemented but never exported here.
+RCT_EXTERN_METHOD(setCrossfadeDurationEndOfTrack:(nonnull NSNumber *)seconds
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 @end

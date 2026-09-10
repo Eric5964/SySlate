@@ -142,7 +142,7 @@ export default function PlaylistDetailScreen() {
                 </TouchableOpacity>
                 <View style={{ flex: 1, marginHorizontal: 4, justifyContent: 'center' }}>
                     <TextInput
-                        style={[s.searchBar, { backgroundColor: base.surface, marginHorizontal: 0 }]}
+                        style={[s.searchBar, { backgroundColor: base.surface, marginHorizontal: 0, color: base.text }]}
                         value={search}
                         onChangeText={setSearch}
                         placeholder="Search this playlist"
@@ -151,7 +151,7 @@ export default function PlaylistDetailScreen() {
                     />
                     {search.length > 0 && (
                         <TouchableOpacity style={s.clearBtn} onPress={() => setSearch('')} hitSlop={HIT}>
-                            <Text style={s.clearBtnText}>✕</Text>
+                            <Text style={[s.clearBtnText, { color: base.textFaint }]}>✕</Text>
                         </TouchableOpacity>
                     )}
                 </View>
@@ -196,8 +196,8 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.titleRow}>
                             <View style={{ flex: 1 }}>
-                                <Text style={s.title} numberOfLines={1}>{playlist.name}</Text>
-                                <Text style={s.subtitle}>{playlist.songs.length} tracks</Text>
+                                <Text style={[s.title, { color: base.text }]} numberOfLines={1}>{playlist.name}</Text>
+                                <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} tracks</Text>
                             </View>
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
@@ -209,10 +209,10 @@ export default function PlaylistDetailScreen() {
                                 {SORTS.map(opt => (
                                     <TouchableOpacity
                                         key={opt.id}
-                                        style={[s.sortChip, sortId === opt.id && { backgroundColor: theme.accent }]}
+                                        style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
                                         onPress={() => { setSortId(opt.id); setPlaylistSort(playlist.path, opt.id); setShowSort(false); }}
                                     >
-                                        <Text style={[s.sortChipText, sortId === opt.id && { color: theme.onAccent }]}>
+                                        <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                             {opt.label}
                                         </Text>
                                     </TouchableOpacity>
@@ -233,11 +233,11 @@ export default function PlaylistDetailScreen() {
                                 </View>
                             )}
                             <View style={{ flex: 1 }}>
-                                <Text style={s.rowTitle} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                                <Text style={s.rowSub} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator)}</Text>
+                                <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
+                                <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator)}</Text>
                             </View>
                             {showPlayCount && playCounts[item.id] > 0 && (
-                                <Text style={s.playCount}>{playCounts[item.id]}×</Text>
+                                <Text style={[s.playCount, { color: base.textFaint }]}>{playCounts[item.id]}×</Text>
                             )}
                         </TouchableOpacity>
                     </SwipeableRow>

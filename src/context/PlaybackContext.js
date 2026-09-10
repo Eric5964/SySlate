@@ -288,19 +288,32 @@ export function PlaybackProvider({ children }) {
             try {
                 const currentIndex = await AudioEngine.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-                // Used to look for an existing copy of this song later in
-                // the queue and move it forward instead of adding a new
-                // one — which meant tapping "add to queue" on the same song
-                // more than once only ever resulted in one copy, no matter
-                // how many times you tapped it. Every call now just adds
-                // another genuine copy, same as promoteToQueue already does
-                // for the swipe-inside-the-queue-view version of this.
                 let priority = priorityRef.current;
                 const insertAt = currentIndex + 1 + priority.length;
                 await AudioEngine.add(stampQid(song), insertAt);
                 priority = [...priority, song.id];
                 priorityRef.current = priority;
                 setPriorityQueue(priority);
+                // Restored move-not-duplicate behavior (matches this
+                // function's own doc comment above, which already
+                // described this — a previous round had swapped the actual
+                // code to always leave the original copy in place "so
+                // tapping add-to-queue on the same song twice gives two
+                // genuine copies," but that meant EVERY priority-add left a
+                // stray duplicate sitting in Up Next for any song that was
+                // already anywhere later in the queue, which is the
+                // "priority queue is still messed up" duplication seen on
+                // screen (same song listed under both Priority and Up
+                // Next). Search starts at insertAt+1, not insertAt, since
+                // insertAt is our own just-inserted copy. Only removes ONE
+                // occurrence — the next natural one — not every later
+                // occurrence, so a song genuinely queued multiple times on
+                // purpose elsewhere isn't touched.
+                try {
+                    const queueNow = await AudioEngine.getQueue();
+                    const dupIdx = queueNow.findIndex((t, i) => i > insertAt && t.id === song.id);
+                    if (dupIdx !== -1) await AudioEngine.remove(dupIdx);
+                } catch (e) { console.error('addToQueue dedupe:', e); }
                 return priority;
             } catch (e) { console.error('addToQueue:', e); return priorityRef.current; }
         };
@@ -354,14 +367,20 @@ export function PlaybackProvider({ children }) {
             const queue = await AudioEngine.getQueue();
             const track = queue[realIndex];
             if (!track) return { priority: priorityRef.current, insertedAt: null };
-            // Keeps the original occurrence in place instead of moving it —
-            // the song plays sooner via this new priority copy, but still
-            // plays again later at its natural spot too.
             const insertAt = currentIndex + 1 + priorityRef.current.length;
             await AudioEngine.add(stampQid(track), insertAt);
             const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
+            // Restored move-not-duplicate (see addToQueue's matching
+            // comment above — this had the exact same "leave the original
+            // in place" behavior, same underlying complaint: a song
+            // promoted to Priority kept showing up a second time in Up
+            // Next). insertAt is always <= realIndex (guaranteed by the
+            // priorityEnd guard above), so inserting AT insertAt shifts the
+            // original occurrence from realIndex to realIndex+1 —
+            // deterministic, no search needed like addToQueue's version.
+            try { await AudioEngine.remove(realIndex + 1); } catch (e) { console.error('promoteToQueue dedupe:', e); }
             return { priority: next, insertedAt: insertAt };
         } catch (e) { console.error('promoteToQueue:', e); return { priority: priorityRef.current, insertedAt: null }; }
     }, []);
