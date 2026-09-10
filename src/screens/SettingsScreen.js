@@ -16,7 +16,7 @@ import ScreenBackground from '../components/ScreenBackground';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
-// in storage.js for the default-';' reasoning).
+// in storage.js for the default-';' reasoning). test
 const ARTIST_SEPARATORS = [
     { id: ';', label: ';' },
     { id: ',', label: ',' },
