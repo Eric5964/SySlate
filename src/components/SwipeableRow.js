@@ -36,6 +36,18 @@ export default function SwipeableRow({
     const onSwipeRightRef = useRef(onSwipeRight);
     const onSwipeLeftRef = useRef(onSwipeLeft);
     useEffect(() => { onSwipeRightRef.current = onSwipeRight; onSwipeLeftRef.current = onSwipeLeft; });
+    // Real bug found here: "with one swipe, [the row] showed several times"
+    // (added to the queue more than once from what read as a single swipe).
+    // onHandlerStateChange fires on EVERY state transition, guarded only by
+    // "did we just leave ACTIVE" — RNGH can legitimately report ACTIVE more
+    // than once for what feels like one continuous gesture (most often when
+    // this pan is competing with the enclosing FlatList's own scroll
+    // recognizer, which is exactly the context this fired in — a queue
+    // list). Without a per-gesture latch, a second ACTIVE→END transition
+    // re-fires onSwipeRightRef/onSwipeLeftRef a second time for the same
+    // physical swipe. Latched below: fires once, then ignored until the
+    // NEXT gesture actually begins.
+    const hasFiredRef = useRef(false);
 
     const onGestureEvent = useRef(
         Animated.event(
@@ -62,9 +74,15 @@ export default function SwipeableRow({
     };
 
     const onHandlerStateChange = useRef((e) => {
+        if (e.nativeEvent.state === State.BEGAN) {
+            hasFiredRef.current = false;
+            return;
+        }
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
+        if (hasFiredRef.current) return;
         const dx = e.nativeEvent.translationX;
         if (dx > COMMIT_DISTANCE && onSwipeRightRef.current) {
+            hasFiredRef.current = true;
             // Fire immediately, animate the row back with a quick spring
             // instead of teleporting it via setValue(0).
             onSwipeRightRef.current();
@@ -74,6 +92,7 @@ export default function SwipeableRow({
             return;
         }
         if (dx < -COMMIT_DISTANCE && onSwipeLeftRef.current) {
+            hasFiredRef.current = true;
             // Fires immediately now too (was waiting for the slide-off
             // animation to finish first, which made it feel slower to
             // respond than the add side). The actual list-removal round

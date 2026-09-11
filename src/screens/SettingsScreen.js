@@ -16,7 +16,7 @@ import ScreenBackground from '../components/ScreenBackground';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
-// in storage.js for the default-';' reasoning). test
+// in storage.js for the default-';' reasoning).
 const ARTIST_SEPARATORS = [
     { id: ';', label: ';' },
     { id: ',', label: ',' },
@@ -301,20 +301,30 @@ export default function SettingsScreen() {
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — End of Track</Text>
                             <Text style={s.sliderNote}>Overlaps into the next track as this one ends</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationEotLocal.toFixed(1)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationEotLocal}
+                            {/* Max lowered 10→6 to match Ramp's End of Track
+                                cap right below — direct ask ("crossfade
+                                settings should be 6,3,3 just like audio
+                                ramping"). A 10s crossfade was also just
+                                genuinely too long to use in practice — most
+                                of what read as "doesn't switch song, just
+                                cover" / "lasts too long" was a real 10-second
+                                overlap, not only the mid-crossfade
+                                announcement being late. */}
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={6} step={0.5} value={crossfadeDurationEotLocal}
                                 onValueChange={setCrossfadeDurationEotLocal}
                                 onSlidingComplete={v => { setCrossfadeDurationEotLocal(v); setCrossfadeDurationEndOfTrack(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — On Skip</Text>
                             <Text style={s.sliderNote}>Overlaps into the next track on a manual skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={10} step={0.5} value={crossfadeDurationLocal}
+                            {/* Max lowered 10→3, matching Ramp's On Skip cap. */}
+                            <PureSlider style={s.slider} minimumValue={1} maximumValue={3} step={0.5} value={crossfadeDurationLocal}
                                 onValueChange={setCrossfadeDurationLocal}
                                 onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>10s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>3s</Text></View>
                         </>
                     ) : (
                         <>

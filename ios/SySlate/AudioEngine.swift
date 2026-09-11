@@ -146,6 +146,17 @@ class AudioEngine: RCTEventEmitter {
     // playing, which isn't an overlap at all).
     private var crossfadeLeadTimer: Timer?
 
+    // Instance-level so a pause (or anything else) mid-crossfade can find
+    // and finish it — these used to be purely local to runCrossfade, which
+    // meant nothing outside that one method's closures could ever
+    // intervene in an in-progress crossfade. See finishCrossfadeForPause.
+    private var crossfadeFadeTimer: Timer?
+    private var crossfadeIncomingFile: AVAudioFile?
+    private var crossfadeIncomingSampleRate: Double = 0
+    private var crossfadeIncomingTrack: Track?
+    private var crossfadeIncomingIndex: Int?
+    private var crossfadeTargetVolume: Float = 1
+
     // Guards the specific race RNTP's own completion callback used to hit:
     // scheduleFile's completion handler firing after we've already moved
     // on (skip/seek/stop called while a completion callback was in flight).
@@ -796,6 +807,16 @@ class AudioEngine: RCTEventEmitter {
     // becomes active next gets a fresh schedule right after this runs.
     private func cancelCrossfadeIfNeeded() {
         guard isCrossfading else { return }
+        // Also invalidate the fade timer itself here now — it used to only
+        // stop implicitly (on its own next tick, once whatever call site
+        // bumps playbackToken) rather than immediately. Harmless in
+        // practice since the nodes below are already stopped by the time
+        // it would fire again, but explicit beats implicit.
+        crossfadeFadeTimer?.invalidate()
+        crossfadeFadeTimer = nil
+        crossfadeIncomingFile = nil
+        crossfadeIncomingTrack = nil
+        crossfadeIncomingIndex = nil
         nodeA.stop()
         nodeB.stop()
         isCrossfading = false
@@ -914,6 +935,17 @@ class AudioEngine: RCTEventEmitter {
         // not here — see its comment for why.
         let targetVolume = volume * gainCorrection
 
+        // Mirrored into instance vars so finishCrossfadeForPause (called
+        // from pauseInternal, a totally different call stack) can complete
+        // this handoff early instead of only this closure ever being able
+        // to. See that method for the bug this exists to fix — a
+        // still-running crossfade timer surviving a pause.
+        crossfadeIncomingFile = file
+        crossfadeIncomingSampleRate = sampleRate
+        crossfadeIncomingTrack = track
+        crossfadeIncomingIndex = idx
+        crossfadeTargetVolume = targetVolume
+
         // Coarse timer-driven fade controlling both nodes in lockstep —
         // done natively rather than via the usual JS setVolume() calls
         // because those go over the bridge one at a time; a real
@@ -946,6 +978,7 @@ class AudioEngine: RCTEventEmitter {
 
             if currentStep >= steps {
                 timer.invalidate()
+                self.crossfadeFadeTimer = nil
                 outgoingNode.stop()
                 outgoingNode.volume = targetVolume
 
@@ -954,6 +987,9 @@ class AudioEngine: RCTEventEmitter {
                 self.currentFile = file
                 self.currentFileSampleRate = sampleRate
                 self.segmentStartOffsetSeconds = 0
+                self.crossfadeIncomingFile = nil
+                self.crossfadeIncomingTrack = nil
+                self.crossfadeIncomingIndex = nil
 
                 var trackWithDuration = track
                 if trackWithDuration.duration == nil {
@@ -971,6 +1007,7 @@ class AudioEngine: RCTEventEmitter {
                 self.scheduleCrossfadeLeadIn()
             }
         }
+        crossfadeFadeTimer = fadeTimer
         RunLoop.main.add(fadeTimer, forMode: .common)
     }
 
@@ -1062,6 +1099,27 @@ class AudioEngine: RCTEventEmitter {
         // this same pause/resume path. Storing the snapshot separately
         // instead leaves segmentStartOffsetSeconds untouched, so resuming
         // counts correctly from the same original origin it always had.
+        //
+        // Real bug found here: this never checked for an in-progress
+        // crossfade at all. activeNode.pause() below only ever paused the
+        // OUTGOING node — the crossfade's own fade timer (a completely
+        // separate Timer, not touched by anything in this method) kept
+        // running regardless, still actively fading the INCOMING node
+        // in — meaning that node kept audibly PLAYING, volume still
+        // climbing, for however much of the crossfade duration was left
+        // after pause was pressed. That alone is "audio keeps playing
+        // after pause with crossfade on." Combine it with JS's OWN
+        // pause-ramp (fadeVol, which assumes a fresh 1→0 start and calls
+        // setVolume() repeatedly) fighting over the SAME outgoing node's
+        // volume property at the same time as the crossfade timer's own
+        // per-step write to it, and the result is exactly "ramping up
+        // then down" — two independent fades landing conflicting values
+        // on the same node in whatever order their timers happened to
+        // fire. finishCrossfadeForPause ends the crossfade immediately
+        // (promoting the incoming node to activeNode at full volume, same
+        // as if it had finished naturally) so everything below then
+        // operates on ONE settled node instead of two nodes mid-fight.
+        if isCrossfading { finishCrossfadeForPause() }
         frozenPositionSeconds = currentPositionSeconds()
         activeNode.pause()
         setState(.paused)
@@ -1069,6 +1127,49 @@ class AudioEngine: RCTEventEmitter {
         // reschedules it from wherever playback actually resumes.
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
+    }
+
+    // See pauseInternal's comment above for the bug this fixes. Brings an
+    // in-progress crossfade to its completed state immediately — the
+    // outgoing node stops, the incoming node (already playing) is promoted
+    // to activeNode at full target volume, same bookkeeping runCrossfade's
+    // own completion does on a normal finish — instead of leaving it
+    // running in the background while paused.
+    private func finishCrossfadeForPause() {
+        guard isCrossfading else { return }
+        crossfadeFadeTimer?.invalidate()
+        crossfadeFadeTimer = nil
+        guard let outgoingNode = activeNode, let file = crossfadeIncomingFile, let idx = crossfadeIncomingIndex else {
+            isCrossfading = false
+            return
+        }
+        let incomingNode = idleNode
+        outgoingNode.stop()
+        outgoingNode.volume = crossfadeTargetVolume
+        incomingNode.volume = crossfadeTargetVolume
+
+        activeNode = incomingNode
+        isCrossfading = false
+        currentFile = file
+        currentFileSampleRate = crossfadeIncomingSampleRate
+        segmentStartOffsetSeconds = 0
+
+        if var trackWithDuration = crossfadeIncomingTrack {
+            if trackWithDuration.duration == nil {
+                trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate
+                if idx < queue.count { queue[idx] = trackWithDuration }
+            }
+            // Covers the case where pause landed before the halfway-point
+            // announcement in runCrossfade ever fired — JS still needs to
+            // know the track changed. Harmless if it already fired; JS
+            // de-dupes by queue slot (see PlaybackContext.js's
+            // PlaybackTrackChanged listener).
+            sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+        }
+
+        crossfadeIncomingFile = nil
+        crossfadeIncomingTrack = nil
+        crossfadeIncomingIndex = nil
     }
 
     private func stopInternal() {
@@ -1394,10 +1495,20 @@ class AudioEngine: RCTEventEmitter {
     // nodes) briefly around the toggle means the discontinuity happens
     // while the signal is silent instead of live.
     private func toggleNormalizerBypass(_ bypassed: Bool) {
-        let duckMs = 15.0
-        let settleMs = 40.0
+        // Widened from 15ms/40ms — the pop was specifically reported on the
+        // OFF direction (normalizer active → bypassed), which makes sense:
+        // turning bypass ON abruptly discards whatever gain reduction the
+        // Dynamics Processor was actively applying at that instant, a
+        // bigger signal discontinuity than the OFF→ON direction (which
+        // starts the DSP fresh at zero reduction). The original duck
+        // window was probably just too short to fully mask that specific
+        // case. This is a width increase, not a fix for a specific
+        // diagnosed cause — couldn't confirm the exact mechanism without
+        // device audio to inspect.
+        let duckMs = 40.0
+        let settleMs = 80.0
         let startVol = preMixNode.outputVolume
-        let steps = 4
+        let steps = 8
         for i in 0...steps {
             let delay = duckMs * Double(i) / Double(steps) / 1000.0
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

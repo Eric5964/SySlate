@@ -233,7 +233,20 @@ export function PlaybackProvider({ children }) {
                     track = await AudioEngine.getTrack(nextTrack);
                 }
                 if (!track) return;
-                if (track.id === currentTrackRef.current?.id) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
+                // Was comparing by song `id` alone — with priority-queuing
+                // now confirmed to genuinely duplicate a song (same id,
+                // different queue slot — see addToQueue/promoteToQueue),
+                // transitioning from one occurrence of a song to ANOTHER
+                // occurrence of the exact same song matched this guard and
+                // silently skipped the update, which read as "doesn't
+                // switch the song" for that specific case. `_qid` (stamped
+                // per-slot on every native add) tells two genuine
+                // occurrences of the same song apart; only falls back to
+                // `id` for tracks that predate _qid tagging.
+                const sameSlot = track._qid != null
+                    ? track._qid === currentTrackRef.current?._qid
+                    : track.id === currentTrackRef.current?.id;
+                if (sameSlot) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
                 setCurrentTrack(track);
                 // Priority items are always inserted at the tail of the
                 // contiguous priority block (currentIndex+1+length), so the
@@ -288,32 +301,22 @@ export function PlaybackProvider({ children }) {
             try {
                 const currentIndex = await AudioEngine.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
+                // Reverted the round-17 dedupe: explicit direction from
+                // testing was to keep the original occurrence in Up Next —
+                // "add to Priority" means play a copy sooner, not move the
+                // song. The actual bug behind "showed several times" wasn't
+                // this at all — it was SwipeableRow firing onSwipeRight
+                // more than once for a single physical swipe (RNGH can
+                // report the ACTIVE state twice when this pan competes with
+                // an enclosing FlatList's scroll recognizer, which a queue
+                // list always is) — fixed there with a per-gesture latch
+                // instead.
                 let priority = priorityRef.current;
                 const insertAt = currentIndex + 1 + priority.length;
                 await AudioEngine.add(stampQid(song), insertAt);
                 priority = [...priority, song.id];
                 priorityRef.current = priority;
                 setPriorityQueue(priority);
-                // Restored move-not-duplicate behavior (matches this
-                // function's own doc comment above, which already
-                // described this — a previous round had swapped the actual
-                // code to always leave the original copy in place "so
-                // tapping add-to-queue on the same song twice gives two
-                // genuine copies," but that meant EVERY priority-add left a
-                // stray duplicate sitting in Up Next for any song that was
-                // already anywhere later in the queue, which is the
-                // "priority queue is still messed up" duplication seen on
-                // screen (same song listed under both Priority and Up
-                // Next). Search starts at insertAt+1, not insertAt, since
-                // insertAt is our own just-inserted copy. Only removes ONE
-                // occurrence — the next natural one — not every later
-                // occurrence, so a song genuinely queued multiple times on
-                // purpose elsewhere isn't touched.
-                try {
-                    const queueNow = await AudioEngine.getQueue();
-                    const dupIdx = queueNow.findIndex((t, i) => i > insertAt && t.id === song.id);
-                    if (dupIdx !== -1) await AudioEngine.remove(dupIdx);
-                } catch (e) { console.error('addToQueue dedupe:', e); }
                 return priority;
             } catch (e) { console.error('addToQueue:', e); return priorityRef.current; }
         };
@@ -372,15 +375,11 @@ export function PlaybackProvider({ children }) {
             const next = [...priorityRef.current, track.id];
             priorityRef.current = next;
             setPriorityQueue(next);
-            // Restored move-not-duplicate (see addToQueue's matching
-            // comment above — this had the exact same "leave the original
-            // in place" behavior, same underlying complaint: a song
-            // promoted to Priority kept showing up a second time in Up
-            // Next). insertAt is always <= realIndex (guaranteed by the
-            // priorityEnd guard above), so inserting AT insertAt shifts the
-            // original occurrence from realIndex to realIndex+1 —
-            // deterministic, no search needed like addToQueue's version.
-            try { await AudioEngine.remove(realIndex + 1); } catch (e) { console.error('promoteToQueue dedupe:', e); }
+            // Reverted the round-17 dedupe here too — explicit direction
+            // was to keep the original occurrence in Up Next (promoting
+            // plays a copy sooner, doesn't move the song). See addToQueue's
+            // matching comment above for what the real "showed several
+            // times" bug actually was.
             return { priority: next, insertedAt: insertAt };
         } catch (e) { console.error('promoteToQueue:', e); return { priority: priorityRef.current, insertedAt: null }; }
     }, []);

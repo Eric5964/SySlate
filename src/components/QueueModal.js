@@ -378,7 +378,23 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    style={{ flex: 1 }}
+                    // Real cause of "the screen scrolls up/down when adding
+                    // a song to priority, when it's out of view": promoting
+                    // an off-screen row inserts its new copy right after
+                    // Priority — ABOVE wherever you're currently scrolled —
+                    // which shifts every row below it down by one row's
+                    // height. That's ordinary ScrollView behavior without
+                    // this prop; it has no way to know content changed
+                    // above the visible area and compensate. This tells it
+                    // to: when content changes outside the visible rect,
+                    // adjust the scroll offset to keep whatever's currently
+                    // on screen anchored in place instead of visually
+                    // jumping.
+                    maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+                >
                     {/* Just another section, scrolling with everything else
                         below it — not pinned above the list. Not tappable
                         (plain View, not TouchableOpacity) — there's nothing
@@ -413,19 +429,20 @@ export default function QueueModal({ visible, onClose }) {
                             </SwipeableRow>
                         </>
                     )}
-                    {/* "Keep the Priority pill there no matter what, even
-                         when there's no songs & when you just open the
-                         app" — was gated behind priorityRows.length > 0
-                         entirely (pill included), so it only ever appeared
-                         once something had actually been added. Pill now
-                         always renders; only the empty-state hint under it
-                         is conditional. */}
-                    <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Priority</Text></View>
-                    {priorityRows.length > 0
-                        ? priorityRows.map(renderRow)
-                        : <Text style={[s.emptyPriorityHint, { color: base.textFaint }]}>Nothing queued next yet</Text>
-                    }
-                    {upNextRows.length > 0 && <View style={[s.divider, { backgroundColor: base.border }]} />}
+                    {/* Was unconditional ("keep the Priority pill there no
+                         matter what") per an earlier round's explicit
+                         decision — flipped back per direct feedback ("no
+                         priority part when there are no songs in priority
+                         is more ideal"). Whole pill + empty hint now gated
+                         together behind priorityRows.length, same as the Up
+                         Next section right below already does. */}
+                    {priorityRows.length > 0 && (
+                        <>
+                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Priority</Text></View>
+                            {priorityRows.map(renderRow)}
+                        </>
+                    )}
+                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={[s.divider, { backgroundColor: base.border }]} />}
                     {upNextRows.length > 0 && (
                         <>
                             <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Up Next</Text></View>

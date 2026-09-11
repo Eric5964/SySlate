@@ -486,8 +486,20 @@ export default function PlayerScreen() {
         setLyricsManualScroll(false);
         lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
     }, [currentTrack?.id]);
+    // "Lyrics should already be at the place in the song before needing to
+    // move when the music player is opened" — this effect's scrollTo was
+    // ALWAYS animated, including the very first positioning right after
+    // showingLyrics flips true, so opening the lyrics view visibly
+    // scrolled from the top into place instead of just appearing already
+    // correct. Tracks whether showingLyrics was already true last render;
+    // only that specific "just opened" transition snaps instantly — a
+    // genuine active-line advance while already looking at the view still
+    // animates normally.
+    const wasShowingLyricsRef = useRef(showingLyrics);
     useEffect(() => {
-        if (!showingLyrics) return;
+        if (!showingLyrics) { wasShowingLyricsRef.current = false; return; }
+        const justOpened = !wasShowingLyricsRef.current;
+        wasShowingLyricsRef.current = true;
         // Before the song reaches its first timed line (activeLine === -1,
         // e.g. a [00:00]-style intro gap, or seeking back to the very
         // start), this used to just no-op and leave the view wherever it
@@ -499,7 +511,7 @@ export default function PlayerScreen() {
         // actually caught up.
         if (activeLine < 0) {
             if (lyricsManualScroll) return;
-            lyricsScrollRef.current?.scrollTo({ y: 0, animated: true });
+            lyricsScrollRef.current?.scrollTo({ y: 0, animated: !justOpened });
             return;
         }
         if (lyricsManualScroll) return;
@@ -514,7 +526,7 @@ export default function PlayerScreen() {
         // instead means the used/empty space splits evenly top and bottom —
         // matching how the cover fills that box symmetrically, which is the
         // actual ask ("symmetrical around the song cover").
-        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: true });
+        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: !justOpened });
     }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
