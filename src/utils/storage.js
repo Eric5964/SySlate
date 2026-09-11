@@ -7,7 +7,9 @@ export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:
 export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v === 'true'), false);
 export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
 export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('crossfade_duration').then(v => v !== null ? parseFloat(v) : 4), 4);
-export const setCrossfadeDuration = (v) => safe(() => AsyncStorage.setItem('crossfade_duration', String(v)), null);
+// setCrossfadeDuration (the writer) was removed — nothing writes the old
+// combined key anymore now that Skip/EndOfTrack are separate below; the
+// getter stays only as their one-time migration fallback.
 // Split from the single Crossfade Duration above to match Audio Ramp's
 // granularity (On Skip / End of Track each get their own duration — see
 // AudioEngine.swift's advance() comment for why there's no "On Play" one

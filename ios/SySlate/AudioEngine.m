@@ -3,29 +3,6 @@
 
 @interface RCT_EXTERN_MODULE(AudioEngine, RCTEventEmitter)
 
-// Real concurrency bug found here: without this, RN dispatches every
-// bridge-invoked method below (pause, play, skip, seek, all the setters)
-// on a private BACKGROUND queue by default — while nearly everything else
-// this module does (the progress timer, the crossfade fade timer, the
-// crossfade lead-in timer, all scheduled via RunLoop.main) runs on the
-// MAIN thread. Both sides read/write the same state (`state`,
-// `currentIndex`, MPNowPlayingInfoCenter's nowPlayingInfo) with no
-// synchronization between them. Concretely: pause() landing on the
-// background queue right as the main-thread progress timer's periodic
-// updateNowPlayingInfo() push (added this round) is mid-flight can let the
-// timer's stale "still playing" write land AFTER pause()'s correct "now
-// paused" write — Control Center then shows the song as still playing
-// when it isn't. Matches "Control Center pause/play is quite bugged... it
-// thinks the songs are still playing once paused after ramping out"
-// exactly, including "only sometimes" (a timing-dependent race, not a
-// deterministic bug). Forcing every bridge call onto the main queue puts
-// it on the SAME serial queue as every Timer callback already in this
-// file, so they can no longer interleave mid-mutation.
-+ (BOOL)requiresMainQueueSetup
-{
-    return YES;
-}
-
 RCT_EXTERN_METHOD(setupPlayer:(NSDictionary *)options
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
