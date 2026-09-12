@@ -181,7 +181,13 @@ export default function SettingsScreen() {
     const swatchRows = [themeEntries.slice(0, 5), themeEntries.slice(5, 10)];
     // 'light' has its own dedicated toggle below rather than sitting in this
     // grid alongside the ten dark bases — one clear way to reach it, not two.
-    const baseEntries = Object.entries(BASE_COLORS).filter(([id]) => id !== 'light');
+    // Was `id !== 'light'` — that excluded the old single generic light
+    // theme from this grid (this picks the DARK base only; light mode is a
+    // separate toggle elsewhere). Now that light mode has one pastel
+    // variant per hue (light_pink, light_purple, etc.) instead of one
+    // generic entry, all ten needed excluding the same way or they'd leak
+    // into this grid as 10 extra, redundant-looking swatches.
+    const baseEntries = Object.entries(BASE_COLORS).filter(([id]) => !id.startsWith('light_'));
 
     const renderSwatch = ([id, t]) => (
         <TouchableOpacity key={id} onPress={() => setTheme(id)}

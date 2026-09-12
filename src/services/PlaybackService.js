@@ -12,6 +12,12 @@ let fadeCounter = 0;
 let activeFadeId = null;
 let naturalEndFadeOwner = null;
 let skipLock = false;
+// Timestamp + expected duration for whatever skip transition currently
+// holds skipLock — lets a SECOND skip tap that lands during it tell "we're
+// barely into this transition" from "this transition is basically already
+// on the next song" (see skipWithRamp's halfway-aware handling below).
+let skipLockStartedAt = 0;
+let skipLockExpectedDurationMs = 0;
 let rampLock = false;
 // True only for the duration of the natural end-of-track ramp's fade-IN half (the
 // new/repeated track ramping 0->1 after the old one finished fading out) —
@@ -92,9 +98,21 @@ async function fadeVol(from, to, sec, ownerId) {
     const start = Date.now();
     for (let i = 1; i <= STEPS; i++) {
         if (!isFadeOwner(ownerId)) return;
-        AudioEngine.setVolume(Math.max(0, Math.min(1, from + (to - from) * (i / STEPS)))).catch(() => { });
+        const t = i / STEPS;
+        // Requested: smoother, sin-wave ramping instead of a linear ramp.
+        // Raised-cosine ("S-curve") easing — eases in and out of the fade
+        // instead of moving at a constant rate the whole way. A straight
+        // linear ramp sounds uneven because loudness perception is roughly
+        // logarithmic, not linear: the same-sized volume STEP reads as a
+        // bigger jump near the quiet end than near the loud end, so a
+        // linear fade-out in particular can sound like it "lands" abruptly
+        // at the end. This eases both ends of the ramp gently and moves
+        // fastest through the middle, which reads as smoother without
+        // needing full dB-based volume math.
+        const eased = (1 - Math.cos(t * Math.PI)) / 2;
+        AudioEngine.setVolume(Math.max(0, Math.min(1, from + (to - from) * eased))).catch(() => { });
         if (i < STEPS) {
-            const targetElapsed = totalMs * (i / STEPS);
+            const targetElapsed = totalMs * t;
             const wait = Math.max(0, targetElapsed - (Date.now() - start));
             await sleep(wait);
         }
@@ -102,16 +120,39 @@ async function fadeVol(from, to, sec, ownerId) {
 }
 
 async function waitForPlaying(timeoutMs = 4000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        try {
-            const state = await AudioEngine.getState();
-            if (state === State.Playing) return true;
-            if (state === State.Paused || state === State.Stopped) return false;
-        } catch { return false; }
-        await sleep(40);
-    }
-    return false;
+    // Real improvement here: this used to poll getState() every 40ms —
+    // each poll is its own bridge round-trip, so detection could lag up to
+    // ~40ms+ behind the actual moment state flips, on top of round-trip
+    // latency itself, on every single poll. setState(.playing) already
+    // fires a PlaybackState event the INSTANT it happens natively (see
+    // AudioEngine.swift's setState) — listening for it directly is both
+    // faster and exact instead of guessing based on a polling interval.
+    // Given how persistent the ramp-in-doesn't-happen reports have been
+    // even after widening timeouts/margins, tightening the actual
+    // detection mechanism seemed more likely to help than yet another
+    // bigger number.
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            sub.remove();
+            clearTimeout(timer);
+            resolve(result);
+        };
+        // Covers the race where state already settled and its event
+        // already fired BEFORE this listener got attached — startAction()
+        // above is awaited, so there's a real window for that.
+        AudioEngine.getState().then((state) => {
+            if (state === State.Playing) finish(true);
+            else if (state === State.Paused || state === State.Stopped) finish(false);
+        }).catch(() => { });
+        const sub = AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => {
+            if (state === State.Playing) finish(true);
+            else if (state === State.Paused || state === State.Stopped) finish(false);
+        });
+        const timer = setTimeout(() => finish(false), timeoutMs);
+    });
 }
 
 // --- End-of-track ramp watcher -----------------------------------
@@ -487,30 +528,60 @@ export async function skipWithRamp(direction = 'next') {
     // that transition clears, just not this one specific case.
     if (isTransitionLocked()) {
         if (naturalEndFadeOwner !== null && isFadeOwner(naturalEndFadeOwner)) return;
-        // A second skip tap landing while the FIRST skip's own fade is
-        // still running used to queue here and re-fire once that fade
-        // cleared — landing on a SECOND song. "Tapping skip twice doesn't
-        // skip the next song" (i.e. shouldn't skip past it) — drop it
-        // instead, same as the natural-end-fade case above: the first skip
-        // already represents the user's most recent "go to the next song"
-        // intent, a rapid double-tap on the same button isn't a request
-        // for two. Other locks (a pause/play ramp, some other fade) still
-        // queue as before — those are a different, genuinely separate
-        // intent from the skip itself.
-        if (skipLock) return;
+        // Refined per direct feedback: dropping every second tap
+        // unconditionally was too broad. "Not entirely — hitting skip
+        // while the 2nd (ramped/crossfaded into) song is playing more than
+        // the outgoing one (over halfway through the transition), or a
+        // fresh ramp-in is just starting, should let the current fade
+        // finish, then fade OUT to start the skip. Never cut instant."
+        // So: barely into the transition (well under halfway) → the first
+        // skip still represents the freshest intent, drop the second tap.
+        // Past halfway (or the transition is itself a ramp-in, which by
+        // definition means we're already committed to the incoming track)
+        // → honor it, but defer until the current one settles rather than
+        // interrupting it, and let it run through its OWN normal
+        // fade-out/skip/fade-in — never an instant cut.
+        if (skipLock) {
+            const elapsed = Date.now() - skipLockStartedAt;
+            const pastHalfway = rampInActive || (skipLockExpectedDurationMs > 0 && elapsed >= skipLockExpectedDurationMs / 2);
+            if (!pastHalfway) return;
+            queueAction(() => skipWithRamp(direction));
+            return;
+        }
         queueAction(() => skipWithRamp(direction));
         return;
     }
     skipLock = true;
+    skipLockStartedAt = Date.now();
+    skipLockExpectedDurationMs = 0; // set below once the actual duration for this specific transition is known
     try {
         if (direction === 'next') {
             // Manual skip — this one specifically needs the On Skip
             // duration (same bug/fix as checkRampWindow's End of Track
             // one above — was reading the now-stale combined
             // getCrossfadeDuration() here too).
-            const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDurationSkip()) > 0.05;
+            const crossfadeDur = await getCrossfadeDurationSkip();
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
             if (crossfading) {
+                skipLockExpectedDurationMs = crossfadeDur * 1000;
                 try { await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
+                // Real bug found here: AudioEngine.skipToNext()'s promise
+                // resolves almost instantly (see AudioEngine.swift's
+                // skipToNext — resolve(nil) fires right after KICKING OFF
+                // the skip, not once the crossfade animation itself
+                // finishes several seconds later). skipLock used to
+                // release right after that resolve (via the shared
+                // `finally` below, ~80ms later) — meaning the whole
+                // "protect against a second tap during a fade" mechanism
+                // above didn't apply to crossfade skips for anything past
+                // that first ~100ms. A second tap landing any time during
+                // the REAL multi-second crossfade fired a completely
+                // unprotected second skip, cutting the first crossfade
+                // short — exactly "it glitches & just cuts off the fade
+                // early, then skips." Holding the lock here for the
+                // crossfade's actual configured duration is what makes the
+                // halfway-aware logic above actually apply to this case.
+                await sleep(crossfadeDur * 1000);
                 return;
             }
         }
@@ -550,6 +621,10 @@ export async function skipWithRamp(direction = 'next') {
 
         const id = claimFade();
         const dur = await getSkipRamp();
+        // For the plain (non-crossfade) skip fade-out phase — the
+        // crossfade branch above sets its own expected duration and
+        // returns before ever reaching here.
+        skipLockExpectedDurationMs = dur * 1000;
         try { await AudioEngine.setVolume(1); } catch { }
         if (dur > 0.05) {
             skipFadeOutActive = true;

@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import AudioToolbox
 import MediaPlayer
+import UIKit
 
 // MARK: - Track model
 //
@@ -168,6 +169,12 @@ class AudioEngine: RCTEventEmitter {
     private var crossfadeIncomingTrack: Track?
     private var crossfadeIncomingIndex: Int?
     private var crossfadeTargetVolume: Float = 1
+    // Raw gain correction alone (crossfadeTargetVolume above is volume ×
+    // this, already multiplied together) — settleCrossfadeToIncoming needs
+    // the unmultiplied value to correctly set currentGainCorrection for
+    // whatever setVolume() calls come after a pause/seek interrupts a
+    // crossfade partway through.
+    private var crossfadeIncomingGainCorrection: Float = 1.0
 
     // Guards the specific race RNTP's own completion callback used to hit:
     // scheduleFile's completion handler firing after we've already moved
@@ -195,6 +202,23 @@ class AudioEngine: RCTEventEmitter {
     // apply trim at all currently). Needed to report an accurate duration —
     // see loadAndScheduleCurrentTrack's comment on the bug this fixes.
     private var currentTrailingCutSeconds: Double = 0
+    // Real bug found here — this is THE reason Match Volume Between Songs
+    // doesn't actually work: gainCorrection (the per-track loudness
+    // correction from analyzeFile) was only ever a local variable, applied
+    // ONCE at the exact moment a track loads (activeNode.volume = volume *
+    // gainCorrection in finishLoadingTrack/runCrossfade) and never stored
+    // anywhere afterward. setVolume() below — called constantly by every
+    // ramp step, every fade, every "just snap to full volume" fallback
+    // throughout PlaybackService.js — set activeNode.volume = volume
+    // directly, with NO gain correction applied at all. In practice that
+    // means the correction only survived until the very next setVolume()
+    // call, which for a track played with ANY ramping happens almost
+    // immediately — so it was being computed correctly and then
+    // overwritten right back out, for nearly every real play. Stored here
+    // now so setVolume() (and anything else touching volume) can keep
+    // applying it consistently instead of just at the one instant a track
+    // loads.
+    private var currentGainCorrection: Float = 1.0
     // Frozen position snapshot for display while paused — separate from
     // segmentStartOffsetSeconds, see pauseInternal below for why conflating
     // the two caused a real "jumps forward" bug on resume.
@@ -289,6 +313,44 @@ class AudioEngine: RCTEventEmitter {
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+        // Requested: ramp out briefly (not an instant cut) specifically when
+        // the app is force-quit from the app switcher — background play via
+        // the "audio" background mode is untouched, this only fires on
+        // actual termination. willTerminateNotification only fires at all
+        // for a running-in-background app (which this is, while playing
+        // audio) being user-killed from the switcher — a suspended or
+        // already-purged app gets no notification whatsoever, nothing to
+        // hook for that case.
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate), name: UIApplication.willTerminateNotification, object: nil)
+    }
+
+    // MARK: - App termination
+
+    @objc private func handleAppWillTerminate() {
+        guard state == .playing else { return }
+        // No guaranteed continuation past this notification — the process
+        // can be killed shortly after it returns, so this can't be the
+        // usual async Timer-driven fade (those might just never get to run
+        // at all). beginBackgroundTask asks for a little extra time
+        // specifically to finish something short like this; the blocking
+        // loop below is the actual fade, deliberately synchronous so it
+        // provably completes (or the requested ~1s elapses) before this
+        // function returns and the app is allowed to actually die.
+        var bgTask = UIBackgroundTaskIdentifier.invalid
+        bgTask = UIApplication.shared.beginBackgroundTask {
+            UIApplication.shared.endBackgroundTask(bgTask)
+        }
+        let startVolume = activeNode.volume
+        let duration = 1.0
+        let steps = 10
+        for i in 1...steps {
+            Thread.sleep(forTimeInterval: duration / Double(steps))
+            activeNode.volume = startVolume * Float(1 - Double(i) / Double(steps))
+        }
+        activeNode.pause()
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+        }
     }
 
     // MARK: - Session
@@ -457,9 +519,29 @@ class AudioEngine: RCTEventEmitter {
         return UIImage(contentsOfFile: artworkPath.replacingOccurrences(of: "file://", with: ""))
     }
 
+    // Real regression found here, introduced by THIS round's own earlier
+    // fix (the periodic updateNowPlayingInfo() push, throttled to ~once a
+    // second): this used to only build a fresh MPMediaItemArtwork on a rare
+    // state transition. Now that it runs roughly every second while
+    // playing, it was re-reading the artwork file from disk and handing
+    // iOS a BRAND NEW MPMediaItemArtwork object every single time, even
+    // though the actual artwork hadn't changed. Control Center/lock screen
+    // artwork rendering doesn't handle that kind of constant churn well —
+    // it doesn't reliably keep up when the artwork instance changes every
+    // tick, which reads exactly as "song covers do not work outside the
+    // app now" (a regression, not something intermittent — it lines up
+    // with when the periodic push was added). Cached below, keyed by the
+    // artwork path — only reloads from disk and rebuilds the
+    // MPMediaItemArtwork when the path actually changes (a real track
+    // change), not on every elapsed-time tick.
+    private var cachedArtworkPath: String?
+    private var cachedArtwork: MPMediaItemArtwork?
+
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            cachedArtworkPath = nil
+            cachedArtwork = nil
             return
         }
         let track = queue[idx]
@@ -473,8 +555,19 @@ class AudioEngine: RCTEventEmitter {
         if let duration = track.duration {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
-        if let artworkPath = track.artwork, let image = loadArtworkImage(artworkPath) {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        if let artworkPath = track.artwork {
+            if artworkPath != cachedArtworkPath {
+                cachedArtwork = loadArtworkImage(artworkPath).map { image in
+                    MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                }
+                cachedArtworkPath = artworkPath
+            }
+            if let artwork = cachedArtwork {
+                info[MPMediaItemPropertyArtwork] = artwork
+            }
+        } else {
+            cachedArtworkPath = nil
+            cachedArtwork = nil
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
@@ -678,6 +771,13 @@ class AudioEngine: RCTEventEmitter {
             }
             segmentStartOffsetSeconds = effectiveStartAtSeconds
             currentTrailingCutSeconds = trailingCutSeconds
+            // Stored so setVolume() keeps applying this correction on every
+            // subsequent call, not just the activeNode.volume line below —
+            // see currentGainCorrection's declaration for the full bug this
+            // fixes. gainCorrection is 1.0 (no-op) whenever normalization
+            // is off or analysis wasn't run, so this is always safe to set
+            // unconditionally here.
+            currentGainCorrection = gainCorrection
 
             activeNode.stop()
 
@@ -988,6 +1088,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingTrack = track
         crossfadeIncomingIndex = idx
         crossfadeTargetVolume = targetVolume
+        crossfadeIncomingGainCorrection = gainCorrection
 
         // Coarse timer-driven fade controlling both nodes in lockstep —
         // done natively rather than via the usual JS setVolume() calls
@@ -998,8 +1099,20 @@ class AudioEngine: RCTEventEmitter {
             guard let self = self, token == self.playbackToken else { timer.invalidate(); return }
             currentStep += 1
             let t = Float(currentStep) / Float(steps)
-            outgoingNode.volume = outgoingVolumeStart * (1 - t)
-            incomingNode.volume = targetVolume * t
+            // Requested: smoother, sin-wave crossfade instead of linear.
+            // Equal-power curve — outgoing follows cos(t·π/2), incoming
+            // follows sin(t·π/2). A linear crossfade (outgoing: 1−t,
+            // incoming: t) has a real, audible loudness DIP around the
+            // midpoint: perceived loudness tracks roughly with power
+            // (amplitude²), and 0.5² + 0.5² = 0.5 — about a 3dB dip right
+            // where both tracks are audible together. sin²+cos² = 1
+            // always, so the combined perceived loudness stays constant
+            // through the whole crossfade instead of sagging in the
+            // middle — the standard "equal-power" curve used for this
+            // exact reason.
+            let angle = t * .pi / 2
+            outgoingNode.volume = outgoingVolumeStart * cos(angle)
+            incomingNode.volume = targetVolume * sin(angle)
 
             // Requested: the title/art should switch partway through the
             // crossfade, not only once it's fully done. currentIndex is
@@ -1030,6 +1143,12 @@ class AudioEngine: RCTEventEmitter {
                 self.currentFile = file
                 self.currentFileSampleRate = sampleRate
                 self.segmentStartOffsetSeconds = 0
+                // Same fix as setVolume()/finishLoadingTrack — keeps the
+                // INCOMING track's own gain correction in effect for
+                // whatever setVolume() calls come after the crossfade
+                // finishes, instead of leaving whatever the outgoing
+                // track's correction happened to be.
+                self.currentGainCorrection = gainCorrection
                 // Crossfade never applies silence trim (schedules the full
                 // file from frame 0 — see this function's scheduleSegment
                 // call above) — reset explicitly rather than leaving
@@ -1247,6 +1366,11 @@ class AudioEngine: RCTEventEmitter {
 
         activeNode = incomingNode
         isCrossfading = false
+        // Same fix as runCrossfade's own handoff — keeps the INCOMING
+        // track's gain correction in effect for setVolume() calls after
+        // this (a pause or seek interrupting the crossfade), instead of
+        // leaving whatever the outgoing track's correction was.
+        currentGainCorrection = crossfadeIncomingGainCorrection
         currentFile = file
         currentFileSampleRate = crossfadeIncomingSampleRate
         segmentStartOffsetSeconds = 0
@@ -1563,7 +1687,13 @@ class AudioEngine: RCTEventEmitter {
     @objc(setVolume:resolver:rejecter:)
     func setVolume(_ vol: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         volume = vol.floatValue
-        activeNode.volume = volume
+        // Was `activeNode.volume = volume` — see currentGainCorrection's
+        // comment for why that silently discarded Match Volume Between
+        // Songs' correction on every single call. `volume` itself stays
+        // the plain 0–1 value JS's ramp math expects (getVolume() below is
+        // unchanged) — the correction is applied on top only when actually
+        // writing to the audio engine.
+        activeNode.volume = volume * currentGainCorrection
         resolve(nil)
     }
 

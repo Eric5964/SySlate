@@ -61,13 +61,32 @@ export const BASE_COLORS = {
     // to tell apart before, and briefly during a first pass at this fix.
     dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
     black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    // The new light mode. One clean variant, not ten — a toggle, not a
-    // whole second grid of per-accent bases to maintain (accent colors
-    // stay exactly as they are; all ten already read fine on a light
-    // surface without adjustment, being fully saturated rather than
-    // near-black). #f7f7f8 instead of pure #fff so surface/border still
-    // read as distinct steps rather than flat white-on-white.
-    light: { name: 'Light', bg: '#f7f7f8', surface: '#ffffff', border: '#e2e2e5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    // Requested: light mode should have a base color PER dark base — "just
+    // replace the dark mode colors when light mode is on, match the colors
+    // but have them light/pastel" — not one single generic light theme
+    // regardless of which dark base was active. Each light_X below is the
+    // corresponding dark_X's hue carried through: same hue angle, pushed to
+    // a very high lightness with modest saturation (a proper pastel, not
+    // just "the dark color but inverted") — border is where the tint reads
+    // most clearly, bg/surface stay closer to white so text contrast holds.
+    // text/textDim/textFaint reuse the same values across all ten — those
+    // were already tuned for contrast against a light/white surface
+    // specifically, and that doesn't change with which pastel hue sits
+    // under it.
+    light_pink: { name: 'Pink', bg: '#f8f4f6', surface: '#fdfcfc', border: '#ebe0e6', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_purple: { name: 'Purple', bg: '#f5f4f8', surface: '#fcfcfd', border: '#e2dfec', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_blue: { name: 'Blue', bg: '#f4f5f8', surface: '#fcfcfd', border: '#dee3ed', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_teal: { name: 'Teal', bg: '#f3f8f9', surface: '#fcfdfd', border: '#ddecee', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_green: { name: 'Green', bg: '#f4f8f6', surface: '#fcfdfc', border: '#e0ebe5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_yellow: { name: 'Yellow', bg: '#f9f8f3', surface: '#fdfdfc', border: '#eeebdd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_orange: { name: 'Orange', bg: '#f9f6f3', surface: '#fdfcfc', border: '#eee4dd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_red: { name: 'Red', bg: '#f9f3f3', surface: '#fdfcfc', border: '#eedddd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_rose: { name: 'Crimson', bg: '#f8f4f5', surface: '#fdfcfc', border: '#eddee1', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    // black has no real "hue" to carry through — this is the neutral pastel
+    // (was the old single generic `light` entry, kept as-is and renamed to
+    // fit the light_X pattern; see the migration in the useEffect below for
+    // installs that still have the literal 'light' stored).
+    light_black: { name: 'Light', bg: '#f7f7f8', surface: '#ffffff', border: '#e2e2e5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
 };
 
 // Whether a given base id is the light one — screens that need to invert
@@ -109,15 +128,28 @@ export function ThemeProvider({ children }) {
             }),
             AsyncStorage.getItem('base_color_id').then(id => {
                 if (id && BASE_COLORS[id]) { setBaseId(id); return; }
-                // Old chains that used to land on light_purple now go straight
-                // to dark_purple instead, since light_purple no longer exists
-                // (base colors expanded to match the 10 accent colors — kept
-                // only black and dark_purple from the old 4, dropped
-                // light_purple and slate). Direct light_purple/slate selections
-                // migrate the same way for the same reason.
+                // Old chains that used to land on the legacy light_purple
+                // (a completely different, now-removed light-gray-ish theme
+                // from several rounds back) used to migrate to dark_purple.
+                // That entry is gone now — light_purple is a real, valid
+                // BASE_COLORS key again (the new pastel purple below, paired
+                // with dark_purple), so it's caught by the check above and
+                // never reaches this migration map at all. Genuinely fine as
+                // an outcome (a stored "light_purple" landing on an actual
+                // light purple theme fits the name better than the old
+                // migration target ever did) — noted here so it's not
+                // mistaken for a bug if that old migration line looks like
+                // it's missing.
+                //
+                // 'light' (the old single generic light theme, before it was
+                // split into one pastel per hue below) migrates to
+                // light_black specifically — that neutral entry IS the old
+                // 'light' theme's exact colors, just renamed to fit the
+                // light_X-per-hue pattern.
                 const migrate = {
                     light_gray: 'dark_purple', galaxy: 'dark_purple', gray: 'dark_purple', dark_gray: 'black',
-                    light_purple: 'dark_purple', slate: 'black',
+                    slate: 'black',
+                    light: 'light_black',
                 };
                 if (id && migrate[id]) setBaseId(migrate[id]);
             }),
@@ -131,13 +163,23 @@ export function ThemeProvider({ children }) {
     // Simple toggle rather than making the user pick "Light" out of the
     // same grid as the ten dark bases — remembers whichever dark base was
     // active before switching to Light, so flipping back doesn't lose it.
+    //
+    // Real gap found here: this used to switch straight to the single
+    // literal 'light' base regardless of which dark hue was active —
+    // exactly "there are still no light mode base colors, just replace the
+    // dark mode colors when light mode is on, match the colors but have
+    // them light/pastel." Now derives the matching light_X for whichever
+    // dark_X (or black) was active, so the hue actually carries through
+    // instead of always landing on the same neutral light theme.
     const toggleLightMode = async () => {
-        if (baseId === 'light') {
+        if (baseId?.startsWith('light_')) {
             const prev = (await AsyncStorage.getItem('base_color_id_pre_light')) || 'black';
             await setBase(BASE_COLORS[prev] ? prev : 'black');
         } else {
             await AsyncStorage.setItem('base_color_id_pre_light', baseId);
-            await setBase('light');
+            const hue = baseId === 'black' ? 'black' : baseId.replace(/^dark_/, '');
+            const lightId = `light_${hue}`;
+            await setBase(BASE_COLORS[lightId] ? lightId : 'light_black');
         }
     };
 
@@ -145,7 +187,7 @@ export function ThemeProvider({ children }) {
         <ThemeContext.Provider value={{
             theme: THEMES[themeId], themeId, setTheme,
             base: BASE_COLORS[baseId], baseId, setBase,
-            isLight: baseId === 'light', toggleLightMode,
+            isLight: !!baseId?.startsWith('light_'), toggleLightMode,
             ready,
         }}>
             {children}

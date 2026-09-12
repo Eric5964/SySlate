@@ -337,7 +337,14 @@ export const getPlayCounts = async (songs) => {
 };
 
 export const exportAllSettings = async () => {
-    const keys = ['theme_id', 'base_color_id', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri'];
+    // crossfade_duration_eot and crossfade_duration_skip (the split-out End
+    // of Track / On Skip crossfade durations) were missing from this list —
+    // added. base_color_id_pre_light (which dark base to restore when
+    // toggling light mode back off) was missing too — added. hide_player_cover
+    // intentionally left out — it's a one-time migration source for
+    // show_player_cover (see its comment in this file), nothing actively
+    // writes it anymore. last_session — confirmed include it — added below.
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
