@@ -1747,7 +1747,6 @@ class AudioEngine: RCTEventEmitter {
         resolve(volume)
     }
 
-    @objc(getProgress:rejecter:)
     // Shared by getProgress and the progress timer — see
     // crossfadeAnnouncedIncoming's declaration and currentPositionSeconds's
     // matching branch for the sync bug this closes: duration needs to
@@ -1765,6 +1764,13 @@ class AudioEngine: RCTEventEmitter {
             ?? (currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0)
     }
 
+    // Build was broken: this @objc attribute previously sat above
+    // currentDurationSeconds() instead of here — Swift attaches an
+    // attribute to whatever declaration immediately follows it, so it had
+    // silently bound to a 0-parameter private helper instead of this
+    // method, and getProgress itself had no @objc at all. Moved to the
+    // right declaration.
+    @objc(getProgress:rejecter:)
     func getProgress(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let position = currentPositionSeconds()
         // Was `queue[currentIndex].duration` — but currentIndex is bumped
