@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { Image } from 'react-native';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Image, AppState } from 'react-native';
 import AudioEngine from '../native/AudioEngine';
 import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
@@ -74,6 +74,13 @@ export function PreferencesProvider({ children }) {
     const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
     const [silenceTrim, setSilenceTrimState] = useState(false);
 
+    // Kept in sync so the AppState listener below (set up once, in the
+    // mount-only effect right after this) always re-prefetches whatever
+    // URI is CURRENT, not whatever it was at the moment that effect first
+    // ran.
+    const backgroundImageUriRef = useRef(backgroundImageUri);
+    useEffect(() => { backgroundImageUriRef.current = backgroundImageUri; }, [backgroundImageUri]);
+
     useEffect(() => {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
@@ -99,6 +106,22 @@ export function PreferencesProvider({ children }) {
             setBackgroundImageUriState(uri);
             if (uri) Image.prefetch(uri).catch(() => { });
         });
+        // Real gap found here: this cold-start prefetch only ever ran
+        // once, at launch. "The background image should be in permanent
+        // cache until replaced... right now it seems to be reset based on
+        // time" — that's consistent with the underlying native image
+        // cache getting evicted under memory pressure or after the app's
+        // been backgrounded a while (normal iOS behavior, not something a
+        // one-time prefetch at launch can prevent on its own). Re-warming
+        // it every time the app comes back to the foreground means any
+        // eviction that happened while backgrounded gets fixed BEFORE the
+        // next screen mount, instead of showing the flash and only then
+        // reloading.
+        const appStateSub = AppState.addEventListener('change', (next) => {
+            if (next === 'active' && backgroundImageUriRef.current) {
+                Image.prefetch(backgroundImageUriRef.current).catch(() => { });
+            }
+        });
         // These also need to reach the native engine on cold start, not
         // just local state — App.js's own setup effect races this one, so
         // it also independently pushes these same values to native once it
@@ -114,7 +137,9 @@ export function PreferencesProvider({ children }) {
         getWithinTrackNorm().then((v) => { setWithinTrackNormState(v); AudioEngine.setWithinTrackNormEnabled(v).catch(() => { }); });
         getBetweenTrackNorm().then((v) => { setBetweenTrackNormState(v); AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { }); });
         getSilenceTrim().then((v) => { setSilenceTrimState(v); AudioEngine.setSilenceTrimEnabled(v).catch(() => { }); });
+        return () => appStateSub.remove();
     }, []);
+
 
     // Updates local state immediately (every consumer re-renders right
     // away) and persists in the background — the persist doesn't need to

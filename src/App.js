@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
-import { View, Text, Dimensions, Image } from 'react-native';
+import { View, Text, Dimensions, Image, AppState } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -139,20 +139,44 @@ function AppInner() {
         }
     }, [backgroundImageEnabled, backgroundImageUri]);
 
+    // Extracted out of reload() so it can also run on its own on app
+    // resume below — reload() does a full library rescan too, which isn't
+    // needed (and isn't cheap) just to refresh an image cache. Same
+    // reasoning as PreferencesContext's background-image resume prefetch:
+    // "playlist covers... flash a color before loading" — the underlying
+    // native image cache isn't necessarily still warm after the app's been
+    // backgrounded a while, and this had previously only ever run once, at
+    // whatever moment reload() happened to be called.
+    const prefetchPlaylistCovers = async () => {
+        try {
+            const covers = await getPlaylistCovers();
+            await Promise.all(
+                Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
+            );
+        } catch { }
+    };
+
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (next) => {
+            if (next === 'active') {
+                prefetchPlaylistCovers();
+                if (backgroundImageEnabled && backgroundImageUri) {
+                    Image.prefetch(backgroundImageUri).catch(() => { });
+                }
+            }
+        });
+        return () => sub.remove();
+    }, [backgroundImageEnabled, backgroundImageUri]);
+
     const reload = async () => {
         try {
             const lib = await scanLibrary();
             setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null });
-            try {
-                const covers = await getPlaylistCovers();
-                // Actually WAIT for these instead of firing-and-forgetting —
-                // the whole point is the UI doesn't render until images are
-                // already in RN's cache, otherwise this preload step does
-                // nothing to prevent the first-render flash it's meant to fix.
-                await Promise.all(
-                    Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
-                );
-            } catch { }
+            // Actually WAIT for these instead of firing-and-forgetting —
+            // the whole point is the UI doesn't render until images are
+            // already in RN's cache, otherwise this preload step does
+            // nothing to prevent the first-render flash it's meant to fix.
+            await prefetchPlaylistCovers();
         } catch (e) { console.error('reload:', e); }
     };
 

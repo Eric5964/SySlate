@@ -948,7 +948,20 @@ const s = StyleSheet.create({
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
     lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '700', textAlign: 'center', marginVertical: 7 },
-    lyricLineActive: { fontSize: 26, lineHeight: 36, fontWeight: '900' },
+    // Two fixes here per direct feedback:
+    // 1. "too bolded, just a normal bold ideally, noticeable but not over
+    //    the top" — was 900/26 (bigger jump, bigger size too). Dialed back
+    //    to 800, same 24 size as idle lines.
+    // 2. "bolding changes line wrap, words wrap differently than they were
+    //    supposed to" — a heavier weight has wider glyphs, so switching a
+    //    line's weight can genuinely shift where it wraps. Dropping the
+    //    fontSize bump removes HALF of what was changing width (size and
+    //    weight were compounding); keeping some weight difference from
+    //    idle's 700 still risks a SMALLER version of the same reflow —
+    //    700→800 is a much smaller jump than 700→900 was, but if lines
+    //    still visibly reflow, the next step would be dropping the weight
+    //    difference entirely and using color/glow alone for emphasis.
+    lyricLineActive: { fontWeight: '800' },
     trackInfoGroup: {},
     info: { paddingHorizontal: 28, marginBottom: 10, flexDirection: 'row', alignItems: 'flex-start' },
     playCount: { color: '#444', fontSize: 13, fontWeight: '600', marginLeft: 10, marginTop: 2 },

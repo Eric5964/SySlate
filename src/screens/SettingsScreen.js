@@ -316,21 +316,28 @@ export default function SettingsScreen() {
                                 cover" / "lasts too long" was a real 10-second
                                 overlap, not only the mid-crossfade
                                 announcement being late. */}
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={6} step={0.5} value={crossfadeDurationEotLocal}
+                            {/* minimumValue was 1 — inconsistent with Ramp's
+                                sliders (which all start at 0) and with what
+                                the underlying value actually supports: 0 is a
+                                valid, meaningful "off" here, same as Ramp's 0
+                                (native/storage already floor at 0, not 1 —
+                                this was purely a UI-imposed floor). */}
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={crossfadeDurationEotLocal}
                                 onValueChange={setCrossfadeDurationEotLocal}
                                 onSlidingComplete={v => { setCrossfadeDurationEotLocal(v); setCrossfadeDurationEndOfTrack(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>6s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — On Skip</Text>
                             <Text style={s.sliderNote}>Overlaps into the next track on a manual skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
-                            {/* Max lowered 10→3, matching Ramp's On Skip cap. */}
-                            <PureSlider style={s.slider} minimumValue={1} maximumValue={3} step={0.5} value={crossfadeDurationLocal}
+                            {/* Max lowered 10→3, matching Ramp's On Skip cap.
+                                minimumValue same fix as above — 0 instead of 1. */}
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={crossfadeDurationLocal}
                                 onValueChange={setCrossfadeDurationLocal}
                                 onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>1s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
                         </>
                     ) : (
                         <>

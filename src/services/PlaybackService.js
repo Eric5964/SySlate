@@ -612,10 +612,30 @@ export async function skipWithRamp(direction = 'next') {
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
 
         if (!wasPlaying) {
-            try {
-                await withTimeout(doNativeSkip(), 5000);
-            } catch { return; }
-            await playWithRamp();
+            // Real bug found here: this called doNativeSkip() directly, then
+            // playWithRamp() as a completely separate step afterward — unlike
+            // every OTHER fresh-start call site (see PlaybackContext.js's
+            // song-tap/playlist-Play/Shuffle paths), which pre-claim the fade
+            // and pass their native call in AS playWithRamp's startAction, so
+            // playWithRamp's own setVolume(0) always lands BEFORE native
+            // starts playing. Two real problems from skipping that pattern
+            // here: (1) native's finishLoadingTrack sets
+            // activeNode.volume = volume * gainCorrection and autoplays
+            // immediately — `volume` is whatever was last set, which is 1
+            // right after any pause (pauseWithRamp/pauseImmediate both
+            // restore it to 1 post-pause) — so the new track started
+            // audibly at FULL volume, unramped; (2) skipLock was already
+            // true at this point (set above), so the plain playWithRamp()
+            // call immediately hit its own isTransitionLocked() guard and
+            // got queued rather than run — it only actually executed ~100ms
+            // later, in drainPending(), once skipLock cleared. Net effect:
+            // skip-while-paused briefly played the new song at full volume,
+            // then snapped to 0 and ramped up from there — not a ramp-in at
+            // all for that ~100ms+ window. Fixed by adopting the same
+            // pre-claim pattern as every other fresh-start path.
+            forceReleaseFade();
+            const preClaimedId = preClaimFadeForFreshStart();
+            await playWithRamp(preClaimedId, () => withTimeout(doNativeSkip(), 5000));
             return;
         }
 

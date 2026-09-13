@@ -168,6 +168,25 @@ class AudioEngine: RCTEventEmitter {
     private var crossfadeIncomingSampleRate: Double = 0
     private var crossfadeIncomingTrack: Track?
     private var crossfadeIncomingIndex: Int?
+    private var crossfadeIncomingNode: AVAudioPlayerNode?
+    // Real bug found here: PlaybackTrackChanged fires at the crossfade's
+    // halfway point (see runCrossfade below) so title/cover switch without
+    // waiting for the whole multi-second crossfade to finish — but
+    // position/duration (getProgress, the progress timer) deliberately kept
+    // reporting the OUTGOING track's numbers until the actual node handoff
+    // completes at the very end. That's correct in isolation (position
+    // matches whichever file is actually still playing through activeNode)
+    // but WRONG paired with the track identity JS now has from that early
+    // announcement — for the whole second half of every crossfade, JS knew
+    // "current track = the incoming song" while position/duration still
+    // described the outgoing one. Anything matching lyrics or the progress
+    // bar to "the current track" during that window was matching the wrong
+    // song's timeline. Set true right when that halfway announcement
+    // fires; currentPositionSeconds/getProgress/the progress timer check
+    // this to switch to reporting the INCOMING node's own elapsed time
+    // instead, closing the gap between what JS is told the track is and
+    // what position it's given for it.
+    private var crossfadeAnnouncedIncoming: Bool = false
     private var crossfadeTargetVolume: Float = 1
     // Raw gain correction alone (crossfadeTargetVolume above is volume ×
     // this, already multiplied together) — settleCrossfadeToIncoming needs
@@ -701,6 +720,19 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func currentPositionSeconds() -> Double {
+        // Once the halfway announcement has told JS the current track is
+        // the INCOMING one (crossfadeAnnouncedIncoming), report ITS elapsed
+        // time instead of activeNode's (still the outgoing track until the
+        // handoff completes at the end of the crossfade) — see
+        // crossfadeAnnouncedIncoming's declaration for the sync bug this
+        // fixes. The incoming node always starts at frame 0 (see
+        // runCrossfade's scheduleSegment call), so its own position is
+        // simply its elapsed render time, no segmentStartOffsetSeconds
+        // needed the way activeNode's calculation needs one below.
+        if isCrossfading, crossfadeAnnouncedIncoming, let incoming = crossfadeIncomingNode,
+           let nodeTime = incoming.lastRenderTime, let playerTime = incoming.playerTime(forNodeTime: nodeTime) {
+            return Double(playerTime.sampleTime) / crossfadeIncomingSampleRate
+        }
         guard let nodeTime = activeNode.lastRenderTime,
               let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return frozenPositionSeconds ?? segmentStartOffsetSeconds }
         return segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
@@ -960,6 +992,8 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingFile = nil
         crossfadeIncomingTrack = nil
         crossfadeIncomingIndex = nil
+        crossfadeIncomingNode = nil
+        crossfadeAnnouncedIncoming = false
         nodeA.stop()
         nodeB.stop()
         isCrossfading = false
@@ -1087,6 +1121,8 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingSampleRate = sampleRate
         crossfadeIncomingTrack = track
         crossfadeIncomingIndex = idx
+        crossfadeIncomingNode = incomingNode
+        crossfadeAnnouncedIncoming = false
         crossfadeTargetVolume = targetVolume
         crossfadeIncomingGainCorrection = gainCorrection
 
@@ -1123,13 +1159,17 @@ class AudioEngine: RCTEventEmitter {
             // nothing to react to until then. Firing it here too, at the
             // halfway point, updates JS's displayed track while leaving
             // getProgress/progressTimer alone — those deliberately keep
-            // reading the OUTGOING track's real position via currentFile
-            // (see getProgress's comment) until the handoff below actually
-            // completes, so the progress bar stays correct the whole time.
+            // reading the OUTGOING track's real position via currentFile —
+            // NO LONGER how this works, see crossfadeAnnouncedIncoming's
+            // declaration for why that was actually a bug (position/lyrics
+            // sync mismatch), fixed by flipping this flag right here so
+            // getProgress/the progress timer switch to the INCOMING node's
+            // own position from this exact moment instead.
             // JS already no-ops a same-track re-fire (currentTrackRef check
             // in PlaybackContext.js), so firing it twice here is harmless.
             if currentStep == steps / 2 {
                 self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+                self.crossfadeAnnouncedIncoming = true
             }
 
             if currentStep >= steps {
@@ -1143,6 +1183,7 @@ class AudioEngine: RCTEventEmitter {
                 self.currentFile = file
                 self.currentFileSampleRate = sampleRate
                 self.segmentStartOffsetSeconds = 0
+                self.crossfadeAnnouncedIncoming = false
                 // Same fix as setVolume()/finishLoadingTrack — keeps the
                 // INCOMING track's own gain correction in effect for
                 // whatever setVolume() calls come after the crossfade
@@ -1159,6 +1200,7 @@ class AudioEngine: RCTEventEmitter {
                 self.crossfadeIncomingFile = nil
                 self.crossfadeIncomingTrack = nil
                 self.crossfadeIncomingIndex = nil
+                self.crossfadeIncomingNode = nil
 
                 var trackWithDuration = track
                 if trackWithDuration.duration == nil {
@@ -1210,11 +1252,10 @@ class AudioEngine: RCTEventEmitter {
         progressTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] _ in
             guard let self = self, self.state == .playing else { return }
             let position = self.currentPositionSeconds()
-            // Same fix as getProgress above — derive from currentFile, not
-            // queue[currentIndex], so this can't pair mismatched track data
-            // during a crossfade's currentIndex-flips-early window either.
-            let duration = self.currentFile.map { Double($0.length) / self.currentFileSampleRate - self.currentTrailingCutSeconds }
-                ?? (self.currentIndex.flatMap { self.queue[safe: $0]?.duration } ?? 0)
+            // Now shares getProgress's currentDurationSeconds() helper —
+            // includes the crossfade-mid-announcement branch too, see its
+            // comment.
+            let duration = self.currentDurationSeconds()
             self.sendEvent(withName: "PlaybackProgressUpdated", body: [
                 "position": position,
                 "duration": duration,
@@ -1357,6 +1398,8 @@ class AudioEngine: RCTEventEmitter {
             // whatever just interrupted it (pause or seek).
             playbackToken &+= 1
             isCrossfading = false
+            crossfadeIncomingNode = nil
+            crossfadeAnnouncedIncoming = false
             return
         }
         let incomingNode = idleNode
@@ -1392,6 +1435,8 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingFile = nil
         crossfadeIncomingTrack = nil
         crossfadeIncomingIndex = nil
+        crossfadeIncomingNode = nil
+        crossfadeAnnouncedIncoming = false
     }
 
     private func stopInternal() {
@@ -1703,6 +1748,23 @@ class AudioEngine: RCTEventEmitter {
     }
 
     @objc(getProgress:rejecter:)
+    // Shared by getProgress and the progress timer — see
+    // crossfadeAnnouncedIncoming's declaration and currentPositionSeconds's
+    // matching branch for the sync bug this closes: duration needs to
+    // switch to describing the incoming track at the exact same moment
+    // position does, or the two disagree about which song they're
+    // describing for the second half of every crossfade.
+    private func currentDurationSeconds() -> Double {
+        if isCrossfading, crossfadeAnnouncedIncoming, let file = crossfadeIncomingFile {
+            // Crossfade never applies silence trim (see its scheduleSegment
+            // call) so no trailing-cut subtraction needed here, unlike the
+            // currentFile branch below.
+            return Double(file.length) / crossfadeIncomingSampleRate
+        }
+        return currentFile.map { Double($0.length) / currentFileSampleRate - currentTrailingCutSeconds }
+            ?? (currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0)
+    }
+
     func getProgress(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let position = currentPositionSeconds()
         // Was `queue[currentIndex].duration` — but currentIndex is bumped
@@ -1715,13 +1777,7 @@ class AudioEngine: RCTEventEmitter {
         // segmentStartOffsetSeconds do (see loadAndScheduleCurrentTrack and
         // runCrossfade's handoff), deriving duration from it instead keeps
         // position and duration always describing the same track.
-        //
-        // Also subtracts currentTrailingCutSeconds now — same silence-trim
-        // duration bug as loadAndScheduleCurrentTrack's cached-duration fix
-        // (see its comment), just also needed here since this computes
-        // fresh from currentFile rather than reading that cached value.
-        let duration = currentFile.map { Double($0.length) / currentFileSampleRate - currentTrailingCutSeconds }
-            ?? (currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0)
+        let duration = currentDurationSeconds()
         resolve(["position": position, "duration": duration, "buffered": duration])
     }
 
