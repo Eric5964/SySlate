@@ -774,9 +774,27 @@ class AudioEngine: RCTEventEmitter {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let file = try AVAudioFile(forReading: track.url)
+                // Real bug found here: analyzeFile used to run INSIDE
+                // finishLoadingTrack, which runs on the main thread — for
+                // a file analyzeFile hasn't cached yet (see its cache
+                // check), that's a synchronous PCM scan of real audio data
+                // (up to 20s sampled from each end for Silence Trim, 12
+                // sample points across the whole file for Match Volume)
+                // happening directly on the main thread, freezing the UI
+                // and dropping touch input for however long the scan
+                // takes. startCrossfade already does this analysis off
+                // the main thread for exactly this reason (see its own
+                // comment) — this was the one remaining place it still
+                // ran synchronously, on EVERY plain track load/skip/
+                // natural-advance when either Silence Trim or Match
+                // Volume is on, which is "the app lags and drops all
+                // inputs with audio ramping" (ramping's plain skip/advance
+                // path goes through here, not through startCrossfade).
+                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || self?.betweenTrackNormEnabled == true)
+                    ? self?.analyzeFile(file, path: track.url.path) : nil
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return } // superseded by a newer load
-                    self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, announceChange: announceChange, token: token)
+                    self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, announceChange: announceChange, token: token, precomputedAnalysis: analysis)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -788,7 +806,7 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
-    private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64) {
+    private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64, precomputedAnalysis: FileAnalysis?) {
         do {
             currentFile = file
             currentFileSampleRate = file.processingFormat.sampleRate
@@ -806,8 +824,11 @@ class AudioEngine: RCTEventEmitter {
             var effectiveStartAtSeconds = startAtSeconds
             var trailingCutSeconds: Double = 0
             var gainCorrection: Float = 1.0
-            if silenceTrimEnabled || betweenTrackNormEnabled {
-                let analysis = analyzeFile(file, path: track.url.path)
+            // Now computed by the caller, off the main thread, before this
+            // function ever runs — see loadAndScheduleCurrentTrack's
+            // comment. precomputedAnalysis is nil exactly when neither
+            // feature is on, same condition this used to check itself.
+            if let analysis = precomputedAnalysis {
                 if silenceTrimEnabled && startAtSeconds == 0 {
                     effectiveStartAtSeconds = analysis.leadInSeconds
                     trailingCutSeconds = analysis.trailingCutSeconds

@@ -83,7 +83,7 @@ export default function SettingsScreen() {
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -492,6 +492,16 @@ export default function SettingsScreen() {
                         <Switch value={showPlayerCover} onValueChange={setShowPlayerCover}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    {showPlayerCover && (
+                        <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.toggleLabel}>Cover Shadow</Text>
+                                <Text style={s.toggleSub}>Adds a drop shadow around the Player cover — matches whichever corner style above is picked</Text>
+                            </View>
+                            <Switch value={coverShadow} onValueChange={setCoverShadow}
+                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                        </View>
+                    )}
                 </Section>
 
                 {/* Splits a tag's artist field into individual artists on this

@@ -73,20 +73,28 @@ export const BASE_COLORS = {
     // were already tuned for contrast against a light/white surface
     // specifically, and that doesn't change with which pastel hue sits
     // under it.
-    light_pink: { name: 'Pink', bg: '#f8f4f6', surface: '#fdfcfc', border: '#ebe0e6', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_purple: { name: 'Purple', bg: '#f5f4f8', surface: '#fcfcfd', border: '#e2dfec', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_blue: { name: 'Blue', bg: '#f4f5f8', surface: '#fcfcfd', border: '#dee3ed', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_teal: { name: 'Teal', bg: '#f3f8f9', surface: '#fcfdfd', border: '#ddecee', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_green: { name: 'Green', bg: '#f4f8f6', surface: '#fcfdfc', border: '#e0ebe5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_yellow: { name: 'Yellow', bg: '#f9f8f3', surface: '#fdfdfc', border: '#eeebdd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_orange: { name: 'Orange', bg: '#f9f6f3', surface: '#fdfcfc', border: '#eee4dd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_red: { name: 'Red', bg: '#f9f3f3', surface: '#fdfcfc', border: '#eedddd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_rose: { name: 'Crimson', bg: '#f8f4f5', surface: '#fdfcfc', border: '#eddee1', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    // Was basically-white (#f8f4f6-ish across the board) — visibly
+    // distinct from each other in code, but at actual swatch size on
+    // screen they all read as the same near-white square with barely-
+    // visible borders, functionally indistinguishable — "basically white"
+    // / felt like nothing was actually selectable. Pushed lightness down
+    // and saturation up substantially (was L~97%/low-S pastel, now more a
+    // proper visible pastel) while keeping `text` (#161616, unchanged)
+    // comfortably high-contrast against all of them.
+    light_pink: { name: 'Pink', bg: '#fbdfe9', surface: '#fdf0f5', border: '#f0b8cd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_purple: { name: 'Purple', bg: '#e7dbf7', surface: '#f2eafb', border: '#c7a8ec', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_blue: { name: 'Blue', bg: '#dbe7fb', surface: '#eaf1fd', border: '#a9cbf5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_teal: { name: 'Teal', bg: '#d5f0f1', surface: '#e8f7f8', border: '#9fe0e3', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_green: { name: 'Green', bg: '#dcf2e1', surface: '#eaf8ed', border: '#a6e0b6', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_yellow: { name: 'Yellow', bg: '#faf0c4', surface: '#fdf8e0', border: '#ecd97e', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_orange: { name: 'Orange', bg: '#fbe2cd', surface: '#fdf0e4', border: '#f0bb8c', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_red: { name: 'Red', bg: '#fbdada', surface: '#fdeded', border: '#f0aeae', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_rose: { name: 'Crimson', bg: '#f7d9e0', surface: '#fbebee', border: '#e8a9b7', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
     // black has no real "hue" to carry through — this is the neutral pastel
     // (was the old single generic `light` entry, kept as-is and renamed to
     // fit the light_X pattern; see the migration in the useEffect below for
     // installs that still have the literal 'light' stored).
-    light_black: { name: 'Light', bg: '#f7f7f8', surface: '#ffffff', border: '#e2e2e5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_black: { name: 'Light', bg: '#e7e7ea', surface: '#f2f2f4', border: '#c7c7cd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
 };
 
 // Whether a given base id is the light one — screens that need to invert

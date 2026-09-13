@@ -210,6 +210,13 @@ export const getShowPlayerCover = () => safe(async () => {
     return true;
 }, true);
 export const setShowPlayerCover = (v) => safe(() => AsyncStorage.setItem('show_player_cover', String(v)), null);
+// New setting: a drop shadow around the player cover, off by default.
+// Works with either cover_shape (the shadow's own corner radius always
+// matches whatever squircle(...) the cover itself is using — see
+// PlayerScreen's coverShadowWrap style) and is simply never rendered when
+// show_player_cover is off, same as the cover art itself.
+export const getCoverShadow = () => safe(() => AsyncStorage.getItem('cover_shadow').then(v => v === 'true'), false);
+export const setCoverShadow = (v) => safe(() => AsyncStorage.setItem('cover_shadow', String(v)), null);
 
 // Whole-app custom background image — off by default, and the URI is only
 // meaningful once persisted locally (see persistCoverImage/the same pattern

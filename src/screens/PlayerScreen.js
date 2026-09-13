@@ -81,7 +81,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover, coverShadow } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -731,14 +731,29 @@ export default function PlayerScreen() {
                             // box's own dark background + shadow stayed visible as a
                             // flat square sitting behind the lyrics text. Fully
                             // transparent (and non-interactive) once lyrics are showing.
-                            <Animated.View
-                                style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
-                                pointerEvents={showingLyrics ? 'none' : 'auto'}
-                            >
-                                {artwork
-                                    ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                                    : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
-                                }
+                            //
+                            // New "Cover Shadow" setting: s.art itself has
+                            // overflow:'hidden' (needed to clip the artwork/rounded
+                            // corners), which also clips any shadow applied directly
+                            // to it — a shadow property sitting right there in s.art's
+                            // own style was actually dead/invisible for that reason.
+                            // When the setting's on, wrap in a second Animated.View
+                            // that carries ONLY the shadow (no overflow:hidden) at the
+                            // same squircle radius as the cover itself, so it works
+                            // identically for rounded or square cover_shape and simply
+                            // isn't rendered at all — not just invisible, actually
+                            // absent — whenever showPlayerCover is off, same as the
+                            // cover art it surrounds.
+                            <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape), shadowColor: theme.accent }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }] : null}>
+                                <Animated.View
+                                    style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, coverShadow ? null : { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+                                    pointerEvents={showingLyrics ? 'none' : 'auto'}
+                                >
+                                    {artwork
+                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                        : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                                    }
+                                </Animated.View>
                             </Animated.View>
                         )}
                         {lyricsData && (
@@ -957,6 +972,13 @@ const s = StyleSheet.create({
     middle: { flex: 1, justifyContent: 'space-evenly' },
     artWrap: { alignItems: 'center' },
     art: { width: width - 56, height: width - 56, backgroundColor: '#0f0f0f', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
+    // shadowOffset/Opacity/Radius above on `art` itself are dead weight —
+    // `overflow:'hidden'` on that same view clips its own shadow on iOS, so
+    // it was never actually visible. This is the real, visible one, one
+    // step further out where nothing clips it. Deliberately a bit more
+    // pronounced than art's old (invisible) values, since a shadow subtle
+    // enough to match those wouldn't have been worth adding a setting for.
+    coverShadowWrap: { width: width - 56, height: width - 56, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.35, shadowRadius: 16, elevation: 10 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     // Small text button matching the sort-label style used elsewhere
@@ -970,7 +992,14 @@ const s = StyleSheet.create({
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
     lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
-    lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '700', textAlign: 'center', marginVertical: 7 },
+    // Was 700 base / 800 active — a real weight change between the two,
+    // which shifts glyph widths enough to reflow line-wrapping right as a
+    // line becomes active (Eric: "the boldness makes the lyrics have a
+    // different layout because of like wrapping"). Both now render at the
+    // same 800 weight always; active vs inactive is still clearly
+    // distinguished by color/opacity alone (see the color/opacity props
+    // where this style gets applied), just without the reflow.
+    lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '800', textAlign: 'center', marginVertical: 7 },
     // Two fixes here per direct feedback:
     // 1. "too bolded, just a normal bold ideally, noticeable but not over
     //    the top" — was 900/26 (bigger jump, bigger size too). Dialed back

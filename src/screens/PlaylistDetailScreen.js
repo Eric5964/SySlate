@@ -47,7 +47,21 @@ export default function PlaylistDetailScreen() {
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
-        getPlaylistCovers().then(covers => setCover(covers[playlist.path] ?? null));
+        // Real bug found here (this is the "background image flashes...
+        // always when opening a playlist" report): setCover(uri) handed
+        // the Image component a URI it hadn't decoded yet, so the very
+        // first frame after this resolved rendered the empty/fallback
+        // state while decode-from-disk caught up — a real, if brief,
+        // black flash every single time, not just on a slow first load.
+        // Image.prefetch() warms RN's own image cache for that URI BEFORE
+        // cover ever gets set, so by the time the Image component
+        // actually mounts with a real uri, it's already decoded and
+        // renders on the very first frame instead of a blank one.
+        getPlaylistCovers().then(covers => {
+            const uri = covers[playlist.path] ?? null;
+            if (!uri) { setCover(null); return; }
+            Image.prefetch(uri).catch(() => { }).finally(() => setCover(uri));
+        });
         getPlaylistSort(playlist.path).then(setSortId);
     }, []);
 

@@ -11,6 +11,7 @@ import {
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
     getCoverShape, setCoverShape as persistCoverShape,
     getShowPlayerCover, setShowPlayerCover as persistShowPlayerCover,
+    getCoverShadow, setCoverShadow as persistCoverShadow,
     getBackgroundImageEnabled, setBackgroundImageEnabled as persistBgImageEnabled,
     getBackgroundImageUri, setBackgroundImageUri as persistBgImageUri,
     getCrossfadeEnabled, setCrossfadeEnabled as persistCrossfadeEnabled,
@@ -38,6 +39,7 @@ const Ctx = createContext({
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
     showPlayerCover: true, setShowPlayerCover: () => { },
+    coverShadow: false, setCoverShadow: () => { },
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
     crossfadeEnabled: false, setCrossfadeEnabled: () => { },
@@ -65,6 +67,7 @@ export function PreferencesProvider({ children }) {
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
     const [showPlayerCover, setShowPlayerCoverState] = useState(true);
+    const [coverShadow, setCoverShadowState] = useState(false);
     const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
     const [crossfadeEnabled, setCrossfadeEnabledState] = useState(false);
@@ -91,6 +94,7 @@ export function PreferencesProvider({ children }) {
         getKeepScreenAwake().then(setKeepScreenAwakeState);
         getCoverShape().then(setCoverShapeState);
         getShowPlayerCover().then(setShowPlayerCoverState);
+        getCoverShadow().then(setCoverShadowState);
         getBackgroundImageEnabled().then(setBackgroundImageEnabledState);
         // "Flicker each time" — every screen mounts its own ScreenBackground
         // <Image> for the same local file:// URI, and with no request-level
@@ -176,6 +180,10 @@ export function PreferencesProvider({ children }) {
         setShowPlayerCoverState(v);
         persistShowPlayerCover(v);
     }, []);
+    const setCoverShadow = useCallback((v) => {
+        setCoverShadowState(v);
+        persistCoverShadow(v);
+    }, []);
     const setBackgroundImageEnabled = useCallback((v) => {
         setBackgroundImageEnabledState(v);
         persistBgImageEnabled(v);
@@ -236,6 +244,7 @@ export function PreferencesProvider({ children }) {
         keepScreenAwake, setKeepScreenAwake,
         coverShape, setCoverShape,
         showPlayerCover, setShowPlayerCover,
+        coverShadow, setCoverShadow,
         backgroundImageEnabled, setBackgroundImageEnabled,
         backgroundImageUri, setBackgroundImageUri,
         crossfadeEnabled, setCrossfadeEnabled,
@@ -246,7 +255,7 @@ export function PreferencesProvider({ children }) {
         silenceTrim, setSilenceTrim,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
-        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover,
+        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, betweenTrackNorm, silenceTrim,
     ]);

@@ -30,6 +30,10 @@ let naturalFadeInActive = false;
 // ramp-in. Both get the same treatment in pauseWithRamp: see the comment
 // there for why.
 let rampInActive = false;
+// Set by pauseWithRamp when a pause interrupts a skip's fade-OUT phase —
+// see its skipFadeOutActive branch and skipWithRamp's matching check right
+// after its own fade-out for the full explanation.
+let pauseRequestedDuringSkipFadeOut = false;
 // True only while skipWithRamp's OWN fade-OUT of the old track is running
 // (the very start of a manual skip, before the native skipToNext/Previous
 // even fires) — a third case alongside naturalFadeInActive/rampInActive/
@@ -437,7 +441,25 @@ export async function pauseWithRamp() {
     // "stop now" request, not a leisurely transition. Clearing
     // naturalEndFadeOwner here also stops the recovery block above from
     // later trying to continue/ramp-in a track after this has paused.
-    if (naturalFadeInActive || rampInActive || naturalEndFadeOwner !== null || skipFadeOutActive) {
+    // Separated out from the other three interrupt cases below: pausing
+    // while the skip's OWN fade-out (before the native skip has even
+    // fired) is running used to fall into the same forceReleaseFade()
+    // path as the others — which steals fade ownership out from under
+    // skipWithRamp's own `if (!isFadeOwner(id)) return` check right after
+    // its fade-out, silently aborting the ENTIRE skip before
+    // doNativeSkip() ever ran. That's "audio ramping does not skip the
+    // song" — it stayed on the OLD track, just paused. What's actually
+    // wanted: the skip still completes (silently — nothing to gain from
+    // letting the new track audibly start when pause was requested before
+    // it even landed), ending paused at 0:00 of the NEW track, ready for
+    // a normal play/skip from there. Signal skipWithRamp to finish that
+    // way itself instead of duplicating its native-skip logic here.
+    if (skipFadeOutActive) {
+        pauseRequestedDuringSkipFadeOut = true;
+        forceReleaseFade();
+        return;
+    }
+    if (naturalFadeInActive || rampInActive || naturalEndFadeOwner !== null) {
         naturalFadeInActive = false;
         rampInActive = false;
         forceReleaseFade(); // also clears naturalEndFadeOwner
@@ -463,15 +485,24 @@ export async function pauseWithRamp() {
     if (isTransitionLocked()) {
         // Whatever's currently ramping — a fresh start's ramp-in, a manual
         // ramp-out already in flight, the natural end-of-track ramp,
-        // another skip — gets left to finish on its own; pause doesn't
-        // interrupt it. This used to queue pauseWithRamp itself here, which
-        // meant once that finished, IT would kick off its OWN full
-        // ramp-down before actually pausing — so what landed was [current
-        // ramp] [a whole SECOND ramp] [finally paused], noticeably later
-        // than the tap. Now it's [current ramp] [paused immediately, no
-        // ramp] — the pause lands the moment it safely can, without adding
-        // a second ramp cycle on top of whatever was already happening.
-        queueAction(() => pauseImmediate());
+        // another skip, or (most commonly reaching this specific branch)
+        // a crossfade in progress natively — gets left to finish on its
+        // own; pause doesn't interrupt it.
+        //
+        // Queues pauseWithRamp() itself, not pauseImmediate() — was
+        // pauseImmediate() briefly, to stop a redundant/duplicate pause
+        // tap (nothing transitioning, already paused) from running a
+        // whole pointless second ramp-down on top of whatever was already
+        // happening. But that swap broke a real, legitimate case: pause
+        // requested WHILE a crossfade is running should let the crossfade
+        // finish and THEN ramp out properly before pausing — "it finishes
+        // the crossfade but pauses without a ramp out. it should ramp out
+        // after the crossfade." pauseImmediate() skipped that ramp-out
+        // entirely. pauseWithRamp() now has its own guard right below
+        // (state !== Playing → no-op) that catches the original
+        // already-paused/redundant case just as well, so queuing it back
+        // here fixes the crossfade case without reopening that one.
+        queueAction(() => pauseWithRamp());
         return;
     }
     // Real bug found here: nothing below checked whether playback was
@@ -668,7 +699,21 @@ export async function skipWithRamp(direction = 'next') {
                 skipFadeOutActive = false;
             }
         }
-        if (!isFadeOwner(id)) return;
+        if (!isFadeOwner(id)) {
+            if (pauseRequestedDuringSkipFadeOut) {
+                // See pauseWithRamp's skipFadeOutActive branch — pause
+                // interrupted the fade-out before the native skip ever
+                // fired. Finish the skip anyway, silently, landing paused
+                // at 0:00 of the new track instead of leaving it aborted
+                // on the old one.
+                pauseRequestedDuringSkipFadeOut = false;
+                try { await AudioEngine.setVolume(0); } catch { }
+                try { await withTimeout(doNativeSkip(), 5000); } catch { }
+                try { await AudioEngine.pause(); } catch { }
+                try { await AudioEngine.setVolume(1); } catch { }
+            }
+            return;
+        }
 
         try {
             await withTimeout(doNativeSkip(), 5000);

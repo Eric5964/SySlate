@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Image } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { getPresetById } from '../utils/eq';
 import { getCustomPresets } from '../utils/storage';
@@ -124,7 +124,16 @@ export function PlaybackProvider({ children }) {
 
         const applyArt = (uri) => {
             if (cancelled || !uri) return;
-            setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
+            // Same reasoning as PlaylistDetailScreen's cover fix: warm RN's
+            // image cache before handing the Player screen (and anywhere
+            // else reading currentTrack.artwork) a URI it hasn't decoded
+            // yet — that gap was the "background image... flashes with a
+            // placeholder" moment landing right as a song's art resolves,
+            // on top of the same flash already fixed for playlist covers.
+            Image.prefetch(uri).catch(() => { }).finally(() => {
+                if (cancelled) return;
+                setCurrentTrack(prev => (prev?.id === currentTrack.id ? { ...prev, artwork: uri } : prev));
+            });
             pushMetadataAndPrefetch(uri);
         };
 
@@ -565,6 +574,65 @@ export function PlaybackProvider({ children }) {
         // queue order.
     };
 
+    // Real bug found here (there wasn't a fix for it before — this function
+    // didn't exist): loadPlaylist/playPlaylistOrdered/playPlaylistShuffled/
+    // playSongFromPlaylist all went through primeNativeQueue above, which
+    // ALWAYS calls AudioEngine.reset() first — reset() hard-stops the
+    // currently-playing audio node immediately (see its native comment).
+    // That's why NONE of those four could ever crossfade even with
+    // Crossfade on and a song already playing: reset() kills the exact
+    // audio a crossfade needs to fade OUT of before a crossfade could ever
+    // get a chance to start. "Clicking songs / hitting Play/Shuffle still
+    // doesn't crossfade — it's not a crossfade at all" was accurate.
+    //
+    // Fix reuses the crossfade AudioEngine.skip(index) already does for a
+    // manual skip (see its own comment) instead of duplicating that logic:
+    // insert the new queue right after the currently-playing track instead
+    // of wiping the queue first, skip() to it (which crossfades under the
+    // same conditions a Skip does), THEN remove everything else that was
+    // in the old queue. The outgoing track's own audio node is never
+    // touched by any of this — it's the same node startCrossfade() already
+    // knows how to fade out on its own.
+    //
+    // Returns whether it actually crossfaded, so the caller knows whether
+    // it still needs to run the ramp-in (preClaimFadeForFreshStart +
+    // playWithRamp) itself — a crossfade owns its own fade-in natively, a
+    // plain reset+ramp fresh-start doesn't.
+    const primeQueueForTransition = async (fullQueue, rampDuration, anchorIndex = 0) => {
+        const wasPlaying = (await AudioEngine.getState()) === State.Playing;
+        const crossfadeReady = wasPlaying
+            && (await getCrossfadeEnabled())
+            && (await getCrossfadeDurationSkip()) > 0.05;
+
+        if (!crossfadeReady) {
+            await fadeOutCurrentIfPlaying(rampDuration);
+            forceReleaseFade();
+            const preClaimedId = preClaimFadeForFreshStart();
+            await primeNativeQueue(fullQueue, anchorIndex);
+            return { preClaimedId, crossfaded: false };
+        }
+
+        const oldQueue = await AudioEngine.getQueue();
+        const curIdx = await AudioEngine.getCurrentTrack();
+        logicalQueueRef.current = fullQueue;
+        const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
+        const insertAt = curIdx + 1;
+        await withTimeout(AudioEngine.add(batch, insertAt), 6000);
+        loadedThroughRef.current = anchorIndex + batch.length;
+        await AudioEngine.skip(insertAt);
+        // Everything at or before curIdx kept its original position (the
+        // insert above only affects insertAt and later); everything after
+        // curIdx got pushed up by batch.length by that same insert. Remove
+        // it all — including curIdx itself, now that we've already
+        // skip()'d away from it — leaving only the freshly-inserted batch,
+        // which then becomes indices 0..batch.length-1 exactly like a
+        // normal primeNativeQueue result.
+        const toRemove = [];
+        for (let i = 0; i < oldQueue.length; i++) toRemove.push(i <= curIdx ? i : i + batch.length);
+        if (toRemove.length) await AudioEngine.remove(toRemove);
+        return { preClaimedId: null, crossfaded: true };
+    };
+
     const fillRestOfWindow = async () => {
         try {
             const rest = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + (QUEUE_WINDOW_SIZE - QUEUE_INITIAL_BATCH)));
@@ -719,14 +787,11 @@ export function PlaybackProvider({ children }) {
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
 
-        await fadeOutCurrentIfPlaying(await getAudioRamp());
-        forceReleaseFade();
-        const preClaimedId = preClaimFadeForFreshStart();
-        await primeNativeQueue(queue, startIndex);
+        const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp(), startIndex);
         await restorePriorityTracks(carriedPriority);
         fillRestOfWindow();
         await setQueueLoop();
-        await playWithRamp(preClaimedId);
+        if (!crossfaded) await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -751,14 +816,11 @@ export function PlaybackProvider({ children }) {
         const queue = [...orderedSongs];
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
-        await fadeOutCurrentIfPlaying(await getAudioRamp());
-        forceReleaseFade();
-        const preClaimedId = preClaimFadeForFreshStart();
-        await primeNativeQueue(queue, 0);
+        const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp());
         await restorePriorityTracks(carriedPriority);
         fillRestOfWindow();
         await setQueueLoop();
-        await playWithRamp(preClaimedId);
+        if (!crossfaded) await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -783,14 +845,11 @@ export function PlaybackProvider({ children }) {
         const queue = buildQueue(playlist.songs, useMode);
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
-        await fadeOutCurrentIfPlaying(await getAudioRamp());
-        forceReleaseFade();
-        const preClaimedId = preClaimFadeForFreshStart();
-        await primeNativeQueue(queue, 0);
+        const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp());
         await restorePriorityTracks(carriedPriority);
         fillRestOfWindow();
         await setQueueLoop();
-        await playWithRamp(preClaimedId);
+        if (!crossfaded) await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
@@ -822,8 +881,15 @@ export function PlaybackProvider({ children }) {
         const song = playlist.songs.find(s => s.id === songId);
         if (!song) { console.warn('Song not found:', songId); return; }
 
-        const isSamePlaylist = currentPlaylist?.path === playlist.path;
-        if (isSamePlaylist && currentTrack?.id === songId) return; // already playing this exact song here
+        // Real bug found here: this used to return early — no-op — when
+        // the tapped song was already the current song in the same
+        // playlist. That silently ate exactly the case Eric flagged:
+        // toggling shuffle (or anything else about how the rest of the
+        // queue gets built) and then re-tapping the currently-playing song
+        // to make it take effect — the guard treated "same song" as
+        // "nothing to do" and the rest of the queue never actually
+        // rebuilt. Tapping a song is a deliberate "start fresh from here"
+        // action; it should always fade/rebuild, same song or not.
 
         // Previously only kept priority when tapping a song within the SAME
         // playlist already playing, and never actually checked "Keep
@@ -858,14 +924,11 @@ export function PlaybackProvider({ children }) {
         // Ramp — tapping a song is conceptually closer to a skip (jump
         // straight to a specific song) than it is to a fresh "start
         // playback from nothing" moment.
-        await fadeOutCurrentIfPlaying(await getSkipRamp());
-        forceReleaseFade();
-        const preClaimedId = preClaimFadeForFreshStart();
-        await primeNativeQueue(queue, 0);
+        const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getSkipRamp());
         await restorePriorityTracks(carriedPriority);
         fillRestOfWindow();
         await setQueueLoop();
-        await playWithRamp(preClaimedId);
+        if (!crossfaded) await playWithRamp(preClaimedId);
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
