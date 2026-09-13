@@ -474,6 +474,20 @@ export async function pauseWithRamp() {
         queueAction(() => pauseImmediate());
         return;
     }
+    // Real bug found here: nothing below checked whether playback was
+    // already paused before running the full fade-out sequence. Control
+    // Center's play/pause is a single toggle button whose icon is driven
+    // by MPNowPlayingInfoPropertyPlaybackRate — right around any state
+    // change there's a brief window where a stray/duplicate tap sends
+    // ANOTHER pause command for a song that's already paused and silent.
+    // Without this guard, that redundant command still ran the entire
+    // fade-out (from volume 1, since setVolume(1) resets it after every
+    // pause) on a node that wasn't even producing audio, holding rampLock
+    // for the full ramp duration — which is exactly "doesn't recognize
+    // the end of ramps as a full pause, making it difficult to play the
+    // song": the very next real Play tap got queued behind this pointless
+    // multi-second no-op instead of running immediately.
+    if ((await AudioEngine.getState()) !== State.Playing) return;
     rampLock = true;
     try {
         const useFade = await getRampOnPause();

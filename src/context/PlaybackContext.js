@@ -11,6 +11,7 @@ import {
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
+    getCrossfadeEnabled, getCrossfadeDurationSkip,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
@@ -434,9 +435,21 @@ export function PlaybackProvider({ children }) {
             const priorityStart = currentIndex + 1;
             const priorityEnd = priorityStart + priorityCount;
 
-            await fadeOutCurrentIfPlaying(await getAudioRamp());
-            forceReleaseFade();
-            const preClaimedId = preClaimFadeForFreshStart();
+            // Real bug found here: tapping a song in the queue ALWAYS went
+            // through fadeOutCurrentIfPlaying (a plain JS ramp) followed by
+            // a fresh ramp-in — even with Crossfade on and something
+            // already playing, this was never actually a crossfade, just a
+            // fade-out-then-fade-in with a gap between them. Native's
+            // skip(index) now crossfades itself when appropriate (see its
+            // comment) by reusing the same startCrossfade() the natural
+            // next-track transition uses — so when that applies, skip the
+            // JS-side fade-out and the playWithRamp wrapper entirely and
+            // hand off straight to native, which owns the whole transition
+            // (both the outgoing fade and the incoming one) on its own.
+            const wasPlaying = (await AudioEngine.getState()) === State.Playing;
+            const crossfadeReady = wasPlaying
+                && (await getCrossfadeEnabled())
+                && (await getCrossfadeDurationSkip()) > 0.05;
 
             if (realIndex < priorityEnd) {
                 // Jumping to a row inside the priority zone itself (tapping
@@ -457,7 +470,14 @@ export function PlaybackProvider({ children }) {
                 const next = priorityRef.current.slice(skippedCount);
                 priorityRef.current = next;
                 setPriorityQueue(next);
-                await playWithRamp(preClaimedId, () => AudioEngine.skip(realIndex));
+                if (crossfadeReady) {
+                    await AudioEngine.skip(realIndex);
+                } else {
+                    await fadeOutCurrentIfPlaying(await getAudioRamp());
+                    forceReleaseFade();
+                    const preClaimedId = preClaimFadeForFreshStart();
+                    await playWithRamp(preClaimedId, () => AudioEngine.skip(realIndex));
+                }
                 return;
             }
 
@@ -470,7 +490,14 @@ export function PlaybackProvider({ children }) {
             if (priorityTracks.length) {
                 await AudioEngine.add(priorityTracks, newTargetIndex + 1);
             }
-            await playWithRamp(preClaimedId, () => AudioEngine.skip(newTargetIndex));
+            if (crossfadeReady) {
+                await AudioEngine.skip(newTargetIndex);
+            } else {
+                await fadeOutCurrentIfPlaying(await getAudioRamp());
+                forceReleaseFade();
+                const preClaimedId = preClaimFadeForFreshStart();
+                await playWithRamp(preClaimedId, () => AudioEngine.skip(newTargetIndex));
+            }
             // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
             // call — enough for the steady-state "a song just finished,
             // drip-feed a few more" case it was actually designed for, but

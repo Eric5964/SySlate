@@ -200,15 +200,33 @@ export default function SettingsScreen() {
         </TouchableOpacity>
     );
 
-    const renderBaseSwatch = ([id, b]) => (
-        <TouchableOpacity key={id} onPress={() => setBase(id)}
-            style={[s.swatch, {
-                width: BASE_SWATCH_SIZE, height: BASE_SWATCH_SIZE, borderRadius: squircle(BASE_SWATCH_SIZE),
-                backgroundColor: b.bg, borderWidth: 1, borderColor: b.border,
-            }, baseId === id && s.swatchActive]}>
-            {baseId === id && <Text style={{ color: theme.accent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
-        </TouchableOpacity>
-    );
+    const renderBaseSwatch = ([id, b]) => {
+        // Real bug found here: this always called setBase(id) with the
+        // DARK id shown in the grid, no matter what. While in Light Mode,
+        // tapping any swatch to change the accent hue set baseId to a
+        // dark_X id directly — which makes isLight recompute to false, so
+        // the whole app silently dropped back to dark mode on every tap.
+        // That's exactly "light mode has no selectable base colors": there
+        // was no way to change hue and STAY in light mode. It also meant
+        // no swatch ever showed the checkmark while in light mode at all
+        // (baseId was always some light_X, which never equals the dark_X
+        // id being compared here) — so even before tapping anything, the
+        // grid looked like nothing was selected. Fixed by mapping to the
+        // matching light_X id (same hue-derivation toggleLightMode itself
+        // uses) whenever Light Mode is currently on, both for what tapping
+        // actually sets and for which swatch shows as active/previewed.
+        const targetId = isLight ? (BASE_COLORS[`light_${id.replace(/^dark_/, '')}`] ? `light_${id.replace(/^dark_/, '')}` : 'light_black') : id;
+        const swatchColors = BASE_COLORS[targetId] ?? b;
+        return (
+            <TouchableOpacity key={id} onPress={() => setBase(targetId)}
+                style={[s.swatch, {
+                    width: BASE_SWATCH_SIZE, height: BASE_SWATCH_SIZE, borderRadius: squircle(BASE_SWATCH_SIZE),
+                    backgroundColor: swatchColors.bg, borderWidth: 1, borderColor: swatchColors.border,
+                }, baseId === targetId && s.swatchActive]}>
+                {baseId === targetId && <Text style={{ color: theme.accent, fontWeight: '700', fontSize: 13 }}>✓</Text>}
+            </TouchableOpacity>
+        );
+    };
 
     const pickBackgroundImage = async () => {
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();

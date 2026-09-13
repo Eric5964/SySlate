@@ -97,6 +97,14 @@ export default function PlayerScreen() {
     const clearDragTimer = useRef(null);
     const committedRef = useRef(false);
     const gestureTrackIdRef = useRef(null);
+    // Set whenever the lyrics view's active line is about to move for a
+    // reason OTHER than natural playback advancing one line at a time — a
+    // manual seek (below) or a track change (see the lyrics reset effect
+    // further down). Both are "jumps": the correct line could be anywhere
+    // in the list, so the scroll should SNAP straight there, not animate
+    // through everything in between the way a normal line-to-line advance
+    // does. Consumed (and cleared) by the scroll-to-line effect itself.
+    const lyricsJustJumpedRef = useRef(false);
     // Set on commit to the ratio we just asked the native side to seek to;
     // cleared once the polled position actually agrees (see the
     // convergence effect below) rather than on a fixed timer. See onScrub's
@@ -197,6 +205,10 @@ export default function PlayerScreen() {
             const targetRatio = ratio;
             const duration = progress.duration;
             latestSeekRatioRef.current = targetRatio;
+            // A seek can land the active lyric line anywhere — see
+            // lyricsJustJumpedRef's declaration for why that means the
+            // lyrics scroll-to-line effect should snap instead of animate.
+            lyricsJustJumpedRef.current = true;
             // "Double-plays when sliding the bar" with ramping on: seekTo
             // never checked for an in-flight ramp before running. Native
             // seekTo reschedules and immediately resumes playback at
@@ -484,6 +496,10 @@ export default function PlayerScreen() {
         lyricsRowYRef.current.clear();
         setLyricsLayoutVersion(v => v + 1);
         setLyricsManualScroll(false);
+        // A track change (skip, crossfade landing, natural advance) is a
+        // jump too, same as a manual seek — see lyricsJustJumpedRef's
+        // declaration.
+        lyricsJustJumpedRef.current = true;
         lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
     }, [currentTrack?.id]);
     // "Lyrics should already be at the place in the song before needing to
@@ -500,6 +516,13 @@ export default function PlayerScreen() {
         if (!showingLyrics) { wasShowingLyricsRef.current = false; return; }
         const justOpened = !wasShowingLyricsRef.current;
         wasShowingLyricsRef.current = true;
+        // Either kind of jump (view just opened, or a seek/track-change
+        // just happened) should snap instead of animate — only a natural
+        // one-line-at-a-time advance while already sitting on the view
+        // should animate. Consumed once, immediately, so it doesn't also
+        // suppress the animation on the NEXT natural advance.
+        const skipAnimation = justOpened || lyricsJustJumpedRef.current;
+        lyricsJustJumpedRef.current = false;
         // Before the song reaches its first timed line (activeLine === -1,
         // e.g. a [00:00]-style intro gap, or seeking back to the very
         // start), this used to just no-op and leave the view wherever it
@@ -511,7 +534,7 @@ export default function PlayerScreen() {
         // actually caught up.
         if (activeLine < 0) {
             if (lyricsManualScroll) return;
-            lyricsScrollRef.current?.scrollTo({ y: 0, animated: !justOpened });
+            lyricsScrollRef.current?.scrollTo({ y: 0, animated: !skipAnimation });
             return;
         }
         if (lyricsManualScroll) return;
@@ -526,7 +549,7 @@ export default function PlayerScreen() {
         // instead means the used/empty space splits evenly top and bottom —
         // matching how the cover fills that box symmetrically, which is the
         // actual ask ("symmetrical around the song cover").
-        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: !justOpened });
+        lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: !skipAnimation });
     }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track

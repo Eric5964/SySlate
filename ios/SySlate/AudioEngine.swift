@@ -576,10 +576,25 @@ class AudioEngine: RCTEventEmitter {
         }
         if let artworkPath = track.artwork {
             if artworkPath != cachedArtworkPath {
-                cachedArtwork = loadArtworkImage(artworkPath).map { image in
-                    MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                // Real bug found here: on failure this still set
+                // cachedArtworkPath = artworkPath below, permanently —
+                // the very next check above would see the path as
+                // "already cached" and never try loading it again, even
+                // though cachedArtwork was nil. If JS calls
+                // updateMetadataForTrack with the artwork path slightly
+                // before the actual file exists on disk (embedded-art
+                // extraction is async), that first failed load became
+                // the FINAL answer for that track — lock screen/Control
+                // Center artwork for it, forever. Only advance
+                // cachedArtworkPath on a successful load now, so a
+                // failure just leaves it retrying (still throttled to
+                // ~once/sec by the caller) instead of giving up for good.
+                if let image = loadArtworkImage(artworkPath) {
+                    cachedArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    cachedArtworkPath = artworkPath
+                } else {
+                    cachedArtwork = nil
                 }
-                cachedArtworkPath = artworkPath
             }
             if let artwork = cachedArtwork {
                 info[MPMediaItemPropertyArtwork] = artwork
@@ -1550,6 +1565,22 @@ class AudioEngine: RCTEventEmitter {
     func skip(_ index: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let idx = index.intValue
         guard idx >= 0, idx < queue.count else {
+            resolve(nil)
+            return
+        }
+        // Real bug found here: this always hard-cancelled any crossfade
+        // and force-reloaded, regardless of the Crossfade setting —
+        // jumping straight to an arbitrary song in the queue (tapping it
+        // in a song list, or in the Up Next sheet) never crossfaded even
+        // with Crossfade on and something already playing, unlike a
+        // plain next/previous skip. startCrossfade(toIndex:duration:) is
+        // already index-agnostic (advance() below only ever calls it for
+        // idx+1, but it works for any target still in the current
+        // queue), so route through it here too under the same conditions
+        // a manual skip uses.
+        if crossfadeEnabled, crossfadeDurationSkipSeconds > 0.05, !isCrossfading, state == .playing, idx != currentIndex {
+            currentIndex = idx
+            startCrossfade(toIndex: idx, duration: crossfadeDurationSkipSeconds)
             resolve(nil)
             return
         }
