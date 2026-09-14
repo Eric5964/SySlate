@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { AppState, Image } from 'react-native';
-import AudioEngine, { Event } from '../native/AudioEngine';
+import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById } from '../utils/eq';
 import { getCustomPresets } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
