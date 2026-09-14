@@ -194,6 +194,13 @@ class AudioEngine: RCTEventEmitter {
     // whatever setVolume() calls come after a pause/seek interrupts a
     // crossfade partway through.
     private var crossfadeIncomingGainCorrection: Float = 1.0
+    // Mirrors crossfadeIncomingGainCorrection above — same reasoning, now
+    // that crossfade actually applies Silence Trim to the incoming track
+    // (see startCrossfade/runCrossfade). settleCrossfadeToIncoming (a
+    // pause/seek landing mid-crossfade) needs these too, not just the
+    // normal full-duration timer completion in runCrossfade.
+    private var crossfadeIncomingLeadInSeconds: Double = 0
+    private var crossfadeIncomingTrailingCutSeconds: Double = 0
 
     // Guards the specific race RNTP's own completion callback used to hit:
     // scheduleFile's completion handler firing after we've already moved
@@ -740,13 +747,14 @@ class AudioEngine: RCTEventEmitter {
         // time instead of activeNode's (still the outgoing track until the
         // handoff completes at the end of the crossfade) — see
         // crossfadeAnnouncedIncoming's declaration for the sync bug this
-        // fixes. The incoming node always starts at frame 0 (see
-        // runCrossfade's scheduleSegment call), so its own position is
-        // simply its elapsed render time, no segmentStartOffsetSeconds
-        // needed the way activeNode's calculation needs one below.
+        // fixes. Was assuming the incoming node always starts at frame 0 —
+        // no longer true now that crossfade applies Silence Trim's lead-in
+        // to it (see startCrossfade/runCrossfade); crossfadeIncomingLeadInSeconds
+        // is that same offset, playing the same role segmentStartOffsetSeconds
+        // plays for activeNode's calculation just below.
         if isCrossfading, crossfadeAnnouncedIncoming, let incoming = crossfadeIncomingNode,
            let nodeTime = incoming.lastRenderTime, let playerTime = incoming.playerTime(forNodeTime: nodeTime) {
-            return Double(playerTime.sampleTime) / crossfadeIncomingSampleRate
+            return crossfadeIncomingLeadInSeconds + Double(playerTime.sampleTime) / crossfadeIncomingSampleRate
         }
         guard let nodeTime = activeNode.lastRenderTime,
               let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return frozenPositionSeconds ?? segmentStartOffsetSeconds }
@@ -1105,7 +1113,20 @@ class AudioEngine: RCTEventEmitter {
                         self?.isCrossfading = false
                         return
                     }
-                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, gainCorrection: analysis?.gainCorrection ?? 1.0, duration: duration, token: token)
+                    // Real bug found here (Eric: songs needing Silence Trim
+                    // "didn't handle crossfade... properly, mainly when
+                    // clicking"): this only ever pulled gainCorrection out
+                    // of the analysis — leadInSeconds/trailingCutSeconds
+                    // were computed (when Silence Trim is on) and then just
+                    // discarded, so crossfading INTO a track with a
+                    // silence-trimmed lead-in used to fade all the way up
+                    // to volume 1 over several seconds of literal silence
+                    // before any real audio started. Now passed through so
+                    // runCrossfade can actually apply the trim, same as a
+                    // plain load already does.
+                    let leadIn = self.silenceTrimEnabled ? (analysis?.leadInSeconds ?? 0) : 0
+                    let trailingCut = self.silenceTrimEnabled ? (analysis?.trailingCutSeconds ?? 0) : 0
+                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, gainCorrection: analysis?.gainCorrection ?? 1.0, leadInSeconds: leadIn, trailingCutSeconds: trailingCut, duration: duration, token: token)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1122,10 +1143,17 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
-    private func runCrossfade(file: AVAudioFile, track: Track, idx: Int, outgoingNode: AVAudioPlayerNode, incomingNode: AVAudioPlayerNode, outgoingVolumeStart: Float, gainCorrection: Float, duration: Double, token: UInt64) {
+    private func runCrossfade(file: AVAudioFile, track: Track, idx: Int, outgoingNode: AVAudioPlayerNode, incomingNode: AVAudioPlayerNode, outgoingVolumeStart: Float, gainCorrection: Float, leadInSeconds: Double, trailingCutSeconds: Double, duration: Double, token: UInt64) {
         let sampleRate = file.processingFormat.sampleRate
         incomingNode.stop()
-        incomingNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil) { [weak self] in
+        // Same lead-in/trailing-cut math loadAndScheduleCurrentTrack uses —
+        // see startCrossfade's comment for why this used to always be
+        // startingFrame: 0 / the full file length regardless of Silence
+        // Trim.
+        let startFrame = AVAudioFramePosition(leadInSeconds * sampleRate)
+        let trailingCutFrames = AVAudioFramePosition(trailingCutSeconds * sampleRate)
+        let frameCount = AVAudioFrameCount(max(0, file.length - startFrame - trailingCutFrames))
+        incomingNode.scheduleSegment(file, startingFrame: startFrame, frameCount: frameCount, at: nil) { [weak self] in
             DispatchQueue.main.async {
                 self?.handlePlaybackCompleted(token: token)
             }
@@ -1158,6 +1186,8 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingTrack = track
         crossfadeIncomingIndex = idx
         crossfadeIncomingNode = incomingNode
+        crossfadeIncomingLeadInSeconds = leadInSeconds
+        crossfadeIncomingTrailingCutSeconds = trailingCutSeconds
         crossfadeAnnouncedIncoming = false
         crossfadeTargetVolume = targetVolume
         crossfadeIncomingGainCorrection = gainCorrection
@@ -1218,7 +1248,6 @@ class AudioEngine: RCTEventEmitter {
                 self.isCrossfading = false
                 self.currentFile = file
                 self.currentFileSampleRate = sampleRate
-                self.segmentStartOffsetSeconds = 0
                 self.crossfadeAnnouncedIncoming = false
                 // Same fix as setVolume()/finishLoadingTrack — keeps the
                 // INCOMING track's own gain correction in effect for
@@ -1226,13 +1255,14 @@ class AudioEngine: RCTEventEmitter {
                 // finishes, instead of leaving whatever the outgoing
                 // track's correction happened to be.
                 self.currentGainCorrection = gainCorrection
-                // Crossfade never applies silence trim (schedules the full
-                // file from frame 0 — see this function's scheduleSegment
-                // call above) — reset explicitly rather than leaving
-                // whatever the OUTGOING track's trailing cut happened to be,
-                // which would otherwise silently apply to this new track's
-                // duration reporting too.
-                self.currentTrailingCutSeconds = 0
+                // Now applies the incoming track's real trim (see
+                // startCrossfade/runCrossfade above) instead of always
+                // resetting to 0 — this is that same value, just kept
+                // through to the moment the incoming node actually becomes
+                // `current`, matching what a plain load already does at an
+                // equivalent point (loadAndScheduleCurrentTrack).
+                self.currentTrailingCutSeconds = trailingCutSeconds
+                self.segmentStartOffsetSeconds = leadInSeconds
                 self.crossfadeIncomingFile = nil
                 self.crossfadeIncomingTrack = nil
                 self.crossfadeIncomingIndex = nil
@@ -1240,7 +1270,11 @@ class AudioEngine: RCTEventEmitter {
 
                 var trackWithDuration = track
                 if trackWithDuration.duration == nil {
-                    trackWithDuration.duration = Double(file.length) / sampleRate
+                    // Matches loadAndScheduleCurrentTrack's equivalent cache
+                    // fill — subtract trailingCutSeconds here too, now that
+                    // this path actually has a real (possibly nonzero) one
+                    // to subtract.
+                    trackWithDuration.duration = Double(file.length) / sampleRate - trailingCutSeconds
                     if idx < self.queue.count { self.queue[idx] = trackWithDuration }
                 }
 
@@ -1452,13 +1486,16 @@ class AudioEngine: RCTEventEmitter {
         currentGainCorrection = crossfadeIncomingGainCorrection
         currentFile = file
         currentFileSampleRate = crossfadeIncomingSampleRate
-        segmentStartOffsetSeconds = 0
-        // Same reset as runCrossfade's own handoff — see its comment.
-        currentTrailingCutSeconds = 0
+        // Now uses the incoming track's real lead-in/trailing-cut instead
+        // of always 0 — same fix as runCrossfade's own handoff, needed here
+        // too since a pause or seek landing mid-crossfade completes the
+        // handoff through this function instead.
+        segmentStartOffsetSeconds = crossfadeIncomingLeadInSeconds
+        currentTrailingCutSeconds = crossfadeIncomingTrailingCutSeconds
 
         if var trackWithDuration = crossfadeIncomingTrack {
             if trackWithDuration.duration == nil {
-                trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate
+                trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds
                 if idx < queue.count { queue[idx] = trackWithDuration }
             }
             // Covers landing here before runCrossfade's own halfway-point
@@ -1807,10 +1844,10 @@ class AudioEngine: RCTEventEmitter {
     // describing for the second half of every crossfade.
     private func currentDurationSeconds() -> Double {
         if isCrossfading, crossfadeAnnouncedIncoming, let file = crossfadeIncomingFile {
-            // Crossfade never applies silence trim (see its scheduleSegment
-            // call) so no trailing-cut subtraction needed here, unlike the
-            // currentFile branch below.
-            return Double(file.length) / crossfadeIncomingSampleRate
+            // Now subtracts the incoming track's own trailing cut — see
+            // startCrossfade/runCrossfade for why crossfade actually
+            // applies Silence Trim now instead of always ignoring it.
+            return Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds
         }
         return currentFile.map { Double($0.length) / currentFileSampleRate - currentTrailingCutSeconds }
             ?? (currentIndex.flatMap { queue[safe: $0]?.duration } ?? 0)

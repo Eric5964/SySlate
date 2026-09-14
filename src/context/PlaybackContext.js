@@ -1108,11 +1108,22 @@ export function PlaybackProvider({ children }) {
         const pl = playlistRef.current;
         if (!pl?.path) return;
         try {
-            const index = await AudioEngine.getCurrentTrack();
+            // Was 3 sequential awaits (getCurrentTrack, then getQueue, then
+            // getProgress) before ever writing anything — on a genuine
+            // force-quit, the OS gives very little time between the app
+            // going to background and the process actually dying, and
+            // background/foreground AppState transitions plus a real
+            // fade-out (native's willTerminate handler) are already
+            // competing for that same brief window. Every extra bridge
+            // round-trip in sequence here is time this save might not get.
+            // Running them concurrently cuts that to roughly a third.
+            const [index, queue, progress] = await Promise.all([
+                AudioEngine.getCurrentTrack(),
+                AudioEngine.getQueue(),
+                AudioEngine.getProgress().catch(() => null),
+            ]);
             if (index !== null) {
-                const queue = await AudioEngine.getQueue();
-                let pos = 0;
-                try { const p = await AudioEngine.getProgress(); pos = p?.position ?? 0; } catch { }
+                const pos = progress?.position ?? 0;
                 await setSession(pl.path, { queue, index });
                 // priorityCount is enough to reconstruct which of the
                 // tracks right after `index` were priority-queued on
@@ -1142,7 +1153,16 @@ export function PlaybackProvider({ children }) {
         return () => sub.remove();
     }, []);
     useEffect(() => {
-        const interval = setInterval(() => saveSessionRef.current?.(), 15000);
+        // Was 15000ms — tightened per Eric's report that position still
+        // isn't being remembered through a genuine force-quit. The
+        // background/inactive-triggered save above SHOULD already cover a
+        // clean quit (that event fires before the process actually dies),
+        // but a force-quit's timing isn't fully in this app's control —
+        // this periodic checkpoint is the backstop for whatever gap
+        // remains, and a tighter interval just means whatever position
+        // it last captured is closer to the truth if that specific save
+        // never got to run to completion.
+        const interval = setInterval(() => saveSessionRef.current?.(), 5000);
         return () => clearInterval(interval);
     }, []);
 
