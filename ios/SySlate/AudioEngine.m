@@ -67,6 +67,17 @@ RCT_EXTERN_METHOD(setVolume:(nonnull NSNumber *)volume
 RCT_EXTERN_METHOD(getVolume:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// Native-side volume ramp — see AudioEngine.swift's rampVolume for why this
+// replaces JS's old per-step setVolume() loop (fadeVol in PlaybackService.js).
+RCT_EXTERN_METHOD(rampVolume:(nonnull NSNumber *)from
+                  to:(nonnull NSNumber *)to
+                  duration:(nonnull NSNumber *)duration
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(cancelVolumeRamp:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(getProgress:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

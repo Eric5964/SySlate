@@ -12,8 +12,32 @@ export const BUILT_IN_PRESETS = [
 export const BAND_HZ = ['32', '64', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
 export const BAND_COUNT = 10;
 
-export function getPresetById(id, customPresets = []) {
-    return [...BUILT_IN_PRESETS, ...customPresets].find(p => p.id === id) ?? BUILT_IN_PRESETS[0];
+// overrides is { [builtInPresetId]: bands[] } — see storage.js's
+// getEQOverrides. Checked before customPresets so a built-in's override
+// always wins for its own id (a custom preset can never collide with a
+// built-in id anyway, since new custom ids are always 'custom_<timestamp>').
+export function getPresetById(id, customPresets = [], overrides = {}) {
+    const builtIn = BUILT_IN_PRESETS.find(p => p.id === id);
+    if (builtIn) {
+        const override = overrides?.[id];
+        return override ? { ...builtIn, bands: override } : builtIn;
+    }
+    return customPresets.find(p => p.id === id) ?? BUILT_IN_PRESETS[0];
+}
+
+// Single combined list for the Settings EQ grid — every built-in (with its
+// override applied on top if it has one) followed by every custom preset,
+// each tagged with isBuiltIn/isOverridden so the UI can decide what
+// editing/deleting/resetting means for that particular row.
+export function mergePresetsForDisplay(customPresets = [], overrides = {}) {
+    const builtIns = BUILT_IN_PRESETS.map(p => {
+        const override = overrides?.[p.id];
+        return override
+            ? { ...p, bands: override, isBuiltIn: true, isOverridden: true }
+            : { ...p, isBuiltIn: true, isOverridden: false };
+    });
+    const customs = customPresets.map(p => ({ ...p, isBuiltIn: false, isOverridden: false }));
+    return [...builtIns, ...customs];
 }
 
 // Keep EQ_PRESETS as alias for components that import it

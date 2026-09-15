@@ -122,6 +122,17 @@ class AudioEngine: RCTEventEmitter {
     private var repeatMode: RepeatModeValue = .off
     private var state: PlaybackStateValue = .none
     private var volume: Float = 1.0
+    // Drives rampVolume(from:to:duration:) below — a single native-side
+    // timer instead of JS calling setVolume() ~25x/sec over the bridge.
+    // rampGeneration invalidates any in-flight ramp the instant a NEWER one
+    // starts (or setVolume()/cancelVolumeRamp() is called directly) without
+    // needing the timer to notice on its own next tick — the tick itself
+    // checks this before writing anything. pendingRampResolve is kept so a
+    // superseded ramp's JS promise can be resolved immediately instead of
+    // left hanging forever (the caller `await`s it).
+    private var rampTimer: Timer?
+    private var rampGeneration: UInt64 = 0
+    private var pendingRampResolve: RCTPromiseResolveBlock?
     private var crossfadeEnabled: Bool = false
     // Split to match Audio Ramp's granularity (On Play / On Skip / End of
     // Track each have their own duration) — crossfade only ever fires on a
@@ -1820,6 +1831,12 @@ class AudioEngine: RCTEventEmitter {
 
     @objc(setVolume:resolver:rejecter:)
     func setVolume(_ vol: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // A direct setVolume call always means "I want this volume NOW" —
+        // cancel any ramp still in flight so it can't win a race and
+        // overwrite this a moment later on its next tick. Resolves the
+        // superseded ramp's own promise (not reject) so whatever JS code is
+        // still awaiting it doesn't hang.
+        cancelActiveRampLocked()
         volume = vol.floatValue
         // Was `activeNode.volume = volume` — see currentGainCorrection's
         // comment for why that silently discarded Match Volume Between
@@ -1834,6 +1851,90 @@ class AudioEngine: RCTEventEmitter {
     @objc(getVolume:rejecter:)
     func getVolume(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         resolve(volume)
+    }
+
+    // Invalidates whatever ramp (if any) currently owns rampTimer and
+    // immediately resolves its promise — shared by setVolume, cancelVolumeRamp,
+    // and rampVolume itself (a new ramp starting supersedes the old one the
+    // same way a direct setVolume does). Must only be called on the main
+    // thread/queue, same as everything else touching activeNode.
+    private func cancelActiveRampLocked() {
+        rampTimer?.invalidate()
+        rampTimer = nil
+        rampGeneration &+= 1
+        if let prevResolve = pendingRampResolve {
+            pendingRampResolve = nil
+            prevResolve(nil)
+        }
+    }
+
+    // Replaces JS's old ~25-steps/sec loop of individual setVolume() bridge
+    // calls (see PlaybackService.js's fadeVol) with ONE bridge call that
+    // drives the whole ramp natively via a single Timer. Two real problems
+    // that loop had on-device, especially under any JS-thread/bridge load
+    // (a sideloaded/LiveContainer build has no reason to be faster than a
+    // normal build here): (1) each step is its own async round-trip, so if
+    // the bridge falls behind, steps bunch up or land late — audible as
+    // "cuts up and down" / stutter rather than a smooth curve; (2) it's ~25x
+    // the bridge traffic of this for the exact same audible result. Running
+    // the timer here means the ramp's timing is immune to whatever the JS
+    // thread is doing at that moment. Same raised-cosine ("S-curve") easing
+    // as before — eases both ends, moves fastest through the middle, reads
+    // as smoother than linear because loudness perception is roughly
+    // logarithmic, not linear.
+    @objc(rampVolume:to:duration:resolver:rejecter:)
+    func rampVolume(_ from: NSNumber, to: NSNumber, duration: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        cancelActiveRampLocked()
+        let fromVal = max(0, min(1, from.floatValue))
+        let toVal = max(0, min(1, to.floatValue))
+        let dur = max(0, duration.doubleValue)
+
+        volume = fromVal
+        activeNode.volume = fromVal * currentGainCorrection
+
+        if dur <= 0.02 {
+            volume = toVal
+            activeNode.volume = toVal * currentGainCorrection
+            resolve(nil)
+            return
+        }
+
+        rampGeneration &+= 1
+        let myGeneration = rampGeneration
+        pendingRampResolve = resolve
+        let start = Date()
+        // 1/60s tick — smooth without being any more bridge/CPU traffic
+        // than a single scheduled Timer regardless of interval; the actual
+        // volume math is trivial.
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self = self, self.rampGeneration == myGeneration else { t.invalidate(); return }
+            let elapsed = Date().timeIntervalSince(start)
+            let progress = min(1.0, dur > 0 ? elapsed / dur : 1.0)
+            let eased = Float((1 - cos(progress * Double.pi)) / 2)
+            let v = fromVal + (toVal - fromVal) * eased
+            self.volume = v
+            self.activeNode.volume = v * self.currentGainCorrection
+            if progress >= 1.0 {
+                t.invalidate()
+                if self.rampGeneration == myGeneration {
+                    self.rampTimer = nil
+                    self.pendingRampResolve = nil
+                }
+                resolve(nil)
+            }
+        }
+        rampTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    // Lets JS cancel a ramp without also forcing a specific final volume
+    // (setVolume() does both at once) — not currently called from JS but
+    // kept as an explicit escape hatch alongside rampVolume rather than
+    // relying only on the implicit cancel-on-next-setVolume behavior.
+    @objc(cancelVolumeRamp:rejecter:)
+    func cancelVolumeRamp(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        cancelActiveRampLocked()
+        resolve(nil)
     }
 
     // Shared by getProgress and the progress timer — see

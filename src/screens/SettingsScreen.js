@@ -13,7 +13,8 @@ import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import ScreenBackground from '../components/ScreenBackground';
-import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT } from '../utils/eq';
+import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay } from '../utils/eq';
+import { applyEQPreset } from '../context/PlaybackContext';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
 // in storage.js for the default-';' reasoning).
@@ -46,6 +47,7 @@ import {
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
+    getEQOverrides, setEQOverrides,
     getShuffleMode,
     getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch,
     getPrevButtonMode, setPrevButtonMode,
@@ -65,7 +67,7 @@ const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 
 export default function SettingsScreen() {
-    const { changeShuffleMode } = usePlayback();
+    const { changeShuffleMode, eqPresetId } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
     const s = useMemo(() => makeStyles(base), [base]);
@@ -78,9 +80,16 @@ export default function SettingsScreen() {
     const [rampPause, setRampPause] = useState(false);
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
+    const [eqOverrides, setEO] = useState({});
     const [showNewEQ, setShowNewEQ] = useState(false);
+    // null editingId = creating a brand new custom preset. Non-null +
+    // editingIsBuiltIn = editing/overwriting a built-in (via eqOverrides).
+    // Non-null + !editingIsBuiltIn = editing an existing custom preset in place.
+    const [editingId, setEditingId] = useState(null);
+    const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
+    const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
@@ -136,6 +145,7 @@ export default function SettingsScreen() {
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
             setHP(await getHiddenPresets());
+            setEO(await getEQOverrides());
             setShuffleTypePref(await getShuffleMode());
             setKeepPriority(await getKeepPriorityOnPlaylistSwitch());
             setAlbumFromFolderState(await getAlbumFromFolder());
@@ -145,24 +155,85 @@ export default function SettingsScreen() {
         })();
     }, []);
 
-    const togglePreset = async (id) => {
+    const togglePresetVisible = async (id) => {
         const next = hiddenPresets.includes(id)
             ? hiddenPresets.filter(x => x !== id)
             : [...hiddenPresets, id];
         setHP(next); await setHiddenPresets(next);
     };
 
-    const deletePreset = async (id) => {
+    // Built-ins can only be hidden (above), never actually removed from the
+    // list — they're baked into BUILT_IN_PRESETS. This is for custom
+    // (user-created) presets only.
+    const deleteCustomPreset = async (id) => {
         const next = customPresets.filter(p => p.id !== id);
         setCP(next); await setCustomPresets(next);
     };
 
-    const saveNewPreset = async () => {
-        if (!newName.trim()) return;
-        const id = 'custom_' + Date.now();
-        const next = [...customPresets, { id, name: newName.trim(), bands: [...newBands] }];
-        setCP(next); await setCustomPresets(next);
-        setShowNewEQ(false); setNewName(''); setNewBands(new Array(BAND_COUNT).fill(0));
+    const closeEQSheet = () => {
+        setShowNewEQ(false);
+        setEditingId(null);
+        setEditingIsBuiltIn(false);
+        setNewName('');
+        setNewBands(new Array(BAND_COUNT).fill(0));
+    };
+
+    const openNewPresetSheet = () => {
+        setEditingId(null);
+        setEditingIsBuiltIn(false);
+        setNewName('');
+        setNewBands(new Array(BAND_COUNT).fill(0));
+        setShowNewEQ(true);
+    };
+
+    // Tapping any preset row (built-in or custom) opens the same
+    // band-by-band editor, pre-filled with that preset's current bands
+    // (its override, if it has one).
+    const openEditPresetSheet = (preset) => {
+        setEditingId(preset.id);
+        setEditingIsBuiltIn(!!preset.isBuiltIn);
+        setNewName(preset.name);
+        setNewBands([...preset.bands]);
+        setShowNewEQ(true);
+    };
+
+    // Editing a built-in overwrites it in place via eqOverrides (see
+    // eq.js/storage.js) rather than spinning off a separate custom preset —
+    // per request. Editing an existing custom preset updates it in place.
+    // No existing editingId at all means a genuinely new custom preset,
+    // same as before.
+    const savePreset = async () => {
+        if (editingIsBuiltIn && editingId) {
+            const nextOverrides = { ...eqOverrides, [editingId]: [...newBands] };
+            setEO(nextOverrides); await setEQOverrides(nextOverrides);
+        } else if (editingId) {
+            const next = customPresets.map(p => p.id === editingId ? { ...p, name: newName.trim() || p.name, bands: [...newBands] } : p);
+            setCP(next); await setCustomPresets(next);
+        } else {
+            if (!newName.trim()) return;
+            const id = 'custom_' + Date.now();
+            const next = [...customPresets, { id, name: newName.trim(), bands: [...newBands] }];
+            setCP(next); await setCustomPresets(next);
+        }
+        // If the preset just edited is the one actually playing right now,
+        // refresh the live EQ immediately instead of the change only
+        // taking effect the next time a preset gets picked.
+        if (editingId && eqPresetId === editingId) applyEQPreset(eqPresetId);
+        closeEQSheet();
+    };
+
+    // "reset EQ to normal" for an overwritten built-in — restores its
+    // original BUILT_IN_PRESETS bands. The preset itself stays right where
+    // it was in the list (not deleted), just no longer overridden.
+    const resetEditingPresetToDefault = async () => {
+        if (!editingIsBuiltIn || !editingId) return;
+        const builtIn = BUILT_IN_PRESETS.find(p => p.id === editingId);
+        if (!builtIn) return;
+        const nextOverrides = { ...eqOverrides };
+        delete nextOverrides[editingId];
+        setEO(nextOverrides); await setEQOverrides(nextOverrides);
+        setNewBands([...builtIn.bands]);
+        if (eqPresetId === editingId) applyEQPreset(eqPresetId);
     };
 
     const MODES = [
@@ -262,30 +333,37 @@ export default function SettingsScreen() {
                     builder below (sliders per BAND_HZ), already wired to
                     getCustomPresets/setCustomPresets. */}
                 <Section title="EQ Presets">
+                    {/* Built-ins and custom presets now share one 2-column
+                        grid instead of built-ins living in a grid above a
+                        separate full-width list of customs — tapping a
+                        preset's name (not its checkbox, not its ✕) opens
+                        the same band editor for either kind. Each row is a
+                        plain View with three independently-tappable
+                        children (checkbox / name / delete) instead of one
+                        big TouchableOpacity, since a name tap now needs to
+                        mean something different from a checkbox tap. */}
                     <View style={s.eqGrid}>
-                        {BUILT_IN_PRESETS.map(p => (
-                            <TouchableOpacity key={p.id} style={s.eqChip} onPress={() => togglePreset(p.id)}>
-                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
-                                </View>
-                                <Text style={s.eqChipName} numberOfLines={1}>{p.name}</Text>
-                            </TouchableOpacity>
+                        {displayPresets.map(p => (
+                            <View key={p.id} style={s.eqChip}>
+                                <TouchableOpacity onPress={() => togglePresetVisible(p.id)} hitSlop={HIT} style={s.checkWrapGrid}>
+                                    <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                        {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                                    </View>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={s.eqChipNameWrap} onPress={() => openEditPresetSheet(p)}>
+                                    <Text style={s.eqChipName} numberOfLines={1}>
+                                        {p.name}{p.isOverridden ? ' •' : ''}
+                                    </Text>
+                                </TouchableOpacity>
+                                {!p.isBuiltIn && (
+                                    <TouchableOpacity onPress={() => deleteCustomPreset(p.id)} hitSlop={HIT} style={s.eqDelWrap}>
+                                        <Text style={s.eqDel}>✕</Text>
+                                    </TouchableOpacity>
+                                )}
+                            </View>
                         ))}
                     </View>
-                    {customPresets.length > 0 && customPresets.map(p => (
-                        <View key={p.id} style={s.eqRow}>
-                            <TouchableOpacity onPress={() => togglePreset(p.id)} style={s.checkWrap}>
-                                <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                    {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 12, fontWeight: '700' }}>✓</Text>}
-                                </View>
-                            </TouchableOpacity>
-                            <Text style={s.eqName}>{p.name}</Text>
-                            <TouchableOpacity onPress={() => deletePreset(p.id)} hitSlop={HIT}>
-                                <Text style={s.eqDel}>✕</Text>
-                            </TouchableOpacity>
-                        </View>
-                    ))}
-                    <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={() => setShowNewEQ(true)}>
+                    <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
                         <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                     </TouchableOpacity>
                 </Section>
@@ -772,13 +850,22 @@ export default function SettingsScreen() {
                 showNewEQ to true, but the sheet it's supposed to open was
                 dead code, so nothing ever appeared. That's the actual
                 "adding a custom preset doesn't work" bug. */}
-            <BottomSheet visible={showNewEQ} onClose={() => setShowNewEQ(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>New EQ Preset</Text>}>
+            <BottomSheet visible={showNewEQ} onClose={closeEQSheet} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>{editingId ? 'Edit EQ Preset' : 'New EQ Preset'}</Text>}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
-                    <TextInput
-                        style={[s.nameInput, { borderColor: theme.accent }]}
-                        value={newName} onChangeText={setNewName}
-                        placeholder="Preset name..." placeholderTextColor="#444"
-                    />
+                    {editingIsBuiltIn ? (
+                        // Built-in presets keep their fixed name — editing
+                        // overwrites its bands, not its identity — so this
+                        // is a plain label, not an editable field.
+                        <View style={[s.nameInput, { borderColor: base.border }]}>
+                            <Text style={{ color: base.textFaint, fontSize: 15 }}>{newName}</Text>
+                        </View>
+                    ) : (
+                        <TextInput
+                            style={[s.nameInput, { borderColor: theme.accent }]}
+                            value={newName} onChangeText={setNewName}
+                            placeholder="Preset name..." placeholderTextColor="#444"
+                        />
+                    )}
                     <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                         {newBands.map((val, i) => (
                             <View key={i} style={s.bandRow}>
@@ -793,8 +880,13 @@ export default function SettingsScreen() {
                             </View>
                         ))}
                     </ScrollView>
-                    <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={saveNewPreset}>
-                        <Text style={[s.saveBtnText, { color: theme.onAccent }]}>Save Preset</Text>
+                    {editingIsBuiltIn && !!eqOverrides[editingId] && (
+                        <TouchableOpacity style={[s.resetBtn, { borderColor: base.border }]} onPress={resetEditingPresetToDefault}>
+                            <Text style={[s.resetBtnText, { color: base.textFaint }]}>Reset to Default</Text>
+                        </TouchableOpacity>
+                    )}
+                    <TouchableOpacity style={[s.saveBtn, { backgroundColor: theme.accent }]} onPress={savePreset}>
+                        <Text style={[s.saveBtnText, { color: theme.onAccent }]}>{editingId ? 'Save Changes' : 'Save Preset'}</Text>
                     </TouchableOpacity>
                 </KeyboardAvoidingView>
             </BottomSheet>
@@ -883,14 +975,23 @@ const makeStyles = (base) => StyleSheet.create({
     sortChipText: { color: base.textDim, fontSize: 13, fontWeight: '600' },
     swatch: { justifyContent: 'center', alignItems: 'center' },
     swatchActive: { borderWidth: 3, borderColor: base.text },
+    // Explicit fixed widths for the checkbox/delete-✕ instead of letting
+    // them size from content — with a delete icon now potentially sharing
+    // the same half-width chip as a checkbox + name (customs didn't
+    // previously need to fit all three in 50% width, only checkbox+name
+    // did), an unconstrained icon width was the main way this could start
+    // wrapping/overlapping onto two lines depending on name length. The
+    // name itself gets flex:1 on its own wrapping TouchableOpacity so it's
+    // the only element that ever shrinks/truncates (numberOfLines={1}),
+    // never the checkbox or delete icon.
     eqGrid: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 8, paddingHorizontal: 8 },
-    eqChip: { width: '50%', flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12 },
-    eqChipName: { color: base.text, fontSize: 14, marginLeft: 10, flexShrink: 1 },
-    eqRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderTopWidth: 1, borderTopColor: base.border },
-    checkWrap: { marginRight: 14 },
+    eqChip: { width: '50%', flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12, minHeight: 40 },
+    checkWrapGrid: { width: 22, marginRight: 10 },
+    eqChipNameWrap: { flex: 1, paddingRight: 4 },
+    eqChipName: { color: base.text, fontSize: 14 },
     checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, justifyContent: 'center', alignItems: 'center' },
-    eqName: { flex: 1, color: base.text, fontSize: 15 },
-    eqDel: { color: base.textFaint, fontSize: 16 },
+    eqDelWrap: { width: 22, alignItems: 'center' },
+    eqDel: { color: base.textFaint, fontSize: 15 },
     addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
     addBtnText: { fontSize: 15, fontWeight: '600' },
     locBlock: { padding: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: base.border },
@@ -905,4 +1006,6 @@ const makeStyles = (base) => StyleSheet.create({
     bandVal: { color: base.textDim, fontSize: 11, width: 40, textAlign: 'right' },
     saveBtn: { borderRadius: 14, padding: 16, alignItems: 'center', marginTop: 14 },
     saveBtnText: { fontSize: 16, fontWeight: '700' },
+    resetBtn: { borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 10, borderWidth: 1 },
+    resetBtnText: { fontSize: 14, fontWeight: '600' },
 });

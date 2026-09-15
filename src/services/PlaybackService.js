@@ -73,6 +73,13 @@ export function isTransitionLocked() {
 export function forceReleaseFade() {
     activeFadeId = null;
     naturalEndFadeOwner = null;
+    // Belt-and-suspenders alongside native's own cancel-on-next-setVolume/
+    // rampVolume behavior (see AudioEngine.swift): most callers of this
+    // immediately follow up with their own setVolume/fadeVol, which already
+    // supersedes whatever ramp was running — but not every caller does, and
+    // this makes those cases correct too instead of relying on it being
+    // incidental. Fire-and-forget; nothing here needs to await it.
+    AudioEngine.cancelVolumeRamp().catch(() => { });
 }
 
 // Instead of silently dropping a play/pause/skip that arrives while a ramp
@@ -95,32 +102,30 @@ function drainPending() {
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Used to run the ENTIRE ramp as one native call (see AudioEngine.swift's
+// rampVolume) instead of this function looping ~25 setVolume() bridge calls
+// a second itself. That loop was the likely cause of "the ramp glitches,
+// sounds like cuts up and down, or delays ramping up" — every single step
+// was its own async round-trip, so if the bridge fell behind (any JS-thread
+// load, easy to hit mid-skip/mid-transition, which is exactly when this
+// runs), steps bunched up or landed late instead of at their scheduled
+// time. Running the curve natively makes it immune to that. Same
+// raised-cosine ("S-curve") easing as before — see the native side's own
+// comment for why cosine over plain linear.
+//
+// Ownership (isFadeOwner) is still checked once, right before handing off
+// to native — if this fade was already superseded before it even started,
+// skip calling rampVolume at all rather than briefly hijacking the audio
+// with a fade nothing wants anymore. Once the native call is in flight, its
+// own supersede-on-next-setVolume/rampVolume behavior (see
+// cancelActiveRampLocked in AudioEngine.swift) is what protects it from
+// then on — not a per-step JS check anymore, since there are no more
+// per-step round trips to check between.
 async function fadeVol(from, to, sec, ownerId) {
-    if (sec <= 0.05) { if (isFadeOwner(ownerId)) { AudioEngine.setVolume(to).catch(() => { }); } return; }
-    const STEPS = Math.max(10, Math.round(sec * 25));
-    const totalMs = sec * 1000;
-    const start = Date.now();
-    for (let i = 1; i <= STEPS; i++) {
-        if (!isFadeOwner(ownerId)) return;
-        const t = i / STEPS;
-        // Requested: smoother, sin-wave ramping instead of a linear ramp.
-        // Raised-cosine ("S-curve") easing — eases in and out of the fade
-        // instead of moving at a constant rate the whole way. A straight
-        // linear ramp sounds uneven because loudness perception is roughly
-        // logarithmic, not linear: the same-sized volume STEP reads as a
-        // bigger jump near the quiet end than near the loud end, so a
-        // linear fade-out in particular can sound like it "lands" abruptly
-        // at the end. This eases both ends of the ramp gently and moves
-        // fastest through the middle, which reads as smoother without
-        // needing full dB-based volume math.
-        const eased = (1 - Math.cos(t * Math.PI)) / 2;
-        AudioEngine.setVolume(Math.max(0, Math.min(1, from + (to - from) * eased))).catch(() => { });
-        if (i < STEPS) {
-            const targetElapsed = totalMs * t;
-            const wait = Math.max(0, targetElapsed - (Date.now() - start));
-            await sleep(wait);
-        }
-    }
+    if (!isFadeOwner(ownerId)) return;
+    try {
+        await AudioEngine.rampVolume(from, to, Math.max(0, sec));
+    } catch { }
 }
 
 async function waitForPlaying(timeoutMs = 4000) {
@@ -723,7 +728,23 @@ export async function skipWithRamp(direction = 'next') {
             return;
         }
 
-        await waitForPlaying();
+        // Real bug found here: this called waitForPlaying() but never
+        // looked at what it returned, then unconditionally ran the full
+        // ramp-in regardless. playWithRamp (above) already had to fix this
+        // exact class of bug for its own ramp-in — waitForPlaying can
+        // legitimately time out (audio not CONFIRMED playing yet, plausible
+        // right after a skip while the next file is still loading) without
+        // meaning playback never started; it often starts a moment later.
+        // Running the full ramp-in regardless means it can finish climbing
+        // to full volume BEFORE there's anything audible for it to apply
+        // to — so the instant sound actually starts, it's already at full
+        // volume. That reads exactly like "skip just jumps straight to the
+        // full-volume song," not like a ramp that happened too fast to
+        // notice — because audibly, no ramp happened at all. This mirrors
+        // playWithRamp's fix: check the result, and if it timed out, do a
+        // short catch-up fade instead of the full configured duration
+        // rather than either a hard cut or an unramped full-length wait.
+        const reallyPlaying = await waitForPlaying();
         if (!isFadeOwner(id)) return;
 
         if (dur > 0.05) {
@@ -739,9 +760,19 @@ export async function skipWithRamp(direction = 'next') {
             // pause."
             rampInActive = true;
             try {
-                try { await AudioEngine.setVolume(0); } catch { }
-                try { await AudioEngine.play(); } catch { }
-                await fadeVol(0, 1, dur, id);
+                if (!reallyPlaying) {
+                    await fadeVol(0, 1, Math.min(0.4, dur), id);
+                    try { await AudioEngine.setVolume(1); } catch { }
+                } else {
+                    try { await AudioEngine.setVolume(0); } catch { }
+                    try { await AudioEngine.play(); } catch { }
+                    // Same settle margin as playWithRamp's ramp-in, and for
+                    // the same reason — see its comment. State.Playing (what
+                    // waitForPlaying just confirmed) can fire slightly ahead
+                    // of audio actually reaching the speaker.
+                    await sleep(320);
+                    await fadeVol(0, 1, dur, id);
+                }
             } finally {
                 rampInActive = false;
             }

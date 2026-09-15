@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById } from '../utils/eq';
-import { getCustomPresets } from '../utils/storage';
+import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
@@ -34,10 +34,13 @@ const setQueueLoop = async () => {
 // that changes.
 let qidCounter = 0;
 const stampQid = (track) => ({ ...track, _qid: `q${++qidCounter}` });
-async function applyEQPreset(id) {
+// Exported so SettingsScreen can re-apply immediately after editing whatever
+// preset is currently active, instead of the change only taking effect the
+// next time a preset gets selected.
+export async function applyEQPreset(id) {
     try {
-        const custom = await getCustomPresets();
-        const preset = getPresetById(id, custom);
+        const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+        const preset = getPresetById(id, custom, overrides);
         await AudioEngine.setEQBands(preset.bands);
     } catch { }
 }

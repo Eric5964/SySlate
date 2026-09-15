@@ -100,6 +100,13 @@ export const getCustomPresets = () => safe(() => AsyncStorage.getItem('custom_eq
 export const setCustomPresets = (p) => safe(() => AsyncStorage.setItem('custom_eq_presets', JSON.stringify(p)), null);
 export const getHiddenPresets = () => safe(() => AsyncStorage.getItem('hidden_eq_presets').then(v => v ? JSON.parse(v) : []), []);
 export const setHiddenPresets = (p) => safe(() => AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(p)), null);
+// Per-built-in-preset band overrides — { [builtInPresetId]: bands[] } — so
+// editing a built-in preset (e.g. "Bass Boost") overwrites it in place
+// instead of spinning off a separate custom preset, while still being
+// resettable back to the original BUILT_IN_PRESETS values (see eq.js's
+// getPresetById/mergePresetsForDisplay) without deleting the preset itself.
+export const getEQOverrides = () => safe(() => AsyncStorage.getItem('eq_preset_overrides').then(v => v ? JSON.parse(v) : {}), {});
+export const setEQOverrides = (o) => safe(() => AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(o)), null);
 export const getPlaylistViewFormat = () => safe(() => AsyncStorage.getItem('playlist_view_format').then(v => v ?? 'list'), 'list');
 export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('playlist_view_format', f), null);
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);

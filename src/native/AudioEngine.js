@@ -11,7 +11,7 @@
 // original handoff doc's boundary note. This file exists standalone
 // until you're ready to do that swap deliberately.
 
-import { NativeModules, NativeEventEmitter } from 'react-native';
+import { NativeModules, NativeEventEmitter, AppState } from 'react-native';
 import { useEffect, useRef, useState } from 'react';
 
 const { AudioEngine: NativeAudioEngine } = NativeModules;
@@ -110,6 +110,12 @@ const AudioEngine = {
     seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),
     getVolume: () => NativeAudioEngine.getVolume(),
+    // Runs the whole from->to fade natively over one bridge call instead of
+    // PlaybackService.js looping setVolume() ~25x/sec itself — see
+    // AudioEngine.swift's rampVolume for why (bridge jitter under load was
+    // reading as "cuts up and down"/delays in the ramp).
+    rampVolume: (from, to, seconds) => NativeAudioEngine.rampVolume(from, to, seconds),
+    cancelVolumeRamp: () => NativeAudioEngine.cancelVolumeRamp(),
     getProgress: () => NativeAudioEngine.getProgress(),
     getState: () => NativeAudioEngine.getState(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
@@ -148,7 +154,17 @@ export function useProgress(updateInterval = 1000) {
         };
         tick();
         const id = setInterval(tick, updateInterval);
-        return () => { cancelled = true; clearInterval(id); };
+        // Re-fetch immediately on foreground instead of waiting for the next
+        // interval tick (up to `updateInterval` late) — mainly matters
+        // alongside usePlaybackState's own foreground re-sync below: after
+        // a route-change/interruption that happened while backgrounded
+        // (e.g. a Bluetooth disconnect), this gets the real position back
+        // in front of the user as soon as the app is looked at again rather
+        // than leaving a stale reading on screen for up to a second.
+        const appSub = AppState.addEventListener('change', (state) => {
+            if (state === 'active') tick();
+        });
+        return () => { cancelled = true; clearInterval(id); appSub.remove(); };
     }, [updateInterval]);
     return progress;
 }
@@ -163,7 +179,26 @@ export function usePlaybackState() {
         let cancelled = false;
         NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });
         const sub = addEventListener(Event.PlaybackState, ({ state }) => setPlaybackState({ state }));
-        return () => { cancelled = true; sub.remove(); };
+        // Real gap found here: this only ever fetched the true state once,
+        // on mount — after that it trusted the PlaybackState event stream
+        // exclusively, for the lifetime of the app. That's a problem
+        // specifically around backgrounding: a native state change that
+        // happens while the app is backgrounded/suspended (e.g. handleRouteChange's
+        // pauseInternal() call on a Bluetooth disconnect — see
+        // AudioEngine.swift) sends its event through the same RN bridge
+        // that a backgrounded/suspended app isn't guaranteed to be pumping
+        // at that moment. If that specific event never lands, this hook's
+        // belief silently goes stale — "playing" forever, matching exactly
+        // "shows the song as playing but has no audio" after a disconnect.
+        // Re-fetching the real state directly (not waiting on an event)
+        // every time the app comes back to the foreground makes this
+        // self-correcting regardless of whether the event made it through.
+        const appSub = AppState.addEventListener('change', (nextState) => {
+            if (nextState === 'active') {
+                NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });
+            }
+        });
+        return () => { cancelled = true; sub.remove(); appSub.remove(); };
     }, []);
     return playbackState;
 }
