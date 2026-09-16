@@ -102,6 +102,22 @@ function drainPending() {
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// "Minimum is double the longest crossfade/ramp duration" — for the plain
+// (non-crossfade) ramp paths below. A ramp that's a meaningful fraction of
+// the whole track's length doesn't really "ramp in then play normally,"
+// it's most of the track — e.g. a 3s clip with a 2s ramp is ramping for
+// 2/3 of its length. Checked against whatever's actually loaded right now
+// via getProgress() rather than something passed in, so this covers every
+// call site (resume, skip, natural end) from one place. A duration of 0
+// (not yet known) doesn't block — better to ramp than to silently guess
+// wrong before the real duration has even loaded.
+async function isTooShortToRamp(rampSeconds) {
+    try {
+        const { duration } = await AudioEngine.getProgress();
+        return duration > 0 && duration < rampSeconds * 2;
+    } catch { return false; }
+}
+
 // Used to run the ENTIRE ramp as one native call (see AudioEngine.swift's
 // rampVolume) instead of this function looping ~25 setVolume() bridge calls
 // a second itself. That loop was the likely cause of "the ramp glitches,
@@ -242,7 +258,7 @@ async function checkRampWindow(position, duration) {
                 // making the audible ramp feel rushed. Also no longer capped
                 // at 2.5s — respects the real configured duration, matching
                 // what a genuine track-to-track transition gets.
-                if (ramp > 0.05) {
+                if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
                     naturalFadeInActive = true;
                     try {
                         try { await AudioEngine.setVolume(0); } catch { }
@@ -339,7 +355,7 @@ export async function fadeOutCurrentIfPlaying(dur) {
         if (!wasPlaying) return;
         const id = claimFade();
         try {
-            if (dur > 0.05) {
+            if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
                 try { await AudioEngine.setVolume(1); } catch { }
                 await fadeVol(1, 0, dur, id);
             }
@@ -361,7 +377,20 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
         // toggle too, which meant turning "Ramp on Pause" off silently also
         // killed ramping on resume, skip-while-paused, and effectively the
         // whole ramp-in side — that was wrong scope, not intended.
-        if (ramp > 0.05 && (preClaimedId || activeFadeId === null)) {
+        // Was `ramp > 0.05 && (preClaimedId || activeFadeId === null)` — real
+        // bug, and very likely the actual mechanism behind "lock screen
+        // play doesn't ramp, just jumps the position" plus the standing
+        // "ramping stops working after a long session/idle" reports.
+        // claimFade() always safely supersedes whatever fade is currently
+        // active (see its own definition — it's designed to be called
+        // unconditionally), so requiring activeFadeId === null here wasn't
+        // preventing a race, it was just refusing to ramp at all whenever
+        // ANY fade — including a stale one left over from an interrupted
+        // pause/background transition that never got around to releasing
+        // itself — happened to still be marked active. A genuinely new
+        // play action should always claim its own fade fresh, not defer to
+        // whatever's already there.
+        if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
             const id = preClaimedId ?? claimFade();
             // Set from here rather than just around fadeVol below — a pause
             // request landing during waitForPlaying/the settle sleep (both
@@ -528,7 +557,14 @@ export async function pauseWithRamp() {
     try {
         const useFade = await getRampOnPause();
         const ramp = await getAudioRamp();
-        if (useFade && ramp > 0.05 && activeFadeId === null) {
+        // Same real bug as playWithRamp's own activeFadeId === null guard
+        // above (see its comment) — claimFade() already safely supersedes
+        // whatever's active, so this was just refusing to ramp out at all
+        // whenever a stale fade claim was still sitting there, hard-cutting
+        // straight to silence instead. Matches "ramping cuts early" /
+        // "doesn't go all the way to 0" reports — the else branch below is
+        // an instant AudioEngine.pause() with no fade whatsoever.
+        if (useFade && ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
             const id = claimFade();
             await fadeVol(1, 0, ramp, id);
             releaseFade(id);
@@ -696,7 +732,7 @@ export async function skipWithRamp(direction = 'next') {
         // returns before ever reaching here.
         skipLockExpectedDurationMs = dur * 1000;
         try { await AudioEngine.setVolume(1); } catch { }
-        if (dur > 0.05) {
+        if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
             skipFadeOutActive = true;
             try {
                 await fadeVol(1, 0, dur, id);
@@ -747,7 +783,7 @@ export async function skipWithRamp(direction = 'next') {
         const reallyPlaying = await waitForPlaying();
         if (!isFadeOwner(id)) return;
 
-        if (dur > 0.05) {
+        if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
             // Same gap that playWithRamp's ramp-in already guards against
             // (see rampInActive comment above): this ramp-in wasn't setting
             // rampInActive at all, so a pause landing here fell through to
@@ -844,7 +880,7 @@ export async function PlaybackService() {
             naturalEndFadeOwner = null;
             try { await AudioEngine.setVolume(0); } catch { }
             const ramp = await getEndOfTrackRamp();
-            if (ramp > 0.05) {
+            if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
                 // Same issue as playWithRamp had: waitForPlaying's result
                 // was never checked, so if it timed out (audio not
                 // confirmed playing within the timeout — plausible right

@@ -316,6 +316,26 @@ class AudioEngine: RCTEventEmitter {
         normalizerDesc.componentFlags = 0
         normalizerDesc.componentFlagsMask = 0
         normalizerNode = AVAudioUnitEffect(audioComponentDescription: normalizerDesc)
+        // Apple's DynamicsProcessor stock defaults (~-20dB threshold, a
+        // ~0.1ms near-instant attack, and a 2:1 downward expander below
+        // -80dB) are tuned more for broadcast/voice leveling than
+        // transparent music normalization — that near-instant attack in
+        // particular audibly "pumps"/breathes on transients (kicks,
+        // plosives), and the expander fights the exact thing Volume
+        // Normalization is trying to do (keep quiet passages audible), not
+        // helping it. Matches "volume normalization sounds weird." Gentler,
+        // more transparent settings: raise the threshold so it only
+        // engages on genuinely loud peaks instead of constantly reshaping
+        // the whole track, slow the attack down enough to not react to
+        // individual transients, and disable the expander entirely.
+        if let unit = normalizerNode.audioUnit {
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -12.0, 0)
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 5.0, 0)
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_ExpansionRatio, kAudioUnitScope_Global, 0, 1.0, 0)
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.02, 0)
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.15, 0)
+            AudioUnitSetParameter(unit, kDynamicsProcessorParam_MasterGain, kAudioUnitScope_Global, 0, 0.0, 0)
+        }
 
         engine.attach(nodeA)
         engine.attach(nodeB)
@@ -729,7 +749,7 @@ class AudioEngine: RCTEventEmitter {
         let silenceThreshold: Float = 0.006 // roughly -44 dBFS
         let channels = Int(format.channelCount)
 
-        func rms(atFrame frame: AVAudioFramePosition) -> Float? {
+        func rms(atFrame frame: AVAudioFramePosition, chunkFrames: AVAudioFrameCount = 4096) -> Float? {
             guard frame >= 0, frame < totalFrames, channels > 0,
                   let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else { return nil }
             file.framePosition = frame
@@ -773,12 +793,23 @@ class AudioEngine: RCTEventEmitter {
 
         var gain: Float = 1.0
         if betweenTrackNormEnabled, totalFrames > 0 {
-            let sampleCount = 12
+            // Was 12 samples of a 4096-frame chunk each — ~93ms per sample,
+            // ~1.1s of actual audio measured out of a whole song. That's
+            // small enough to easily land unrepresentatively (a quiet
+            // bridge, one loud chorus hit) and skew the average either way
+            // — "make Match Volume more accurate" tracks directly to this:
+            // more, and longer, sample windows make the average far less
+            // sensitive to any single point landing somewhere unusual, for
+            // a trivial extra cost (still only reading a small fraction of
+            // the file — 30 * 16384 frames is ~11s of audio out of a whole
+            // song, and read/decoded, not the whole file).
+            let sampleCount = 30
+            let sampleChunkFrames: AVAudioFrameCount = 16384
             var rmsSum: Float = 0
             var rmsSamples = 0
             for i in 0..<sampleCount {
                 let framePos = AVAudioFramePosition(Double(totalFrames) * (Double(i) + 0.5) / Double(sampleCount))
-                if let r = rms(atFrame: framePos), r > 0.0005 { // skip near-silent chunks so they don't drag the average down
+                if let r = rms(atFrame: framePos, chunkFrames: sampleChunkFrames), r > 0.0005 { // skip near-silent chunks so they don't drag the average down
                     rmsSum += r
                     rmsSamples += 1
                 }
@@ -1126,7 +1157,19 @@ class AudioEngine: RCTEventEmitter {
         }
 
         let crossfadeDuration = isManualSkip ? crossfadeDurationSkipSeconds : crossfadeDurationEndOfTrackSeconds
-        if crossfadeEnabled, crossfadeDuration > 0.05, autoPlay, direction == 1, !isCrossfading, state == .playing {
+        // Added: guard against the INCOMING track itself being too short for
+        // the configured crossfade duration to make sense on — e.g.
+        // crossfading over 4s into a 3s clip means the crossfade is still
+        // ramping up after the track has already naturally ended.
+        // scheduleCrossfadeLeadIn already guards the OUTGOING side (won't
+        // even arm the lead-in timer if too little of the current track is
+        // left — see its own fireIn > 0.1 check); this is the missing other
+        // half. Minimum: the incoming track needs to be at least double the
+        // crossfade duration, same "double the longest duration" rule
+        // requested for ramping generally.
+        let incomingDuration = queue[newIndex].duration ?? 0
+        let incomingLongEnough = incomingDuration <= 0 || incomingDuration >= crossfadeDuration * 2
+        if crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, direction == 1, !isCrossfading, state == .playing {
             currentIndex = newIndex
             startCrossfade(toIndex: newIndex, duration: crossfadeDuration)
             return

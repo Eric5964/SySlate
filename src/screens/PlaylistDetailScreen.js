@@ -30,7 +30,7 @@ const SORTS = [
 export default function PlaylistDetailScreen() {
     const navigation = useNavigation();
     const route = useRoute();
-    const { playlist } = route.params;
+    const { playlist, initialCover } = route.params;
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue,
     } = usePlayback();
@@ -42,7 +42,13 @@ export default function PlaylistDetailScreen() {
     const [showSort, setShowSort] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const [cover, setCover] = useState(null);
+    // Starts from whatever the Playlists grid already had in memory for
+    // this playlist (passed through as a nav param — see openPlaylist's own
+    // comment) instead of always null. When it's available, the real cover
+    // is already on screen on the very first frame — no fetch, no
+    // prefetch, no gap at all — rather than just no longer flashing blank
+    // while it loads.
+    const [cover, setCover] = useState(initialCover ?? null);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape } = usePreferences();
 
     useEffect(() => {

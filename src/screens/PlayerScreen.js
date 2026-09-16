@@ -773,7 +773,14 @@ export default function PlayerScreen() {
                             // isn't rendered at all — not just invisible, actually
                             // absent — whenever showPlayerCover is off, same as the
                             // cover art it surrounds.
-                            <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape), shadowColor: theme.accent }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }] : null}>
+                            // Real bug found here: this override always set the
+                            // wrapper's shadow to the theme's ACCENT color, so
+                            // "shadow" was actually a colored glow (purple, etc.)
+                            // instead of a real dark drop shadow — coverShadowWrap's
+                            // own base style already has the correct shadowColor
+                            // ('#000'), same idea as the lyrics text using a dark
+                            // shadow for legibility, not an accent-colored one.
+                            <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }] : null}>
                                 <Animated.View
                                     style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, coverShadow ? null : { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
                                     pointerEvents={showingLyrics ? 'none' : 'auto'}
@@ -787,7 +794,18 @@ export default function PlayerScreen() {
                         )}
                         {lyricsData && (
                             <Animated.View
-                                style={[{ position: 'absolute', top: -60, bottom: -60, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
+                                // Real bug found here: top/bottom -60 made this
+                                // taller than (and offset 60px above) the cover art
+                                // box it's meant to replace visually — the cover is a
+                                // plain (width-56) square in normal flow, this was
+                                // absolutely positioned to start 60px above THAT and
+                                // extend 60px past its bottom. That's exactly "lyrics
+                                // aren't where they're supposed to be, shouldn't be
+                                // further up" and "should be the same size as the
+                                // cover" — matching the art's own footprint exactly
+                                // (top: 0, height: width-56) instead of guessing at a
+                                // taller offset box fixes both at once.
+                                style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <Animated.ScrollView

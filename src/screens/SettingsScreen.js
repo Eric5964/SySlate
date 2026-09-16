@@ -22,6 +22,7 @@ const ARTIST_SEPARATORS = [
     { id: ';', label: ';' },
     { id: ',', label: ',' },
     { id: '/', label: '/' },
+    { id: '\\', label: '\\' },
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
@@ -81,6 +82,12 @@ export default function SettingsScreen() {
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
     const [eqOverrides, setEO] = useState({});
+    // Built-ins that are hidden are filtered out of this grid entirely by
+    // default now, not just shown unchecked — "get rid of bundled presets"
+    // reads as wanting them actually gone from view, not just deselected
+    // in a list they still have to scroll past. This toggles them back
+    // into view (dimmed/unchecked) so there's a way to re-enable one.
+    const [showHiddenPresets, setShowHiddenPresets] = useState(false);
     const [showNewEQ, setShowNewEQ] = useState(false);
     // null editingId = creating a brand new custom preset. Non-null +
     // editingIsBuiltIn = editing/overwriting a built-in (via eqOverrides).
@@ -89,7 +96,11 @@ export default function SettingsScreen() {
     const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
-    const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
+    const displayPresets = useMemo(() => {
+        const merged = mergePresetsForDisplay(customPresets, eqOverrides);
+        if (showHiddenPresets) return merged;
+        return merged.filter(p => !hiddenPresets.includes(p.id));
+    }, [customPresets, eqOverrides, showHiddenPresets, hiddenPresets]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
@@ -156,10 +167,22 @@ export default function SettingsScreen() {
     }, []);
 
     const togglePresetVisible = async (id) => {
-        const next = hiddenPresets.includes(id)
+        const wasHidden = hiddenPresets.includes(id);
+        const next = wasHidden
             ? hiddenPresets.filter(x => x !== id)
             : [...hiddenPresets, id];
         setHP(next); await setHiddenPresets(next);
+        // Re-enabling a built-in that had been customized resets it back to
+        // its original bundled bands — "if disabled and reenabled, they are
+        // reset to their original settings." Disabling doesn't touch the
+        // override (nothing to reset yet, and toggling off and back on
+        // without ever actually re-enabling shouldn't lose anything).
+        if (wasHidden && eqOverrides[id]) {
+            const nextOverrides = { ...eqOverrides };
+            delete nextOverrides[id];
+            setEO(nextOverrides); await setEQOverrides(nextOverrides);
+            if (eqPresetId === id) applyEQPreset(id);
+        }
     };
 
     // Built-ins can only be hidden (above), never actually removed from the
@@ -374,9 +397,14 @@ export default function SettingsScreen() {
                             </View>
                         ))}
                     </View>
-                    <TouchableOpacity style={[s.addBtn, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
-                        <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
-                    </TouchableOpacity>
+                    <View style={s.eqButtonRow}>
+                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
+                            <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: base.border }]} onPress={() => setShowHiddenPresets(v => !v)}>
+                            <Text style={[s.addBtnText, { color: base.textFaint }]}>{showHiddenPresets ? 'Hide Disabled' : 'Manage Disabled'}</Text>
+                        </TouchableOpacity>
+                    </View>
                 </Section>
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
@@ -759,7 +787,18 @@ export default function SettingsScreen() {
                         <Switch value={isLight} onValueChange={toggleLightMode}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={{ paddingVertical: 16, paddingHorizontal: 16, opacity: isLight ? 0.35 : 1 }} pointerEvents={isLight ? 'none' : 'auto'}>
+                    {/* Real bug found here: this whole grid used to be
+                        dimmed AND pointerEvents="none" whenever isLight was
+                        true — meaning renderBaseSwatch's careful dark→light
+                        id mapping above was completely unreachable while in
+                        Light Mode. The only way to change hue was to flip
+                        back to dark, pick a swatch, then flip light mode
+                        back on — exactly "light mode is locked, can only
+                        change by picking a dark color then switching."
+                        Nothing else needed to change; the mapping logic was
+                        already correct, this container was just blocking
+                        all touches from ever reaching it. */}
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
                         <View style={s.swatchRow}>
                             {baseEntries.map(renderBaseSwatch)}
                         </View>
@@ -1005,6 +1044,8 @@ const makeStyles = (base) => StyleSheet.create({
     eqDel: { color: base.textFaint, fontSize: 15 },
     addBtn: { margin: 14, padding: 16, borderRadius: 12, borderWidth: 1.5, alignItems: 'center' },
     addBtnText: { fontSize: 15, fontWeight: '600' },
+    eqButtonRow: { flexDirection: 'row' },
+    eqButtonHalf: { flex: 1, margin: 7 },
     locBlock: { padding: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: base.border },
     locHeading: { color: base.textDim, fontSize: 12, fontWeight: '700', marginBottom: 4 },
     locBody: { color: base.textFaint, fontSize: 13, lineHeight: 20 },

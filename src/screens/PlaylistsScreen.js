@@ -112,7 +112,19 @@ export default function PlaylistsScreen() {
     const numCols = FORMATS.find(f => f.id === format)?.cols ?? 1;
     const fmtIcon = FORMATS.find(f => f.id === format)?.label ?? '☰';
 
-    const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item });
+    // Pass the cover URI we already have in memory (from this screen's own
+    // grid thumbnails) straight through as a nav param — see
+    // PlaylistDetailScreen's own comment on why it used the initial state
+    // for this instead of always starting from null and refetching. This
+    // is exactly the "playlist cover has to load every time, should be
+    // cached" report: the target screen's own Image.prefetch-before-render
+    // fix already stopped the BLANK-FRAME flash, but every single open
+    // still paid for a fresh AsyncStorage read + prefetch round trip before
+    // the real cover could show at all — invisible on a fast connection to
+    // fast storage, not so invisible on this setup. When we already know
+    // the answer, hand it over directly instead of making the next screen
+    // rediscover it from scratch.
+    const openPlaylist = (item) => navigation.navigate('PlaylistDetail', { playlist: item, initialCover: covers[item.path] ?? null });
 
     const persistOrder = async (newList) => {
         // Reordering only needs to persist the small order list and update
