@@ -970,11 +970,40 @@ export function PlaybackProvider({ children }) {
             const on = await getShuffleOnStorage();
             await primeNativeQueue(queue, last.index);
             fillRestOfWindow();
-            applyEQPreset(await getEQPreset(last.playlist?.path));
+            const restoredEqId = await getEQPreset(last.playlist?.path);
+            // Real bug found here: this applied the restored preset's
+            // bands to the audio engine but never told React about it —
+            // eqPresetId's own useState defaults to 'flat' and nothing
+            // here ever called setEqPresetId, so the EQ picker UI always
+            // showed "Flat" as selected after a restore even when a
+            // different preset's bands were actually the ones playing.
+            // That mismatch is what "selected EQ preset doesn't save
+            // between closing and reopening" was actually describing —
+            // the underlying setting genuinely was being restored, just
+            // not reflected anywhere the user could see it.
+            setEqPresetId(restoredEqId);
+            applyEQPreset(restoredEqId);
             if (last.position > 2) {
                 // Seeking immediately after skip was silently getting ignored —
-                // the native player hadn't finished preparing the track yet.
-                await new Promise(r => setTimeout(r, 300));
+                // the native player hadn't finished preparing the track yet. A
+                // fixed 300ms+150ms retry budget was tuned for that case (mid-
+                // session, warm app) — cold app LAUNCH is the one moment
+                // everything else (JS bundle parsing, audio session setup,
+                // this exact restore) is ALSO competing for CPU/IO, and on a
+                // sandboxed SideStore install specifically (see Settings'
+                // Music Location section), file access is slower to begin
+                // with. Poll for the track actually being ready instead of
+                // guessing a fixed delay is enough — a populated duration is
+                // a reasonable proxy, since native only reports a real one
+                // once the file's genuinely loaded (see AudioEngine.swift's
+                // currentDurationSeconds) — up to a longer ceiling, then seek
+                // with the same retry as before as cheap extra insurance.
+                const deadline = Date.now() + 4000;
+                while (Date.now() < deadline) {
+                    const p = await AudioEngine.getProgress().catch(() => null);
+                    if (p && p.duration > 0) break;
+                    await new Promise(r => setTimeout(r, 100));
+                }
                 try { await AudioEngine.seekTo(last.position); } catch { }
                 await new Promise(r => setTimeout(r, 150));
                 try { await AudioEngine.seekTo(last.position); } catch { } // retry once, cheap insurance

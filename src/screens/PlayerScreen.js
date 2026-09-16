@@ -515,14 +515,29 @@ export default function PlayerScreen() {
     useEffect(() => {
         if (!showingLyrics) { wasShowingLyricsRef.current = false; return; }
         const justOpened = !wasShowingLyricsRef.current;
-        wasShowingLyricsRef.current = true;
+        // Real gap found here: this used to mark "opened" true on the very
+        // first run regardless of activeLine. But activeLine starts at -1
+        // (progress hasn't polled yet, duration still 0 — see its own
+        // computation above) for whatever brief window that takes, so the
+        // FIRST positioning this effect does is necessarily a guess (top of
+        // the list, the activeLine<0 branch below). Once real progress
+        // lands a moment later and activeLine becomes the actual current
+        // line, wasShowingLyricsRef was already true — so THAT correction
+        // (top → the real position) no longer counted as "just opened" and
+        // animated instead of snapping, which is exactly "opening the
+        // player visibly scrolls the lyrics into place" rather than
+        // already being there. Only mark "opened" once there's a genuine
+        // line to have opened on, so that first real correction still
+        // counts as part of opening.
         // Either kind of jump (view just opened, or a seek/track-change
         // just happened) should snap instead of animate — only a natural
         // one-line-at-a-time advance while already sitting on the view
-        // should animate. Consumed once, immediately, so it doesn't also
-        // suppress the animation on the NEXT natural advance.
+        // should animate. Only actually consumed (both this and
+        // wasShowingLyricsRef below) once a scrollTo genuinely happens —
+        // see the y===undefined bail-out below for why: the target row not
+        // being measured yet is a second, separate way this could still
+        // end up animating a correction that should have snapped.
         const skipAnimation = justOpened || lyricsJustJumpedRef.current;
-        lyricsJustJumpedRef.current = false;
         // Before the song reaches its first timed line (activeLine === -1,
         // e.g. a [00:00]-style intro gap, or seeking back to the very
         // start), this used to just no-op and leave the view wherever it
@@ -535,10 +550,22 @@ export default function PlayerScreen() {
         if (activeLine < 0) {
             if (lyricsManualScroll) return;
             lyricsScrollRef.current?.scrollTo({ y: 0, animated: !skipAnimation });
+            wasShowingLyricsRef.current = true;
+            lyricsJustJumpedRef.current = false;
             return;
         }
         if (lyricsManualScroll) return;
         const y = lyricsRowYRef.current.get(activeLine);
+        // Real gap found here too: this used to bail out on an unmeasured
+        // row WITHOUT the guard above — meaning by the time
+        // lyricsLayoutVersion bumps (the row finally lays out) and this
+        // effect re-runs, justOpened/lyricsJustJumpedRef had already been
+        // consumed by THIS run even though it never actually positioned
+        // anything. The real, only-successful positioning then landed on a
+        // later run with skipAnimation already false — animating in
+        // exactly the same way the activeLine<0 race above did. Returning
+        // before consuming either flag means the eventual real positioning
+        // still sees them intact.
         if (y === undefined) return;
         // Was 0.32 (a third of the way down) — with only a few short lines
         // around the active one (typical for this box's height), anchoring
@@ -550,6 +577,8 @@ export default function PlayerScreen() {
         // matching how the cover fills that box symmetrically, which is the
         // actual ask ("symmetrical around the song cover").
         lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: !skipAnimation });
+        wasShowingLyricsRef.current = true;
+        lyricsJustJumpedRef.current = false;
     }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
@@ -963,7 +992,13 @@ const HIT = { top: 20, bottom: 20, left: 20, right: 20 };
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 4 },
+    // Was 12 — PlaylistDetailScreen's own topBar (the same row: back/down
+    // arrow, title, shuffle, EQ, hamburger) uses 8. Same row, two different
+    // edge insets depending on which screen you're looking at it from —
+    // the back arrow and hamburger/EQ icons visibly shift a few pixels
+    // left/right crossing between the two, which is what "buttons on the
+    // music player vs outside it are not aligned" was pointing at.
+    topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8, marginBottom: 4 },
     topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
     eqTag: { fontSize: 14, fontWeight: '700' },
     topIcon: { fontSize: 26 },

@@ -170,6 +170,17 @@ export default function SettingsScreen() {
         setCP(next); await setCustomPresets(next);
     };
 
+    const confirmDeleteCustomPreset = (preset) => {
+        Alert.alert(
+            'Delete EQ Preset',
+            `Delete "${preset.name}"? This can't be undone.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete', style: 'destructive', onPress: () => deleteCustomPreset(preset.id) },
+            ]
+        );
+    };
+
     const closeEQSheet = () => {
         setShowNewEQ(false);
         setEditingId(null);
@@ -356,7 +367,7 @@ export default function SettingsScreen() {
                                     </Text>
                                 </TouchableOpacity>
                                 {!p.isBuiltIn && (
-                                    <TouchableOpacity onPress={() => deleteCustomPreset(p.id)} hitSlop={HIT} style={s.eqDelWrap}>
+                                    <TouchableOpacity onPress={() => confirmDeleteCustomPreset(p)} hitSlop={HIT} style={s.eqDelWrap}>
                                         <Text style={s.eqDel}>✕</Text>
                                     </TouchableOpacity>
                                 )}
@@ -642,12 +653,12 @@ export default function SettingsScreen() {
                                 How long the lyrics view stays where you scrolled it before
                                 snapping back to follow the song automatically
                             </Text>
-                            <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(0)}s</Text>
-                            <PureSlider style={s.slider} minimumValue={0} maximumValue={12} step={1} value={lyricsResyncLocal}
+                            <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(1)}s</Text>
+                            <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={lyricsResyncLocal}
                                 onValueChange={setLyricsResyncLocal}
                                 onSlidingComplete={v => { setLyricsResyncLocal(v); setLyricsResyncSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>12s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
                             <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
                             <Text style={s.sliderNote}>
                                 If a song's lyrics are consistently early or late, nudge them —

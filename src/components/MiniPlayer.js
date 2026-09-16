@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlaybackState, State, useProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
@@ -26,48 +26,61 @@ export default function MiniPlayer({ withTabBar = true }) {
     const insets = useSafeAreaInsets();
 
     const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
-    const animPct = useRef(new Animated.Value(pct)).current;
-    const animRunRef = useRef(null);
-    const animPctValueRef = useRef(pct);
-    useEffect(() => {
-        const id = animPct.addListener(({ value }) => { animPctValueRef.current = value; });
-        return () => animPct.removeListener(id);
-    }, []);
+    // Replaces the old Animated.timing-based smoothing, which only
+    // restarted its animation when the freshly-polled pct had "drifted"
+    // more than 2% from wherever the animation currently was — meant to
+    // avoid visibly resetting/re-easing on every 500ms poll. The bug: right
+    // after a skip, the first render(s) still carry the PREVIOUS track's
+    // stale position/duration pair (useProgress hasn't repolled yet, but
+    // currentTrack.id already changed) — and that stale pct is usually
+    // close to wherever the old animation already was, so drift stays
+    // under the threshold and nothing restarts. The animation just kept
+    // gliding along the OLD track's timeline under the NEW track's title.
+    // It would eventually self-correct once a real poll landed with a big
+    // enough jump to cross the drift threshold — but repeated skips faster
+    // than that (exactly what the reported "seems to be when I'm skipping"
+    // looks like) meant it could stay wrong indefinitely, or its width
+    // could land on/near 0% and read as "the bar just isn't there."
+    //
+    // This basis+elapsed-time approach can't get stuck the same way: every
+    // currentTrack.id change unconditionally resets the basis to whatever
+    // useProgress currently holds (stale or not, exactly like before), but
+    // there's no drift comparison gating whether that reset actually takes
+    // effect — it always does. A short ticker just extrapolates forward in
+    // plain JS between real polls instead of running an Animated.timing
+    // that has its own start/stop state to get out of sync.
+    const basisRef = useRef({ position: progress.position, duration: progress.duration, at: Date.now() });
+    const [, forceTick] = useState(0);
+    const lastTrackIdRef = useRef(currentTrack?.id);
 
     useEffect(() => {
-        // Always stop and snap to the exact real position when paused —
-        // this used to be gated behind the same drift check as the resync
-        // logic below, so if the animation was already running and drift
-        // happened to be small at the instant of pausing (the normal case,
-        // since pausing is immediate), the running Animated.timing never
-        // actually got stopped and kept advancing on its own.
-        if (!isPlaying) {
-            animRunRef.current?.stop();
-            animRunRef.current = null;
-            animPct.setValue(pct);
-            animPctValueRef.current = pct;
-            return;
+        const trackChanged = lastTrackIdRef.current !== currentTrack?.id;
+        lastTrackIdRef.current = currentTrack?.id;
+        if (trackChanged) {
+            // Same fix as PlayerScreen's own progress bar for this — see
+            // its trackChanged comment. Right after a track change,
+            // `progress` can still be one poll behind (or, during a
+            // crossfade specifically, native pairs the OUTGOING track's
+            // position with the INCOMING track's duration for a moment —
+            // see AudioEngine.swift's getProgress), so don't trust it yet.
+            // Force 0 and let the very next real poll (this same effect,
+            // trackChanged now false) bring in the correct pair.
+            basisRef.current = { position: 0, duration: 0, at: Date.now() };
+        } else {
+            basisRef.current = { position: progress.position, duration: progress.duration, at: Date.now() };
         }
-        const drift = Math.abs(animPctValueRef.current - pct);
-        if (!animRunRef.current || drift > 0.02) {
-            animRunRef.current?.stop();
-            animPct.setValue(pct);
-            animPctValueRef.current = pct;
-            if (progress.duration > 0 && pct < 1) {
-                const remainingMs = Math.max(0, (1 - pct) * progress.duration * 1000);
-                const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
-                animRunRef.current = anim;
-                anim.start();
-            } else {
-                animRunRef.current = null;
-            }
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
+        forceTick(t => t + 1);
+    }, [progress.position, progress.duration, currentTrack?.id]);
 
-    useEffect(() => () => animRunRef.current?.stop(), []);
+    useEffect(() => {
+        if (!isPlaying) return;
+        const id = setInterval(() => forceTick(t => t + 1), 250);
+        return () => clearInterval(id);
+    }, [isPlaying]);
 
-    const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+    const basis = basisRef.current;
+    const elapsed = isPlaying ? (Date.now() - basis.at) / 1000 : 0;
+    const livePct = basis.duration > 0 ? Math.min(1, Math.max(0, (basis.position + elapsed) / basis.duration)) : 0;
 
     if (!currentTrack) return null;
 
@@ -84,7 +97,7 @@ export default function MiniPlayer({ withTabBar = true }) {
         >
             <GradientCap color={theme.accent} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
             <View pointerEvents="none" style={styles.miniProgressTrack}>
-                <Animated.View style={[styles.miniProgressFill, { width: animWidth, backgroundColor: theme.accent }]} />
+                <View style={[styles.miniProgressFill, { width: `${livePct * 100}%`, backgroundColor: theme.accent }]} />
             </View>
             {/* "Show Song Covers In Lists" previously only applied to All
                 Songs/Playlist rows and the Queue sheet — the mini player

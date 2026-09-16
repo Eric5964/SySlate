@@ -500,10 +500,12 @@ class AudioEngine: RCTEventEmitter {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
+            self?.optimisticallySetPlaybackRate(1.0)
             self?.sendEvent(withName: "RemotePlay", body: nil)
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
+            self?.optimisticallySetPlaybackRate(0.0)
             self?.sendEvent(withName: "RemotePause", body: nil)
             return .success
         }
@@ -553,7 +555,35 @@ class AudioEngine: RCTEventEmitter {
         if let url = URL(string: artworkPath), url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
             return image
         }
-        return UIImage(contentsOfFile: artworkPath.replacingOccurrences(of: "file://", with: ""))
+        if let image = UIImage(contentsOfFile: artworkPath.replacingOccurrences(of: "file://", with: "")) {
+            return image
+        }
+        // Real bug found here — specific to sideloaded (SideStore/LiveContainer)
+        // installs. See Settings' own "Known issue" note: on some SideStore
+        // installs, the Documents folder JS resolves through expo-file-system
+        // (this artwork path's origin — see embeddedArt.js) points at a
+        // DIFFERENT container UUID than what THIS native code's own sandbox
+        // resolves "Documents" to. The path JS hands over is a perfectly real
+        // file that genuinely exists — just not at that exact absolute path
+        // from this process's actual, current sandbox perspective. RN's own
+        // <Image> component still shows it fine in-app because it goes
+        // through that same JS-side resolution, consistently — only this
+        // native-side load (used for the lock screen/Control Center) sees
+        // the mismatch. That matches "covers work in-app but never show up
+        // outside the app" exactly — for every song, not just some, since
+        // it's an environment-level path mismatch, not anything song-
+        // specific. Last resort: re-anchor anything under a "Documents/"
+        // segment to this process's own real Documents directory instead of
+        // trusting the absolute path JS provided.
+        if let range = artworkPath.range(of: "/Documents/"),
+           let realDocs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let relative = String(artworkPath[range.upperBound...])
+            let rebased = realDocs.appendingPathComponent(relative)
+            if let image = UIImage(contentsOfFile: rebased.path) {
+                return image
+            }
+        }
+        return nil
     }
 
     // Real regression found here, introduced by THIS round's own earlier
@@ -573,6 +603,22 @@ class AudioEngine: RCTEventEmitter {
     // change), not on every elapsed-time tick.
     private var cachedArtworkPath: String?
     private var cachedArtwork: MPMediaItemArtwork?
+
+    // Play/pause from the lock screen/Control Center are ramp-aware and go
+    // through JS (see the RemotePlay/RemotePause comment above) — a real
+    // round trip through the bridge, not a same-frame native state change.
+    // Without this, the lock screen's own play/pause icon only updates once
+    // that whole round trip finishes and setState() runs — checked via
+    // screen recording, and it was visibly laggy, holding the old icon for
+    // a beat after tapping. This just flips the rate iOS displays
+    // immediately on tap; setState()'s own update a moment later confirms
+    // (or corrects, if JS ends up not honoring it for some reason) it once
+    // the real ramp actually starts.
+    private func optimisticallySetPlaybackRate(_ rate: Double) {
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPNowPlayingInfoPropertyPlaybackRate] = rate
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
 
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
