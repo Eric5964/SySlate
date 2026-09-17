@@ -276,6 +276,27 @@ export function PlaybackProvider({ children }) {
                     const next = priorityRef.current.slice(1);
                     priorityRef.current = next;
                     setPriorityQueue(next);
+                    // Real bug found here: currentPlaylist never got
+                    // touched by this whole listener — reasonable for a
+                    // normal natural-advance (topUpQueueIfNeeded only ever
+                    // pulls from the actual loaded playlist, so those
+                    // tracks genuinely belong to it), but a manually
+                    // queued song (addToQueue/promoteToQueue, from
+                    // anywhere — a different playlist, All Songs, a
+                    // search) can easily NOT be a member of whatever
+                    // playlist you'd last loaded. Once that queued song
+                    // becomes current, the player's top-bar breadcrumb
+                    // kept showing that old, unrelated playlist name —
+                    // "playing from complete" for a song complete doesn't
+                    // even contain — since nothing ever cleared it. Only
+                    // clearing when the incoming track genuinely isn't in
+                    // the loaded playlist's own song list, so this never
+                    // fires for the common case (queuing a song that
+                    // happens to already be in the current playlist).
+                    const pl = playlistRef.current;
+                    if (pl?.songs && !pl.songs.some(s => s.id === track.id)) {
+                        setCurrentPlaylist(null);
+                    }
                 }
                 // Session save now lives HERE (always active) instead of in a
                 // listener inside PlayerScreen — that one only ran while the
@@ -970,6 +991,20 @@ export function PlaybackProvider({ children }) {
             const on = await getShuffleOnStorage();
             await primeNativeQueue(queue, last.index);
             fillRestOfWindow();
+            // Real bug found here (see AudioEngine.swift's new load()
+            // method for the full story): nothing between here and the
+            // seek block below ever actually set the native currentIndex,
+            // so loadAndScheduleCurrentTrack's own guard silently no-op'd
+            // every single time — a cold-launch restore never actually
+            // loaded a file. primeNativeQueue's reset()+add() only
+            // populates the native queue array; it was never the thing
+            // that cues a specific index. Native index 0 IS last.index
+            // (primeNativeQueue slices the full queue starting there), so
+            // this loads it now, paused (autoPlay: false) — deliberately
+            // unconditional (not just inside the `last.position > 2`
+            // branch below), since even a track that's supposed to resume
+            // near its own start still needs to actually be loaded at all.
+            await AudioEngine.load(0, false);
             const restoredEqId = await getEQPreset(last.playlist?.path);
             // Real bug found here: this applied the restored preset's
             // bands to the audio engine but never told React about it —

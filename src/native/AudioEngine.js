@@ -82,6 +82,12 @@ const AudioEngine = {
     remove: (indexes) => NativeAudioEngine.remove(Array.isArray(indexes) ? indexes : [indexes]),
     removeUpcomingTracks: () => NativeAudioEngine.removeUpcomingTracks(),
     skip: (index) => NativeAudioEngine.skip(index),
+    // Loads a specific queue index without forcing playback — unlike
+    // skip(), which always autoplays (see AudioEngine.swift's load() for
+    // why this needed to be its own method). Used by restoreSession for a
+    // cold-launch restore that shouldn't blast audio the instant the app
+    // opens.
+    load: (index, autoPlay) => NativeAudioEngine.load(index, autoPlay),
     skipToNext: () => NativeAudioEngine.skipToNext(),
     skipToPrevious: () => NativeAudioEngine.skipToPrevious(),
     getQueue: () => NativeAudioEngine.getQueue(),

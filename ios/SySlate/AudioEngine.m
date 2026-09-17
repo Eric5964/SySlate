@@ -27,6 +27,14 @@ RCT_EXTERN_METHOD(skip:(nonnull NSNumber *)index
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// Matches AudioEngine.swift's load(index:autoPlay:) — same class of gap as
+// setCrossfadeDurationEndOfTrack below (a real native method with no
+// matching extern entry here silently fails to reach Swift at all).
+RCT_EXTERN_METHOD(load:(nonnull NSNumber *)index
+                  autoPlay:(nonnull NSNumber *)autoPlay
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(skipToNext:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

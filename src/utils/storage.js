@@ -366,6 +366,103 @@ export const exportAllSettings = async () => {
 };
 
 export const importAllSettings = async (jsonString) => {
+    // Real bug found here (general audit item — "Import Settings accepting
+    // out-of-range or wrong-increment numbers, and any other similar
+    // input-validation gaps"): this took ANY parsed JSON object and blindly
+    // multiSet every key/value into AsyncStorage verbatim — no allowlist
+    // (an imported blob could write arbitrary keys, not just the ones
+    // exportAllSettings actually produces), no type checking, no range
+    // checking. A bad paste — hand-edited, corrupted, or from a future
+    // export version with a different shape — could silently plant a
+    // crossfade duration of -50 or "banana", EQ bands outside -12..12, or
+    // (worst case) a malformed last_session that AsyncStorage happily
+    // stores as-is and only blows up later, on the NEXT cold launch, when
+    // restoreSession JSON.parses it — i.e. genuinely bricking the app's
+    // startup from a settings import days earlier, nowhere near where the
+    // actual mistake was made.
+    //
+    // Each key is now validated against what its own getter/slider in this
+    // file and SettingsScreen.js actually expects before being allowed
+    // through; anything that fails validation for a given key is just
+    // skipped (that one setting silently keeps its current value) rather
+    // than either crashing the whole import or writing something that'll
+    // crash later. Only keys from the same allowlist exportAllSettings
+    // produces are ever considered — nothing else gets written.
     const obj = JSON.parse(jsonString);
-    await AsyncStorage.multiSet(Object.entries(obj).map(([k, v]) => [k, v]));
+    if (!obj || typeof obj !== 'object') throw new Error('Not a settings object');
+
+    const BOOL_KEYS = new Set([
+        'crossfade_enabled', 'vol_norm', 'between_track_norm', 'silence_trim',
+        'ramp_on_pause', 'show_play_count', 'show_song_covers',
+        'keep_priority_on_switch', 'album_from_folder', 'keep_screen_awake',
+        'show_player_cover', 'bg_image_enabled',
+    ]);
+    // [min, max] — matches each setting's own slider bounds in
+    // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
+    // Lyrics Resync / Restart Threshold sliders). Sliders step in 0.5s
+    // (1s for restart_threshold) but a stored value doesn't strictly need
+    // to land exactly on a step — importing 6 vs 6.0 vs 6.00 are all the
+    // same real value — so this checks range, not increment, which is
+    // what actually matters for anything downstream reading the number.
+    const NUMERIC_RANGES = {
+        crossfade: [0, 6], crossfade_duration_eot: [0, 6],
+        skip_crossfade: [0, 3], crossfade_duration: [0, 3], crossfade_duration_skip: [0, 3],
+        audio_ramp: [0, 3],
+        lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
+        restart_threshold_sec: [0, 24],
+    };
+    // Keys whose value is itself a JSON-encoded string — validated by
+    // shape (array vs plain object), not by deep-inspecting every entry.
+    const JSON_ARRAY_KEYS = new Set(['custom_eq_presets', 'hidden_eq_presets', 'playlist_order']);
+    const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders']);
+    // Plain string settings (enum-like ids, separators, URIs) — no fixed
+    // enum list enforced here (a future app version could legitimately add
+    // new theme/cover-shape ids that this exact import code doesn't know
+    // about yet), just a sane length cap so a giant garbage string can't
+    // get written into, say, a theme id.
+    const STRING_KEYS = new Set([
+        'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
+        'playlist_view_format', 'artist_separator', 'lyrics_mode',
+        'prev_button_mode', 'cover_shape', 'bg_image_uri',
+    ]);
+
+    const toWrite = [];
+    for (const [key, value] of Object.entries(obj)) {
+        if (typeof value !== 'string') continue; // AsyncStorage values are always strings; anything else was never legitimately exported
+        if (key === 'shuffle_on') {
+            if (value === 'true' || value === 'false') toWrite.push([key, value]);
+        } else if (BOOL_KEYS.has(key)) {
+            if (value === 'true' || value === 'false') toWrite.push([key, value]);
+        } else if (key in NUMERIC_RANGES) {
+            const [min, max] = NUMERIC_RANGES[key];
+            const n = parseFloat(value);
+            if (Number.isFinite(n) && n >= min && n <= max) toWrite.push([key, String(n)]);
+        } else if (JSON_ARRAY_KEYS.has(key)) {
+            try { if (Array.isArray(JSON.parse(value))) toWrite.push([key, value]); } catch { }
+        } else if (JSON_OBJECT_KEYS.has(key)) {
+            try {
+                const parsed = JSON.parse(value);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) toWrite.push([key, value]);
+            } catch { }
+        } else if (key === 'last_session') {
+            // Most safety-critical one to get wrong — restoreSession reads
+            // this on every cold launch. Requires the two fields it
+            // actually dereferences (playlist.queue as an array, index as
+            // a number) to exist and be the right shape before allowing it
+            // through at all; anything else is dropped rather than risking
+            // a broken cold-launch restore days after the import.
+            try {
+                const parsed = JSON.parse(value);
+                if (parsed && Array.isArray(parsed.playlist?.queue) && typeof parsed.index === 'number') {
+                    toWrite.push([key, value]);
+                }
+            } catch { }
+        } else if (STRING_KEYS.has(key)) {
+            if (value.length <= 500) toWrite.push([key, value]);
+        }
+        // Any key not recognized above (not in the allowlist at all, e.g.
+        // hide_player_cover or something exportAllSettings never produces)
+        // is silently dropped, not written.
+    }
+    if (toWrite.length) await AsyncStorage.multiSet(toWrite);
 };

@@ -328,14 +328,18 @@ class AudioEngine: RCTEventEmitter {
         // engages on genuinely loud peaks instead of constantly reshaping
         // the whole track, slow the attack down enough to not react to
         // individual transients, and disable the expander entirely.
-        if let unit = normalizerNode.audioUnit {
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -12.0, 0)
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 5.0, 0)
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_ExpansionRatio, kAudioUnitScope_Global, 0, 1.0, 0)
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.02, 0)
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.15, 0)
-            AudioUnitSetParameter(unit, kDynamicsProcessorParam_MasterGain, kAudioUnitScope_Global, 0, 0.0, 0)
-        }
+        // audioUnit is a non-optional AudioUnit on this SDK (not AudioUnit?),
+        // so no `if let` here — that's exactly what failed to build.
+        // kDynamicsProcessorParam_MasterGain is also gone in Swift (renamed
+        // to kDynamicsProcessorParam_OverallGain — the old symbol still
+        // exists in the ObjC/C headers but is marked unavailable in Swift).
+        let unit = normalizerNode.audioUnit
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -12.0, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 5.0, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_ExpansionRatio, kAudioUnitScope_Global, 0, 1.0, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.02, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.15, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0, 0.0, 0)
 
         engine.attach(nodeA)
         engine.attach(nodeB)
@@ -974,27 +978,26 @@ class AudioEngine: RCTEventEmitter {
             }
 
             var trackWithDuration = track
-            if trackWithDuration.duration == nil {
-                // Real bug found here: this was Double(file.length) /
-                // sampleRate — the FULL, untrimmed file length — while the
-                // segment actually scheduled just above is shorter by
-                // trailingCutSeconds whenever silence trim cut something
-                // off the end. checkRampWindow in PlaybackService.js
-                // computes its natural end-of-track ramp-out trigger as
-                // `remaining = duration - position`, using exactly this
-                // duration — if it's inflated by however many seconds of
-                // trailing silence got trimmed, "remaining" reads as
-                // larger than the audio that's actually left, so the
-                // trigger's `remaining <= ramp` window can end up firing
-                // too late (or never, if the trimmed amount exceeds the
-                // ramp duration) relative to when the trimmed segment
-                // actually completes — the track just stops/advances with
-                // no ramp at all. Matches "cuts off early... genuinely
-                // zero ramping... maybe an issue with cutting out silence"
-                // exactly.
-                trackWithDuration.duration = Double(file.length) / file.processingFormat.sampleRate - trailingCutSeconds
-                if idx < queue.count { queue[idx] = trackWithDuration }
-            }
+            // Real bug found here: this only filled `duration` in when it
+            // was nil, i.e. only for tracks JS hadn't already tagged with
+            // one — meaning queue[idx].duration was the JS/tag-reported
+            // value for basically every normal track, UNCHECKED against
+            // the real file we just loaded. For a file with an inaccurate
+            // tag duration (common on certain VBR-encoded files with a
+            // missing/wrong Xing header), that mismatched value is exactly
+            // what scheduleCrossfadeLeadIn() uses to compute `remaining` —
+            // so a track like this either arms its crossfade at the wrong
+            // moment or never arms it at all, and playback instead falls
+            // through to the raw native completion handler, well after
+            // (or before) the UI's own displayed duration (which already
+            // came from this same real file, not the tag) said it should.
+            // Always overwriting with the just-measured value — instead of
+            // only when nil — keeps every duration-dependent computation
+            // (this scheduler, the natural-end-of-track ramp trigger, the
+            // minimum-length-for-crossfade rule) reading the exact same
+            // real number the screen is already showing, tag data aside.
+            trackWithDuration.duration = Double(file.length) / file.processingFormat.sampleRate - trailingCutSeconds
+            if idx < queue.count { queue[idx] = trackWithDuration }
 
             if announceChange {
                 sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
@@ -1369,14 +1372,11 @@ class AudioEngine: RCTEventEmitter {
                 self.crossfadeIncomingNode = nil
 
                 var trackWithDuration = track
-                if trackWithDuration.duration == nil {
-                    // Matches loadAndScheduleCurrentTrack's equivalent cache
-                    // fill — subtract trailingCutSeconds here too, now that
-                    // this path actually has a real (possibly nonzero) one
-                    // to subtract.
-                    trackWithDuration.duration = Double(file.length) / sampleRate - trailingCutSeconds
-                    if idx < self.queue.count { self.queue[idx] = trackWithDuration }
-                }
+                // Same fix as loadAndScheduleCurrentTrack's equivalent —
+                // always trust the just-measured real duration over
+                // whatever JS/tag value was there, not just when nil.
+                trackWithDuration.duration = Double(file.length) / sampleRate - trailingCutSeconds
+                if idx < self.queue.count { self.queue[idx] = trackWithDuration }
 
                 self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
                 self.setState(.playing)
@@ -1594,10 +1594,11 @@ class AudioEngine: RCTEventEmitter {
         currentTrailingCutSeconds = crossfadeIncomingTrailingCutSeconds
 
         if var trackWithDuration = crossfadeIncomingTrack {
-            if trackWithDuration.duration == nil {
-                trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds
-                if idx < queue.count { queue[idx] = trackWithDuration }
-            }
+            // Same fix as loadAndScheduleCurrentTrack's equivalent —
+            // always trust the just-measured real duration over whatever
+            // JS/tag value was there, not just when nil.
+            trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds
+            if idx < queue.count { queue[idx] = trackWithDuration }
             // Covers landing here before runCrossfade's own halfway-point
             // announcement ever fired — JS still needs to know the track
             // changed. Harmless if it already fired; JS de-dupes by queue
@@ -1745,6 +1746,45 @@ class AudioEngine: RCTEventEmitter {
         cancelCrossfadeIfNeeded()
         currentIndex = idx
         loadAndScheduleCurrentTrack(autoPlay: true)
+        resolve(nil)
+    }
+
+    // Real bug found here (there wasn't a fix for it before — this method
+    // didn't exist): restoreSession (PlaybackContext.js, cold app launch)
+    // had no way to get a specific track actually loaded/cued without
+    // ALSO forcing playback. skip() is the only other way to make
+    // loadAndScheduleCurrentTrack run, and it hardcodes autoPlay: true —
+    // using it here would blast audio the instant the app opens, every
+    // time. seekTo()'s own "not loaded yet" fallback looks like it should
+    // cover this (it calls loadAndScheduleCurrentTrack when currentFile is
+    // nil), but that fallback requires currentIndex to ALREADY be set —
+    // and at a cold launch, after primeNativeQueue's reset()+add(),
+    // nothing had EVER set it. The whole restore chain (primeNativeQueue →
+    // wait for a real duration → seekTo → its fallback → loadAndSchedule
+    // CurrentTrack) was a dead end: loadAndScheduleCurrentTrack's own guard
+    // (`guard let idx = currentIndex ... else { setState(.stopped); return }`)
+    // silently no-ops whenever currentIndex is nil, so cold-launch restore
+    // never actually loaded a file — the getProgress() duration-polling
+    // loop in restoreSession would just spin for its full 4s timeout doing
+    // nothing, and the very first tap of the plain Play button afterward
+    // (playInternal's own nil-currentIndex fallback) would start the
+    // native queue's index 0 from 0:00, NOT last.position, regardless of
+    // which track/position was actually being restored. This is
+    // deliberately its own method rather than adding an autoPlay param to
+    // skip() — skip()'s every other call site (manual skip, jumpToQueueIndex,
+    // primeQueueForTransition's crossfade branch) legitimately wants the
+    // existing always-autoplay behavior and its crossfade handling; a
+    // cold-launch restore should never crossfade (nothing was already
+    // playing) and needs autoPlay controllable, so a separate, simpler
+    // method is lower-risk than changing skip()'s signature/behavior for
+    // every existing caller.
+    @objc(load:autoPlay:resolver:rejecter:)
+    func load(_ index: NSNumber, autoPlay: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let idx = index.intValue
+        guard idx >= 0, idx < queue.count else { resolve(nil); return }
+        cancelCrossfadeIfNeeded()
+        currentIndex = idx
+        loadAndScheduleCurrentTrack(autoPlay: autoPlay.boolValue)
         resolve(nil)
     }
 

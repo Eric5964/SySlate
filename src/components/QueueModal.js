@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, ScrollView, StyleSheet, InteractionManager, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, InteractionManager, Animated } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -319,6 +319,44 @@ export default function QueueModal({ visible, onClose }) {
         await refresh(priority, insertedAt);
     };
 
+    // Real cause of "queue screen laggy/choppy, inconsistent animations"
+    // found here: this whole sheet was a plain ScrollView + .map over every
+    // row — Now Playing, every Priority row, every Up Next row — all
+    // mounted at once regardless of what's actually scrolled into view.
+    // Each one carries its own SwipeableRow (its own pan gesture handler)
+    // plus two nested Animated views for the grow/shrink transitions. A
+    // queue of any real size (a 25-track playlist, let alone a big "All
+    // Songs" shuffle) meant dozens of simultaneously-mounted gesture
+    // handlers and animated nodes competing for the same JS thread as the
+    // scroll/dismiss gesture itself — exactly what "inconsistent
+    // animations" feels like under load. Switching to FlatList windows
+    // this down to roughly what's actually on screen (plus a small
+    // overscan buffer) at any moment, same as the other lists in this app
+    // (AllSongsScreen, PlaylistDetailScreen) already do.
+    //
+    // The Now Playing row, the Priority/Up Next pills, and the divider
+    // between them weren't part of `rows` before — they were separate JSX
+    // interleaved with the two `.map(renderRow)` calls. FlatList needs a
+    // single flat `data` array to virtualize correctly, so they're folded
+    // into one list here with a `type` tag per entry, and renderItem below
+    // switches on it. Content and behavior are unchanged — same rows, same
+    // pills, same divider, same conditions for when each appears.
+    const listData = useMemo(() => {
+        const items = [];
+        if (currentTrack) items.push({ type: 'nowplaying', key: 'now-playing' });
+        if (priorityRows.length > 0) {
+            items.push({ type: 'pill', key: 'pill-priority', label: 'Priority' });
+            for (const r of priorityRows) items.push({ type: 'row', key: r.stableKey, row: r });
+        }
+        if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider' });
+        if (upNextRows.length > 0) {
+            items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next' });
+            for (const r of upNextRows) items.push({ type: 'row', key: r.stableKey, row: r });
+        }
+        return items;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rows, currentTrack]);
+
     const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
         <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
             <ShrinkOutRow removing={removingKeys.has(stableKey)}>
@@ -363,6 +401,45 @@ export default function QueueModal({ visible, onClose }) {
         </GrowInRow>
     );
 
+    // Dispatches by the `type` tag listData built above. Content for each
+    // branch is exactly what used to sit inline in the ScrollView below —
+    // moved here only because FlatList needs one renderItem, not four
+    // separate JSX blocks.
+    const renderItem = ({ item }) => {
+        if (item.type === 'nowplaying') {
+            return (
+                <>
+                    <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Now Playing</Text></View>
+                    <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
+                        <View style={[s.qRow, { backgroundColor: base.border }]}>
+                            {showSongCovers && (
+                                <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                                    {currentTrack.artwork
+                                        ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
+                                        : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                    }
+                                </View>
+                            )}
+                            <View style={{ flex: 1 }}>
+                                <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
+                                <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
+                            </View>
+                            {showPlayCount && playCounts[currentTrack.id] > 0 && (
+                                <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[currentTrack.id]}×</Text>
+                            )}
+                        </View>
+                    </SwipeableRow>
+                </>
+            );
+        }
+        if (item.type === 'pill') {
+            return <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View>;
+        }
+        if (item.type === 'divider') {
+            return <View style={[s.divider, { backgroundColor: base.border }]} />;
+        }
+        return renderRow(item.row);
+    };
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>}>
@@ -378,78 +455,36 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <ScrollView
+                <FlatList
+                    data={listData}
+                    keyExtractor={item => item.key}
+                    renderItem={renderItem}
                     showsVerticalScrollIndicator={false}
                     style={{ flex: 1 }}
-                    // Real cause of "the screen scrolls up/down when adding
-                    // a song to priority, when it's out of view": promoting
-                    // an off-screen row inserts its new copy right after
-                    // Priority — ABOVE wherever you're currently scrolled —
-                    // which shifts every row below it down by one row's
-                    // height. That's ordinary ScrollView behavior without
-                    // this prop; it has no way to know content changed
-                    // above the visible area and compensate. This tells it
-                    // to: when content changes outside the visible rect,
-                    // adjust the scroll offset to keep whatever's currently
-                    // on screen anchored in place instead of visually
-                    // jumping.
+                    // Same fix as before, FlatList supports the same prop —
+                    // keeps whatever's currently on screen anchored in place
+                    // when a promote/remove changes content above it,
+                    // instead of the view visually jumping.
                     maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-                >
-                    {/* Just another section, scrolling with everything else
-                        below it — not pinned above the list. Not tappable
-                        (plain View, not TouchableOpacity) — there's nothing
-                        meaningful to "jump to" on the song already playing.
-                        Swipe-right only (no onSwipeLeft prop at all —
-                        SwipeableRow disables the left-swipe reveal entirely
-                        when that's omitted, rather than showing a Remove
-                        affordance that would do nothing) so you can re-queue
-                        the current song to play again later, but there's
-                        nothing to remove it FROM here. */}
-                    {currentTrack && (
-                        <>
-                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Now Playing</Text></View>
-                            <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
-                                <View style={[s.qRow, { backgroundColor: base.border }]}>
-                                    {showSongCovers && (
-                                        <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
-                                            {currentTrack.artwork
-                                                ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
-                                                : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                            }
-                                        </View>
-                                    )}
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
-                                        <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
-                                    </View>
-                                    {showPlayCount && playCounts[currentTrack.id] > 0 && (
-                                        <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[currentTrack.id]}×</Text>
-                                    )}
-                                </View>
-                            </SwipeableRow>
-                        </>
-                    )}
-                    {/* Was unconditional ("keep the Priority pill there no
-                         matter what") per an earlier round's explicit
-                         decision — flipped back per direct feedback ("no
-                         priority part when there are no songs in priority
-                         is more ideal"). Whole pill + empty hint now gated
-                         together behind priorityRows.length, same as the Up
-                         Next section right below already does. */}
-                    {priorityRows.length > 0 && (
-                        <>
-                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Priority</Text></View>
-                            {priorityRows.map(renderRow)}
-                        </>
-                    )}
-                    {priorityRows.length > 0 && upNextRows.length > 0 && <View style={[s.divider, { backgroundColor: base.border }]} />}
-                    {upNextRows.length > 0 && (
-                        <>
-                            <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Up Next</Text></View>
-                            {upNextRows.map(renderRow)}
-                        </>
-                    )}
-                </ScrollView>
+                    // renderItem above is a fresh closure every render (it
+                    // closes over artMap/playCounts/newKeys/removingKeys,
+                    // all of which live outside `listData`) — extraData
+                    // tells FlatList's cells to actually re-render when any
+                    // of those change, since none of them are part of the
+                    // `data` items themselves. Without this, art/play-count/
+                    // grow-shrink updates could land in state but not
+                    // actually repaint an already-mounted, off-window-edge
+                    // row.
+                    extraData={{ artMap, playCounts, newKeys, removingKeys }}
+                    // Row height is a known constant (see ROW_HEIGHT above)
+                    // for ordinary rows — pill/divider/now-playing rows are
+                    // shorter, so this is deliberately just an estimate
+                    // (getItemLayout would need per-type-accurate heights to
+                    // be exact), enough to help FlatList size its initial
+                    // window reasonably without a measurement pass.
+                    initialNumToRender={12}
+                    windowSize={7}
+                />
             )}
         </BottomSheet>
     );
