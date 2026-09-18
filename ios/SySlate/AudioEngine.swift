@@ -721,7 +721,14 @@ class AudioEngine: RCTEventEmitter {
         let gainCorrection: Float
     }
     private static var analysisCache: [String: FileAnalysis] = {
-        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCache"),
+        // V2 — bumped so every device abandons whatever it cached under the
+        // old key instead of trusting stale results computed before the
+        // over-trimming clamp fix right above analyzeFile's trailing scan.
+        // Same file, same size, but a materially different (and wrong, for
+        // whichever files hit that bug) trailingCutSeconds — file size
+        // alone as a cache key can't tell the two apart, so the only safe
+        // option is to stop reading the old entries at all.
+        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCacheV2"),
               let decoded = try? JSONDecoder().decode([String: FileAnalysis].self, from: data) else { return [:] }
         return decoded
     }()
@@ -733,7 +740,7 @@ class AudioEngine: RCTEventEmitter {
         let snapshot = AudioEngine.analysisCache
         DispatchQueue.global(qos: .utility).async {
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCache")
+            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCacheV2")
         }
     }
     // Rough reference level the gain-correction estimate below aims for —
@@ -792,6 +799,44 @@ class AudioEngine: RCTEventEmitter {
                 guard let r = rms(atFrame: chunkStart) else { break }
                 if r > silenceThreshold { trailingCutFrames = totalFrames - pos; break }
                 pos = chunkStart
+            }
+            // Real bug found here (direct feedback: progress bar "just
+            // didn't work at all... may have worked on some songs" — plus
+            // "songs sometimes cut off early... make sure it works
+            // perfectly with trim silence"): for any file shorter than the
+            // 20s scan cap, trailCap collapses to 0, which means the
+            // starting default above — before either loop finds real
+            // sound — is trailingCutFrames = totalFrames, i.e. the file's
+            // ENTIRE length. A short track that's quiet enough for even a
+            // few chunks to read as "silent" near the tail (not silent
+            // enough to be wrong to trim SOME of, just enough for the scan
+            // to occasionally never hit the exact chunk containing where
+            // sound picks back up before running out of frames to check)
+            // could keep that full-length default instead of ever
+            // overwriting it — reported duration then computes to file
+            // length minus its own full length: ~0 or, with leadIn
+            // overlapping the same range too, genuinely negative.
+            // currentDurationSeconds()/currentPositionSeconds() both feed
+            // straight from this, so a duration of ~0 makes `duration > 0`
+            // false forever for that track (progress bar never starts
+            // moving — matches "may have worked on some songs" exactly,
+            // since it only bites short/quiet tracks), and separately,
+            // trimming virtually the whole file plays as "cuts off early"
+            // in the most literal sense possible. Clamped here so lead-in
+            // and trailing cut combined can never eat more than the file
+            // has, always leaving at least a floor of real playable audio
+            // regardless of what the scan concluded.
+            let minPlayableFrames = AVAudioFramePosition(sampleRate * 1) // always leave at least 1s playable
+            let maxCombinedCut = max(0, totalFrames - minPlayableFrames)
+            if leadInFrames + trailingCutFrames > maxCombinedCut {
+                // Scale both down proportionally rather than just capping
+                // trailingCutFrames alone — preserves whichever one found a
+                // more confident (shorter scan) result relative to the
+                // other instead of always sacrificing the same side.
+                let totalCut = leadInFrames + trailingCutFrames
+                let scale = Double(maxCombinedCut) / Double(totalCut)
+                leadInFrames = AVAudioFramePosition(Double(leadInFrames) * scale)
+                trailingCutFrames = AVAudioFramePosition(Double(trailingCutFrames) * scale)
             }
         }
 

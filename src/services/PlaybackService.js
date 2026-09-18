@@ -298,9 +298,21 @@ async function checkRampWindow(position, duration) {
         if (remaining > 0.15 && remaining <= ramp) {
             const id = claimFade();
             naturalEndFadeOwner = id;
-            // Wider safety margin so the fade reliably finishes BEFORE native
-            // auto-advance fires, avoiding the race that cut songs short.
-            await fadeVol(1, 0, Math.max(0.15, remaining - 0.35), id);
+            // Real bug found here (direct feedback: "songs sometimes cut
+            // off early with audio ramping... ramp out too early"): this
+            // subtracted a flat 0.35s off the fade's own length, on top of
+            // the fade already starting right at the ramp window boundary
+            // — meaning EVERY track with End of Track ramping on spent its
+            // last 0.35s sitting at pure silence before the track's real
+            // (already Silence-Trim-adjusted, if that's on too) end,
+            // rather than fading smoothly through to it. That's not an
+            // edge case, that's every single track, by design. Cut to
+            // 0.15s, same as the floor right below it — still enough of a
+            // margin to finish before native auto-advance fires (the race
+            // this was originally added for), just not enough to eat over
+            // a third of a second of silence at the end of every track on
+            // its own.
+            await fadeVol(1, 0, Math.max(0.15, remaining - 0.15), id);
         }
     } catch { }
 }
