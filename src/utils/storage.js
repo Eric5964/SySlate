@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
+import { EQ_MIN, EQ_MAX } from './eq';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
@@ -180,15 +181,29 @@ export const setShowSongCovers = (v) => safe(() => AsyncStorage.setItem('show_so
 
 // Splits a multi-artist tag string on a configurable separator ('none'
 // disables splitting entirely — the tag displays and matches as one whole
-// string, same as before this feature existed). Defaults to ';' rather
+// string, same as before this feature existed). Defaults to [';'] rather
 // than ',' or '&' specifically because those two are common WITHIN a
 // single real artist/band name ("Earth, Wind & Fire"), so using either as
 // the default would misparse plenty of untagged-for-this libraries right
 // out of the box. ';' essentially never appears inside a real artist name,
 // so defaulting to it is safe even for a library that was never tagged
 // with multiple artists in mind — nothing with no ';' in it is affected.
-export const getArtistSeparator = () => safe(() => AsyncStorage.getItem('artist_separator').then(v => v ?? ';'), ';');
-export const setArtistSeparator = (v) => safe(() => AsyncStorage.setItem('artist_separator', v), null);
+//
+// Now stores a JSON array (multiple separators can be active at once —
+// e.g. a library that mixes "A; B" and "C & D" style tags). Still reads a
+// plain legacy string fine (anyone who set this before multi-select
+// existed) by wrapping it in a single-item array rather than needing a
+// one-time migration step.
+export const getArtistSeparator = () => safe(() => AsyncStorage.getItem('artist_separator').then(v => {
+    if (v == null) return [';'];
+    try {
+        const parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed : [v];
+    } catch {
+        return [v]; // pre-multi-select legacy value, e.g. plain ";"
+    }
+}), [';']);
+export const setArtistSeparator = (arr) => safe(() => AsyncStorage.setItem('artist_separator', JSON.stringify(arr)), null);
 
 // 'off' — feature entirely disabled, no .lrc lookup ever happens (no wasted
 // file I/O for anyone who doesn't want this). 'manual' — lyrics available
@@ -413,18 +428,30 @@ export const importAllSettings = async (jsonString) => {
     };
     // Keys whose value is itself a JSON-encoded string — validated by
     // shape (array vs plain object), not by deep-inspecting every entry.
-    const JSON_ARRAY_KEYS = new Set(['custom_eq_presets', 'hidden_eq_presets', 'playlist_order']);
+    const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order']);
     const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders']);
-    // Plain string settings (enum-like ids, separators, URIs) — no fixed
-    // enum list enforced here (a future app version could legitimately add
-    // new theme/cover-shape ids that this exact import code doesn't know
-    // about yet), just a sane length cap so a giant garbage string can't
-    // get written into, say, a theme id.
+    // Plain string settings (enum-like ids, URIs) — no fixed enum list
+    // enforced here (a future app version could legitimately add new
+    // theme/cover-shape ids that this exact import code doesn't know about
+    // yet), just a sane length cap so a giant garbage string can't get
+    // written into, say, a theme id.
     const STRING_KEYS = new Set([
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
-        'playlist_view_format', 'artist_separator', 'lyrics_mode',
+        'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'cover_shape', 'bg_image_uri',
     ]);
+    // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
+    // never drift from what the sliders/native side actually support.
+    // Also the actual reason custom_eq_presets needed its own validator
+    // instead of the generic "is it an array" check the JSON_ARRAY_KEYS
+    // branch does for everything else: a preset with a band value outside
+    // that range would get silently clamped somewhere downstream in a way
+    // that doesn't necessarily match what the user thought they were
+    // importing.
+    const isValidEqPresets = (parsed) => Array.isArray(parsed) && parsed.every(p =>
+        p && typeof p === 'object' && typeof p.id === 'string' && typeof p.name === 'string' &&
+        Array.isArray(p.bands) && p.bands.every(b => typeof b === 'number' && Number.isFinite(b) && b >= EQ_MIN && b <= EQ_MAX)
+    );
 
     const toWrite = [];
     for (const [key, value] of Object.entries(obj)) {
@@ -437,6 +464,20 @@ export const importAllSettings = async (jsonString) => {
             const [min, max] = NUMERIC_RANGES[key];
             const n = parseFloat(value);
             if (Number.isFinite(n) && n >= min && n <= max) toWrite.push([key, String(n)]);
+        } else if (key === 'custom_eq_presets') {
+            try { if (isValidEqPresets(JSON.parse(value))) toWrite.push([key, value]); } catch { }
+        } else if (key === 'artist_separator') {
+            // Now an array (Multiple Artists supports selecting more than
+            // one separator at once) — accepts a legacy plain-string value
+            // too (anything exported before multi-select existed) by
+            // wrapping it, same as getArtistSeparator's own read path does.
+            try {
+                const parsed = JSON.parse(value);
+                const arr = Array.isArray(parsed) ? parsed : [value];
+                if (arr.every(sep => typeof sep === 'string' && sep.length <= 20)) toWrite.push([key, JSON.stringify(arr)]);
+            } catch {
+                if (value.length <= 20) toWrite.push([key, JSON.stringify([value])]);
+            }
         } else if (JSON_ARRAY_KEYS.has(key)) {
             try { if (Array.isArray(JSON.parse(value))) toWrite.push([key, value]); } catch { }
         } else if (JSON_OBJECT_KEYS.has(key)) {

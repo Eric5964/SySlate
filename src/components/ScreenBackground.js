@@ -12,58 +12,69 @@ import { useTheme } from '../context/ThemeContext';
 // colors), per an explicit "don't affect different colors, just the base
 // background color" request.
 //
-// Uses plain React Native Image, not expo-image — a prior round switched
-// this to expo-image for cross-mount decode caching (to fix flashing/slow
-// switching), but that added a new native dependency, and its native
-// module very likely never actually got linked into the compiled app given
-// how this project's iOS project is maintained (manually-registered
-// pbxproj entries, no automatic `expo prebuild`/pod install step — see the
-// AudioEngine.swift/.m registration history). That's the far more likely
-// explanation for the wave of app-wide regressions afterward (progress bar
-// gestures, swipe-to-close, queue swipe rows all going choppy/unresponsive)
-// than any of those being independent bugs — adding a native dependency
-// without a full pod install can destabilize gesture-handler and other
-// already-working native modules, not just the new one. Reverted back to
-// plain Image; the flash/slow-switching complaint stays open until there's
-// a safe way to add real image caching that doesn't risk this again.
+// Real cause of "always shows a black screen temporarily before loading
+// fully when opening screens... it's the same picture??" found here: this
+// used to render its OWN <Image> — meaning every screen (All Songs,
+// Playlists, Playlist Detail, Settings, Player) mounted a completely
+// separate Image element pointing at the same file:// URI, every single
+// time you navigated to it. App.js's Image.prefetch() calls (still there,
+// still worth keeping for the actual network-image case) are a React
+// Native API documented and built around remote http(s) images — for a
+// local file:// URI like a device-picked background photo, prefetch
+// doesn't reliably warm anything an already-mounted local Image wouldn't
+// already have, so each screen's fresh Image still had to hit disk and
+// decode again from nothing, every time, regardless of how aggressively
+// the app tried to pre-warm it.
+//
+// Fixed structurally instead of by caching harder: the actual <Image> now
+// lives ONCE, permanently mounted at the App root (App.js's
+// PersistentBackgroundImage, rendered behind the whole navigator, never
+// unmounted for the life of the app session) — decoded exactly once, ever,
+// then just sitting there for every screen to show through. This
+// component is now just a transparent-or-solid passthrough: when an image
+// is active it gets out of the way (transparent) so the one persistent
+// Image underneath shows through; otherwise it's the plain solid
+// background, same as before. Screens keep calling this exactly the same
+// way — no call-site changes needed.
+//
+// Uses plain React Native Image at the root (not expo-image) — a prior
+// round switched to expo-image for cross-mount decode caching, but its
+// native module very likely never actually got linked into the compiled
+// app given how this project's iOS project is maintained (manually-
+// registered pbxproj entries, no automatic `expo prebuild`/pod install
+// step). Now moot anyway: with only one Image instance that never
+// remounts, plain Image only ever pays the decode cost once per session.
 export default function ScreenBackground({ style, children }) {
     const { base } = useTheme();
     const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const hasImage = backgroundImageEnabled && backgroundImageUri;
 
-    // Real bug found here (kept from the expo-image round — unrelated to
-    // which Image component is used): the two branches used to return
-    // different element types at the root (Image-wrapping vs plain View)
-    // with `children` sitting at a different nesting depth in each — so
-    // the moment backgroundImageEnabled flipped (e.g. right after picking
-    // an image for the first time), React saw the children subtree as
-    // structurally different and remounted the whole thing, including
-    // whatever ScrollView/scroll position was live on the screen using it.
-    // That's what was behind "the settings screen jumps when applying a
-    // background image" — it wasn't really about the image at all, it was
-    // this component forcing a remount of the entire screen underneath it.
-    // Now both cases render the identical tree shape (same outer View, same
-    // inner wrapper for children at the same position) — only the
-    // image/scrim as extra siblings mount or unmount, which doesn't touch
-    // children's identity.
     return (
         <View style={[styles.flexFill, !hasImage && { backgroundColor: base.bg }]}>
-            {hasImage && (
-                <>
-                    <Image
-                        source={{ uri: backgroundImageUri }}
-                        style={StyleSheet.absoluteFillObject}
-                        resizeMode="cover"
-                        fadeDuration={0}
-                    />
-                    {/* Scrim so existing text (styled assuming a plain dark
-                         background) stays legible over an arbitrary photo —
-                         explicitly asked not to harshly hurt legibility. */}
-                    <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
-                </>
-            )}
             <View style={[styles.flexFill, style]}>{children}</View>
         </View>
+    );
+}
+
+// Rendered exactly once, at the App root, behind the navigator — see the
+// big comment above for why this moved out of every individual screen.
+export function PersistentBackgroundImage() {
+    const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
+    const hasImage = backgroundImageEnabled && backgroundImageUri;
+    if (!hasImage) return null;
+    return (
+        <>
+            <Image
+                source={{ uri: backgroundImageUri }}
+                style={StyleSheet.absoluteFillObject}
+                resizeMode="cover"
+                fadeDuration={0}
+            />
+            {/* Scrim so existing text (styled assuming a plain dark
+                 background) stays legible over an arbitrary photo —
+                 explicitly asked not to harshly hurt legibility. */}
+            <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
+        </>
     );
 }
 

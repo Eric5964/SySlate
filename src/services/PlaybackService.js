@@ -516,6 +516,7 @@ export async function pauseWithRamp() {
             const outDur = await getSkipRamp();
             if (outDur > 0.05 && current > 0.02) {
                 const id = claimFade();
+                try { await AudioEngine.setNowPlayingPaused(true); } catch { }
                 await fadeVol(current, 0, outDur, id);
                 releaseFade(id);
             }
@@ -578,6 +579,7 @@ export async function pauseWithRamp() {
         // an instant AudioEngine.pause() with no fade whatsoever.
         if (useFade && ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
             const id = claimFade();
+            try { await AudioEngine.setNowPlayingPaused(true); } catch { }
             await fadeVol(1, 0, ramp, id);
             releaseFade(id);
             try { await AudioEngine.pause(); } catch { }

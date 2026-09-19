@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // 10 accents. Pink replaces the old White (which read as broken/invisible in
@@ -165,8 +165,18 @@ export function ThemeProvider({ children }) {
         return () => { cancelled = true; };
     }, []);
 
-    const setTheme = async (id) => { setThemeId(id); await AsyncStorage.setItem('theme_id', id); };
-    const setBase = async (id) => { setBaseId(id); await AsyncStorage.setItem('base_color_id', id); };
+    // Real bug found here (contributes to overall app sluggishness,
+    // possibly the "settings feels slow" complaint too): setTheme/setBase
+    // were plain arrow functions recreated fresh on every render, and the
+    // Provider's own value object below was a brand-new object literal
+    // every render too — meaning EVERY consumer of useTheme() anywhere in
+    // the app (which is nearly every screen and component here) re-
+    // rendered on every single ThemeProvider render, regardless of whether
+    // theme/base actually changed. Wrapped in useCallback/useMemo so
+    // consumers only actually re-render when theme, base, or ready
+    // genuinely change.
+    const setTheme = useCallback(async (id) => { setThemeId(id); await AsyncStorage.setItem('theme_id', id); }, []);
+    const setBase = useCallback(async (id) => { setBaseId(id); await AsyncStorage.setItem('base_color_id', id); }, []);
 
     // Simple toggle rather than making the user pick "Light" out of the
     // same grid as the ten dark bases — remembers whichever dark base was
@@ -179,7 +189,7 @@ export function ThemeProvider({ children }) {
     // them light/pastel." Now derives the matching light_X for whichever
     // dark_X (or black) was active, so the hue actually carries through
     // instead of always landing on the same neutral light theme.
-    const toggleLightMode = async () => {
+    const toggleLightMode = useCallback(async () => {
         if (baseId?.startsWith('light_')) {
             const prev = (await AsyncStorage.getItem('base_color_id_pre_light')) || 'black';
             await setBase(BASE_COLORS[prev] ? prev : 'black');
@@ -189,15 +199,17 @@ export function ThemeProvider({ children }) {
             const lightId = `light_${hue}`;
             await setBase(BASE_COLORS[lightId] ? lightId : 'light_black');
         }
-    };
+    }, [baseId, setBase]);
+
+    const value = useMemo(() => ({
+        theme: THEMES[themeId], themeId, setTheme,
+        base: BASE_COLORS[baseId], baseId, setBase,
+        isLight: !!baseId?.startsWith('light_'), toggleLightMode,
+        ready,
+    }), [themeId, baseId, ready, setTheme, setBase, toggleLightMode]);
 
     return (
-        <ThemeContext.Provider value={{
-            theme: THEMES[themeId], themeId, setTheme,
-            base: BASE_COLORS[baseId], baseId, setBase,
-            isLight: !!baseId?.startsWith('light_'), toggleLightMode,
-            ready,
-        }}>
+        <ThemeContext.Provider value={value}>
             {children}
         </ThemeContext.Provider>
     );

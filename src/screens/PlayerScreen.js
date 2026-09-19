@@ -401,7 +401,20 @@ export default function PlayerScreen() {
     // ~25/sec setVolume steps — audible as jitter, and very likely the
     // actual cause of the newly-reported "ramping is glitchy/jumpy going
     // into a song" after this was first added as an always-on interval.
-    const [lyricsProgress, setLyricsProgress] = useState({ position: 0, duration: 0 });
+    // Real gap found here (opening straight into lyrics from a cold-launch
+    // restore, paused, before ever pressing Play): this always started at
+    // position:0/duration:0 regardless of what was already known, so even
+    // though activeLine's own gate (below) is correct, there was still a
+    // real — if brief — window right as showingLyrics flips true where
+    // activeLine had nothing to work with yet, landing on the activeLine<0
+    // branch (scrolls to the top / whatever it last was) before the first
+    // getProgress() round trip below actually resolves a moment later and
+    // the real position takes over. useProgress's own poll (progress,
+    // above) may well already have a real value by the time lyrics finish
+    // resolving — seeding from that instead of a hardcoded zero closes the
+    // gap for that common case instead of always eating one avoidable
+    // async round trip's worth of wrong-content flash.
+    const [lyricsProgress, setLyricsProgress] = useState(() => (progress.duration > 0 ? progress : { position: 0, duration: 0 }));
     const progressKnown = progress.duration > 0;
     useEffect(() => {
         if (!showingLyrics || (isPlaying && progressKnown)) return;

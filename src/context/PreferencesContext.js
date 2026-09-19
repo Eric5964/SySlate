@@ -32,7 +32,7 @@ import {
 const Ctx = createContext({
     showPlayCount: true, setShowPlayCount: () => { },
     showSongCovers: false, setShowSongCovers: () => { },
-    artistSeparator: ';', setArtistSeparator: () => { },
+    artistSeparator: [';'], setArtistSeparator: () => { },
     lyricsMode: 'off', setLyricsMode: () => { },
     lyricsResyncSec: 4, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
@@ -60,7 +60,7 @@ const Ctx = createContext({
 export function PreferencesProvider({ children }) {
     const [showPlayCount, setShowPlayCountState] = useState(true);
     const [showSongCovers, setShowSongCoversState] = useState(false);
-    const [artistSeparator, setArtistSeparatorState] = useState(';');
+    const [artistSeparator, setArtistSeparatorState] = useState([';']);
     const [lyricsMode, setLyricsModeState] = useState('off');
     const [lyricsResyncSec, setLyricsResyncSecState] = useState(4);
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);

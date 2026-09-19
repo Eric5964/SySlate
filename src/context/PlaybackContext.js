@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
-import { getPresetById } from '../utils/eq';
+import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
@@ -41,7 +41,12 @@ export async function applyEQPreset(id) {
     try {
         const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
         const preset = getPresetById(id, custom, overrides);
-        await AudioEngine.setEQBands(preset.bands);
+        // Clamped here — the one place EVERY band value actually reaches
+        // the native EQ unit, regardless of where it came from (a built-in,
+        // a custom preset, an override) — so a value saved back when the
+        // range was ±12 can't hand the native side something outside what
+        // it's now meant to support.
+        await AudioEngine.setEQBands(preset.bands.map(clampEQBand));
     } catch { }
 }
 const stampQids = (tracks) => tracks.map(stampQid);
@@ -1233,14 +1238,30 @@ export function PlaybackProvider({ children }) {
         return () => clearInterval(interval);
     }, []);
 
+    // Real bug found here (same class as ThemeContext/LibraryContext — see
+    // their comments): this was a fresh object literal every render of
+    // PlaybackProvider, so every usePlayback() consumer app-wide re-
+    // rendered whenever ANY of this provider's own state changed, even
+    // state a given consumer doesn't use at all. Every function below was
+    // already useCallback-wrapped (stable), so wrapping the object itself
+    // in useMemo is enough to actually get the benefit — consumers now
+    // only re-render when a value they actually read changes.
+    const value = useMemo(() => ({
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
+        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
+        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
+        addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
+    }), [
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
+        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
+        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
+        addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
+    ]);
+
     return (
-        <Ctx.Provider value={{
-            currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
-            loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
-            toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-            addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
-            sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
-        }}>
+        <Ctx.Provider value={value}>
             {children}
         </Ctx.Provider>
     );

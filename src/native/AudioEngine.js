@@ -115,6 +115,13 @@ const AudioEngine = {
     stop: () => NativeAudioEngine.stop(),
     seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),
+    // Updates only the lock screen/Control Center's displayed play/pause
+    // state — doesn't touch actual playback. Used to make the lock screen
+    // say "paused" immediately when a ramp-out-on-pause starts, instead of
+    // only once the real pause() lands seconds later once the fade
+    // finishes (see AudioEngine.swift's setNowPlayingPaused for the full
+    // story).
+    setNowPlayingPaused: (paused) => NativeAudioEngine.setNowPlayingPaused(paused),
     getVolume: () => NativeAudioEngine.getVolume(),
     // Runs the whole from->to fade natively over one bridge call instead of
     // PlaybackService.js looping setVolume() ~25x/sec itself — see

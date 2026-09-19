@@ -80,12 +80,21 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
 });
 
 export default function PlaylistsScreen() {
-    const { playlists, reload, reorderPlaylists } = useContext(LibraryContext);
+    const { playlists, covers: initialCovers, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
     const { coverShape } = usePreferences();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
-    const [covers, setCovers] = useState({});
+    // Real gap found here: this always started at {} and waited on its own
+    // fresh getPlaylistCovers() fetch (below) to populate it — even on a
+    // cold launch where App.js's prefetchPlaylistCovers() had already
+    // resolved the exact same data (and warmed the actual image bytes)
+    // moments earlier. Seeding from that already-known map means a cold
+    // launch's first paint can show real covers immediately instead of
+    // colored placeholders for a beat; the effects below still keep this
+    // fresh afterward (a playlist-covers change elsewhere, or refocusing
+    // this screen) exactly as before.
+    const [covers, setCovers] = useState(initialCovers || {});
     const [menuFor, setMenuFor] = useState(null);
     const [displayedMenuFor, setDisplayedMenuFor] = useState(null);
     useEffect(() => { if (menuFor) setDisplayedMenuFor(menuFor); }, [menuFor]);

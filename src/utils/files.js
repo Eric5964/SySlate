@@ -43,13 +43,13 @@ function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 async function applyTags(track, albumFromFolder, artistSeparator) {
     const tags = await getCachedTagsFast(track);
     if (!tags) return track;
-    // If the separator's the literal "none" (Multiple Artists disabled), that
-    // means "don't split for display" — it's not a real delimiter, so
-    // joining with it as the actual character would glue names together as
-    // "Artist Anonesplit Artist B". Genuinely discrete tag-sourced artists
-    // still need SOME real separator between them; falls back to ';' the
-    // same way splitArtists' own default does.
-    const joinSep = (artistSeparator && artistSeparator !== 'none') ? artistSeparator : ';';
+    // artistSeparator is now an array (Multiple Artists supports selecting
+    // more than one separator at once) — joining genuinely discrete
+    // tag-sourced artists still only makes sense with ONE character between
+    // them, so this uses the first real (non-'none') one configured, same
+    // ';' fallback as before if the array is empty or 'none'-only.
+    const seps = (Array.isArray(artistSeparator) ? artistSeparator : [artistSeparator]).filter(sep => sep && sep !== 'none');
+    const joinSep = seps[0] || ';';
     const artist = tags.artists?.length ? tags.artists.join(joinSep) : tags.artist;
     return {
         ...track,

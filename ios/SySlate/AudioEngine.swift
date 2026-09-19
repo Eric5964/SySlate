@@ -367,7 +367,7 @@ class AudioEngine: RCTEventEmitter {
         }
         eqNode.bypass = false
         // Normalization off by default until a preference explicitly
-        // turns it on — see setNormalizationEnabled.
+        // turns it on — see setWithinTrackNormEnabled.
         normalizerNode.bypass = true
 
         configureAudioSession()
@@ -2003,6 +2003,34 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // Real cause of "in-app pause not reflected on lock screen" found here
+    // (two prior rounds looked for a logic bug in pauseInternal/setState/
+    // updateNowPlayingInfo itself and correctly found none — the actual
+    // gap was never in this file at all). PlaybackService.js's
+    // pauseWithRamp() runs the ENTIRE fade-out to silence — up to several
+    // seconds, depending on the Skip Ramp / Audio Ramp setting — before it
+    // ever calls the real AudioEngine.pause() below. Nothing updates
+    // MPNowPlayingInfoPropertyPlaybackRate until that real pause() finally
+    // fires, so the lock screen/Control Center keeps showing "playing"
+    // for the whole fade — exactly "keeps showing playing" if you check it
+    // right after tapping pause, which is the natural thing to do. This
+    // lets JS flip just the DISPLAYED rate immediately when a ramp-out
+    // starts, without touching the actual engine state (state/activeNode
+    // untouched) — the audio keeps fading out normally, the lock screen
+    // just stops lying about it while that happens. The real pause() call
+    // that follows the fade re-affirms the same info a moment later
+    // (harmless), and if playback resumes mid-fade instead, the normal
+    // play() → setState(.playing) path overwrites this on its own — no
+    // separate "undo" needed.
+    @objc(setNowPlayingPaused:resolver:rejecter:)
+    func setNowPlayingPaused(_ paused: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { resolve(nil); return }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentPositionSeconds()
+        info[MPNowPlayingInfoPropertyPlaybackRate] = paused.boolValue ? 0.0 : (state == .playing ? 1.0 : 0.0)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        resolve(nil)
+    }
+
     @objc(setVolume:resolver:rejecter:)
     func setVolume(_ vol: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         // A direct setVolume call always means "I want this volume NOW" —
@@ -2214,12 +2242,6 @@ class AudioEngine: RCTEventEmitter {
                 self?.preMixNode.outputVolume = startVol * Float(Double(i) / Double(steps))
             }
         }
-    }
-
-    @objc(setNormalizationEnabled:resolver:rejecter:)
-    func setNormalizationEnabled(_ enabled: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        toggleNormalizerBypass(!enabled.boolValue)
-        resolve(nil)
     }
 
     @objc(setCrossfadeEnabled:resolver:rejecter:)

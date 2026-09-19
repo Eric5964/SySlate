@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, Dimensions, Image, AppState } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer } from '@react-navigation/native';
@@ -22,6 +22,7 @@ import PlaylistDetailScreen from './screens/PlaylistDetailScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import MiniPlayer from './components/MiniPlayer';
+import { PersistentBackgroundImage } from './components/ScreenBackground';
 import { scanLibrary } from './utils/files';
 import { getPlaylistCovers } from './utils/storage';
 import { EDGE_SWIPE_WIDTH } from './utils/layout';
@@ -38,7 +39,7 @@ const PlaylistsStack = createStackNavigator();
 function PlaylistsStackScreen() {
     const { base } = useTheme();
     return (
-        <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: base.bg } }}>
+        <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: 'transparent' } }}>
             <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
             <PlaylistsStack.Screen
                 name="PlaylistDetail"
@@ -109,7 +110,7 @@ function MainLayout() {
 }
 
 function AppInner() {
-    const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null });
+    const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null, covers: {} });
     const [playerReady, setPlayerReady] = useState(false);
     const { ready: themeReady, base } = useTheme();
     const { showSongCovers, keepScreenAwake, backgroundImageEnabled, backgroundImageUri } = usePreferences();
@@ -126,9 +127,15 @@ function AppInner() {
     // independent conditions even though they share one loop/budget.
     useBackgroundLibraryLoader(library.allSongs, { art: playerReady && showSongCovers, tags: playerReady });
 
-    const reorderPlaylists = (newPlaylists) => {
+    // Real bug found here (contributes to overall app sluggishness): a
+    // plain function, recreated every AppInner render — combined with the
+    // Provider value below being a fresh object every render too, every
+    // LibraryContext consumer (Playlists, All Songs, Playlist Detail,
+    // Settings) re-rendered on every single AppInner render, not just when
+    // playlists actually changed.
+    const reorderPlaylists = useCallback((newPlaylists) => {
         setLibrary(prev => ({ ...prev, playlists: newPlaylists }));
-    };
+    }, []);
 
     // Same reasoning as the playlist-cover prefetch in reload() below —
     // the background image previously had no prefetch at all, so its very
@@ -147,38 +154,56 @@ function AppInner() {
     // native image cache isn't necessarily still warm after the app's been
     // backgrounded a while, and this had previously only ever run once, at
     // whatever moment reload() happened to be called.
-    const prefetchPlaylistCovers = async () => {
+    //
+    // Real remaining gap found here: this warmed the image BYTES into RN's
+    // cache, but PlaylistsScreen's own `covers` state (the playlist→cover
+    // URI map itself, not the image data) was always fetched completely
+    // independently, from scratch, on that screen's own mount — with no
+    // way to know this had already just resolved the exact same data a
+    // moment earlier. So even on a cold launch where every cover image was
+    // already decoded and cached by the time the screen painted, the grid
+    // still didn't know WHICH uri to hand each row's Image until its own
+    // fetch resolved a beat later — showing the colored placeholder in the
+    // meantime regardless of the image cache being ready. Now returns the
+    // map so it can be stored once, here, and handed to the screen as an
+    // already-known starting value — same fix already applied for the
+    // grid→detail navigation case (see openPlaylist's comment in
+    // PlaylistsScreen.js), just extended to cover this direction too.
+    const prefetchPlaylistCovers = useCallback(async () => {
         try {
             const covers = await getPlaylistCovers();
             await Promise.all(
                 Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
             );
-        } catch { }
-    };
+            return covers;
+        } catch { return null; }
+    }, []);
 
     useEffect(() => {
         const sub = AppState.addEventListener('change', (next) => {
             if (next === 'active') {
-                prefetchPlaylistCovers();
+                prefetchPlaylistCovers().then(covers => {
+                    if (covers) setLibrary(prev => ({ ...prev, covers }));
+                });
                 if (backgroundImageEnabled && backgroundImageUri) {
                     Image.prefetch(backgroundImageUri).catch(() => { });
                 }
             }
         });
         return () => sub.remove();
-    }, [backgroundImageEnabled, backgroundImageUri]);
+    }, [backgroundImageEnabled, backgroundImageUri, prefetchPlaylistCovers]);
 
-    const reload = async () => {
+    const reload = useCallback(async () => {
         try {
             const lib = await scanLibrary();
-            setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null });
             // Actually WAIT for these instead of firing-and-forgetting —
             // the whole point is the UI doesn't render until images are
             // already in RN's cache, otherwise this preload step does
             // nothing to prevent the first-render flash it's meant to fix.
-            await prefetchPlaylistCovers();
+            const covers = await prefetchPlaylistCovers();
+            setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null, covers: covers ?? {} });
         } catch (e) { console.error('reload:', e); }
-    };
+    }, [prefetchPlaylistCovers]);
 
     useEffect(() => {
         (async () => {
@@ -221,30 +246,62 @@ function AppInner() {
         return <View style={{ flex: 1, backgroundColor: base.bg }} />;
     }
 
+    // Real bug found here (contributes to overall app sluggishness,
+    // possibly part of "settings feels slow" too): this was a fresh object
+    // literal every single AppInner render (spreading `library` plus two
+    // functions) — meaning every LibraryContext consumer (Playlists, All
+    // Songs, Playlist Detail, Settings) re-rendered on every AppInner
+    // render for ANY reason (the AppState listener firing, a preferences
+    // change bubbling through, etc.), not just when the library itself
+    // actually changed. reload/reorderPlaylists are stable now (useCallback
+    // above), so this only actually produces a new object when `library`
+    // itself changes.
+    const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists }), [library, reload, reorderPlaylists]);
+
     return (
-        <LibraryContext.Provider value={{ ...library, reload, reorderPlaylists }}>
-            <PlaybackProvider>
-                <NavigationContainer>
-                    <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: base.bg } }}>
-                        <Root.Screen name="Main" component={MainLayout} />
-                        <Root.Screen
-                            name="Player"
-                            component={PlayerScreen}
-                            options={{
-                                ...TransitionPresets.ModalSlideFromBottomIOS,
-                                gestureEnabled: true,
-                                gestureResponseDistance: Dimensions.get('window').height,
-                                // Same tuning as the playlist swipe-out — a
-                                // quick flick carries the dismiss through
-                                // more readily instead of needing to cross
-                                // most of the screen height.
-                                gestureVelocityImpact: 0.5,
-                            }}
-                        />
-                    </Root.Navigator>
-                </NavigationContainer>
-            </PlaybackProvider>
-        </LibraryContext.Provider>
+        <View style={{ flex: 1 }}>
+            {/* Rendered once, here, for the life of the app session — see
+                ScreenBackground.js's big comment for why this moved out of
+                every individual screen (each of which still controls
+                whether IT shows solid or transparent via ScreenBackground,
+                so this shows through exactly where it used to). */}
+            <PersistentBackgroundImage />
+            <LibraryContext.Provider value={libraryContextValue}>
+                <PlaybackProvider>
+                    <NavigationContainer>
+                        {/* transparent, not base.bg — a stack screen's card
+                            is an opaque layer by default, which would sit
+                            on top of and completely hide the persistent
+                            background Image now rendered once behind the
+                            whole navigator (see PersistentBackgroundImage
+                            above). Each screen's own ScreenBackground
+                            already decides solid-vs-transparent per screen
+                            (based on whether a background image is
+                            actually active), so the card itself just needs
+                            to get out of the way and let that show through;
+                            same reasoning for PlaylistsStackScreen's
+                            Navigator above. */}
+                        <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: 'transparent' } }}>
+                            <Root.Screen name="Main" component={MainLayout} />
+                            <Root.Screen
+                                name="Player"
+                                component={PlayerScreen}
+                                options={{
+                                    ...TransitionPresets.ModalSlideFromBottomIOS,
+                                    gestureEnabled: true,
+                                    gestureResponseDistance: Dimensions.get('window').height,
+                                    // Same tuning as the playlist swipe-out — a
+                                    // quick flick carries the dismiss through
+                                    // more readily instead of needing to cross
+                                    // most of the screen height.
+                                    gestureVelocityImpact: 0.5,
+                                }}
+                            />
+                        </Root.Navigator>
+                    </NavigationContainer>
+                </PlaybackProvider>
+            </LibraryContext.Provider>
+        </View>
     );
 }
 

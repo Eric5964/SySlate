@@ -4,20 +4,33 @@
 // bass+treble boost with a mid scoop, and a "W-shape" — a V-shape with an
 // added presence bump in the middle for vocal clarity on top of it) rather
 // than made-up marketing names. Bands: 32/64/125/250/500/1k/2k/4k/8k/16k.
+// Real feedback found here: these were tuned for a ±12dB range, and even
+// within that came across "too intense" — cut down to fit the new ±6dB
+// range (see the EQ band sliders in SettingsScreen.js) with a bit of extra
+// headroom trimmed on top, roughly 70% of each old value, same shape/curve
+// per preset, just gentler across the board.
 export const BUILT_IN_PRESETS = [
     { id: 'flat', name: 'Flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { id: 'rumble', name: 'Rumble', bands: [7, 5, 1, 0, 0, 0, 0, 0, 0, 0] },
-    { id: 'punch', name: 'Punch', bands: [3, 5, 5, 3, 1, 0, 0, 0, 0, 0] },
-    { id: 'warm', name: 'Warm', bands: [2, 3, 3, 2, 1, 0, 0, -1, -1, 0] },
-    { id: 'presence', name: 'Presence', bands: [-2, -1, 0, 2, 4, 4, 3, 1, 0, 0] },
-    { id: 'sparkle', name: 'Sparkle', bands: [0, 0, 0, 0, 0, 1, 3, 5, 6, 6] },
-    { id: 'v_shape', name: 'V-Shape', bands: [5, 4, 2, 0, -2, -2, 0, 2, 4, 5] },
-    { id: 'w_shape', name: 'W-Shape', bands: [5, 4, 1, -1, -2, 3, -1, 1, 4, 5] },
-    { id: 'classical', name: 'Classical', bands: [3, 2, 0, 0, 0, 0, 0, 2, 3, 4] },
-    { id: 'electronic', name: 'Electronic', bands: [5, 4, 1, 0, -2, 0, 1, 3, 4, 4] },
-    { id: 'acoustic', name: 'Acoustic', bands: [3, 2, 1, 2, 3, 2, 2, 3, 3, 2] },
-    { id: 'loudness', name: 'Loudness', bands: [6, 4, 0, 0, -1, 0, 0, 2, 4, 5] },
+    { id: 'rumble', name: 'Rumble', bands: [5, 3.5, 0.5, 0, 0, 0, 0, 0, 0, 0] },
+    { id: 'punch', name: 'Punch', bands: [2, 3.5, 3.5, 2, 0.5, 0, 0, 0, 0, 0] },
+    { id: 'warm', name: 'Warm', bands: [1.5, 2, 2, 1.5, 0.5, 0, 0, -0.5, -0.5, 0] },
+    { id: 'presence', name: 'Presence', bands: [-1.5, -0.5, 0, 1.5, 3, 3, 2, 0.5, 0, 0] },
+    { id: 'sparkle', name: 'Sparkle', bands: [0, 0, 0, 0, 0, 0.5, 2, 3.5, 4, 4] },
+    { id: 'v_shape', name: 'V-Shape', bands: [3.5, 3, 1.5, 0, -1.5, -1.5, 0, 1.5, 3, 3.5] },
+    { id: 'w_shape', name: 'W-Shape', bands: [3.5, 3, 0.5, -0.5, -1.5, 2, -0.5, 0.5, 3, 3.5] },
+    { id: 'classical', name: 'Classical', bands: [2, 1.5, 0, 0, 0, 0, 0, 1.5, 2, 3] },
+    { id: 'electronic', name: 'Electronic', bands: [3.5, 3, 0.5, 0, -1.5, 0, 0.5, 2, 3, 3] },
+    { id: 'acoustic', name: 'Acoustic', bands: [2, 1.5, 0.5, 1.5, 2, 1.5, 1.5, 2, 2, 1.5] },
+    { id: 'loudness', name: 'Loudness', bands: [4, 3, 0, 0, -0.5, 0, 0, 1.5, 3, 3.5] },
 ];
+
+// ±6dB — matches the band sliders in SettingsScreen.js. Applied here too
+// (not just at the slider input) so a custom preset or override saved
+// before the range shrank from ±12 can't hand the native EQ unit a gain
+// outside what it's now meant to support.
+export const EQ_MIN = -6;
+export const EQ_MAX = 6;
+export const clampEQBand = (v) => Math.max(EQ_MIN, Math.min(EQ_MAX, v));
 
 export const BAND_HZ = ['32', '64', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
 export const BAND_COUNT = 10;

@@ -13,7 +13,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import PureSlider from '../components/PureSlider';
 import ScreenBackground from '../components/ScreenBackground';
-import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay } from '../utils/eq';
+import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay, EQ_MIN, EQ_MAX } from '../utils/eq';
 import { applyEQPreset } from '../context/PlaybackContext';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
@@ -22,7 +22,10 @@ const ARTIST_SEPARATORS = [
     { id: ';', label: ';' },
     { id: ',', label: ',' },
     { id: '/', label: '/' },
-    { id: '\\', label: '\\' },
+    // Two literal backslashes, not one — that's what Mp3tag and MusicBee
+    // actually write for multi-artist tags ("Artist A\\Artist B"), a
+    // single '\' isn't a real-world convention either of those uses.
+    { id: '\\\\', label: '\\\\' },
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
@@ -82,12 +85,20 @@ export default function SettingsScreen() {
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
     const [eqOverrides, setEO] = useState({});
-    // Built-ins that are hidden are filtered out of this grid entirely by
-    // default now, not just shown unchecked — "get rid of bundled presets"
-    // reads as wanting them actually gone from view, not just deselected
-    // in a list they still have to scroll past. This toggles them back
-    // into view (dimmed/unchecked) so there's a way to re-enable one.
-    const [showHiddenPresets, setShowHiddenPresets] = useState(false);
+    // Real UX confusion found here (direct feedback: "eq presets are a bit
+    // confusing... it should be 'manage presets' so you can enable/disable
+    // the presets, not touching your personal shit"): this single grid
+    // did enable/disable AND rename/edit-bands AND delete all at once, and
+    // unchecking a preset made it vanish from THIS view immediately unless
+    // you separately toggled "Manage Disabled" back on — a jarring
+    // disappear-on-tap that's exactly what "without them disappearing"
+    // was asking to stop. Split into two surfaces now: this main grid
+    // always shows every preset (built-in + custom, nothing hidden from
+    // it) and still handles edit/delete for your own custom ones; a
+    // separate Manage Presets sheet (below) is the one dedicated,
+    // enable/disable-ONLY surface — no edit, no delete, so there's no way
+    // to touch a custom preset's actual content from there.
+    const [showManagePresets, setShowManagePresets] = useState(false);
     const [showNewEQ, setShowNewEQ] = useState(false);
     // null editingId = creating a brand new custom preset. Non-null +
     // editingIsBuiltIn = editing/overwriting a built-in (via eqOverrides).
@@ -96,11 +107,9 @@ export default function SettingsScreen() {
     const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
-    const displayPresets = useMemo(() => {
-        const merged = mergePresetsForDisplay(customPresets, eqOverrides);
-        if (showHiddenPresets) return merged;
-        return merged.filter(p => !hiddenPresets.includes(p.id));
-    }, [customPresets, eqOverrides, showHiddenPresets, hiddenPresets]);
+    // Always the full set now — see the comment above showManagePresets
+    // for why this no longer filters hidden ones out of its own view.
+    const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
@@ -401,8 +410,8 @@ export default function SettingsScreen() {
                         <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
                             <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: base.border }]} onPress={() => setShowHiddenPresets(v => !v)}>
-                            <Text style={[s.addBtnText, { color: base.textFaint }]}>{showHiddenPresets ? 'Hide Disabled' : 'Manage Disabled'}</Text>
+                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: base.border }]} onPress={() => setShowManagePresets(true)}>
+                            <Text style={[s.addBtnText, { color: base.textFaint }]}>Manage Presets</Text>
                         </TouchableOpacity>
                     </View>
                 </Section>
@@ -633,20 +642,44 @@ export default function SettingsScreen() {
                 <Section title="Multiple Artists">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
-                        <Text style={s.toggleSub}>How multiple artists are separated in your files, like "A; B"</Text>
+                        <Text style={s.toggleSub}>How multiple artists are separated in your files, like "A; B" — pick as many as your library actually uses</Text>
                     </View>
                     <View style={s.sortRow}>
-                        {ARTIST_SEPARATORS.map(opt => (
-                            <TouchableOpacity
-                                key={opt.id}
-                                style={[s.sortChip, artistSeparator === opt.id && { backgroundColor: theme.accent }]}
-                                onPress={() => setArtistSeparator(opt.id)}
-                            >
-                                <Text style={[s.sortChipText, artistSeparator === opt.id && { color: theme.onAccent }]}>
-                                    {opt.label}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
+                        {ARTIST_SEPARATORS.map(opt => {
+                            // Multi-select now (a library can genuinely mix
+                            // more than one separator convention) — 'None'
+                            // is the one mutually-exclusive option, since it
+                            // means "don't split at all" and picking it
+                            // alongside a real separator wouldn't make
+                            // sense. Selecting 'None' clears everything
+                            // else; selecting any real separator while
+                            // 'None' is active drops 'None'.
+                            const selected = opt.id === 'none'
+                                ? artistSeparator.includes('none') || artistSeparator.length === 0
+                                : artistSeparator.includes(opt.id);
+                            return (
+                                <TouchableOpacity
+                                    key={opt.id}
+                                    style={[s.sortChip, selected && { backgroundColor: theme.accent }]}
+                                    onPress={() => {
+                                        if (opt.id === 'none') {
+                                            setArtistSeparator(['none']);
+                                            return;
+                                        }
+                                        const withoutNone = artistSeparator.filter(sep => sep !== 'none');
+                                        setArtistSeparator(
+                                            withoutNone.includes(opt.id)
+                                                ? withoutNone.filter(sep => sep !== opt.id)
+                                                : [...withoutNone, opt.id]
+                                        );
+                                    }}
+                                >
+                                    <Text style={[s.sortChipText, selected && { color: theme.onAccent }]}>
+                                        {opt.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
                     </View>
                 </Section>
 
@@ -895,6 +928,24 @@ export default function SettingsScreen() {
                 </>
             )}
 
+            {/* Manage Presets — pure enable/disable, no edit or delete, so
+                there's no way to touch a custom preset's own name/bands
+                from here. The one place a hidden preset (built-in or
+                custom) is still shown/reachable, since the main grid above
+                no longer hides anything on its own. */}
+            <BottomSheet visible={showManagePresets} onClose={() => setShowManagePresets(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>Manage Presets</Text>}>
+                <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                    {displayPresets.map(p => (
+                        <TouchableOpacity key={p.id} style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border, paddingHorizontal: 24 }]} onPress={() => togglePresetVisible(p.id)}>
+                            <Text style={[s.toggleLabel, { flex: 1 }]}>{p.name}</Text>
+                            <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                            </View>
+                        </TouchableOpacity>
+                    ))}
+                </ScrollView>
+            </BottomSheet>
+
             {/* This was still commented out even after the EQ Presets *list*
                 section above got un-hidden — "+ Add Custom Preset" flipped
                 showNewEQ to true, but the sheet it's supposed to open was
@@ -922,7 +973,7 @@ export default function SettingsScreen() {
                                 <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
                                 <PureSlider
                                     style={{ flex: 1, marginHorizontal: 8 }}
-                                    minimumValue={-12} maximumValue={12} step={0.5} value={val}
+                                    minimumValue={EQ_MIN} maximumValue={EQ_MAX} step={0.5} value={val}
                                     onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
                                     minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
                                 />

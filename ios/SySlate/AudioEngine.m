@@ -72,6 +72,13 @@ RCT_EXTERN_METHOD(setVolume:(nonnull NSNumber *)volume
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+// Matches AudioEngine.swift's setNowPlayingPaused(paused:) — same class of
+// gap as setCrossfadeDurationEndOfTrack/load below: a real native method
+// with no matching extern entry here silently never reaches Swift at all.
+RCT_EXTERN_METHOD(setNowPlayingPaused:(nonnull NSNumber *)paused
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(getVolume:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
