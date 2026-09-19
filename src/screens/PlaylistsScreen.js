@@ -279,7 +279,9 @@ const HIT = { top: 14, bottom: 14, left: 14, right: 14 };
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 60, paddingHorizontal: 24, paddingBottom: 8 },
+    // Was paddingTop:60/paddingBottom:8 — trimmed to bring the cover grid
+    // closer to the top instead of sitting under a tall empty header band.
+    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 44, paddingHorizontal: 24, paddingBottom: 4 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     btn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
     btnText: { fontSize: 24 },

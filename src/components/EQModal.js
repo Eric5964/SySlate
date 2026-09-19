@@ -16,7 +16,7 @@ export default function EQModal({ visible, onClose, playlistPath }) {
         (async () => {
             const custom = await getCustomPresets();
             const hidden = await getHiddenPresets();
-            setEqPresets([...BUILT_IN_PRESETS, ...custom].filter(p => !hidden.includes(p.id)));
+            setEqPresets([...BUILT_IN_PRESETS, ...custom].filter(p => p.id === 'flat' || !hidden.includes(p.id)));
         })();
     }, [visible]);
 

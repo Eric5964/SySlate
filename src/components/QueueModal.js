@@ -61,6 +61,30 @@ function GrowInRow({ isNew, children }) {
     );
 }
 
+// The "Priority" and "Up Next" pills' own fade — opacity only, no height
+// animation (unlike GrowInRow above, which hardcodes ROW_HEIGHT and would
+// grow the pill to the wrong height since it's much shorter than a row).
+// Driven by the exact same `isNew` flag as the pill's own first row,
+// passed in from listData below rather than computed on its own timer —
+// see the big comment above where pills used to live for why an
+// independent timer was the actual bug last time this was tried: the pill
+// used to animate in ~220ms after its rows on its own schedule, so a
+// freshly-added priority row could sit there for that whole window with no
+// "Priority" label above it yet, reading as if it landed under "Now
+// Playing" instead. Sharing the identical flag makes that desync
+// structurally impossible instead of just less likely — they can only
+// ever start in the same render.
+function FadePill({ isNew, children }) {
+    const opacity = useRef(new Animated.Value(isNew ? 0 : 1)).current;
+    useEffect(() => {
+        if (!isNew) return;
+        Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: false }).start();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    if (!isNew) return <>{children}</>;
+    return <Animated.View style={{ opacity }}>{children}</Animated.View>;
+}
+
 // Mirrors GrowInRow — shrinks a row's height AND content out before it's
 // actually removed from the list, instead of it just vanishing the instant
 // the data updates (which is what "the space doesn't close naturally" was
@@ -93,16 +117,14 @@ function ShrinkOutRow({ removing, children }) {
     );
 }
 
-// The "Priority" and "Up Next" pills/dividers deliberately have no
-// section-level grow/shrink animation of their own — they render/unrender
-// atomically with their rows via plain conditionals, same as each other.
-// An earlier version animated the Priority pill independently (delayed
-// ~220ms relative to its rows, to sequence after GrowInRow above) — that
-// meant a newly-added priority row could appear for that whole window with
-// no "Priority" label above it yet, reading as if it had landed under "Now
-// Playing" instead. Matching Up Next's plain approach removes the
-// desync entirely rather than trying to keep two independent animations in
-// sync under load.
+// The "Priority" and "Up Next" pills get a fade-in (FadePill above) tied to
+// the exact same isNew flag as their own first row — see FadePill's comment
+// for why an independent timer was the actual bug in an earlier attempt at
+// animating these. Removal is still a plain unrender, not a fade-out: doing
+// that properly would mean tracking a lingering "ghost pill" the same way
+// removingKeys does for rows (a pill whose rows just emptied out has no row
+// of its own left to key its fade-out off of), which is a bigger, riskier
+// change than this pass — the appearing half was the specific complaint.
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
@@ -345,17 +367,17 @@ export default function QueueModal({ visible, onClose }) {
         const items = [];
         if (currentTrack) items.push({ type: 'nowplaying', key: 'now-playing' });
         if (priorityRows.length > 0) {
-            items.push({ type: 'pill', key: 'pill-priority', label: 'Priority' });
+            items.push({ type: 'pill', key: 'pill-priority', label: 'Priority', isNew: newKeys.has(priorityRows[0].stableKey) });
             for (const r of priorityRows) items.push({ type: 'row', key: r.stableKey, row: r });
         }
         if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider' });
         if (upNextRows.length > 0) {
-            items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next' });
+            items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next', isNew: newKeys.has(upNextRows[0].stableKey) });
             for (const r of upNextRows) items.push({ type: 'row', key: r.stableKey, row: r });
         }
         return items;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rows, currentTrack]);
+    }, [rows, currentTrack, newKeys]);
 
     const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
         <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
@@ -433,7 +455,7 @@ export default function QueueModal({ visible, onClose }) {
             );
         }
         if (item.type === 'pill') {
-            return <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View>;
+            return <FadePill isNew={item.isNew}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></FadePill>;
         }
         if (item.type === 'divider') {
             return <View style={[s.divider, { backgroundColor: base.border }]} />;

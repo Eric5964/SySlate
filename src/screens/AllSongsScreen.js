@@ -239,7 +239,12 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 const s = StyleSheet.create({
     container: { flex: 1 },
     topBar: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 10 },
-    titleRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 },
+    // Was 'flex-end' — with paddingTop:60 identical to Playlists' own
+    // header, this was the actual cause of "All Songs title sits lower
+    // than Playlists" — flex-end bottom-aligns the title against the
+    // sortBtn next to it instead of top-aligning it like Playlists' header
+    // (flex-start) does.
+    titleRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },
     sortBtnText: { fontSize: 13, fontWeight: '600' },

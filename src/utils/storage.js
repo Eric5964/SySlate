@@ -89,6 +89,13 @@ export const setSession = (path, data) => safe(() => AsyncStorage.setItem(`sessi
 // keys defaulting off.
 export const getWithinTrackNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
 export const setWithinTrackNorm = (v) => safe(() => AsyncStorage.setItem('vol_norm', String(v)), null);
+
+// Pre-amp: a single broadband gain in dB (-12 to +12), applied on top of
+// whatever the current EQ preset already does — see AudioEngine.swift's
+// setPreAmp for why this is its own native global-gain stage rather than
+// an 11th band. 0 = off/unity, same meaning as a flat EQ preset.
+export const getPreAmp = () => safe(() => AsyncStorage.getItem('preamp_db').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const setPreAmp = (v) => safe(() => AsyncStorage.setItem('preamp_db', String(v)), null);
 export const getBetweenTrackNorm = () => safe(() => AsyncStorage.getItem('between_track_norm').then(v => v === 'true'), false);
 export const setBetweenTrackNorm = (v) => safe(() => AsyncStorage.setItem('between_track_norm', String(v)), null);
 export const getSilenceTrim = () => safe(() => AsyncStorage.getItem('silence_trim').then(v => v === 'true'), false);

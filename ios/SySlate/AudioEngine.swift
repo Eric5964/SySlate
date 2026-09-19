@@ -366,6 +366,7 @@ class AudioEngine: RCTEventEmitter {
             eqNode.bands[i].bypass = false
         }
         eqNode.bypass = false
+        eqNode.globalGain = 0 // pre-amp default — restored to its saved value from JS at startup, same as EQ bands
         // Normalization off by default until a preference explicitly
         // turns it on — see setWithinTrackNormEnabled.
         normalizerNode.bypass = true
@@ -2201,6 +2202,21 @@ class AudioEngine: RCTEventEmitter {
         for (i, gain) in bands.enumerated() where i < eqNode.bands.count {
             eqNode.bands[i].gain = gain.floatValue
         }
+        resolve(nil)
+    }
+
+    // Pre-amp: a single broadband gain stage, in dB, applied on top of the
+    // 10 EQ bands rather than as one more band — AVAudioUnitEQ has exactly
+    // this built in (`globalGain`), separate from its per-band filters, so
+    // this doesn't need its own mixer node. Clamped to ±12dB: wide enough
+    // to compensate for a quiet library or pull back a hot one, but a
+    // preset already pushing several bands toward +6dB plus a +12dB
+    // pre-amp on top risks clipping before it ever reaches
+    // normalizerNode — ±12 keeps that combination survivable rather than
+    // trying to guard against every possible band+preamp combination.
+    @objc(setPreAmp:resolver:rejecter:)
+    func setPreAmp(_ db: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        eqNode.globalGain = min(12, max(-12, db.floatValue))
         resolve(nil)
     }
 

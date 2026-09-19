@@ -59,7 +59,7 @@ export default function ScreenBackground({ style, children }) {
 // Rendered exactly once, at the App root, behind the navigator — see the
 // big comment above for why this moved out of every individual screen.
 export function PersistentBackgroundImage() {
-    const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
+    const { backgroundImageEnabled, backgroundImageUri, setBackgroundImageEnabled } = usePreferences();
     const hasImage = backgroundImageEnabled && backgroundImageUri;
     if (!hasImage) return null;
     return (
@@ -69,6 +69,18 @@ export function PersistentBackgroundImage() {
                 style={StyleSheet.absoluteFillObject}
                 resizeMode="cover"
                 fadeDuration={0}
+                // Was silent — a failed load (a stale path from before a
+                // reinstall, a file that got evicted, whatever) just showed
+                // nothing with no way to tell why. Logged for whoever's
+                // debugging next, and auto-disabling rather than leaving
+                // the toggle stuck "on" pointing at an image that will
+                // never load — Settings will show "Choose Image" again
+                // instead of silently claiming an image is active when it
+                // isn't.
+                onError={(e) => {
+                    console.error('PersistentBackgroundImage failed to load:', backgroundImageUri, e.nativeEvent?.error);
+                    setBackgroundImageEnabled(false);
+                }}
             />
             {/* Scrim so existing text (styled assuming a plain dark
                  background) stays legible over an arbitrary photo —

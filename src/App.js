@@ -2,12 +2,28 @@ import 'react-native-gesture-handler';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, Dimensions, Image, AppState } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
 import AudioEngine, { Capability, usePlaybackState, State } from './native/AudioEngine';
+
+// Real cause of the background image (and, before it, any custom base
+// color) never actually showing through: NavigationContainer was never
+// given a `theme` prop, so it silently used React Navigation's own default
+// LIGHT theme — whose background color (rgb(242,242,242), a light gray) the
+// tab and stack navigators paint as an opaque layer of their own, completely
+// independent of ScreenBackground.js or anything else this app controls.
+// `cardStyle: { backgroundColor: 'transparent' }` on the Stack Navigator's
+// screenOptions only ever addressed the STACK's own card layer — this
+// deeper default was always still there underneath it, on every screen,
+// tab or stack alike. Built from DarkTheme rather than a bare object so
+// every other theme field (fonts, etc., which NavigationContainer's types
+// require) stays sane — only background/card need overriding to transparent
+// for this app's own per-screen backgrounds and PersistentBackgroundImage to
+// ever be visible instead.
+const NAV_THEME = { ...DarkTheme, colors: { ...DarkTheme.colors, background: 'transparent', card: 'transparent' } };
 
 import { PlaybackProvider } from './context/PlaybackContext';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
@@ -274,7 +290,7 @@ function AppInner() {
             <PersistentBackgroundImage />
             <LibraryContext.Provider value={libraryContextValue}>
                 <PlaybackProvider>
-                    <NavigationContainer>
+                    <NavigationContainer theme={NAV_THEME}>
                         {/* transparent, not base.bg — a stack screen's card
                             is an opaque layer by default, which would sit
                             on top of and completely hide the persistent

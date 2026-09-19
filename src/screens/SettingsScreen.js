@@ -92,13 +92,17 @@ export default function SettingsScreen() {
     // unchecking a preset made it vanish from THIS view immediately unless
     // you separately toggled "Manage Disabled" back on — a jarring
     // disappear-on-tap that's exactly what "without them disappearing"
-    // was asking to stop. Split into two surfaces now: this main grid
-    // always shows every preset (built-in + custom, nothing hidden from
-    // it) and still handles edit/delete for your own custom ones; a
-    // separate Manage Presets sheet (below) is the one dedicated,
-    // enable/disable-ONLY surface — no edit, no delete, so there's no way
-    // to touch a custom preset's actual content from there.
-    const [showManagePresets, setShowManagePresets] = useState(false);
+    // was asking to stop. This main grid always shows every preset
+    // (built-in + custom, nothing hidden from it) and still handles
+    // edit/delete for your own custom ones; each chip's own checkbox is
+    // still the fine-grained per-preset hide/show. The separate "Manage
+    // Presets" sheet that used to sit below this — a plain duplicate of
+    // that same per-chip checkbox, just as a list instead of a grid — is
+    // gone now, replaced by the "Show Premade Presets" switch next to
+    // "+ Add Custom Preset": a bulk on/off for every built-in at once
+    // (Flat excluded, always shown), which the per-chip checkbox alone
+    // couldn't do without tapping through all of them one at a time.
+
     const [showNewEQ, setShowNewEQ] = useState(false);
     // null editingId = creating a brand new custom preset. Non-null +
     // editingIsBuiltIn = editing/overwriting a built-in (via eqOverrides).
@@ -107,12 +111,13 @@ export default function SettingsScreen() {
     const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
-    // Always the full set now — see the comment above showManagePresets
-    // for why this no longer filters hidden ones out of its own view.
+    // Always the full set now, regardless of hidden state — see the
+    // comment above for why (this grid is the editor, not the picker;
+    // EQModal.js's picker is what actually respects hiddenPresets).
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -149,6 +154,7 @@ export default function SettingsScreen() {
     // AsyncStorage and crossed the native bridge, not just the one value on
     // release. Same local-mirror pattern as lyricsResyncLocal/lyricsOffsetLocal above.
     const [crossfadeDurationLocal, setCrossfadeDurationLocal] = useState(crossfadeDuration);
+    const [preAmpLocal, setPreAmpLocal] = useState(preAmp);
     useEffect(() => { setCrossfadeDurationLocal(crossfadeDuration); }, [crossfadeDuration]);
     // Same local-mirror pattern, now for the split-out End of Track
     // crossfade duration (was one shared "Crossfade Duration" slider —
@@ -191,6 +197,34 @@ export default function SettingsScreen() {
             delete nextOverrides[id];
             setEO(nextOverrides); await setEQOverrides(nextOverrides);
             if (eqPresetId === id) applyEQPreset(id);
+        }
+    };
+
+    // Replaces the old "Manage Presets" sheet, which was a plain duplicate
+    // of the checkbox already on every preset chip in the grid below — a
+    // second way to do the exact same one-at-a-time hide/show. This is the
+    // thing that checkbox couldn't do: hide every built-in at once. Flat
+    // is deliberately excluded from builtInIds so it can never be hidden
+    // by this switch (or end up stuck hidden from some earlier state) —
+    // it's the one preset always guaranteed to be there.
+    const builtInIds = useMemo(() => BUILT_IN_PRESETS.filter(p => p.id !== 'flat').map(p => p.id), []);
+    const premadeShown = useMemo(() => !builtInIds.some(id => hiddenPresets.includes(id)), [hiddenPresets, builtInIds]);
+    const togglePremadePresets = async (show) => {
+        const next = show
+            ? hiddenPresets.filter(id => !builtInIds.includes(id))
+            : [...new Set([...hiddenPresets, ...builtInIds])];
+        setHP(next); await setHiddenPresets(next);
+        // Same reset-on-reenable rule as togglePresetVisible above, just
+        // applied to every built-in being turned back on at once instead
+        // of one.
+        if (show) {
+            const reenabled = builtInIds.filter(id => hiddenPresets.includes(id) && eqOverrides[id]);
+            if (reenabled.length) {
+                const nextOverrides = { ...eqOverrides };
+                reenabled.forEach(id => delete nextOverrides[id]);
+                setEO(nextOverrides); await setEQOverrides(nextOverrides);
+                if (reenabled.includes(eqPresetId)) applyEQPreset(eqPresetId);
+            }
         }
     };
 
@@ -410,10 +444,26 @@ export default function SettingsScreen() {
                         <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
                             <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: base.border }]} onPress={() => setShowManagePresets(true)}>
-                            <Text style={[s.addBtnText, { color: base.textFaint }]}>Manage Presets</Text>
-                        </TouchableOpacity>
+                        <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
+                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
+                            <Switch value={premadeShown} onValueChange={togglePremadePresets}
+                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                        </View>
                     </View>
+
+                    {/* Pre-amp: a single broadband gain on top of whatever
+                        preset is active, not tied to any one preset — lives
+                        here rather than inside the preset editor since it
+                        applies globally regardless of which preset is
+                        picked (same as how a hardware EQ's master gain knob
+                        works alongside its band sliders). */}
+                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Pre-amp</Text>
+                    <Text style={s.sliderNote}>Overall gain on top of the current preset — boost a quiet library or pull back a hot one</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{preAmpLocal > 0 ? '+' : ''}{preAmpLocal.toFixed(1)}dB</Text>
+                    <PureSlider style={s.slider} minimumValue={-12} maximumValue={12} step={0.5} value={preAmpLocal}
+                        onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
                 </Section>
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
@@ -927,24 +977,6 @@ export default function SettingsScreen() {
             </ScrollView>
                 </>
             )}
-
-            {/* Manage Presets — pure enable/disable, no edit or delete, so
-                there's no way to touch a custom preset's own name/bands
-                from here. The one place a hidden preset (built-in or
-                custom) is still shown/reachable, since the main grid above
-                no longer hides anything on its own. */}
-            <BottomSheet visible={showManagePresets} onClose={() => setShowManagePresets(false)} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>Manage Presets</Text>}>
-                <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                    {displayPresets.map(p => (
-                        <TouchableOpacity key={p.id} style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border, paddingHorizontal: 24 }]} onPress={() => togglePresetVisible(p.id)}>
-                            <Text style={[s.toggleLabel, { flex: 1 }]}>{p.name}</Text>
-                            <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
-                            </View>
-                        </TouchableOpacity>
-                    ))}
-                </ScrollView>
-            </BottomSheet>
 
             {/* This was still commented out even after the EQ Presets *list*
                 section above got un-hidden — "+ Add Custom Preset" flipped

@@ -19,28 +19,14 @@ let skipLock = false;
 let skipLockStartedAt = 0;
 let skipLockExpectedDurationMs = 0;
 let rampLock = false;
-// True only for the duration of the natural end-of-track ramp's fade-IN half (the
-// new/repeated track ramping 0->1 after the old one finished fading out) —
-// see pauseWithRamp, which checks this to interrupt that ramp immediately
-// instead of waiting for it to finish, unlike the fade-OUT half which is
-// left alone to complete on its own.
+// True only for the duration of the natural end-of-track ramp's fade-IN half
+// (the new/repeated track ramping 0->1 after the old one finished fading
+// out) — used by skipWithRamp's halfway-aware handling to tell "barely into
+// this transition" from "already committed to the incoming track".
 let naturalFadeInActive = false;
-// True only while playWithRamp's own fresh-start/resume ramp-in is
-// running — mirrors naturalFadeInActive above, but for the OTHER kind of
-// ramp-in. Both get the same treatment in pauseWithRamp: see the comment
-// there for why.
+// True only while playWithRamp's own fresh-start/resume ramp-in is running
+// — mirrors naturalFadeInActive above, but for the OTHER kind of ramp-in.
 let rampInActive = false;
-// Set by pauseWithRamp when a pause interrupts a skip's fade-OUT phase —
-// see its skipFadeOutActive branch and skipWithRamp's matching check right
-// after its own fade-out for the full explanation.
-let pauseRequestedDuringSkipFadeOut = false;
-// True only while skipWithRamp's OWN fade-OUT of the old track is running
-// (the very start of a manual skip, before the native skipToNext/Previous
-// even fires) — a third case alongside naturalFadeInActive/rampInActive/
-// naturalEndFadeOwner that pauseWithRamp needs to treat as "interrupt this
-// into a proper ramp-to-pause", not just queue a delayed hard pause. See
-// pauseWithRamp for why leaving any of these out matters.
-let skipFadeOutActive = false;
 
 const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
 const isFadeOwner = (id) => activeFadeId === id;
@@ -404,13 +390,12 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
         // whatever's already there.
         if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
             const id = preClaimedId ?? claimFade();
-            // Set from here rather than just around fadeVol below — a pause
-            // request landing during waitForPlaying/the settle sleep (both
-            // BEFORE fadeVol actually starts) used to fall through to the
-            // generic isTransitionLocked hard-cut path instead of
-            // pauseWithRamp's dedicated ramp-in-interruption handling,
-            // since rampInActive wasn't true yet even though this WAS
-            // already committed to a ramped start. Narrow window, but real.
+            // Still set from here rather than just around fadeVol below —
+            // no longer for pauseWithRamp's benefit (pause just queues
+            // behind isTransitionLocked() uniformly now, see its comment),
+            // but skipWithRamp's halfway-aware second-skip handling reads
+            // this flag too, and needs it true for the full duration this
+            // ramp-in is actually committed, not just once fadeVol starts.
             rampInActive = true;
             try {
                 try { await AudioEngine.setVolume(0); } catch { }
@@ -469,66 +454,19 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
 }
 
 export async function pauseWithRamp() {
-    // An active ramp — a fresh start/resume's ramp-in (rampInActive), the
-    // natural end-of-track transition's ramp-out AND ramp-in
-    // (naturalEndFadeOwner / naturalFadeInActive), or a manual skip's own
-    // fade-out of the old track (skipFadeOutActive) — is running when pause
-    // is requested. This used to let whichever one was running finish
-    // completely (including, for the transition cases, going on to ramp the
-    // NEXT song in) and only THEN hard-pause with no ramp-out at all. Net
-    // effect for the transition cases specifically: press pause while a
-    // song is fading out, and it still continues on to the next song,
-    // ramps that in, then abruptly cuts it dead. Every one of these four
-    // flags redirects into a real ramp-OUT instead, starting from wherever
-    // the interrupted fade actually left the volume (read directly rather
-    // than assumed, since an interrupted fade could be anywhere between 0
-    // and 1) — quick, using the Skip Ramp duration rather than the full End
-    // of Track/Audio Ramp length, since this is fundamentally an urgent
-    // "stop now" request, not a leisurely transition. Clearing
-    // naturalEndFadeOwner here also stops the recovery block above from
-    // later trying to continue/ramp-in a track after this has paused.
-    // Separated out from the other three interrupt cases below: pausing
-    // while the skip's OWN fade-out (before the native skip has even
-    // fired) is running used to fall into the same forceReleaseFade()
-    // path as the others — which steals fade ownership out from under
-    // skipWithRamp's own `if (!isFadeOwner(id)) return` check right after
-    // its fade-out, silently aborting the ENTIRE skip before
-    // doNativeSkip() ever ran. That's "audio ramping does not skip the
-    // song" — it stayed on the OLD track, just paused. What's actually
-    // wanted: the skip still completes (silently — nothing to gain from
-    // letting the new track audibly start when pause was requested before
-    // it even landed), ending paused at 0:00 of the NEW track, ready for
-    // a normal play/skip from there. Signal skipWithRamp to finish that
-    // way itself instead of duplicating its native-skip logic here.
-    if (skipFadeOutActive) {
-        pauseRequestedDuringSkipFadeOut = true;
-        forceReleaseFade();
-        return;
-    }
-    if (naturalFadeInActive || rampInActive || naturalEndFadeOwner !== null) {
-        naturalFadeInActive = false;
-        rampInActive = false;
-        forceReleaseFade(); // also clears naturalEndFadeOwner
-        rampLock = true;
-        try {
-            let current = 1;
-            try { current = await AudioEngine.getVolume(); } catch { }
-            const outDur = await getSkipRamp();
-            if (outDur > 0.05 && current > 0.02) {
-                const id = claimFade();
-                try { await AudioEngine.setNowPlayingPaused(true); } catch { }
-                await fadeVol(current, 0, outDur, id);
-                releaseFade(id);
-            }
-            try { await AudioEngine.pause(); } catch { }
-            try { await AudioEngine.setVolume(1); } catch { }
-        } finally {
-            await sleep(60);
-            rampLock = false;
-            drainPending();
-        }
-        return;
-    }
+    // Per direct feedback (reversing an earlier round's deliberate change):
+    // pause should behave identically whether it lands during a crossfade,
+    // a natural end-of-track transition, a fresh ramp-in, or a skip's own
+    // fade-out — let whichever transition currently owns the fade lock run
+    // all the way to its finished state (arriving cleanly on the next
+    // song), THEN ramp out and pause from there. This used to special-case
+    // three of those four situations into an immediate interrupt-and-ramp-
+    // out instead — this pass removes that special-casing entirely rather
+    // than trying to keep it in sync with the queued path below, so there's
+    // exactly one pause behavior instead of two that need to agree. This
+    // also makes pauseWithRamp consistent with this file's own general
+    // rule stated at the top: whichever fade claims the lock first runs to
+    // completion; it was previously the one exception to that rule.
     if (isTransitionLocked()) {
         // Whatever's currently ramping — a fresh start's ramp-in, a manual
         // ramp-out already in flight, the natural end-of-track ramp,
@@ -594,9 +532,10 @@ export async function pauseWithRamp() {
     }
 }
 
-// See the natural-end-fade branch in pauseWithRamp above — pauses right
-// away with no ramp at all, regardless of the Ramp on Pause setting,
-// instead of running pauseWithRamp's normal fade-out logic.
+// Currently unused — pauseWithRamp() no longer has a branch that calls
+// this (see its comment: pause always ramps out through the normal path
+// below, never a hard instant cut). Left in case a genuinely urgent
+// no-fade pause is ever needed again.
 async function pauseImmediate() {
     rampLock = true;
     try {
@@ -747,28 +686,15 @@ export async function skipWithRamp(direction = 'next') {
         skipLockExpectedDurationMs = dur * 1000;
         try { await AudioEngine.setVolume(1); } catch { }
         if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
-            skipFadeOutActive = true;
-            try {
-                await fadeVol(1, 0, dur, id);
-            } finally {
-                skipFadeOutActive = false;
-            }
+            await fadeVol(1, 0, dur, id);
         }
-        if (!isFadeOwner(id)) {
-            if (pauseRequestedDuringSkipFadeOut) {
-                // See pauseWithRamp's skipFadeOutActive branch — pause
-                // interrupted the fade-out before the native skip ever
-                // fired. Finish the skip anyway, silently, landing paused
-                // at 0:00 of the new track instead of leaving it aborted
-                // on the old one.
-                pauseRequestedDuringSkipFadeOut = false;
-                try { await AudioEngine.setVolume(0); } catch { }
-                try { await withTimeout(doNativeSkip(), 5000); } catch { }
-                try { await AudioEngine.pause(); } catch { }
-                try { await AudioEngine.setVolume(1); } catch { }
-            }
-            return;
-        }
+        // isFadeOwner can go false here if something else stole the fade
+        // lock mid-fade-out (another skip, a fresh-start reset) — abort
+        // silently rather than continuing on with a fade that's no longer
+        // this call's to finish. Pause no longer does this (see
+        // pauseWithRamp's comment) — it queues behind skipLock instead, so
+        // it can't land here anymore.
+        if (!isFadeOwner(id)) return;
 
         try {
             await withTimeout(doNativeSkip(), 5000);
@@ -798,16 +724,12 @@ export async function skipWithRamp(direction = 'next') {
         if (!isFadeOwner(id)) return;
 
         if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
-            // Same gap that playWithRamp's ramp-in already guards against
-            // (see rampInActive comment above): this ramp-in wasn't setting
-            // rampInActive at all, so a pause landing here fell through to
-            // isTransitionLocked's generic hard-cut path (queued
-            // pauseImmediate) instead of pauseWithRamp's dedicated
-            // ramp-in-interruption handling — the ramp-in was left to
-            // finish climbing to full volume on the new track, then cut
-            // dead with no ramp-out. That's the reported "ramps into the
-            // next song but then abruptly stops instead of ramping to a
-            // pause."
+            // Sets rampInActive same as playWithRamp's own ramp-in does —
+            // no longer for pauseWithRamp's benefit (see its comment), but
+            // this is also what skipWithRamp's own halfway-aware
+            // second-skip check (above, near skipLock) reads to tell
+            // "already committed to the incoming track" from "barely
+            // started".
             rampInActive = true;
             try {
                 if (!reallyPlaying) {

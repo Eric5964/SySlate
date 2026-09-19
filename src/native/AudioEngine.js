@@ -133,6 +133,7 @@ const AudioEngine = {
     getState: () => NativeAudioEngine.getState(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
     setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
+    setPreAmp: (db) => NativeAudioEngine.setPreAmp(db),
     // Split from one "Volume Normalization" toggle into two distinct
     // features: setWithinTrackNormEnabled is the original per-track
     // dynamics compressor; setBetweenTrackNormEnabled is the new sampled
