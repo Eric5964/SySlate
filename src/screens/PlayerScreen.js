@@ -740,7 +740,7 @@ export default function PlayerScreen() {
                         engine was replaced with the custom AudioEngine
                         (which DOES support EQ) several rounds ago and this
                         was never un-hidden. */}
-                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={[s.topBtn, { marginRight: 4 }]}>
+                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : base.textFaint} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
@@ -1030,7 +1030,12 @@ const s = StyleSheet.create({
     // left/right crossing between the two, which is what "buttons on the
     // music player vs outside it are not aligned" was pointing at.
     topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8, marginBottom: 4 },
-    topBtn: { width: 44, height: 44, justifyContent: 'center', alignItems: 'center' },
+    // Matches PlaylistDetailScreen/AllSongsScreen's topBtn — was 44 here,
+    // 40 there, 36 on All Songs: three different tap-target sizes for the
+    // same EQ/queue controls, which is part of what made them look
+    // misaligned crossing between screens even after the paddingHorizontal
+    // fix below (see topBar comment).
+    topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     eqTag: { fontSize: 14, fontWeight: '700' },
     topIcon: { fontSize: 26 },
     topTag: { fontSize: 16, fontWeight: '700' },

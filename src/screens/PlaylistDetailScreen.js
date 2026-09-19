@@ -175,12 +175,18 @@ export default function PlaylistDetailScreen() {
                         </TouchableOpacity>
                     )}
                 </View>
-                <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
-                    <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
-                    <MenuBarsIcon size={20} color={theme.accent} />
-                </TouchableOpacity>
+                {/* Wrapped with the same gap:6 PlayerScreen/AllSongsScreen use
+                    between EQ and queue — this row had no gap at all before,
+                    so the two 40x40 buttons sat flush against each other with
+                    their 12px hitSlop zones actually overlapping. */}
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                        <MenuBarsIcon size={20} color={theme.accent} />
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <FlatList

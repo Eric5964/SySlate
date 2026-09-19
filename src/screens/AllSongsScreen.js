@@ -160,7 +160,15 @@ export default function AllSongsScreen() {
                         ))}
                     </View>
                 )}
-                <View style={s.searchRow}>
+                {/* The title/search block above keeps its own wider 24px
+                    edge padding (top-level tab, not a sub-page), but the
+                    EQ/queue icons are pulled out to their own -16px negative
+                    margin so their right edge lands at the same 8px inset
+                    PlaylistDetailScreen/PlayerScreen use — otherwise these
+                    two icons sat visibly further from the edge than on
+                    every other screen they also appear on. topBtn size also
+                    matched to 40 (was 36 here, 44 on the player screen). */}
+                <View style={[s.searchRow, { marginRight: -16 }]}>
                     <View style={{ flex: 1, justifyContent: 'center' }}>
                         <TextInput
                             style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
@@ -242,7 +250,7 @@ const s = StyleSheet.create({
     searchBar: { borderRadius: 10, paddingVertical: 9, paddingHorizontal: 14, paddingRight: 32, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
-    topBtn: { width: 36, height: 36, justifyContent: 'center', alignItems: 'center' },
+    topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     eqTag: { fontSize: 14, fontWeight: '700' },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },

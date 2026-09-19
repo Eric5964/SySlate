@@ -238,14 +238,6 @@ function AppInner() {
         })();
     }, []);
 
-    // Wait on theme too, not just the player — otherwise the real
-    // NavigationContainer/screens can mount for a frame or two using
-    // ThemeContext's purple/black placeholders before AsyncStorage resolves
-    // the user's actual pick.
-    if (!playerReady || !themeReady) {
-        return <View style={{ flex: 1, backgroundColor: base.bg }} />;
-    }
-
     // Real bug found here (contributes to overall app sluggishness,
     // possibly part of "settings feels slow" too): this was a fresh object
     // literal every single AppInner render (spreading `library` plus two
@@ -256,7 +248,21 @@ function AppInner() {
     // actually changed. reload/reorderPlaylists are stable now (useCallback
     // above), so this only actually produces a new object when `library`
     // itself changes.
+    //
+    // Must run before the playerReady/themeReady early return below —
+    // every hook has to run on every render regardless of that branch, or
+    // the hook count changes between the "not ready" render and the first
+    // "ready" render (this was the "Rendered more hooks than during the
+    // previous render" crash on launch).
     const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists }), [library, reload, reorderPlaylists]);
+
+    // Wait on theme too, not just the player — otherwise the real
+    // NavigationContainer/screens can mount for a frame or two using
+    // ThemeContext's purple/black placeholders before AsyncStorage resolves
+    // the user's actual pick.
+    if (!playerReady || !themeReady) {
+        return <View style={{ flex: 1, backgroundColor: base.bg }} />;
+    }
 
     return (
         <View style={{ flex: 1 }}>
