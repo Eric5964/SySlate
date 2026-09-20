@@ -7,15 +7,16 @@ export default function PureSlider({
     minimumTrackTintColor = '#7c3aed',
     maximumTrackTintColor = '#222',
     thumbTintColor = '#7c3aed',
+    disabled = false,
     style,
 }) {
     const containerRef = useRef(null);
     const layoutRef = useRef({ pageX: 0, width: 1 });
     const valRef = useRef(value);
     // Keep ALL props fresh — avoids stale closure in PanResponder
-    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step });
+    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled });
     useEffect(() => {
-        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step };
+        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled };
     });
 
     const measure = () => {
@@ -34,18 +35,24 @@ export default function PureSlider({
     };
 
     const pan = useRef(PanResponder.create({
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
+        // Per-preset lock (premade EQ bands shouldn't be draggable, only
+        // custom ones) — reads propsRef so a `disabled` prop change takes
+        // effect immediately without needing to recreate the PanResponder.
+        onStartShouldSetPanResponderCapture: () => !propsRef.current.disabled,
+        onMoveShouldSetPanResponderCapture: () => !propsRef.current.disabled,
         onPanResponderGrant: (e) => {
+            if (propsRef.current.disabled) return;
             measure();
             valRef.current = computeVal(e.nativeEvent.pageX);
             propsRef.current.onValueChange?.(valRef.current);
         },
         onPanResponderMove: (e) => {
+            if (propsRef.current.disabled) return;
             valRef.current = computeVal(e.nativeEvent.pageX);
             propsRef.current.onValueChange?.(valRef.current);
         },
         onPanResponderRelease: () => {
+            if (propsRef.current.disabled) return;
             propsRef.current.onSlidingComplete?.(valRef.current);
         },
     })).current;
@@ -57,7 +64,7 @@ export default function PureSlider({
     return (
         <View
             ref={containerRef}
-            style={[styles.container, style]}
+            style={[styles.container, style, disabled && { opacity: 0.4 }]}
             onLayout={measure}
             {...pan.panHandlers}
         >

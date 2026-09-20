@@ -28,6 +28,23 @@ let naturalFadeInActive = false;
 // — mirrors naturalFadeInActive above, but for the OTHER kind of ramp-in.
 let rampInActive = false;
 
+// Direct feedback: toggling Crossfade mid-transition was making the
+// CURRENT transition glitch — because "is this a crossfade" got re-read
+// live from storage at multiple separate points spread across one single
+// transition (checkRampWindow's lead-in decision, then again whenever the
+// track-change listener's fallback ran, which can fire seconds later once
+// a crossfade's own lead-in has been running). If the setting changed in
+// that window, the two reads disagreed about the same transition — e.g.
+// native genuinely ran a crossfade because the FIRST read saw it enabled,
+// but the listener's SECOND, independent read then saw it freshly
+// disabled and slammed volume to 1 on top of native's already-correct
+// crossfaded level. This snapshots the decision exactly once, at whichever
+// of the three call sites actually kicks a transition off, and every other
+// site downstream of that same transition reads this instead of storage
+// again — so a toggle flip can only ever change the NEXT transition, never
+// reach back into one already in flight.
+let currentTransitionCrossfading = false;
+
 const claimFade = () => { activeFadeId = ++fadeCounter; return activeFadeId; };
 const isFadeOwner = (id) => activeFadeId === id;
 const releaseFade = (id) => { if (activeFadeId === id) activeFadeId = null; };
@@ -194,7 +211,6 @@ async function checkRampWindow(position, duration) {
         // fade-out either double-fires alongside native's own crossfade or
         // fails to back off for it.
         const crossfading = (await getCrossfadeEnabled()) && (await getCrossfadeDurationEndOfTrack()) > 0.05;
-
         // If we currently own a natural end-of-track fade but a seek moved
         // playback back OUT of the window (e.g. rewound), cancel it instead
         // of letting it keep fading toward 0 and getting stuck silent —
@@ -278,6 +294,9 @@ async function checkRampWindow(position, duration) {
         if (position < 3) return;
 
         if (activeFadeId !== null) return; // something else owns a fade right now
+        // Snapshot right here, at the actual decision point for THIS
+        // transition — see currentTransitionCrossfading's comment up top.
+        currentTransitionCrossfading = crossfading;
         if (crossfading) return; // native crossfade owns this transition instead
         if (ramp <= 0 || !duration || duration < 1) return;
         const remaining = duration - position;
@@ -601,6 +620,9 @@ export async function skipWithRamp(direction = 'next') {
             // getCrossfadeDuration() here too).
             const crossfadeDur = await getCrossfadeDurationSkip();
             const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            // Same snapshot as checkRampWindow — see
+            // currentTransitionCrossfading's comment up top.
+            currentTransitionCrossfading = crossfading;
             if (crossfading) {
                 skipLockExpectedDurationMs = crossfadeDur * 1000;
                 try { await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
@@ -875,13 +897,15 @@ export async function PlaybackService() {
             // This listener can't tell WHICH trigger caused the track
             // change (manual skip vs. the native lead-in timer firing for
             // a natural end — see AudioEngine.swift's
-            // scheduleCrossfadeLeadIn), so unlike the two call sites above
-            // it has to check both durations rather than one specific one
-            // — either being enabled means SOME crossfade may have just
-            // owned this transition.
-            const crossfading = (await getCrossfadeEnabled())
-                && (((await getCrossfadeDurationSkip()) > 0.05) || ((await getCrossfadeDurationEndOfTrack()) > 0.05));
-            if (!crossfading) {
+            // scheduleCrossfadeLeadIn), so it used to independently
+            // re-check both durations itself rather than know which one
+            // applied. Reads the shared snapshot instead now (see
+            // currentTransitionCrossfading's comment up top) — the same
+            // decision whichever of checkRampWindow/skipWithRamp actually
+            // kicked this transition off already made, not a fresh
+            // independent read that could disagree with it if the setting
+            // changed in the meantime.
+            if (!currentTransitionCrossfading) {
                 try { await AudioEngine.setVolume(1); } catch { }
             }
         }

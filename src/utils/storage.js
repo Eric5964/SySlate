@@ -96,6 +96,15 @@ export const setWithinTrackNorm = (v) => safe(() => AsyncStorage.setItem('vol_no
 // an 11th band. 0 = off/unity, same meaning as a flat EQ preset.
 export const getPreAmp = () => safe(() => AsyncStorage.getItem('preamp_db').then(v => v !== null ? parseFloat(v) : 0), 0);
 export const setPreAmp = (v) => safe(() => AsyncStorage.setItem('preamp_db', String(v)), null);
+
+// Whether built-in ("premade") presets are shown in the Settings screen's
+// own EQ Presets grid. Separate from hiddenPresets (which governs the
+// EQModal picker) — this is purely a Settings-screen declutter switch, per
+// the actual ask: "show premade presets... in the settings, not just
+// enabling them." Flat is never affected by this — it's filtered out of
+// the built-in id list wherever this is consumed, same as hiddenPresets.
+export const getShowPremadeInSettings = () => safe(() => AsyncStorage.getItem('show_premade_settings').then(v => v !== 'false'), true);
+export const setShowPremadeInSettings = (v) => safe(() => AsyncStorage.setItem('show_premade_settings', String(v)), null);
 export const getBetweenTrackNorm = () => safe(() => AsyncStorage.getItem('between_track_norm').then(v => v === 'true'), false);
 export const setBetweenTrackNorm = (v) => safe(() => AsyncStorage.setItem('between_track_norm', String(v)), null);
 export const getSilenceTrim = () => safe(() => AsyncStorage.getItem('silence_trim').then(v => v === 'true'), false);

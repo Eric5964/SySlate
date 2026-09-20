@@ -9,6 +9,16 @@
 // range (see the EQ band sliders in SettingsScreen.js) with a bit of extra
 // headroom trimmed on top, roughly 70% of each old value, same shape/curve
 // per preset, just gentler across the board.
+// Curated down to just the audiophile/IEM-community curve-shape terms —
+// per direct feedback ("the premades are a weird mix... just do the
+// audiophile centered ones") the three genre presets below (Classical,
+// Electronic, Acoustic) were a different paradigm bolted onto this list —
+// consumer genre presets, not audiophile terminology — and got cut. What's
+// left is Flat plus the 8 real audiophile-curve terms researched above.
+// Ids aren't reused for anything new — anyone with 'classical', 'electronic'
+// or 'acoustic' already selected as a playlist's EQ preset just falls back
+// to Flat via getPresetById's `?? BUILT_IN_PRESETS[0]` below, same as any
+// other now-unknown id.
 export const BUILT_IN_PRESETS = [
     { id: 'flat', name: 'Flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
     { id: 'rumble', name: 'Rumble', bands: [5, 3.5, 0.5, 0, 0, 0, 0, 0, 0, 0] },
@@ -18,9 +28,6 @@ export const BUILT_IN_PRESETS = [
     { id: 'sparkle', name: 'Sparkle', bands: [0, 0, 0, 0, 0, 0.5, 2, 3.5, 4, 4] },
     { id: 'v_shape', name: 'V-Shape', bands: [3.5, 3, 1.5, 0, -1.5, -1.5, 0, 1.5, 3, 3.5] },
     { id: 'w_shape', name: 'W-Shape', bands: [3.5, 3, 0.5, -0.5, -1.5, 2, -0.5, 0.5, 3, 3.5] },
-    { id: 'classical', name: 'Classical', bands: [2, 1.5, 0, 0, 0, 0, 0, 1.5, 2, 3] },
-    { id: 'electronic', name: 'Electronic', bands: [3.5, 3, 0.5, 0, -1.5, 0, 0.5, 2, 3, 3] },
-    { id: 'acoustic', name: 'Acoustic', bands: [2, 1.5, 0.5, 1.5, 2, 1.5, 1.5, 2, 2, 1.5] },
     { id: 'loudness', name: 'Loudness', bands: [4, 3, 0, 0, -0.5, 0, 0, 1.5, 3, 3.5] },
 ];
 

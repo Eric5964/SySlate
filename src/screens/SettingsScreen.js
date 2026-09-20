@@ -47,6 +47,7 @@ const PREV_BUTTON_MODES = [
 import {
     getEndOfTrackRamp, setEndOfTrackRamp,
     getSkipRamp, setSkipRamp,
+    getShowPremadeInSettings, setShowPremadeInSettings,
     getAudioRamp, setAudioRamp,
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
@@ -160,6 +161,7 @@ export default function SettingsScreen() {
     // crossfade duration (was one shared "Crossfade Duration" slider —
     // split to match the Audio Ramp section's On Skip / End of Track
     // granularity just below it).
+    const [showPremadeInSettings, setShowPremadeInSettingsState] = useState(true);
     const [crossfadeDurationEotLocal, setCrossfadeDurationEotLocal] = useState(crossfadeDurationEndOfTrack);
     useEffect(() => { setCrossfadeDurationEotLocal(crossfadeDurationEndOfTrack); }, [crossfadeDurationEndOfTrack]);
 
@@ -167,6 +169,7 @@ export default function SettingsScreen() {
         (async () => {
             setEotRampState(await getEndOfTrackRamp());
             setSkipRampState(await getSkipRamp());
+            setShowPremadeInSettingsState(await getShowPremadeInSettings());
             setRamp(await getAudioRamp());
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
@@ -201,32 +204,24 @@ export default function SettingsScreen() {
     };
 
     // Replaces the old "Manage Presets" sheet, which was a plain duplicate
-    // of the checkbox already on every preset chip in the grid below — a
-    // second way to do the exact same one-at-a-time hide/show. This is the
-    // thing that checkbox couldn't do: hide every built-in at once. Flat
-    // is deliberately excluded from builtInIds so it can never be hidden
-    // by this switch (or end up stuck hidden from some earlier state) —
-    // it's the one preset always guaranteed to be there.
+    // of the checkbox already on every preset chip in the grid below. This
+    // is a Settings-screen-only declutter switch (per direct correction:
+    // "I wanted 'show premade presets' to be showing them in the settings,
+    // not just enabling them") — it hides built-in preset chips from THIS
+    // grid entirely, separate from hiddenPresets (which still independently
+    // governs the EQModal picker via each chip's own checkbox, unaffected
+    // by this switch). Flat is deliberately excluded from builtInIds so it
+    // can never be hidden by this switch — it's the one preset always
+    // guaranteed to be there, in the grid or the picker either way.
     const builtInIds = useMemo(() => BUILT_IN_PRESETS.filter(p => p.id !== 'flat').map(p => p.id), []);
-    const premadeShown = useMemo(() => !builtInIds.some(id => hiddenPresets.includes(id)), [hiddenPresets, builtInIds]);
-    const togglePremadePresets = async (show) => {
-        const next = show
-            ? hiddenPresets.filter(id => !builtInIds.includes(id))
-            : [...new Set([...hiddenPresets, ...builtInIds])];
-        setHP(next); await setHiddenPresets(next);
-        // Same reset-on-reenable rule as togglePresetVisible above, just
-        // applied to every built-in being turned back on at once instead
-        // of one.
-        if (show) {
-            const reenabled = builtInIds.filter(id => hiddenPresets.includes(id) && eqOverrides[id]);
-            if (reenabled.length) {
-                const nextOverrides = { ...eqOverrides };
-                reenabled.forEach(id => delete nextOverrides[id]);
-                setEO(nextOverrides); await setEQOverrides(nextOverrides);
-                if (reenabled.includes(eqPresetId)) applyEQPreset(eqPresetId);
-            }
-        }
+    const togglePremadeInSettings = (v) => {
+        setShowPremadeInSettingsState(v);
+        setShowPremadeInSettings(v);
     };
+    const visiblePresets = useMemo(
+        () => showPremadeInSettings ? displayPresets : displayPresets.filter(p => p.isBuiltIn ? p.id === 'flat' : true),
+        [displayPresets, showPremadeInSettings]
+    );
 
     // Built-ins can only be hidden (above), never actually removed from the
     // list — they're baked into BUILT_IN_PRESETS. This is for custom
@@ -420,7 +415,7 @@ export default function SettingsScreen() {
                         big TouchableOpacity, since a name tap now needs to
                         mean something different from a checkbox tap. */}
                     <View style={s.eqGrid}>
-                        {displayPresets.map(p => (
+                        {visiblePresets.map(p => (
                             <View key={p.id} style={s.eqChip}>
                                 <TouchableOpacity onPress={() => togglePresetVisible(p.id)} hitSlop={HIT} style={s.checkWrapGrid}>
                                     <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
@@ -446,7 +441,7 @@ export default function SettingsScreen() {
                         </TouchableOpacity>
                         <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
                             <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
-                            <Switch value={premadeShown} onValueChange={togglePremadePresets}
+                            <Switch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
                                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                         </View>
                     </View>
@@ -1000,12 +995,20 @@ export default function SettingsScreen() {
                         />
                     )}
                     <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                        {/* Per direct feedback: premade preset bands should
+                            not be draggable at all — bands are only ever
+                            editable for a genuine custom preset now.
+                            (Built-ins previously wrote a per-id override on
+                            drag via eqOverrides; that mechanism still exists
+                            for now — see resetEditingPresetToDefault below —
+                            but nothing can create a NEW override anymore.) */}
                         {newBands.map((val, i) => (
                             <View key={i} style={s.bandRow}>
                                 <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
                                 <PureSlider
                                     style={{ flex: 1, marginHorizontal: 8 }}
                                     minimumValue={EQ_MIN} maximumValue={EQ_MAX} step={0.5} value={val}
+                                    disabled={editingIsBuiltIn}
                                     onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
                                     minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
                                 />
