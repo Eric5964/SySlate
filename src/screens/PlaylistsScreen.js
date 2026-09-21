@@ -174,7 +174,9 @@ export default function PlaylistsScreen() {
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             allowsEditing: true,
             aspect: [1, 1],
-            quality: 0.8,
+            // Same as PlaylistDetailScreen's own cover picker — see its
+            // comment.
+            quality: 0.4,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
         const permanentUri = await persistCoverImage(result.assets[0].uri);

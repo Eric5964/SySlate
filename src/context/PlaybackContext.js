@@ -514,7 +514,24 @@ export function PlaybackProvider({ children }) {
                     await fadeOutCurrentIfPlaying(await getAudioRamp());
                     forceReleaseFade();
                     const preClaimedId = preClaimFadeForFreshStart();
-                    await playWithRamp(preClaimedId, () => AudioEngine.skip(realIndex));
+                    // Real bug found here: skip() has its OWN independent
+                    // native crossfade decision (see its Swift comment) —
+                    // this branch already decided NOT to crossfade
+                    // (crossfadeReady false) and is about to run its own
+                    // JS ramp-in via playWithRamp, but calling skip() as
+                    // the startAction let native re-decide for itself and
+                    // sometimes take its own crossfade branch anyway,
+                    // silently replacing the JS ramp-in with native's
+                    // internal crossfade volume curve — audible as "ramps
+                    // out of the previous song, but never ramps into the
+                    // new one" (the JS ramp-out above still ran normally;
+                    // native's own crossfade just took over from there
+                    // instead of the JS ramp-in that was supposed to
+                    // follow it). load() is the purpose-built alternative
+                    // that always does a plain track switch with no
+                    // crossfade decision of its own — exactly what a
+                    // JS-owned ramp needs under it.
+                    await playWithRamp(preClaimedId, () => AudioEngine.load(realIndex, true));
                 }
                 return;
             }
@@ -534,7 +551,9 @@ export function PlaybackProvider({ children }) {
                 await fadeOutCurrentIfPlaying(await getAudioRamp());
                 forceReleaseFade();
                 const preClaimedId = preClaimFadeForFreshStart();
-                await playWithRamp(preClaimedId, () => AudioEngine.skip(newTargetIndex));
+                // Same fix as the priority-zone branch above — see its
+                // comment.
+                await playWithRamp(preClaimedId, () => AudioEngine.load(newTargetIndex, true));
             }
             // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
             // call — enough for the steady-state "a song just finished,

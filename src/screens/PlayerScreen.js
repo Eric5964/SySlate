@@ -111,6 +111,9 @@ export default function PlayerScreen() {
     // commit branch for why the fixed timer this replaced caused a visible
     // "jumps back" glitch.
     const pendingSeekRatioRef = useRef(null);
+    // See the dedup check in onScrub's commit branch — tracks the last
+    // ratio/time a native seekTo actually fired for.
+    const lastNativeSeekRef = useRef({ ratio: -1, at: 0 });
     // Backstop: if no terminal gesture state ever arrives after a touch
     // starts (this has been the recurring symptom — the bar freezes and
     // STAYS frozen, even across later songs, only unstuck by a real drag),
@@ -204,6 +207,28 @@ export default function PlayerScreen() {
         if (progress.duration > 0) {
             const targetRatio = ratio;
             const duration = progress.duration;
+            // Moved ahead of everything below (was only guarding the final
+            // seekTo call) — now also guards the isTransitionLocked()
+            // interrupt-cleanup just below. Best working theory for BOTH
+            // this and the double-audio bug: a real pan-gesture release can
+            // apparently still be followed by a spurious extra BEGAN→END
+            // from the simultaneous tap handler at the same position (see
+            // realDragMovedRef's comment elsewhere in this file for the
+            // general fragility here), which resets committedRef for what
+            // LOOKS like a fresh gesture and lets a second, redundant
+            // commit through to the same spot. That second commit's own
+            // isTransitionLocked() cleanup (forceReleaseFade +
+            // setVolume(1)) firing a beat later — possibly after the user
+            // has already tapped Play and a fresh ramp-in has started —
+            // would forcibly kill that ramp and slam volume to 1, matching
+            // "swipe while paused, hit play, doesn't ramp." Bailing out
+            // this early means a redundant commit does nothing at all
+            // instead of just skipping the seek call.
+            const now = Date.now();
+            if (Math.abs(targetRatio - lastNativeSeekRef.current.ratio) < 0.005 && now - lastNativeSeekRef.current.at < 800) {
+                return;
+            }
+            lastNativeSeekRef.current = { ratio: targetRatio, at: now };
             latestSeekRatioRef.current = targetRatio;
             // A seek can land the active lyric line anywhere — see
             // lyricsJustJumpedRef's declaration for why that means the
@@ -562,9 +587,29 @@ export default function PlayerScreen() {
         // actually caught up.
         if (activeLine < 0) {
             if (lyricsManualScroll) return;
+            // Real gap in the fix above (the y===undefined guard's twin
+            // case, missed on the first pass): activeLine is forced to -1
+            // for TWO different reasons — genuinely before the song's
+            // first timed line (duration>0, a real, stable state worth
+            // consuming the flags for), or simply because
+            // effectiveLyricsProgress.duration isn't known yet right after
+            // opening (progress hasn't polled). That second case looked
+            // identical to the first here, so the very first run — before
+            // real position data ever arrived — was scrolling to 0 (fine,
+            // that's where it already was) AND immediately marking
+            // "opened" + clearing the jump flag. The NEXT run, once
+            // duration/position actually loaded and activeLine resolved to
+            // the real current line, then found both flags already
+            // consumed and animated the correction — which is exactly
+            // "starts at the top, then scrolls down by itself." Only
+            // consuming the flags once duration>0 confirms this -1 is the
+            // real, stable answer (not a placeholder) closes that gap.
+            const isRealPosition = effectiveLyricsProgress.duration > 0;
             lyricsScrollRef.current?.scrollTo({ y: 0, animated: !skipAnimation });
-            wasShowingLyricsRef.current = true;
-            lyricsJustJumpedRef.current = false;
+            if (isRealPosition) {
+                wasShowingLyricsRef.current = true;
+                lyricsJustJumpedRef.current = false;
+            }
             return;
         }
         if (lyricsManualScroll) return;

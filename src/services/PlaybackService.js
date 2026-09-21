@@ -664,7 +664,17 @@ export async function skipWithRamp(direction = 'next') {
                 } catch { }
             }
         }
-        const doNativeSkip = () => {
+        const doNativeSkip = async () => {
+            // This entire function only runs once JS has already decided
+            // NOT to crossfade (the crossfade branch above returns early
+            // instead) — see suppressNextCrossfade's Swift comment for why
+            // skipToNext still needs telling that explicitly rather than
+            // trusting it to independently reach the same conclusion.
+            // Harmless to set for skipToPrevious/seekTo too even though
+            // neither can ever natively crossfade anyway (advance()
+            // requires direction==1) — one flag, always cleared by native
+            // the moment any advance() call reads it, so it can't leak.
+            await AudioEngine.setSuppressNextCrossfade(true).catch(() => { });
             if (direction === 'next') return AudioEngine.skipToNext();
             if (restartCurrent) return AudioEngine.seekTo(0);
             return AudioEngine.skipToPrevious();

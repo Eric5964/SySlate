@@ -1180,8 +1180,26 @@ class AudioEngine: RCTEventEmitter {
         isCrossfading = false
     }
 
+    // Single-use override — set by JS right before a plain (non-crossfade)
+    // ramp-driven skipToNext/skipToPrevious call, for the exact same reason
+    // load() exists for skip(index): advance() below makes its own
+    // independent crossfade decision from crossfadeEnabled, which can
+    // disagree with whatever JS already decided (and already ran its own
+    // JS ramp-out for) — same "ramps out of the previous song, never ramps
+    // into the new one" bug as skip(index) had, just for the Next/Previous
+    // buttons instead of tapping a song. Unlike skip(index), there's no
+    // index-free "just do a plain track change" native method to swap in
+    // (the target is relative — +1/-1 with wrap — not a known index), so
+    // this is a targeted one-shot suppression instead: JS sets it
+    // immediately before the call, advance() consumes (clears) it the
+    // moment it's read regardless of which branch runs, so it can never
+    // leak into some LATER, unrelated advance() call.
+    private var suppressNextCrossfade = false
+
     private func advance(direction: Int, wrap: Bool, autoPlay: Bool, isManualSkip: Bool) {
         cancelCrossfadeIfNeeded()
+        let suppressCrossfade = suppressNextCrossfade
+        suppressNextCrossfade = false
         guard !queue.isEmpty else {
             currentIndex = nil
             setState(.stopped)
@@ -1218,7 +1236,7 @@ class AudioEngine: RCTEventEmitter {
         // requested for ramping generally.
         let incomingDuration = queue[newIndex].duration ?? 0
         let incomingLongEnough = incomingDuration <= 0 || incomingDuration >= crossfadeDuration * 2
-        if crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, direction == 1, !isCrossfading, state == .playing {
+        if !suppressCrossfade, crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, direction == 1, !isCrossfading, state == .playing {
             currentIndex = newIndex
             startCrossfade(toIndex: newIndex, duration: crossfadeDuration)
             return
@@ -1831,6 +1849,16 @@ class AudioEngine: RCTEventEmitter {
         cancelCrossfadeIfNeeded()
         currentIndex = idx
         loadAndScheduleCurrentTrack(autoPlay: autoPlay.boolValue)
+        resolve(nil)
+    }
+
+    // Sets suppressNextCrossfade (see its declaration for the full
+    // reasoning) — called from JS immediately before skipToNext/Previous
+    // whenever JS has already decided this specific skip should be a plain
+    // JS-driven ramp, not native's own crossfade.
+    @objc(setSuppressNextCrossfade:resolver:rejecter:)
+    func setSuppressNextCrossfade(_ v: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        suppressNextCrossfade = v.boolValue
         resolve(nil)
     }
 

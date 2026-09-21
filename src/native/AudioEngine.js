@@ -82,6 +82,7 @@ const AudioEngine = {
     remove: (indexes) => NativeAudioEngine.remove(Array.isArray(indexes) ? indexes : [indexes]),
     removeUpcomingTracks: () => NativeAudioEngine.removeUpcomingTracks(),
     skip: (index) => NativeAudioEngine.skip(index),
+    setSuppressNextCrossfade: (v) => NativeAudioEngine.setSuppressNextCrossfade(v),
     // Loads a specific queue index without forcing playback — unlike
     // skip(), which always autoplays (see AudioEngine.swift's load() for
     // why this needed to be its own method). Used by restoreSession for a

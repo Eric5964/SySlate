@@ -140,7 +140,15 @@ export default function PlaylistDetailScreen() {
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             allowsEditing: true,
             aspect: [1, 1],
-            quality: 0.8,
+            // Was 0.8 — these are grid thumbnails (~150px), not full-screen
+            // images, so there's no real visual cost to compressing harder,
+            // and a smaller file is faster to read off disk and decode on
+            // every render. Doesn't reduce the actual pixel dimensions
+            // (the native crop can still hand back a multi-megapixel
+            // image — a real fix for that needs an image-resize library
+            // this project doesn't have yet), but should meaningfully help
+            // the flash/reload feel regardless.
+            quality: 0.4,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
         const permanentUri = await persistCoverImage(result.assets[0].uri);
