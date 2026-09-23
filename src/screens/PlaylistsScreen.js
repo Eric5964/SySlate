@@ -281,9 +281,12 @@ const HIT = { top: 14, bottom: 14, left: 14, right: 14 };
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    // Was paddingTop:60/paddingBottom:8 — trimmed to bring the cover grid
-    // closer to the top instead of sitting under a tall empty header band.
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 44, paddingHorizontal: 24, paddingBottom: 4 },
+    // Round 39 trimmed this to 44 to fix "excess fat above the covers" —
+    // wrong lever. That gap was actually gridItem's own padding/background
+    // (see below, fixed this round), not header height. 44 just made this
+    // screen's title sit noticeably higher than All Songs/Settings (both
+    // paddingTop:60) and Playlist Detail (56) — restored to match.
+    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 60, paddingHorizontal: 24, paddingBottom: 4 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     btn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
     btnText: { fontSize: 24 },
@@ -295,7 +298,15 @@ const s = StyleSheet.create({
     rowName: { color: '#e5e5e5', fontSize: 16, fontWeight: '500' },
     rowCount: { color: '#555', fontSize: 12, marginTop: 3 },
     arrow: { color: '#333', fontSize: 22 },
-    gridItem: { borderRadius: 14, backgroundColor: '#0f0f0f', padding: 8, alignItems: 'center' },
+    // Real cause of the "extra base color stuff above each cover" (his
+    // yellow-circled screenshot): this had its own padding:8 + a solid
+    // #0f0f0f card background wrapping the art, while gridArt inside it was
+    // ALSO set to the full cell `size` — so the art box was actually wider
+    // than the padded space it sat in, overflowing the card and reading as
+    // a visible dark band peeking out around/above the actual cover image.
+    // No padding/background here now — the cell is just a layout box, the
+    // cover image is the only visible surface.
+    gridItem: { borderRadius: 14, alignItems: 'center' },
     gridArt: { justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },

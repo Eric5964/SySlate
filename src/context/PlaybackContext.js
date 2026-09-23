@@ -464,7 +464,18 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     const jumpToQueueIndex = useCallback(async (realIndex) => {
-        if (isTransitionLocked()) return;
+        // Real gap found here: tapping a song while something else was
+        // already mid-transition (most commonly: the current track fading
+        // toward its own natural end) just silently did nothing — return
+        // with no follow-up. Every other entry point in this file that
+        // hits this same lock (playWithRamp, for one) queues itself to run
+        // right after the in-flight transition finishes instead of
+        // dropping the request. This did neither, which reads as an
+        // unresponsive tap right when the user reaches for a different
+        // song near the end of the current one — matching "account for a
+        // user clicking into the end of a song where it's supposed to be
+        // ramping already." Now consistent with the rest of this file.
+        if (isTransitionLocked()) { queueAction(() => jumpToQueueIndex(realIndex)); return; }
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
@@ -660,24 +671,53 @@ export function PlaybackProvider({ children }) {
             return { preClaimedId, crossfaded: false };
         }
 
-        const oldQueue = await AudioEngine.getQueue();
-        const curIdx = await AudioEngine.getCurrentTrack();
-        logicalQueueRef.current = fullQueue;
-        const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
-        const insertAt = curIdx + 1;
-        await withTimeout(AudioEngine.add(batch, insertAt), 6000);
-        loadedThroughRef.current = anchorIndex + batch.length;
-        await AudioEngine.skip(insertAt);
-        // Everything at or before curIdx kept its original position (the
-        // insert above only affects insertAt and later); everything after
-        // curIdx got pushed up by batch.length by that same insert. Remove
-        // it all — including curIdx itself, now that we've already
-        // skip()'d away from it — leaving only the freshly-inserted batch,
-        // which then becomes indices 0..batch.length-1 exactly like a
-        // normal primeNativeQueue result.
-        const toRemove = [];
-        for (let i = 0; i < oldQueue.length; i++) toRemove.push(i <= curIdx ? i : i + batch.length);
-        if (toRemove.length) await AudioEngine.remove(toRemove);
+        // Real bug found here (matches "Play/Shuffle/tapping a song shows
+        // the wrong song mid-crossfade" + "queues another of the same song,
+        // only sometimes"): this whole insert->skip->remove sequence is 3
+        // separate awaited native calls, and NOTHING here claimed the
+        // transition lock across them — isTransitionLocked() stayed false
+        // the entire time. checkRampWindow's natural-end-of-track poll
+        // checks that exact lock before deciding to start its own fade, so
+        // a poll tick landing in any of the gaps between these 3 calls
+        // could run concurrently with this sequence, shifting native's
+        // queue/index state out from under the toRemove math below (which
+        // is only correct if nothing else touches the queue between
+        // reading oldQueue/curIdx and the final remove()) — explaining both
+        // a stray leftover duplicate entry (an old index that should've
+        // been removed, wasn't) and a brief flash of the wrong track. Only
+        // reproduces when the timing happens to line up, matching "only
+        // sometimes". Fixed by claiming the same fade lock the non-
+        // crossfade branch above already uses for this — checkRampWindow
+        // backs off entirely while it's held, same as it already does for
+        // every other transition.
+        const guardId = preClaimFadeForFreshStart();
+        try {
+            const oldQueue = await AudioEngine.getQueue();
+            const curIdx = await AudioEngine.getCurrentTrack();
+            logicalQueueRef.current = fullQueue;
+            const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
+            const insertAt = curIdx + 1;
+            await withTimeout(AudioEngine.add(batch, insertAt), 6000);
+            loadedThroughRef.current = anchorIndex + batch.length;
+            await AudioEngine.skip(insertAt);
+            // Everything at or before curIdx kept its original position (the
+            // insert above only affects insertAt and later); everything after
+            // curIdx got pushed up by batch.length by that same insert. Remove
+            // it all — including curIdx itself, now that we've already
+            // skip()'d away from it — leaving only the freshly-inserted batch,
+            // which then becomes indices 0..batch.length-1 exactly like a
+            // normal primeNativeQueue result.
+            const toRemove = [];
+            for (let i = 0; i < oldQueue.length; i++) toRemove.push(i <= curIdx ? i : i + batch.length);
+            if (toRemove.length) await AudioEngine.remove(toRemove);
+        } finally {
+            // Native owns the actual crossfade audio from here — this lock
+            // was only ever guarding the queue-mutation sequence above, not
+            // the crossfade itself, so it's safe to release the moment
+            // that sequence is done rather than waiting on the crossfade's
+            // own duration.
+            forceReleaseFade();
+        }
         return { preClaimedId: null, crossfaded: true };
     };
 

@@ -323,13 +323,32 @@ async function checkRampWindow(position, duration) {
 }
 
 function startWatcher() {
+    // Real bug found here — a real contributor to "the app lags to an
+    // insane extent... likely an issue with crossfade too": these two
+    // watchers were both always running, completely independently of each
+    // other. The native PlaybackProgressUpdated event now fires every
+    // 0.25s (bumped from 1s in an earlier round specifically to catch
+    // short ramp windows accurately — see AudioEngine.swift's
+    // startProgressTimer), and this fallback interval ALSO independently
+    // polls every 400ms regardless, on top of that — meaning
+    // checkRampWindow, which does 3 separate AsyncStorage round-trips
+    // every time it runs, was firing roughly 4-5x/sec continuously, the
+    // entire time anything was playing, not just near a transition. The
+    // fallback was clearly meant as a safety net for if the event stream
+    // ever stops, not a second full-time poller — now it only actually
+    // does anything if a real event tick hasn't landed recently, so during
+    // normal playback (the overwhelming majority of the time) it's an
+    // idle no-op check instead of 3 more AsyncStorage reads every 400ms.
+    let lastEventTickAt = 0;
     if (!progressSub) {
         progressSub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
+            lastEventTickAt = Date.now();
             checkRampWindow(position, duration);
         });
     }
     if (!fallbackTimer) {
         fallbackTimer = setInterval(async () => {
+            if (Date.now() - lastEventTickAt < 1200) return; // events are flowing normally, nothing to do
             try {
                 const state = await AudioEngine.getState();
                 if (state !== State.Playing) return;
@@ -416,10 +435,23 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
             // this flag too, and needs it true for the full duration this
             // ramp-in is actually committed, not just once fadeVol starts.
             rampInActive = true;
+            // Temporary diagnostic logging — tagged [RAMP-DEBUG], not a
+            // fix. Four investigation passes on "ramp doesn't engage for
+            // silence-trimmed tracks" haven't found a root cause by reading
+            // code alone; this is the actual timing of every step in this
+            // sequence, so the next time it happens, the console output
+            // (Xcode, or Metro if reproducible on a dev build) shows
+            // exactly where the gap is instead of more guessing. Safe to
+            // strip once this is diagnosed — or leave in, it's cheap.
+            const rampDebugT0 = Date.now();
+            console.log(`[RAMP-DEBUG] t+0ms: starting ramp-in, configured duration=${ramp}s`);
             try {
                 try { await AudioEngine.setVolume(0); } catch { }
+                console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: setVolume(0) done, calling startAction`);
                 try { await startAction(); } catch { }
+                console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: startAction resolved, waiting for playing`);
                 const reallyPlaying = await waitForPlaying();
+                console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: waitForPlaying resolved, reallyPlaying=${reallyPlaying}`);
                 // Widened timeout (was 2500ms) plus this changed from an
                 // instant setVolume(1) to a short catch-up fade — on a
                 // sideloaded/LiveContainer build especially, the timeout
@@ -434,6 +466,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                 // clearly not the FULL configured ramp if this really was
                 // a genuine failure, but not a jarring cut either).
                 if (!reallyPlaying) {
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: took the !reallyPlaying branch (timed out) — quick catch-up fade only, not the full configured ramp`);
                     await fadeVol(0, 1, Math.min(0.4, ramp), id);
                     try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
@@ -453,7 +486,9 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                     // finish, before there's anything audible for it to
                     // apply to — sounding exactly like no ramp happened.
                     await sleep(320);
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: 320ms settle done, calling fadeVol(0,1,${ramp})`);
                     await fadeVol(0, 1, ramp, id);
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: fadeVol resolved — ramp should be fully audible now`);
                     releaseFade(id);
                 }
             } finally {

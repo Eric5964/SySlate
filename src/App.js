@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, Dimensions, Image, AppState } from 'react-native';
+import { View, Text, Dimensions, Image, AppState, Easing } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -43,7 +43,31 @@ import { scanLibrary } from './utils/files';
 import { getPlaylistCovers } from './utils/storage';
 import { EDGE_SWIPE_WIDTH } from './utils/layout';
 
-enableScreens(false);
+// Real cause of "background is a mixture of all screens" (torn/overlapping
+// content from two different tabs painting at once, e.g. Playlists' grid
+// showing through Settings' Export/Import rows with both titles stacked on
+// top of each other): enableScreens(false) below meant react-native-screens
+// was never actually doing anything — every tab AND stack screen this app
+// has ever navigated to stays fully mounted in the view hierarchy forever,
+// just repositioned, instead of being properly detached natively. That's
+// normally "just" a performance cost (very likely also behind "transitions
+// go slow after being out of the app a while" — more mounted screens
+// accumulating the longer a session runs), but under some navigation
+// timing (fast tab switches, this report's likely trigger) it's also what
+// let two screens' content actually render simultaneously in the same
+// space instead of one being cleanly hidden behind the other.
+// No comment/history explained why this was ever disabled — package.json
+// confirms react-native-screens is a real, installed dependency (3.31.0),
+// so there's no reason it shouldn't be doing its job. Enabling it.
+// Flagging the one real risk: if this was disabled in the first place to
+// work around some specific crash (react-native-screens has historically
+// had rough edges paired with react-native-gesture-handler, and this app
+// leans heavily on custom gesture handlers — BottomSheet's handle,
+// PlaylistDetail's swipe-back, the progress bar's own pan/tap handlers),
+// turning it back on could resurface whatever that was. Test those
+// gesture-heavy spots specifically after this build, not just the tearing
+// itself.
+enableScreens(true);
 
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
@@ -128,7 +152,7 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null, covers: {} });
     const [playerReady, setPlayerReady] = useState(false);
-    const { ready: themeReady, base } = useTheme();
+    const { ready: themeReady, base, theme } = useTheme();
     const { showSongCovers, keepScreenAwake, backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const playbackState = usePlaybackState();
 
@@ -272,12 +296,30 @@ function AppInner() {
     // previous render" crash on launch).
     const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists }), [library, reload, reorderPlaylists]);
 
-    // Wait on theme too, not just the player — otherwise the real
-    // NavigationContainer/screens can mount for a frame or two using
-    // ThemeContext's purple/black placeholders before AsyncStorage resolves
-    // the user's actual pick.
+    // Loading screen. Requested: app icon + base color, hides launch-time
+    // rough edges (the pop, lyrics not positioned yet, etc.) while
+    // everything preloads, capped around 0.5s.
+    //
+    // This is the SAME gate that already existed here (playerReady &&
+    // themeReady) — it already only shows for as long as real preload
+    // actually takes, so it was never going to hang open longer than
+    // necessary; nothing changed about WHEN it clears. What's new is what
+    // it shows while it's up: base color + a centered icon slot instead of
+    // a bare color rectangle.
+    //
+    // No icon file yet — placeholder is a plain rounded accent-color
+    // square standing in for it. Once you send the icon: drop it at
+    // src/assets/app-icon.png, then replace the placeholderIcon View below
+    // with:
+    //   <Image source={require('./assets/app-icon.png')} style={{ width: 96, height: 96, borderRadius: 22 }} resizeMode="contain" />
+    // — everything else here (centering, background, the gate itself)
+    // already doesn't need to change.
     if (!playerReady || !themeReady) {
-        return <View style={{ flex: 1, backgroundColor: base.bg }} />;
+        return (
+            <View style={{ flex: 1, backgroundColor: base.bg, alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ width: 96, height: 96, borderRadius: 22, backgroundColor: theme.accent }} />
+            </View>
+        );
     }
 
     return (
@@ -317,6 +359,23 @@ function AppInner() {
                                     // more readily instead of needing to cross
                                     // most of the screen height.
                                     gestureVelocityImpact: 0.5,
+                                    // "Down arrow closes too fast vs. opening
+                                    // it" — couldn't verify from here whether
+                                    // ModalSlideFromBottomIOS's own open/close
+                                    // transitionSpec is actually symmetric by
+                                    // default (no node_modules in this zip to
+                                    // check against, and the down-arrow button
+                                    // is a plain navigation.goBack(), not the
+                                    // gesture path gestureVelocityImpact above
+                                    // affects — so that wasn't the cause
+                                    // either way). Pinning both directions to
+                                    // the exact same explicit timing removes
+                                    // the guesswork regardless of what the
+                                    // preset's actual default was.
+                                    transitionSpec: {
+                                        open: { animation: 'timing', config: { duration: 350, easing: Easing.out(Easing.poly(4)) } },
+                                        close: { animation: 'timing', config: { duration: 350, easing: Easing.in(Easing.poly(4)) } },
+                                    },
                                 }}
                             />
                         </Root.Navigator>

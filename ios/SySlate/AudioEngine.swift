@@ -372,6 +372,25 @@ class AudioEngine: RCTEventEmitter {
         normalizerNode.bypass = true
 
         configureAudioSession()
+
+        // Real cause of the loud pop on the FIRST play after launch
+        // (every play after that is silent/clean): engine.start() was only
+        // ever called lazily, right at the moment of the first actual
+        // play() — the exact same instant audio starts getting pushed
+        // through it. Starting an AVAudioEngine cold and immediately
+        // playing through freshly-activated hardware I/O in the same beat
+        // is a well-known way to get a transient pop (the DAC/hardware
+        // route hasn't settled). Warming the engine up here instead, right
+        // after the graph is wired, means it's already running by the time
+        // any play() call happens — first tap included — so there's
+        // nothing left to cold-start at that critical moment.
+        activateSession()
+        do {
+            try engine.start()
+        } catch {
+            NSLog("AudioEngine: failed to warm-start engine at init: \(error)")
+        }
+
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
@@ -645,6 +664,24 @@ class AudioEngine: RCTEventEmitter {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    // Real bug found here — this is why the lock screen play/pause icon
+    // flickers during a pause-ramp instead of just switching once: the
+    // progress timer keeps firing (and calling updateNowPlayingInfo below,
+    // periodically) for the ENTIRE duration of a ramp-out, because `state`
+    // doesn't actually flip to .paused until the real pause() call at the
+    // very end of the fade — see setNowPlayingPaused's own comment. Every
+    // one of those in-between ticks computed rate from raw `state`
+    // (.playing the whole time), silently overwriting whatever
+    // setNowPlayingPaused had just set the moment before — so for a 2-4s
+    // ramp, the lock screen would flip to "paused" once, then get stomped
+    // back to "playing" by the next tick a fraction of a second later,
+    // repeatedly, until the ramp actually finished. setNowPlayingPaused now
+    // sets this instead of writing directly to MPNowPlayingInfoCenter once
+    // and being done — updateNowPlayingInfo (below) checks it on every
+    // call, so every tick during the fade keeps agreeing with it instead of
+    // only the very first one.
+    private var displayedAsPaused: Bool? = nil
+
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -653,12 +690,13 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         let track = queue[idx]
+        let isPlayingForDisplay = displayedAsPaused.map { !$0 } ?? (state == .playing)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title ?? "",
             MPMediaItemPropertyArtist: track.artist ?? "",
             MPMediaItemPropertyAlbumTitle: track.album ?? "",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentPositionSeconds(),
-            MPNowPlayingInfoPropertyPlaybackRate: state == .playing ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? 1.0 : 0.0,
         ]
         if let duration = track.duration {
             info[MPMediaItemPropertyPlaybackDuration] = duration
@@ -699,6 +737,11 @@ class AudioEngine: RCTEventEmitter {
 
     private func setState(_ newState: PlaybackStateValue) {
         state = newState
+        // Any real, definitive state transition supersedes whatever
+        // setNowPlayingPaused's display-only override was holding — clear
+        // it so updateNowPlayingInfo goes back to trusting `state` directly
+        // instead of possibly holding on to a stale ramp-in-progress guess.
+        displayedAsPaused = nil
         sendEvent(withName: "PlaybackState", body: ["state": newState.rawValue])
         updateNowPlayingInfo()
     }
@@ -918,6 +961,7 @@ class AudioEngine: RCTEventEmitter {
         let token = playbackToken
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let debugT0 = Date()
             do {
                 let file = try AVAudioFile(forReading: track.url)
                 // Real bug found here: analyzeFile used to run INSIDE
@@ -938,6 +982,13 @@ class AudioEngine: RCTEventEmitter {
                 // path goes through here, not through startCrossfade).
                 let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || self?.betweenTrackNormEnabled == true)
                     ? self?.analyzeFile(file, path: track.url.path) : nil
+                // Temporary diagnostic logging — tagged [RAMP-DEBUG], see
+                // the matching tag in PlaybackService.js's playWithRamp.
+                // Cross-referencing the two timelines is the actual point
+                // — safe to strip once the silence-trim-ramp issue is
+                // diagnosed.
+                let analysisMs = Int(Date().timeIntervalSince(debugT0) * 1000)
+                NSLog("[RAMP-DEBUG] native: analysis took %dms, leadIn=%.3fs trailingCut=%.3fs (nil analysis = trim/normalize both off)", analysisMs, analysis?.leadInSeconds ?? -1, analysis?.trailingCutSeconds ?? -1)
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return } // superseded by a newer load
                     self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, announceChange: announceChange, token: token, precomputedAnalysis: analysis)
@@ -1053,11 +1104,18 @@ class AudioEngine: RCTEventEmitter {
                 try engine.start()
             }
             activateSession()
+            // [RAMP-DEBUG] — this line sets activeNode.volume directly,
+            // unconditionally, every load — including a fresh ramp-in JS
+            // just set to 0 a moment ago via setVolume(0) before calling
+            // this. Logging the actual value so it's visible whether this
+            // is stomping a ramp-in back to full right as it starts.
+            NSLog("[RAMP-DEBUG] native: about to set activeNode.volume=%.3f (volume param=%.3f * gainCorrection=%.3f), autoPlay=%@", volume * gainCorrection, volume, gainCorrection, autoPlay ? "true" : "false")
             activeNode.volume = volume * gainCorrection
 
             if autoPlay {
                 activeNode.play()
                 setState(.playing)
+                NSLog("[RAMP-DEBUG] native: activeNode.play() + setState(.playing) fired")
             } else {
                 setState(.ready)
             }
@@ -1685,7 +1743,22 @@ class AudioEngine: RCTEventEmitter {
         activeNode.stop()
         progressTimer?.invalidate()
         setState(.stopped)
-        deactivateSession()
+        // Speculative fix, lower confidence than most of this file's other
+        // comments — for "sometimes the songs pop when clicking them",
+        // separate from the (already-fixed) very-first-play-after-launch
+        // pop: this used to deactivateSession() here, on every natural
+        // queue-end/stop, while the app stays open. Reactivating a session
+        // (activateSession(), called at the start of the next play/skip/
+        // load) is its own hardware I/O route event — the same class of
+        // thing that causes the first-play pop init now avoids by keeping
+        // the engine warm continuously. Deactivating here just to
+        // re-activate moments later, the next time the user taps
+        // something, pays that same cost repeatedly instead of once.
+        // Genuinely deactivating when the app is about to die is still
+        // handled — see handleAppWillTerminate above. Not deactivating on
+        // every in-app stop is the same "stay warm while the app is
+        // alive" philosophy as the engine already gets, just not
+        // confirmed against a device the way that fix was.
     }
 
     private func skipToNextInternal() {
@@ -2053,10 +2126,8 @@ class AudioEngine: RCTEventEmitter {
     // separate "undo" needed.
     @objc(setNowPlayingPaused:resolver:rejecter:)
     func setNowPlayingPaused(_ paused: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { resolve(nil); return }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentPositionSeconds()
-        info[MPNowPlayingInfoPropertyPlaybackRate] = paused.boolValue ? 0.0 : (state == .playing ? 1.0 : 0.0)
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        displayedAsPaused = paused.boolValue
+        updateNowPlayingInfo()
         resolve(nil)
     }
 

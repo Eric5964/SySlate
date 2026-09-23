@@ -1094,7 +1094,11 @@ const s = StyleSheet.create({
     // step further out where nothing clips it. Deliberately a bit more
     // pronounced than art's old (invisible) values, since a shadow subtle
     // enough to match those wouldn't have been worth adding a setting for.
-    coverShadowWrap: { width: width - 56, height: width - 56, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.35, shadowRadius: 16, elevation: 10 },
+    // Was shadowRadius:16/offset:10/opacity:0.35 — a much heavier shadow
+    // than anything else on this screen. Scaled down to roughly match the
+    // lyrics' own textShadowRadius:4 glow instead of standing out as its
+    // own much bigger effect.
+    coverShadowWrap: { width: width - 56, height: width - 56, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 5, elevation: 4 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     // Small text button matching the sort-label style used elsewhere

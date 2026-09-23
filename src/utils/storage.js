@@ -4,7 +4,24 @@ import { EQ_MIN, EQ_MAX } from './eq';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
-export const getEQPreset = (path) => safe(() => AsyncStorage.getItem(path ? `eq:${path}` : 'eq:global').then(v => v ?? 'flat'), 'flat');
+// Real bug found here ("selected EQ preset doesn't save between closing
+// and reopening"): this is a per-playlist setting (eq:<path>), which is
+// correct when you've actually picked a DIFFERENT preset for that specific
+// playlist before — but if nothing was ever saved under that exact key
+// (new playlist, or you usually play from All Songs/Queue/a different
+// playlist than whichever one you had open when you picked a preset),
+// this fell straight to the hardcoded 'flat' default, silently ignoring
+// whatever preset you'd actually set elsewhere. Now falls through to the
+// global preset first — only lands on 'flat' if NEITHER this playlist nor
+// the global slot has ever had one saved.
+export const getEQPreset = (path) => safe(async () => {
+    if (path) {
+        const perPlaylist = await AsyncStorage.getItem(`eq:${path}`);
+        if (perPlaylist !== null) return perPlaylist;
+    }
+    const global = await AsyncStorage.getItem('eq:global');
+    return global ?? 'flat';
+}, 'flat');
 export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v === 'true'), false);
 export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
 export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('crossfade_duration').then(v => v !== null ? parseFloat(v) : 4), 4);
@@ -389,7 +406,12 @@ export const exportAllSettings = async () => {
     // intentionally left out — it's a one-time migration source for
     // show_player_cover (see its comment in this file), nothing actively
     // writes it anymore. last_session — confirmed include it — added below.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session'];
+    // Added this round: preamp_db, show_premade_settings, cover_shadow,
+    // eq_preset_overrides — all four are real, currently-used settings
+    // (pre-amp added round 39, Show Premade Presets round 40, the other
+    // two older) that were never added here, so Export Settings silently
+    // dropped them and Import Settings could never restore them.
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -427,6 +449,7 @@ export const importAllSettings = async (jsonString) => {
         'ramp_on_pause', 'show_play_count', 'show_song_covers',
         'keep_priority_on_switch', 'album_from_folder', 'keep_screen_awake',
         'show_player_cover', 'bg_image_enabled',
+        'show_premade_settings', 'cover_shadow',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -441,11 +464,12 @@ export const importAllSettings = async (jsonString) => {
         audio_ramp: [0, 3],
         lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
         restart_threshold_sec: [0, 24],
+        preamp_db: [-12, 12],
     };
     // Keys whose value is itself a JSON-encoded string — validated by
     // shape (array vs plain object), not by deep-inspecting every entry.
     const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order']);
-    const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders']);
+    const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders', 'eq_preset_overrides']);
     // Plain string settings (enum-like ids, URIs) — no fixed enum list
     // enforced here (a future app version could legitimately add new
     // theme/cover-shape ids that this exact import code doesn't know about

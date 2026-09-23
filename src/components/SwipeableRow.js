@@ -228,8 +228,11 @@ const styles = StyleSheet.create({
         shadowRadius: 5,
         shadowOpacity: 0.55,
     },
+    // Was right:56 — sat close enough to the row's own trailing play-count
+    // text (see AllSongsScreen/PlaylistDetailScreen's playCount style) that
+    // the two could visually collide. Pushed further left for clearance.
     addedBadgeZone: {
-        position: 'absolute', top: 0, bottom: 0, right: 56,
+        position: 'absolute', top: 0, bottom: 0, right: 80,
         justifyContent: 'center', alignItems: 'flex-end',
     },
     addedBadge: {
