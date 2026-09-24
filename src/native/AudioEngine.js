@@ -82,6 +82,13 @@ const AudioEngine = {
     remove: (indexes) => NativeAudioEngine.remove(Array.isArray(indexes) ? indexes : [indexes]),
     removeUpcomingTracks: () => NativeAudioEngine.removeUpcomingTracks(),
     skip: (index) => NativeAudioEngine.skip(index),
+    // Directly triggers a crossfade, bypassing skip()'s own precondition
+    // re-check (crossfadeEnabled/state/index-mismatch) against whatever
+    // native's current state happens to be by the time the call lands —
+    // see this method's comment in AudioEngine.swift for the race that
+    // re-check opened up. Only for callers (primeQueueForTransition) that
+    // have already confirmed a crossfade should apply themselves.
+    crossfadeToIndex: (index, duration) => NativeAudioEngine.crossfadeToIndex(index, duration),
     setSuppressNextCrossfade: (v) => NativeAudioEngine.setSuppressNextCrossfade(v),
     // Loads a specific queue index without forcing playback — unlike
     // skip(), which always autoplays (see AudioEngine.swift's load() for

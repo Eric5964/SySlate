@@ -52,7 +52,15 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
         const size = CELL_SIZES[numCols];
         return (
             <TouchableOpacity
-                style={[s.gridItem, { width: size, margin: CELL_MARGIN, backgroundColor: base.surface }]}
+                // Round 46 removed gridItem's own background/padding in the
+                // stylesheet (that was the "extra fat" card), but missed
+                // this inline backgroundColor override right here doing the
+                // exact same thing — base.surface, with gridItem's fixed
+                // borderRadius:14 instead of gridArt's actual squircle()
+                // radius (size-dependent, usually bigger), so the squarer
+                // outer corner poked out past the more-rounded inner one.
+                // That's exactly what was peeking at the corners.
+                style={[s.gridItem, { width: size, margin: CELL_MARGIN }]}
                 onPress={onOpen} onLongPress={onLongPress} activeOpacity={0.75}
             >
                 <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size, coverShape) }]}>

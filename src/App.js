@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, Dimensions, Image, AppState, Easing } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { View, Text, Dimensions, Image, AppState, Animated } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -69,6 +69,11 @@ import { EDGE_SWIPE_WIDTH } from './utils/layout';
 // itself.
 enableScreens(true);
 
+// Sampled directly from src/assets/app-icon.jpg's own background — an icon
+// designed against one specific color looks off composited over a
+// different one, even briefly.
+const LOADING_BG = '#382F42';
+
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
 const PlaylistsStack = createStackNavigator();
@@ -118,6 +123,34 @@ function Tabs() {
                 tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: '#444',
                 tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 2 },
+                // Real cause of "background image doesn't load/appear
+                // anymore" after enableScreens(true): Tab.Navigator (from
+                // @react-navigation/bottom-tabs) doesn't use cardStyle —
+                // it's sceneContainerStyle. This was never set, so each
+                // tab's content area had no explicit background at all.
+                // Under enableScreens(false) that was harmless (a plain RN
+                // View defaults to transparent, so PersistentBackgroundImage
+                // behind the whole navigator showed through by accident).
+                // Under enableScreens(true), each tab is now a native
+                // screen container, which paints its own default —
+                // opaque — background unless told otherwise, sitting
+                // directly on top of PersistentBackgroundImage and hiding
+                // it completely. This is exactly the same class of issue
+                // as react-navigation/react-navigation#4759 (cardStyle
+                // transparent doesn't survive native screens without being
+                // explicit about it).
+                sceneContainerStyle: { backgroundColor: 'transparent' },
+                // The loading screen is meant to hide first-mount cost for
+                // ALL THREE tabs, not just whichever one happens to be
+                // initialRouteName — Tab.Navigator's default (lazy: true)
+                // only mounts a tab the first time it's actually visited,
+                // so All Songs and Settings were never actually part of
+                // what the loading screen was covering; they'd still mount
+                // (and pay their own first-render cost) the first time the
+                // user tapped over to them, loading screen or not. lazy:
+                // false mounts all three together, while AppInner's overlay
+                // still fully covers this — see its own comment.
+                lazy: false,
             }}
         >
             <Tab.Screen
@@ -296,31 +329,41 @@ function AppInner() {
     // previous render" crash on launch).
     const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists }), [library, reload, reorderPlaylists]);
 
-    // Loading screen. Requested: app icon + base color, hides launch-time
+    // Loading screen — icon + its own background color, hides launch-time
     // rough edges (the pop, lyrics not positioned yet, etc.) while
-    // everything preloads, capped around 0.5s.
+    // everything preloads.
     //
-    // This is the SAME gate that already existed here (playerReady &&
-    // themeReady) — it already only shows for as long as real preload
-    // actually takes, so it was never going to hang open longer than
-    // necessary; nothing changed about WHEN it clears. What's new is what
-    // it shows while it's up: base color + a centered icon slot instead of
-    // a bare color rectangle.
-    //
-    // No icon file yet — placeholder is a plain rounded accent-color
-    // square standing in for it. Once you send the icon: drop it at
-    // src/assets/app-icon.png, then replace the placeholderIcon View below
-    // with:
-    //   <Image source={require('./assets/app-icon.png')} style={{ width: 96, height: 96, borderRadius: 22 }} resizeMode="contain" />
-    // — everything else here (centering, background, the gate itself)
-    // already doesn't need to change.
-    if (!playerReady || !themeReady) {
-        return (
-            <View style={{ flex: 1, backgroundColor: base.bg, alignItems: 'center', justifyContent: 'center' }}>
-                <View style={{ width: 96, height: 96, borderRadius: 22, backgroundColor: theme.accent }} />
-            </View>
-        );
-    }
+    // This used to be a plain early-return gate: nothing below it (the
+    // whole NavigationContainer, all three tabs) even started mounting
+    // until playerReady/themeReady flipped true, then everything mounted
+    // for the first time AFTER the loading screen was already gone — so it
+    // was never actually hiding any real mounting cost, just showing a
+    // color for a bit beforehand. Restructured so the real app mounts
+    // UNDERNEATH this overlay instead (see the return below): everything
+    // (all three tabs now, too — see Tabs' lazy:false) mounts while this is
+    // still fully covering it, then fades out once actually ready, so what
+    // gets revealed is already warm rather than mounting live in front of
+    // the user.
+    const overlayOpacity = useRef(new Animated.Value(1)).current;
+    const [showOverlay, setShowOverlay] = useState(true);
+    const mountedAtRef = useRef(Date.now());
+    useEffect(() => {
+        if (!playerReady || !themeReady) return;
+        // Shows fully opaque for at least 500ms from mount (regardless of
+        // how fast playerReady/themeReady resolve — that's the window
+        // everything underneath gets to actually mount in), then fades out
+        // over another 500ms. If real readiness takes LONGER than 500ms,
+        // this effect only fires once it's actually ready, so the minimum
+        // never cuts preload short — it only ever adds a floor, not a
+        // ceiling.
+        const elapsed = Date.now() - mountedAtRef.current;
+        const t = setTimeout(() => {
+            Animated.timing(overlayOpacity, { toValue: 0, duration: 500, useNativeDriver: true }).start(() => {
+                setShowOverlay(false);
+            });
+        }, Math.max(0, 500 - elapsed));
+        return () => clearTimeout(t);
+    }, [playerReady, themeReady]);
 
     return (
         <View style={{ flex: 1 }}>
@@ -359,29 +402,55 @@ function AppInner() {
                                     // more readily instead of needing to cross
                                     // most of the screen height.
                                     gestureVelocityImpact: 0.5,
-                                    // "Down arrow closes too fast vs. opening
-                                    // it" — couldn't verify from here whether
-                                    // ModalSlideFromBottomIOS's own open/close
-                                    // transitionSpec is actually symmetric by
-                                    // default (no node_modules in this zip to
-                                    // check against, and the down-arrow button
-                                    // is a plain navigation.goBack(), not the
-                                    // gesture path gestureVelocityImpact above
-                                    // affects — so that wasn't the cause
-                                    // either way). Pinning both directions to
-                                    // the exact same explicit timing removes
-                                    // the guesswork regardless of what the
-                                    // preset's actual default was.
-                                    transitionSpec: {
-                                        open: { animation: 'timing', config: { duration: 350, easing: Easing.out(Easing.poly(4)) } },
-                                        close: { animation: 'timing', config: { duration: 350, easing: Easing.in(Easing.poly(4)) } },
-                                    },
+                                    // Round 47 added a custom `timing`-based
+                                    // transitionSpec here to try to make the
+                                    // down-arrow's close match the open
+                                    // speed — wrong fix, reverted. A `timing`
+                                    // animation computes its curve from a
+                                    // fresh start every time; it doesn't know
+                                    // or care where a gesture-driven dismiss
+                                    // was released, so handing off from a
+                                    // partial swipe to that timing curve
+                                    // produced exactly the reported
+                                    // "restarts the animation at the spot you
+                                    // stopped swiping" glitch. ModalSlide-
+                                    // FromBottomIOS's own default is `spring`
+                                    // based (TransitionIOSSpec), which is
+                                    // already symmetric between open/close
+                                    // AND naturally continues from a gesture's
+                                    // current position/velocity instead of
+                                    // restarting — removing the override
+                                    // fixes the gesture case. Whatever
+                                    // actually caused the original "close
+                                    // feels faster than open" report is still
+                                    // unconfirmed — this was a guess that
+                                    // turned out wrong, not a diagnosed fix.
                                 }}
                             />
                         </Root.Navigator>
                     </NavigationContainer>
                 </PlaybackProvider>
             </LibraryContext.Provider>
+            {showOverlay && (
+                <Animated.View
+                    pointerEvents="none"
+                    style={{
+                        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                        // The icon's own background color, not base.bg — an
+                        // icon designed against one color reads noticeably
+                        // wrong composited over a different one for however
+                        // briefly this shows.
+                        backgroundColor: LOADING_BG,
+                        alignItems: 'center', justifyContent: 'center',
+                        opacity: overlayOpacity,
+                    }}
+                >
+                    {/* Sized to roughly one 3-column grid cover (~110-130pt
+                        on typical screens — see PlaylistsScreen's cellSize),
+                        a bit bigger per request, centered. */}
+                    <Image source={require('./assets/app-icon.jpg')} style={{ width: 130, height: 130, borderRadius: 29 }} resizeMode="cover" />
+                </Animated.View>
+            )}
         </View>
     );
 }

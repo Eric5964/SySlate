@@ -86,20 +86,30 @@ export function forceReleaseFade() {
 }
 
 // Instead of silently dropping a play/pause/skip that arrives while a ramp
-// is mid-flight, the LATEST one is remembered (overwriting whatever was
-// queued before — never a combination, just the most recent request) and
-// run automatically the moment the ramp finishes.
-let pendingAction = null; // { run: () => void }
+// is mid-flight, up to 2 are remembered and run in order, one at a time, as
+// each transition finishes. Was a single slot (the latest request always
+// overwriting whatever was already queued) — per "when pressing songs a
+// few times, it cuts off a crossfade, just let it happen & only queue like
+// 2 songs", the in-flight transition should always get to finish
+// undisturbed (that already happens — nothing here ever interrupts an
+// active one), and rapid taps beyond that should queue up to a couple deep
+// rather than only the very last tap surviving. A 3rd+ tap while 2 are
+// already pending replaces the 2nd (most recent) slot rather than growing
+// further — still bounded, just not down to 1.
+let pendingQueue = []; // [{ run: () => void }], length 0-2
 
 export function queueAction(run) {
-    pendingAction = { run };
+    if (pendingQueue.length < 2) {
+        pendingQueue.push({ run });
+    } else {
+        pendingQueue[1] = { run };
+    }
 }
 
 function drainPending() {
     if (isTransitionLocked()) return;
-    const action = pendingAction;
+    const action = pendingQueue.shift();
     if (!action) return;
-    pendingAction = null;
     setTimeout(() => action.run(), 20);
 }
 

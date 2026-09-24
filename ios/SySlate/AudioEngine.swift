@@ -422,7 +422,14 @@ class AudioEngine: RCTEventEmitter {
             UIApplication.shared.endBackgroundTask(bgTask)
         }
         let startVolume = activeNode.volume
-        let duration = 1.0
+        // Was 1.0s. Apple's documented budget for applicationWillTerminate
+        // is "approximately five seconds", but that's a nominal ceiling,
+        // not a reliable guarantee — real-world reports (e.g. Flutter's own
+        // measurement of this exact window: engine.io/flutter#96779) found
+        // the process actually cut off well under a second in some runs.
+        // 1.0s synchronous/blocking was closer to that observed real-world
+        // edge than the documented one. Shortened with margin to spare.
+        let duration = 0.4
         let steps = 10
         for i in 1...steps {
             Thread.sleep(forTimeInterval: duration / Double(steps))
@@ -1886,6 +1893,36 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // Real bug found here (still-reported "queues the song but then just
+    // goes straight to it, no crossfade" after the JS-side transition lock
+    // added for this same symptom in an earlier round): that JS lock only
+    // ever blocked JS's OWN natural-end-of-track polling from interleaving
+    // with primeQueueForTransition's insert->skip->remove sequence — it has
+    // no way to touch THIS side's completely independent natural-end
+    // detection (startProgressTimer's tick -> handlePlaybackCompleted ->
+    // advance()), which runs regardless of any JS lock. If the outgoing
+    // song happens to hit its own real end natively in the narrow window
+    // between JS deciding "crossfade should apply here" and its skip()
+    // call actually landing, state/currentIndex can have already moved by
+    // the time skip() re-derives its own crossfade decision from current
+    // state — silently falling through to the hard-cut branch instead,
+    // even though every precondition was genuinely true when JS checked.
+    // primeQueueForTransition already verifies crossfade should apply
+    // before it ever gets here; having skip() re-verify the exact same
+    // thing again after an async gap is exactly what leaves the opening
+    // for state to shift in between. This bypasses that re-check entirely
+    // and goes straight to the same startCrossfade() skip() would have
+    // used — correct precisely because the caller already confirmed
+    // everything moments ago, not despite it.
+    @objc(crossfadeToIndex:duration:resolver:rejecter:)
+    func crossfadeToIndex(_ index: NSNumber, duration: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let idx = index.intValue
+        guard idx >= 0, idx < queue.count else { resolve(nil); return }
+        currentIndex = idx
+        startCrossfade(toIndex: idx, duration: duration.doubleValue)
+        resolve(nil)
+    }
+
     // Real bug found here (there wasn't a fix for it before — this method
     // didn't exist): restoreSession (PlaybackContext.js, cold app launch)
     // had no way to get a specific track actually loaded/cued without
@@ -2133,6 +2170,33 @@ class AudioEngine: RCTEventEmitter {
 
     @objc(setVolume:resolver:rejecter:)
     func setVolume(_ vol: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // Real bug found here (ramp-in glitching against a crossfade/fade
+        // already in flight): a native crossfade (whether started by the
+        // autonomous lead-in timer near a natural track end, or by a manual
+        // skip) drives BOTH nodes' volume itself, on its own Timer
+        // (crossfadeFadeTimer in runCrossfade), and does not hand activeNode
+        // over to the incoming node until it finishes. Critically, JS has NO
+        // way to know an autonomous lead-in crossfade has started — it only
+        // ever gets a PlaybackTrackChanged event at the crossfade's halfway
+        // point and again on completion — so isTransitionLocked() on the JS
+        // side stays false the entire time, and any ordinary JS-triggered
+        // action (pause, a song tap, Next/Previous) proceeds thinking
+        // nothing is happening. Every one of those goes through setVolume/
+        // rampVolume below, which used to write straight to activeNode —
+        // still the OUTGOING node for the whole crossfade — with nothing
+        // stopping crossfadeFadeTimer first. Two independent timers then
+        // wrote to the same node's volume on every tick, each unaware of
+        // the other: audible as volume jumping around rather than a clean
+        // fade, plus the incoming node kept right on playing/ramping in
+        // regardless of whatever JS thought it had just started (e.g. a
+        // pause). pauseInternal/seekWithinCurrentTrack already settle an
+        // in-progress crossfade before touching activeNode (see
+        // settleCrossfadeToIncoming's own comment) — this was the same
+        // fix, just missing from the two lowest-level volume entry points
+        // every JS ramp/fade actually calls. Settling first here means any
+        // JS-driven volume change always lands on one already-consistent
+        // node, never a node a crossfade timer is still actively fading.
+        if isCrossfading { settleCrossfadeToIncoming() }
         // A direct setVolume call always means "I want this volume NOW" —
         // cancel any ramp still in flight so it can't win a race and
         // overwrite this a moment later on its next tick. Resolves the
@@ -2186,6 +2250,12 @@ class AudioEngine: RCTEventEmitter {
     // logarithmic, not linear.
     @objc(rampVolume:to:duration:resolver:rejecter:)
     func rampVolume(_ from: NSNumber, to: NSNumber, duration: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // Same fix, same reasoning as setVolume() above — this is the one
+        // that actually matters most in practice, since every JS ramp/fade
+        // (pause-out, skip-out, a fresh song's ramp-in) calls THIS, not
+        // setVolume, for the actual fade. Settle any in-progress crossfade
+        // onto a single node before this ramp starts driving activeNode.
+        if isCrossfading { settleCrossfadeToIncoming() }
         cancelActiveRampLocked()
         let fromVal = max(0, min(1, from.floatValue))
         let toVal = max(0, min(1, to.floatValue))

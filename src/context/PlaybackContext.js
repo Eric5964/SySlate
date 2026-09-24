@@ -659,9 +659,10 @@ export function PlaybackProvider({ children }) {
     // plain reset+ramp fresh-start doesn't.
     const primeQueueForTransition = async (fullQueue, rampDuration, anchorIndex = 0) => {
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
+        const skipCrossfadeDuration = await getCrossfadeDurationSkip();
         const crossfadeReady = wasPlaying
             && (await getCrossfadeEnabled())
-            && (await getCrossfadeDurationSkip()) > 0.05;
+            && skipCrossfadeDuration > 0.05;
 
         if (!crossfadeReady) {
             await fadeOutCurrentIfPlaying(rampDuration);
@@ -699,7 +700,14 @@ export function PlaybackProvider({ children }) {
             const insertAt = curIdx + 1;
             await withTimeout(AudioEngine.add(batch, insertAt), 6000);
             loadedThroughRef.current = anchorIndex + batch.length;
-            await AudioEngine.skip(insertAt);
+            // crossfadeToIndex instead of skip() — skip() re-derives its
+            // own crossfade decision from native's state at the moment it
+            // runs, which is exactly the race described above (a real gap
+            // this function's own lock doesn't close, since it can't touch
+            // native's independent natural-end detection). Everything
+            // crossfadeToIndex needs was already confirmed true, above,
+            // before any of this started.
+            await AudioEngine.crossfadeToIndex(insertAt, skipCrossfadeDuration);
             // Everything at or before curIdx kept its original position (the
             // insert above only affects insertAt and later); everything after
             // curIdx got pushed up by batch.length by that same insert. Remove
