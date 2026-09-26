@@ -5,6 +5,7 @@ import {
     Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
 } from 'react-native';
 import { useScrollToTop } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import BottomSheet from '../components/BottomSheet';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
@@ -72,6 +73,7 @@ const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 
 export default function SettingsScreen() {
+    const navigation = useNavigation();
     const { changeShuffleMode, eqPresetId } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
@@ -377,9 +379,16 @@ export default function SettingsScreen() {
             Alert.alert('Permission needed', 'Allow Photos access in Settings to set a background image.');
             return;
         }
+        // Real bug found here: allowsEditing was explicitly off, so picking
+        // a background image never showed iOS's own crop/position step at
+        // all — whatever photo you picked got used exactly as the library
+        // returned it, uncropped, regardless of its aspect ratio vs the
+        // screen's. Flipping this on brings back the native crop UI (drag
+        // to reposition/zoom before confirming), same one Playlist covers
+        // already use elsewhere in this screen.
         const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: false,
+            allowsEditing: true,
             quality: 0.8,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
@@ -967,6 +976,16 @@ export default function SettingsScreen() {
                     <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
                         <Text style={s.rowLabel}>Import Settings</Text>
                         <Text style={s.rowSub}>Paste exported JSON</Text>
+                    </TouchableOpacity>
+                </Section>
+
+                {/* No Xcode on a GH-Actions/sideloaded build means every
+                    [RAMP-DEBUG]/[SEEK-DEBUG] console line so far has been
+                    invisible — this is the way in to actually see them. */}
+                <Section title="Debug">
+                    <TouchableOpacity style={s.row} onPress={() => navigation.navigate('DebugLog')}>
+                        <Text style={s.rowLabel}>Debug Log</Text>
+                        <Text style={s.rowSub}>Console output captured this session</Text>
                     </TouchableOpacity>
                 </Section>
             </ScrollView>

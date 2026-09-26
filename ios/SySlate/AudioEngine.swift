@@ -302,7 +302,27 @@ class AudioEngine: RCTEventEmitter {
             // decision #2.
             "AudioInterruptionBegan",
             "AudioInterruptionEnded",
+            // In-app debug log viewer (no Xcode/console access on a
+            // sideloaded/GH-Actions build) — see debugLog()'s own comment.
+            "DebugLog",
         ]
+    }
+
+    // Real gap found here: every [RAMP-DEBUG]/[SEEK-DEBUG] line so far only
+    // ever went to NSLog — genuinely useless without Xcode's console, which
+    // is exactly the situation for a GitHub-Actions-built, sideloaded app.
+    // This is the same NSLog call sites now also route through, PLUS an RN
+    // event JS can collect into an in-app, on-device log buffer (see
+    // utils/debugLog.js) with its own viewer screen. NSLog stays too — free,
+    // and still useful on the rare occasion Xcode IS available.
+    private func debugLog(_ message: String) {
+        // "%@" here, not NSLog(message) directly — message is arbitrary
+        // text (could contain a literal '%' from a track title, a file
+        // path, etc.), and NSLog treats its first argument as its OWN
+        // format string. Passing it as a %@ argument instead avoids that
+        // ever being misinterpreted.
+        NSLog("%@", message)
+        sendEvent(withName: "DebugLog", body: ["message": message, "at": Date().timeIntervalSince1970])
     }
 
     override init() {
@@ -995,7 +1015,12 @@ class AudioEngine: RCTEventEmitter {
                 // — safe to strip once the silence-trim-ramp issue is
                 // diagnosed.
                 let analysisMs = Int(Date().timeIntervalSince(debugT0) * 1000)
-                NSLog("[RAMP-DEBUG] native: analysis took %dms, leadIn=%.3fs trailingCut=%.3fs (nil analysis = trim/normalize both off)", analysisMs, analysis?.leadInSeconds ?? -1, analysis?.trailingCutSeconds ?? -1)
+                // self?. here, not bare debugLog(...) — this closure only
+                // weakly captured self ([weak self] above), and self isn't
+                // unwrapped to a non-optional until the guard let inside the
+                // nested DispatchQueue.main.async below. Calling an instance
+                // method on a still-optional self needs the explicit `?`.
+                self?.debugLog(String(format: "[RAMP-DEBUG] native: analysis took %dms, leadIn=%.3fs trailingCut=%.3fs (nil analysis = trim/normalize both off)", analysisMs, analysis?.leadInSeconds ?? -1, analysis?.trailingCutSeconds ?? -1))
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return } // superseded by a newer load
                     self.finishLoadingTrack(file: file, track: track, idx: idx, startAtSeconds: startAtSeconds, autoPlay: autoPlay, announceChange: announceChange, token: token, precomputedAnalysis: analysis)
@@ -1116,13 +1141,13 @@ class AudioEngine: RCTEventEmitter {
             // just set to 0 a moment ago via setVolume(0) before calling
             // this. Logging the actual value so it's visible whether this
             // is stomping a ramp-in back to full right as it starts.
-            NSLog("[RAMP-DEBUG] native: about to set activeNode.volume=%.3f (volume param=%.3f * gainCorrection=%.3f), autoPlay=%@", volume * gainCorrection, volume, gainCorrection, autoPlay ? "true" : "false")
+            debugLog(String(format: "[RAMP-DEBUG] native: about to set activeNode.volume=%.3f (volume param=%.3f * gainCorrection=%.3f), autoPlay=%@", volume * gainCorrection, volume, gainCorrection, autoPlay ? "true" : "false"))
             activeNode.volume = volume * gainCorrection
 
             if autoPlay {
                 activeNode.play()
                 setState(.playing)
-                NSLog("[RAMP-DEBUG] native: activeNode.play() + setState(.playing) fired")
+                debugLog("[RAMP-DEBUG] native: activeNode.play() + setState(.playing) fired")
             } else {
                 setState(.ready)
             }
@@ -1321,6 +1346,30 @@ class AudioEngine: RCTEventEmitter {
         // shouldn't be one, but belt-and-suspenders again) is now stale.
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
+        // Real bug found here — the other half of the gap rampVolume/
+        // setVolume's own "if isCrossfading { settleCrossfadeToIncoming() }"
+        // fix covers: THAT fix stops a JS ramp from colliding with a
+        // crossfade already running. This is the reverse case — a JS ramp
+        // (most commonly: resume's ramp-in, from tapping Play shortly after
+        // pausing) that's still actively ticking via its own native Timer
+        // the moment a crossfade STARTS, e.g. this fires autonomously from
+        // the natural end-of-track lead-in timer without any JS
+        // involvement at all, so JS's own lock has no way to have deferred
+        // it. Nothing here ever stopped that ramp's Timer before this
+        // function started driving the SAME node's volume via its own
+        // crossfadeFadeTimer in runCrossfade below — two independent
+        // Timers on outgoingNode.volume, exactly the same class of bug as
+        // rampVolume/setVolume's fix, just starting from the opposite
+        // side. Matches "playing ramps up, then overlaps with the ramp out
+        // at the end of the song" — a resume tapped close enough to a
+        // track's end that its ramp-in hadn't finished yet when the
+        // natural crossfade lead-in fired on its own. Cancelling first
+        // also means outgoingVolumeStart, captured right after, reflects
+        // wherever the ramp had actually gotten to and stays accurate
+        // instead of going stale the moment a still-running ramp keeps
+        // moving it after this snapshot.
+        cancelActiveRampLocked()
+        debugLog("[RAMP-DEBUG] startCrossfade: cancelled any in-flight JS ramp before starting crossfade")
         let track = queue[idx]
         let outgoingNode = activeNode!
         let incomingNode = idleNode
@@ -2052,6 +2101,8 @@ class AudioEngine: RCTEventEmitter {
     @objc(seekTo:resolver:rejecter:)
     func seekTo(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let wasPlaying = state == .playing
+        // [SEEK-DEBUG] Temporary — see PlayerScreen.js's matching tag.
+        debugLog(String(format: "[SEEK-DEBUG] native seekTo called: seconds=%.3f wasPlaying=%@ currentIndex=%@ isCrossfading=%@", seconds.doubleValue, wasPlaying ? "true" : "false", currentIndex.map(String.init) ?? "nil", isCrossfading ? "true" : "false"))
         seekWithinCurrentTrack(startAtSeconds: seconds.doubleValue, autoPlay: wasPlaying)
         resolve(nil)
     }

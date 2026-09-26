@@ -35,6 +35,10 @@ export const Event = {
     // cutting or (worse) doing nothing until the interruption clears.
     AudioInterruptionBegan: 'AudioInterruptionBegan',
     AudioInterruptionEnded: 'AudioInterruptionEnded',
+    // In-app debug log viewer — see utils/debugLog.js. Native's own
+    // NSLog(...) calls (tagged [RAMP-DEBUG]/[SEEK-DEBUG] etc.) now also
+    // fire this event, since NSLog alone is invisible without Xcode.
+    DebugLog: 'DebugLog',
 };
 
 export const State = {

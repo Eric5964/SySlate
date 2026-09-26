@@ -8,6 +8,12 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
 import AudioEngine, { Capability, usePlaybackState, State } from './native/AudioEngine';
+import { startDebugLogCapture } from './utils/debugLog';
+
+// Started here, at true app entry, before anything else has a chance to
+// log — see debugLog.js's own comment for why this exists at all (no
+// Xcode/console on a sideloaded GH-Actions build).
+startDebugLogCapture();
 
 // Real cause of the background image (and, before it, any custom base
 // color) never actually showing through: NavigationContainer was never
@@ -37,6 +43,7 @@ import PlaylistsScreen from './screens/PlaylistsScreen';
 import PlaylistDetailScreen from './screens/PlaylistDetailScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
+import DebugLogScreen from './screens/DebugLogScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { PersistentBackgroundImage } from './components/ScreenBackground';
 import { scanLibrary } from './utils/files';
@@ -349,20 +356,15 @@ function AppInner() {
     const mountedAtRef = useRef(Date.now());
     useEffect(() => {
         if (!playerReady || !themeReady) return;
-        // Shows fully opaque for at least 500ms from mount (regardless of
-        // how fast playerReady/themeReady resolve — that's the window
-        // everything underneath gets to actually mount in), then fades out
-        // over another 500ms. If real readiness takes LONGER than 500ms,
-        // this effect only fires once it's actually ready, so the minimum
-        // never cuts preload short — it only ever adds a floor, not a
-        // ceiling.
-        const elapsed = Date.now() - mountedAtRef.current;
-        const t = setTimeout(() => {
-            Animated.timing(overlayOpacity, { toValue: 0, duration: 500, useNativeDriver: true }).start(() => {
-                setShowOverlay(false);
-            });
-        }, Math.max(0, 500 - elapsed));
-        return () => clearTimeout(t);
+        // Per request: no more icon, no more 500ms floor — just the base
+        // color as a bridge over the real black frame before anything is
+        // ready, gone as soon as it can be. No artificial floor (that was
+        // only ever there to give the icon a moment to actually be seen);
+        // the moment playerReady/themeReady flip true, a quick 250ms fade
+        // starts immediately.
+        Animated.timing(overlayOpacity, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
+            setShowOverlay(false);
+        });
     }, [playerReady, themeReady]);
 
     return (
@@ -390,6 +392,11 @@ function AppInner() {
                             Navigator above. */}
                         <Root.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: 'transparent' } }}>
                             <Root.Screen name="Main" component={MainLayout} />
+                            {/* Plain default push/slide transition — this is a
+                                utility screen, not part of the app's designed
+                                navigation feel, so it deliberately doesn't get
+                                any of the custom transition tuning below. */}
+                            <Root.Screen name="DebugLog" component={DebugLogScreen} />
                             <Root.Screen
                                 name="Player"
                                 component={PlayerScreen}
@@ -432,24 +439,20 @@ function AppInner() {
                 </PlaybackProvider>
             </LibraryContext.Provider>
             {showOverlay && (
+                // Per request: just the base color, same as what's already
+                // showing underneath the instant it's ready — no icon, no
+                // separate "designed" moment, just a fast bridge over the
+                // real black frame before anything mounts. Fades out over
+                // ~0.25s (see the effect above) instead of sitting on
+                // screen first.
                 <Animated.View
                     pointerEvents="none"
                     style={{
                         position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                        // The icon's own background color, not base.bg — an
-                        // icon designed against one color reads noticeably
-                        // wrong composited over a different one for however
-                        // briefly this shows.
                         backgroundColor: LOADING_BG,
-                        alignItems: 'center', justifyContent: 'center',
                         opacity: overlayOpacity,
                     }}
-                >
-                    {/* Sized to roughly one 3-column grid cover (~110-130pt
-                        on typical screens — see PlaylistsScreen's cellSize),
-                        a bit bigger per request, centered. */}
-                    <Image source={require('./assets/app-icon.jpg')} style={{ width: 130, height: 130, borderRadius: 29 }} resizeMode="cover" />
-                </Animated.View>
+                />
             )}
         </View>
     );
