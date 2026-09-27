@@ -20,14 +20,27 @@ export function splitArtists(artistStr, separators) {
     return s.split(pattern).map(a => a.trim()).filter(Boolean);
 }
 
-// Re-joins with a consistent ", " for display, regardless of what the
+// The join string used to re-display split artists — a separate setting
+// (artistDisplayJoin/getArtistDisplayJoin in storage.js) from the splitting
+// separators above. 'comma' matches the original, always-on hardcoded
+// behavior, so it's both the default and the fallback for anything
+// unrecognized.
+const JOIN_STRINGS = { comma: ', ', ampersand: ' & ', slash: ' / ' };
+export function joinArtists(parts, joinId) {
+    return parts.join(JOIN_STRINGS[joinId] ?? JOIN_STRINGS.comma);
+}
+
+// Re-joins with a consistent separator for display, regardless of what the
 // raw tag's actual separator character was — this also means a song
 // tagged with, say, "Artist A;Artist B" (no space after the semicolon)
 // and one tagged "Artist A; Artist B" (with a space) display identically,
-// instead of one looking inconsistent next to the other.
-export function formatArtists(artistStr, separators) {
+// instead of one looking inconsistent next to the other. joinId is
+// optional and defaults to 'comma' (the original hardcoded ", ") so every
+// existing call site that doesn't pass one keeps behaving exactly as
+// before.
+export function formatArtists(artistStr, separators, joinId) {
     const parts = splitArtists(artistStr, separators);
-    return parts.length ? parts.join(', ') : (artistStr || '');
+    return parts.length ? joinArtists(parts, joinId) : (artistStr || '');
 }
 
 // True if `query` matches the whole artist string OR any individual

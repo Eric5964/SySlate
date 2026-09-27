@@ -120,7 +120,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -158,6 +158,19 @@ export default function SettingsScreen() {
     // release. Same local-mirror pattern as lyricsResyncLocal/lyricsOffsetLocal above.
     const [crossfadeDurationLocal, setCrossfadeDurationLocal] = useState(crossfadeDuration);
     const [preAmpLocal, setPreAmpLocal] = useState(preAmp);
+    // Real bug found here — this is "pre-amp doesn't stay between
+    // sessions": preAmpLocal only ever took preAmp's value at this
+    // component's FIRST render (useState(preAmp) only reads it once).
+    // preAmp itself gets correctly restored from storage in
+    // PreferencesContext — but that restore resolves asynchronously,
+    // after this screen has almost certainly already mounted and already
+    // captured preAmp as its still-default 0. Nothing ever re-synced
+    // preAmpLocal once the real value arrived, so the slider (and the dB
+    // label, since both read preAmpLocal) sat at 0 regardless of what was
+    // actually persisted and actually applied to native — the setting
+    // itself was fine the whole time, just never reflected here unless
+    // you happened to drag the slider yourself.
+    useEffect(() => { setPreAmpLocal(preAmp); }, [preAmp]);
     useEffect(() => { setCrossfadeDurationLocal(crossfadeDuration); }, [crossfadeDuration]);
     // Same local-mirror pattern, now for the split-out End of Track
     // crossfade duration (was one shared "Crossfade Duration" slider —
@@ -735,6 +748,50 @@ export default function SettingsScreen() {
                             );
                         })}
                     </View>
+
+                    {/* Separate from the separator picker above — that
+                         controls what counts as a split point in the raw
+                         tag; this controls how the split artists get
+                         re-joined for display. Applies in-app everywhere
+                         formatArtists is used (Player, queue, playlist and
+                         All Songs rows). Does not yet reach the lock-screen/
+                         Bluetooth/CarPlay "Now Playing" artist field — that
+                         goes through native metadata sent at queue-add time
+                         from many call sites, and doing that safely needs
+                         its own centralized pass rather than being bolted
+                         on here; noted as a followup, not silently skipped. */}
+                    <View style={[s.settingHeader, { marginTop: 14 }]}>
+                        <Text style={s.toggleLabel}>Artist Display Format</Text>
+                        <Text style={s.toggleSub}>How multiple artists are shown, in-app only for now</Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {[
+                            { id: 'comma', label: 'A, B' },
+                            { id: 'ampersand', label: 'A & B' },
+                            { id: 'slash', label: 'A / B' },
+                        ].map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, artistDisplayJoin === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => setArtistDisplayJoin(opt.id)}
+                            >
+                                <Text style={[s.sortChipText, artistDisplayJoin === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Section>
+
+                <Section title="Playlists">
+                    <View style={s.row}>
+                        <Text style={s.rowLabel}>Show Track Count</Text>
+                        <Switch value={showPlaylistTrackCount} onValueChange={setShowPlaylistTrackCount} />
+                    </View>
+                    <View style={s.row}>
+                        <Text style={s.rowLabel}>Show Playlist Titles</Text>
+                        <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles} />
+                    </View>
                 </Section>
 
                 {/* 'Off' never attempts a .lrc lookup on the Player screen at
@@ -787,6 +844,13 @@ export default function SettingsScreen() {
                                 onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
+                            <View style={[s.row, { paddingTop: 14 }]}>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={s.rowLabel}>Unscrollable Lyrics</Text>
+                                    <Text style={s.rowSub}>Swiping the lyrics closes the player instead of scrolling them</Text>
+                                </View>
+                                <Switch value={lyricsScrollLocked} onValueChange={setLyricsScrollLocked} />
+                            </View>
                         </>
                     )}
                 </Section>

@@ -46,7 +46,7 @@ export default function AllSongsScreen() {
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -216,7 +216,7 @@ export default function AllSongsScreen() {
                                 )}
                                 <View style={{ flex: 1 }}>
                                     <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.title}</Text>
-                                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator)}</Text>
+                                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator, artistDisplayJoin)}</Text>
                                 </View>
                                 {showPlayCount && playCounts[item.id] > 0 && (
                                     <Text style={[s.playCount, { color: base.textFaint }]}>{playCounts[item.id]}×</Text>

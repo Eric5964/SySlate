@@ -129,7 +129,7 @@ function ShrinkOutRow({ removing, children }) {
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
-    const { showSongCovers, showPlayCount, artistSeparator, coverShape } = usePreferences();
+    const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
     const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
@@ -412,7 +412,7 @@ export default function QueueModal({ visible, onClose }) {
                         )}
                         <View style={{ flex: 1 }}>
                             <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                            <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator)}</Text>
+                            <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator, artistDisplayJoin)}</Text>
                         </View>
                         {showPlayCount && playCounts[song.id] > 0 && (
                             <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[song.id]}×</Text>
@@ -444,7 +444,7 @@ export default function QueueModal({ visible, onClose }) {
                             )}
                             <View style={{ flex: 1 }}>
                                 <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
-                                <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator)}</Text>
+                                <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator, artistDisplayJoin)}</Text>
                             </View>
                             {showPlayCount && playCounts[currentTrack.id] > 0 && (
                                 <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[currentTrack.id]}×</Text>

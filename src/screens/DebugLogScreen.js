@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share, StatusBar } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import ScreenBackground from '../components/ScreenBackground';
 import { getDebugLogLines, clearDebugLog, subscribeDebugLog } from '../utils/debugLog';
@@ -12,6 +13,14 @@ const fmtTime = (t) => {
 
 export default function DebugLogScreen({ navigation }) {
     const { base, theme } = useTheme();
+    // Real bug found here: this screen never accounted for the safe area at
+    // all (no insets, no SafeAreaView) — on a real device that puts the
+    // header (Back/Clear) right under the status bar/notch/Dynamic Island,
+    // overlapped and unreachable, and the Share button right against the
+    // home indicator at the bottom. PlayerScreen.js already does exactly
+    // this (insets.top + a few px) — same fix here, plus a bottom one for
+    // the button this screen has that Player's own layout doesn't.
+    const insets = useSafeAreaInsets();
     const [lines, setLines] = useState(getDebugLogLines());
     const scrollRef = useRef(null);
     const atBottomRef = useRef(true);
@@ -39,7 +48,7 @@ export default function DebugLogScreen({ navigation }) {
     return (
         <ScreenBackground>
             <StatusBar barStyle="light-content" />
-            <View style={s.header}>
+            <View style={[s.header, { paddingTop: insets.top + 8 }]}>
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
                     <Text style={s.headerBtn}>Back</Text>
                 </TouchableOpacity>
@@ -71,7 +80,7 @@ export default function DebugLogScreen({ navigation }) {
                 ))}
             </ScrollView>
             <TouchableOpacity
-                style={[s.shareBtn, { backgroundColor: theme.accent }]}
+                style={[s.shareBtn, { backgroundColor: theme.accent, marginBottom: insets.bottom + 12 }]}
                 onPress={() => Share.share({ message: allText() || '(empty log)' })}
             >
                 <Text style={s.shareBtnText}>Share Log</Text>

@@ -41,7 +41,7 @@ const FORMATS = [
 // Memoized so opening/closing the long-press menu (state lives in the parent)
 // doesn't force every visible row to re-render — that re-render of the whole
 // list was what made the long-press feel choppy.
-const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, coverShape, onOpen, onLongPress }) {
+const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, coverShape, onOpen, onLongPress, showTitle, showCount }) {
     const bg = playlistColor(item.name);
 
     const renderArt = (size, fontSize) => cover
@@ -66,8 +66,8 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
                 <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size, coverShape) }]}>
                     {renderArt(numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
                 </View>
-                <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>
-                <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>
+                {showTitle !== false && <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>}
+                {showCount !== false && <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
             </TouchableOpacity>
         );
     }
@@ -79,8 +79,8 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
                 </View>
             )}
             <View style={{ flex: 1 }}>
-                <Text style={[s.rowName, { color: base.text }]}>{item.name}</Text>
-                <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>
+                {showTitle !== false && <Text style={[s.rowName, { color: base.text }]}>{item.name}</Text>}
+                {showCount !== false && <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
             </View>
             <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>
         </TouchableOpacity>
@@ -90,7 +90,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, ba
 export default function PlaylistsScreen() {
     const { playlists, covers: initialCovers, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
-    const { coverShape } = usePreferences();
+    const { coverShape, showPlaylistTrackCount, showPlaylistTitles } = usePreferences();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
     // Real gap found here: this always started at {} and waited on its own
@@ -252,6 +252,8 @@ export default function PlaylistsScreen() {
                                 coverShape={coverShape}
                                 onOpen={() => openPlaylist(item)}
                                 onLongPress={() => setMenuFor(item)}
+                                showTitle={showPlaylistTitles}
+                                showCount={showPlaylistTrackCount}
                             />
                         )}
                     />

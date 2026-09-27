@@ -81,7 +81,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover, coverShadow } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -267,9 +267,27 @@ export default function PlayerScreen() {
                 pendingSeekRatioRef.current = null;
                 setDragRatio(null);
             }, 2500);
+            // [SEEK-DEBUG] Temporary — same pattern as [RAMP-DEBUG]. Reported:
+            // bar shows the drag, snaps back after ~0.5s, playback position
+            // never actually changes. Every plausible cause I could confirm
+            // by reading (bridge wiring, native seekTo/seekWithinCurrentTrack,
+            // the dragRatio-holds-until-convergence logic) checked out fine
+            // on paper, so this logs the one thing static reading can't
+            // settle: whether AudioEngine.seekTo actually gets called, what
+            // it resolves/throws, and whether the polled position (pct) ever
+            // moves afterward. Safe to strip once diagnosed.
+            console.log('[SEEK-DEBUG] committing seek', { targetRatio, targetSeconds: targetRatio * duration, duration });
             seekChainRef.current = seekChainRef.current.then(async () => {
-                if (latestSeekRatioRef.current !== targetRatio) return; // superseded by a newer seek before its turn
-                try { await AudioEngine.seekTo(targetRatio * duration); } catch { }
+                if (latestSeekRatioRef.current !== targetRatio) {
+                    console.log('[SEEK-DEBUG] superseded before its turn, skipped', { targetRatio });
+                    return;
+                }
+                try {
+                    await AudioEngine.seekTo(targetRatio * duration);
+                    console.log('[SEEK-DEBUG] seekTo resolved', { targetRatio });
+                } catch (e) {
+                    console.log('[SEEK-DEBUG] seekTo THREW', { targetRatio, error: String(e) });
+                }
             });
         } else {
             // No known duration to seek within — nothing was actually
@@ -362,7 +380,7 @@ export default function PlayerScreen() {
     }, []);
 
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
-    const displayArtist = formatArtists(currentTrack?.ourArtist ?? currentTrack?.artist ?? '', artistSeparator);
+    const displayArtist = formatArtists(currentTrack?.ourArtist ?? currentTrack?.artist ?? '', artistSeparator, artistDisplayJoin);
     // No per-song embedded-artwork (ID3/FLAC picture tag) extraction exists
     // anywhere in this codebase yet — currentTrack.artwork is never actually
     // populated, so "song covers" were always silently falling back to the
@@ -871,7 +889,7 @@ export default function PlayerScreen() {
                                     style={{ flex: 1 }}
                                     contentContainerStyle={s.lyricsContent}
                                     showsVerticalScrollIndicator={false}
-                                    scrollEnabled={showingLyrics}
+                                    scrollEnabled={showingLyrics && !lyricsScrollLocked}
                                     onScroll={Animated.event(
                                         [{ nativeEvent: { contentOffset: { y: lyricsScrollY } } }],
                                         { useNativeDriver: true }
@@ -884,14 +902,18 @@ export default function PlayerScreen() {
                                     onScrollEndDrag={armResyncTimer}
                                     onMomentumScrollEnd={armResyncTimer}
                                 >
-                                    {/* Was scrollEnabled={false} — the swipe-to-dismiss
-                                        gesture that used to be the concern is limited (via
-                                        gestureResponseDistance, set from the controls row
-                                        below) to starting above the control row, and a
-                                        RNGH-composed ScrollView generally yields to a
-                                        surrounding pan gesture at its own scroll bounds
-                                        anyway. If the two still fight in practice, that's
-                                        worth a follow-up report with which one wins. */}
+                                    {/* scrollEnabled above now also respects the
+                                        "Unscrollable Lyrics" setting — when it's on,
+                                        this stays non-scrollable so the same swipe
+                                        that closes the player elsewhere also works
+                                        over the lyrics panel instead of scrolling
+                                        through the text. Off by default: the
+                                        swipe-to-dismiss gesture is limited (via
+                                        gestureResponseDistance, set from the controls
+                                        row below) to starting above the control row,
+                                        and a RNGH-composed ScrollView generally yields
+                                        to a surrounding pan gesture at its own scroll
+                                        bounds anyway. */}
                                     {lyricsData.map((line, i) => {
                                         // Requested Spotify-style: fade the LINES
                                         // themselves near the top/bottom edges, not a

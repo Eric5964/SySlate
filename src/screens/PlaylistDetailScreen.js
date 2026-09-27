@@ -49,7 +49,7 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -231,7 +231,7 @@ export default function PlaylistDetailScreen() {
                         <View style={s.titleRow}>
                             <View style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: base.text }]} numberOfLines={1}>{playlist.name}</Text>
-                                <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} tracks</Text>
+                                {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} tracks</Text>}
                             </View>
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
@@ -268,7 +268,7 @@ export default function PlaylistDetailScreen() {
                             )}
                             <View style={{ flex: 1 }}>
                                 <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                                <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator)}</Text>
+                                <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}</Text>
                             </View>
                             {showPlayCount && playCounts[item.id] > 0 && (
                                 <Text style={[s.playCount, { color: base.textFaint }]}>{playCounts[item.id]}×</Text>

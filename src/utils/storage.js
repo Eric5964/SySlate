@@ -130,17 +130,59 @@ export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').
 export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);
 export const getRampOnPause = () => safe(() => AsyncStorage.getItem('ramp_on_pause').then(v => v === 'true'), false);
 export const setRampOnPause = (v) => safe(() => AsyncStorage.setItem('ramp_on_pause', String(v)), null);
-export const getCustomPresets = () => safe(() => AsyncStorage.getItem('custom_eq_presets').then(v => v ? JSON.parse(v) : []), []);
-export const setCustomPresets = (p) => safe(() => AsyncStorage.setItem('custom_eq_presets', JSON.stringify(p)), null);
-export const getHiddenPresets = () => safe(() => AsyncStorage.getItem('hidden_eq_presets').then(v => v ? JSON.parse(v) : []), []);
-export const setHiddenPresets = (p) => safe(() => AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(p)), null);
+// Real gap found here, same class as playlist_sort_orders above — this is
+// user-crafted data (a custom EQ preset someone built and tuned by hand)
+// that can't be regenerated automatically like a song's embedded art can,
+// so it's exactly the kind of thing that "resets after an update" hurts
+// most. Same backup-file fallback as playlist_order/playlist_covers.
+export const getCustomPresets = () => safe(async () => {
+    const v = await AsyncStorage.getItem('custom_eq_presets');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.custom_eq_presets?.length) {
+        await AsyncStorage.setItem('custom_eq_presets', JSON.stringify(backup.custom_eq_presets));
+        return backup.custom_eq_presets;
+    }
+    return [];
+}, []);
+export const setCustomPresets = (p) => safe(async () => {
+    await AsyncStorage.setItem('custom_eq_presets', JSON.stringify(p));
+    await writeBackup({ custom_eq_presets: p });
+}, null);
+export const getHiddenPresets = () => safe(async () => {
+    const v = await AsyncStorage.getItem('hidden_eq_presets');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.hidden_eq_presets?.length) {
+        await AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(backup.hidden_eq_presets));
+        return backup.hidden_eq_presets;
+    }
+    return [];
+}, []);
+export const setHiddenPresets = (p) => safe(async () => {
+    await AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(p));
+    await writeBackup({ hidden_eq_presets: p });
+}, null);
 // Per-built-in-preset band overrides — { [builtInPresetId]: bands[] } — so
 // editing a built-in preset (e.g. "Bass Boost") overwrites it in place
 // instead of spinning off a separate custom preset, while still being
 // resettable back to the original BUILT_IN_PRESETS values (see eq.js's
 // getPresetById/mergePresetsForDisplay) without deleting the preset itself.
-export const getEQOverrides = () => safe(() => AsyncStorage.getItem('eq_preset_overrides').then(v => v ? JSON.parse(v) : {}), {});
-export const setEQOverrides = (o) => safe(() => AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(o)), null);
+// Same backup fallback as the two presets lists above, same reasoning.
+export const getEQOverrides = () => safe(async () => {
+    const v = await AsyncStorage.getItem('eq_preset_overrides');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.eq_preset_overrides && Object.keys(backup.eq_preset_overrides).length) {
+        await AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(backup.eq_preset_overrides));
+        return backup.eq_preset_overrides;
+    }
+    return {};
+}, {});
+export const setEQOverrides = (o) => safe(async () => {
+    await AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(o));
+    await writeBackup({ eq_preset_overrides: o });
+}, null);
 export const getPlaylistViewFormat = () => safe(() => AsyncStorage.getItem('playlist_view_format').then(v => v ?? 'list'), 'list');
 export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('playlist_view_format', f), null);
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
@@ -212,6 +254,36 @@ export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_pla
 export const getShowSongCovers = () => safe(() => AsyncStorage.getItem('show_song_covers').then(v => v === 'true'), false);
 export const setShowSongCovers = (v) => safe(() => AsyncStorage.setItem('show_song_covers', String(v)), null);
 
+// New settings this round: independent show/hide for playlist track counts
+// ("25 tracks") and playlist titles on the Playlists grid/list AND the
+// playlist-detail header — both default true (matches current always-on
+// behavior, so nobody's view changes just from this shipping). Plain
+// conditional rendering in the screens themselves (not a fixed-height
+// placeholder) is what makes the spacing "adapt smoothly" when hidden —
+// nothing to add here for that part.
+export const getShowPlaylistTrackCount = () => safe(() => AsyncStorage.getItem('show_playlist_track_count').then(v => v !== 'false'), true);
+export const setShowPlaylistTrackCount = (v) => safe(() => AsyncStorage.setItem('show_playlist_track_count', String(v)), null);
+export const getShowPlaylistTitles = () => safe(() => AsyncStorage.getItem('show_playlist_titles').then(v => v !== 'false'), true);
+export const setShowPlaylistTitles = (v) => safe(() => AsyncStorage.setItem('show_playlist_titles', String(v)), null);
+
+// Unscrollable lyrics: when on, swiping on the lyrics panel closes the
+// player (same gesture as swiping anywhere else on it) instead of
+// scrolling through the lyrics text. Off by default — matches current
+// behavior (lyrics scroll, swipe-to-close doesn't work over them).
+export const getLyricsScrollLocked = () => safe(() => AsyncStorage.getItem('lyrics_scroll_locked').then(v => v === 'true'), false);
+export const setLyricsScrollLocked = (v) => safe(() => AsyncStorage.setItem('lyrics_scroll_locked', String(v)), null);
+
+// How multiple artists on one track get displayed/reported — separate from
+// artistSeparator above, which only controls what counts as a split point
+// in the raw tag. This controls the join string used to put them back
+// together for display, in-app AND in the metadata sent to
+// MPNowPlayingInfoCenter (lock screen / Control Center / Bluetooth/CarPlay
+// displays) — see utils/artists.js's formatArtists and AudioEngine.swift's
+// updateNowPlayingInfo. 'comma' (", ") matches the current hardcoded
+// behavior, so this defaults to it.
+export const getArtistDisplayJoin = () => safe(() => AsyncStorage.getItem('artist_display_join').then(v => v ?? 'comma'), 'comma');
+export const setArtistDisplayJoin = (v) => safe(() => AsyncStorage.setItem('artist_display_join', v), null);
+
 // Splits a multi-artist tag string on a configurable separator ('none'
 // disables splitting entirely — the tag displays and matches as one whole
 // string, same as before this feature existed). Defaults to [';'] rather
@@ -276,10 +348,39 @@ export const setCoverShadow = (v) => safe(() => AsyncStorage.setItem('cover_shad
 // Whole-app custom background image — off by default, and the URI is only
 // meaningful once persisted locally (see persistCoverImage/the same pattern
 // used for playlist covers; a raw picker URI lives in a volatile cache dir).
-export const getBackgroundImageEnabled = () => safe(() => AsyncStorage.getItem('bg_image_enabled').then(v => v === 'true'), false);
-export const setBackgroundImageEnabled = (v) => safe(() => AsyncStorage.setItem('bg_image_enabled', v ? 'true' : 'false'), null);
-export const getBackgroundImageUri = () => safe(() => AsyncStorage.getItem('bg_image_uri'), null);
-export const setBackgroundImageUri = (v) => safe(() => v ? AsyncStorage.setItem('bg_image_uri', v) : AsyncStorage.removeItem('bg_image_uri'), null);
+// Same backup-file fallback as above — a custom background image the user
+// picked and cropped is exactly as un-regenerable as a custom EQ preset.
+// Both the toggle and the URI are backed up together (setBackgroundImageUri
+// writes both keys into the SAME backup patch call) so a restore can't land
+// in the inconsistent state of "image restored but still switched off".
+export const getBackgroundImageEnabled = () => safe(async () => {
+    const v = await AsyncStorage.getItem('bg_image_enabled');
+    if (v !== null) return v === 'true';
+    const backup = await readBackup();
+    if (backup && typeof backup.bg_image_enabled === 'boolean') {
+        await AsyncStorage.setItem('bg_image_enabled', backup.bg_image_enabled ? 'true' : 'false');
+        return backup.bg_image_enabled;
+    }
+    return false;
+}, false);
+export const setBackgroundImageEnabled = (v) => safe(async () => {
+    await AsyncStorage.setItem('bg_image_enabled', v ? 'true' : 'false');
+    await writeBackup({ bg_image_enabled: v });
+}, null);
+export const getBackgroundImageUri = () => safe(async () => {
+    const v = await AsyncStorage.getItem('bg_image_uri');
+    if (v !== null) return v;
+    const backup = await readBackup();
+    if (backup?.bg_image_uri) {
+        await AsyncStorage.setItem('bg_image_uri', backup.bg_image_uri);
+        return backup.bg_image_uri;
+    }
+    return null;
+}, null);
+export const setBackgroundImageUri = (v) => safe(async () => {
+    if (v) await AsyncStorage.setItem('bg_image_uri', v); else await AsyncStorage.removeItem('bg_image_uri');
+    await writeBackup({ bg_image_uri: v ?? null });
+}, null);
 
 // Previous button behavior. 'previous_track' — pressing it always skips to
 // the previous track, no matter where you are in the current one.
@@ -314,10 +415,27 @@ export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics
 
 // Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
 // separately, persisted across app restarts.
+//
+// Real gap found here while chasing "playlist/song covers and sort order
+// all reset after updating the app (or LiveContainer)": playlist_order and
+// playlist_covers already got the documentDirectory backup-file fallback
+// above (see BACKUP_PATH's own comment — added specifically because
+// AsyncStorage's own persistence isn't holding up across an update/reinstall
+// in this environment), but this key never got the same treatment — it was
+// still pure AsyncStorage, unprotected, the whole time. If AsyncStorage
+// really is what's not surviving here, this specific setting had nothing
+// to fall back to while playlist order/covers already did — which fits
+// "some of this resets and some doesn't" better than "everything's equally
+// broken." Same backup pattern as the other two, applied here too.
 export const getPlaylistSort = (playlistPath) => safe(async () => {
     const all = await AsyncStorage.getItem('playlist_sort_orders');
-    const map = all ? JSON.parse(all) : {};
-    return map[playlistPath] ?? 'alpha';
+    if (all) return (JSON.parse(all)[playlistPath]) ?? 'alpha';
+    const backup = await readBackup();
+    if (backup?.playlist_sort_orders && Object.keys(backup.playlist_sort_orders).length) {
+        await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(backup.playlist_sort_orders));
+        return backup.playlist_sort_orders[playlistPath] ?? 'alpha';
+    }
+    return 'alpha';
 }, 'alpha');
 
 export const setPlaylistSort = async (playlistPath, sortId) => {
@@ -326,6 +444,7 @@ export const setPlaylistSort = async (playlistPath, sortId) => {
         const map = all ? JSON.parse(all) : {};
         map[playlistPath] = sortId;
         await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
+        await writeBackup({ playlist_sort_orders: map });
     } catch { }
 };
 
@@ -411,7 +530,11 @@ export const exportAllSettings = async () => {
     // (pre-amp added round 39, Show Premade Presets round 40, the other
     // two older) that were never added here, so Export Settings silently
     // dropped them and Import Settings could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session'];
+    // Added this round: show_playlist_track_count, show_playlist_titles,
+    // lyrics_scroll_locked, artist_display_join — 4 new settings, same
+    // "silently dropped from export/import" risk as the note above if
+    // left out.
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -450,6 +573,7 @@ export const importAllSettings = async (jsonString) => {
         'keep_priority_on_switch', 'album_from_folder', 'keep_screen_awake',
         'show_player_cover', 'bg_image_enabled',
         'show_premade_settings', 'cover_shadow',
+        'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -479,6 +603,7 @@ export const importAllSettings = async (jsonString) => {
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'cover_shape', 'bg_image_uri',
+        'artist_display_join',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.

@@ -21,6 +21,10 @@ import {
     getPreAmp, setPreAmp as persistPreAmp,
     getBetweenTrackNorm, setBetweenTrackNorm as persistBetweenTrackNorm,
     getSilenceTrim, setSilenceTrim as persistSilenceTrim,
+    getShowPlaylistTrackCount, setShowPlaylistTrackCount as persistShowPlaylistTrackCount,
+    getShowPlaylistTitles, setShowPlaylistTitles as persistShowPlaylistTitles,
+    getLyricsScrollLocked, setLyricsScrollLocked as persistLyricsScrollLocked,
+    getArtistDisplayJoin, setArtistDisplayJoin as persistArtistDisplayJoin,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -57,6 +61,10 @@ const Ctx = createContext({
     withinTrackNorm: true, setWithinTrackNorm: () => { },
     betweenTrackNorm: false, setBetweenTrackNorm: () => { },
     silenceTrim: false, setSilenceTrim: () => { },
+    showPlaylistTrackCount: true, setShowPlaylistTrackCount: () => { },
+    showPlaylistTitles: true, setShowPlaylistTitles: () => { },
+    lyricsScrollLocked: false, setLyricsScrollLocked: () => { },
+    artistDisplayJoin: 'comma', setArtistDisplayJoin: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -79,6 +87,10 @@ export function PreferencesProvider({ children }) {
     const [preAmp, setPreAmpState] = useState(0);
     const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
     const [silenceTrim, setSilenceTrimState] = useState(false);
+    const [showPlaylistTrackCount, setShowPlaylistTrackCountState] = useState(true);
+    const [showPlaylistTitles, setShowPlaylistTitlesState] = useState(true);
+    const [lyricsScrollLocked, setLyricsScrollLockedState] = useState(false);
+    const [artistDisplayJoin, setArtistDisplayJoinState] = useState('comma');
 
     // Kept in sync so the AppState listener below (set up once, in the
     // mount-only effect right after this) always re-prefetches whatever
@@ -145,6 +157,10 @@ export function PreferencesProvider({ children }) {
         getPreAmp().then((v) => { setPreAmpState(v); AudioEngine.setPreAmp(v).catch(() => { }); });
         getBetweenTrackNorm().then((v) => { setBetweenTrackNormState(v); AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { }); });
         getSilenceTrim().then((v) => { setSilenceTrimState(v); AudioEngine.setSilenceTrimEnabled(v).catch(() => { }); });
+        getShowPlaylistTrackCount().then(setShowPlaylistTrackCountState);
+        getShowPlaylistTitles().then(setShowPlaylistTitlesState);
+        getLyricsScrollLocked().then(setLyricsScrollLockedState);
+        getArtistDisplayJoin().then(setArtistDisplayJoinState);
         return () => appStateSub.remove();
     }, []);
 
@@ -236,6 +252,22 @@ export function PreferencesProvider({ children }) {
         persistSilenceTrim(v);
         AudioEngine.setSilenceTrimEnabled(v).catch(() => { });
     }, []);
+    const setShowPlaylistTrackCount = useCallback((v) => {
+        setShowPlaylistTrackCountState(v);
+        persistShowPlaylistTrackCount(v);
+    }, []);
+    const setShowPlaylistTitles = useCallback((v) => {
+        setShowPlaylistTitlesState(v);
+        persistShowPlaylistTitles(v);
+    }, []);
+    const setLyricsScrollLocked = useCallback((v) => {
+        setLyricsScrollLockedState(v);
+        persistLyricsScrollLocked(v);
+    }, []);
+    const setArtistDisplayJoin = useCallback((v) => {
+        setArtistDisplayJoinState(v);
+        persistArtistDisplayJoin(v);
+    }, []);
 
     // This context now has more consumers than just SettingsScreen (art
     // rendering across MiniPlayer, playlists, queue, etc. all read
@@ -263,11 +295,16 @@ export function PreferencesProvider({ children }) {
         preAmp, setPreAmp,
         betweenTrackNorm, setBetweenTrackNorm,
         silenceTrim, setSilenceTrim,
+        showPlaylistTrackCount, setShowPlaylistTrackCount,
+        showPlaylistTitles, setShowPlaylistTitles,
+        lyricsScrollLocked, setLyricsScrollLocked,
+        artistDisplayJoin, setArtistDisplayJoin,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,
+        showPlaylistTrackCount, showPlaylistTitles, lyricsScrollLocked, artistDisplayJoin,
     ]);
 
     return (
