@@ -33,12 +33,27 @@ function fmt(sec) {
 // navigator's own transition (causing the blank-flash-then-double-swipe bug)
 // and, being JS-thread-only, never felt as smooth as the library's own
 // gesture-handler-backed implementation.
+// A gray/neutral accent (white, silver, gray) is nearly the same color as the
+// dim gray the non-playing lyric lines use, so the current line couldn't be
+// told apart. For those accents the current line uses the full-strength text
+// color and the rest drop to the faintest gray, so the contrast is always there.
+function isNeutralColor(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+    if (!m) return false;
+    const n = parseInt(m[1], 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    return Math.max(r, g, b) - Math.min(r, g, b) < 28;
+}
+
 export default function PlayerScreen() {
     const navigation = useNavigation();
     const route = useRoute();
     const { playlist } = route.params ?? {};
     const { theme, base } = useTheme();
     const insets = useSafeAreaInsets();
+    const lyricNeutral = isNeutralColor(theme.accent);
+    const lyricActiveColor = lyricNeutral ? base.text : theme.accent;
+    const lyricIdleColor = lyricNeutral ? base.textFaint : base.textDim;
 
     const {
         currentPlaylist, currentTrack, eqPresetId, shuffleOn, singleLoop,
@@ -763,12 +778,20 @@ export default function PlayerScreen() {
     const SIDE_BTN_FADE_MS = 180;
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
-    useEffect(() => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
-    }, [shuffleOn]);
-    useEffect(() => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 1 : 0, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
-    }, [singleLoop]);
+    // Each button's animation used to start TWICE per tap: once right at the
+    // press, and again when the state change re-rendered and the effect
+    // below fired. The second start restarted the fade mid-flight, which is
+    // the choppy feel. Now the target is remembered, so whichever one
+    // arrives second sees it's already headed there and does nothing.
+    const shuffleTargetRef = useRef(shuffleOn ? 1 : 0);
+    const loopTargetRef = useRef(singleLoop ? 1 : 0);
+    const animateSideBtn = (anim, targetRef, to) => {
+        if (targetRef.current === to) return;
+        targetRef.current = to;
+        Animated.timing(anim, { toValue: to, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+    };
+    useEffect(() => { animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleOn ? 1 : 0); }, [shuffleOn]);
+    useEffect(() => { animateSideBtn(loopAnim, loopTargetRef, singleLoop ? 1 : 0); }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
 
@@ -792,8 +815,15 @@ export default function PlayerScreen() {
     // reverted to the driver that's actually known to render both
     // correctly, and the congestion problem is addressed differently below
     // instead.
+    // A second tap landing before the first has applied would read the
+    // not-yet-updated state and undo/duplicate it, so taps are ignored for
+    // the short window while one is in flight.
+    const sideLockRef = useRef({ shuffle: false, loop: false });
     const onPressShuffle = () => {
-        Animated.timing(shuffleAnim, { toValue: shuffleOn ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
+        if (sideLockRef.current.shuffle) return;
+        sideLockRef.current.shuffle = true;
+        setTimeout(() => { sideLockRef.current.shuffle = false; }, SIDE_BTN_FADE_MS + 350);
+        animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleOn ? 0 : 1);
         // Deferred one tick so the animation's first, most important frames
         // get a clear run on the JS thread before toggleShuffle's real
         // native-queue work (reading the current track, reading the whole
@@ -801,11 +831,16 @@ export default function PlayerScreen() {
         // competing with it. toggleSingleLoop below doesn't need this — it's
         // one setRepeatMode() call, not enough concurrent work to visibly
         // compete with an 180ms animation in the first place.
-        setTimeout(() => toggleShuffle(), 0);
+        // Held until the fade has finished, so the queue rebuild and the
+        // re-render it causes never land in the middle of the animation.
+        setTimeout(() => toggleShuffle(), SIDE_BTN_FADE_MS + 20);
     };
     const onPressLoop = () => {
-        Animated.timing(loopAnim, { toValue: singleLoop ? 0 : 1, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
-        toggleSingleLoop();
+        if (sideLockRef.current.loop) return;
+        sideLockRef.current.loop = true;
+        setTimeout(() => { sideLockRef.current.loop = false; }, SIDE_BTN_FADE_MS + 150);
+        animateSideBtn(loopAnim, loopTargetRef, singleLoop ? 0 : 1);
+        setTimeout(() => toggleSingleLoop(), SIDE_BTN_FADE_MS + 20);
     };
 
     return (
@@ -970,7 +1005,7 @@ export default function PlayerScreen() {
                                                 // distinct weights (not synthesized), so this reads
                                                 // as a real emphasis jump rather than a same-weight
                                                 // color change.
-                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? theme.accent : base.textDim, opacity: opacityStyle }, i === activeLine && s.lyricLineActive]}
+                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? lyricActiveColor : lyricIdleColor, opacity: opacityStyle }, i === activeLine && s.lyricLineActive]}
                                             >
                                                 {line.text || '\u2026'}
                                             </Animated.Text>

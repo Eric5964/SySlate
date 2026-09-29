@@ -49,15 +49,35 @@ const CACHE_KEY = 'song_art_cache_v6';
 const FRONT_PREFIX_BYTES = 3 * 1024 * 1024;
 
 let cacheMapPromise = null;
+// The same map, held directly once loaded, so a list can read every cover it
+// already knows about in one synchronous pass instead of awaiting per song.
+let cacheMapSync = null;
 async function loadCacheMap() {
     if (!cacheMapPromise) {
-        cacheMapPromise = AsyncStorage.getItem(CACHE_KEY).then(v => v ? JSON.parse(v) : {}).catch(() => ({}));
+        cacheMapPromise = AsyncStorage.getItem(CACHE_KEY).then(v => v ? JSON.parse(v) : {}).catch(() => ({}))
+            .then(m => { cacheMapSync = m; return m; });
     }
     return cacheMapPromise;
+}
+// Call once at app start so the map is already in memory by the time the
+// first list mounts.
+export function preloadArtCache() { return loadCacheMap(); }
+// Synchronous, no file or storage access. Returns { [song.id]: uri | null }
+// for every given song the cache already has an answer for (null means
+// "checked, no embedded art"). Empty until the map has loaded.
+export function peekCachedArtBulk(songs) {
+    const out = {};
+    if (!cacheMapSync || !songs) return out;
+    for (const song of songs) {
+        const entry = song?.id ? cacheMapSync[song.id] : undefined;
+        if (entry !== undefined) out[song.id] = entry.uri ?? null;
+    }
+    return out;
 }
 async function saveCacheEntry(songId, value) {
     const map = await loadCacheMap();
     map[songId] = value;
+    cacheMapSync = map;
     cacheMapPromise = Promise.resolve(map);
     AsyncStorage.setItem(CACHE_KEY, JSON.stringify(map)).catch(() => { });
 }

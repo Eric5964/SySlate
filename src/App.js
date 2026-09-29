@@ -46,6 +46,7 @@ import PlayerScreen from './screens/PlayerScreen';
 import DebugLogScreen from './screens/DebugLogScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { PersistentBackgroundImage } from './components/ScreenBackground';
+import { preloadArtCache } from './utils/embeddedArt';
 import { scanLibrary } from './utils/files';
 import { getPlaylistCovers } from './utils/storage';
 import { EDGE_SWIPE_WIDTH } from './utils/layout';
@@ -79,7 +80,6 @@ enableScreens(true);
 // Sampled directly from src/assets/app-icon.jpg's own background — an icon
 // designed against one specific color looks off composited over a
 // different one, even briefly.
-const LOADING_BG = '#382F42';
 
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
@@ -267,9 +267,12 @@ function AppInner() {
     const prefetchPlaylistCovers = useCallback(async () => {
         try {
             const covers = await getPlaylistCovers();
-            await Promise.all(
-                Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))
-            );
+            // Warm what we can, but never hold the splash screen more than
+            // ~0.6s for it. Anything not warm by then just loads as it shows.
+            await Promise.race([
+                Promise.all(Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))),
+                new Promise(r => setTimeout(r, 600)),
+            ]);
             return covers;
         } catch { return null; }
     }, []);
@@ -302,6 +305,9 @@ function AppInner() {
 
     useEffect(() => {
         (async () => {
+            // Library scan runs alongside player setup instead of after it.
+            preloadArtCache().catch(() => { });
+            const libraryLoad = reload();
             try {
                 await AudioEngine.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
                 await AudioEngine.setVolume(1);
@@ -323,7 +329,7 @@ function AppInner() {
                     progressUpdateEventInterval: 1,
                 });
             } catch { }
-            await reload();
+            await libraryLoad;
             // Deliberately gate rendering on this instead of restoring inside
             // PlaybackProvider's own mount effect — child effects fire BEFORE
             // parent effects on initial mount, so a restore effect living
@@ -377,7 +383,7 @@ function AppInner() {
         // only ever there to give the icon a moment to actually be seen);
         // the moment playerReady/themeReady flip true, a quick 250ms fade
         // starts immediately.
-        Animated.timing(overlayOpacity, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
+        Animated.timing(overlayOpacity, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => {
             setShowOverlay(false);
         });
     }, [playerReady, themeReady]);
@@ -464,7 +470,7 @@ function AppInner() {
                     pointerEvents="none"
                     style={{
                         position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                        backgroundColor: LOADING_BG,
+                        backgroundColor: base.bg,
                         opacity: overlayOpacity,
                     }}
                 />

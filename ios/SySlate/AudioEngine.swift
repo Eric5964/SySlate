@@ -198,6 +198,10 @@ class AudioEngine: RCTEventEmitter {
     // instead, closing the gap between what JS is told the track is and
     // what position it's given for it.
     private var crossfadeAnnouncedIncoming: Bool = false
+    // True while the running crossfade is a single-track loop (the song
+    // fading into a fresh copy of itself). Same queue slot, so JS must not
+    // be told the track changed.
+    private var crossfadeSelfLoop: Bool = false
     private var crossfadeTargetVolume: Float = 1
     // Raw gain correction alone (crossfadeTargetVolume above is volume ×
     // this, already multiplied together) — settleCrossfadeToIncoming needs
@@ -517,6 +521,7 @@ class AudioEngine: RCTEventEmitter {
             if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             }
+            markOutputCold()
             debugLog("[RAMP-DEBUG] interruption ENDED — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state), shouldResume=\(shouldResume)")
             // Deliberately not auto-resuming even when iOS suggests it's
             // safe to — most players require an explicit tap back to play.
@@ -530,6 +535,7 @@ class AudioEngine: RCTEventEmitter {
               let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
+        markOutputCold()
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
                 self?.pauseInternal()
@@ -699,6 +705,7 @@ class AudioEngine: RCTEventEmitter {
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyPlaybackRate] = rate
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = rate > 0 ? .playing : .paused
     }
 
     // Real bug found here — this is why the lock screen play/pause icon
@@ -732,9 +739,15 @@ class AudioEngine: RCTEventEmitter {
     // definition — updateNowPlayingInfo drops it (below).
     private var displayedAsPausedAt: Date? = nil
 
+    // Last real duration per track, so a moment where the current track's
+    // duration is briefly unknown can't blank the lock screen progress bar.
+    // iOS drops the bar entirely when a Now Playing update has no duration.
+    private var lastKnownDurationByKey: [String: Double] = [:]
+
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             cachedArtworkPath = nil
             cachedArtwork = nil
             return
@@ -752,9 +765,16 @@ class AudioEngine: RCTEventEmitter {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentPositionSeconds(),
             MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? 1.0 : 0.0,
         ]
-        if let duration = track.duration {
+        let durKey = "\(track.id)|\(track.qid ?? "")"
+        if let duration = track.duration, duration > 0 {
+            lastKnownDurationByKey[durKey] = duration
+        }
+        if let duration = lastKnownDurationByKey[durKey] {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+        info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+        info[MPNowPlayingInfoPropertyIsLiveStream] = false
         if let artworkPath = track.artwork {
             if artworkPath != cachedArtworkPath {
                 // Real bug found here: on failure this still set
@@ -785,6 +805,10 @@ class AudioEngine: RCTEventEmitter {
             cachedArtwork = nil
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // Control Center reads this explicit state, not just the rate above.
+        // Without it, Control Center could show or snap back to "playing"
+        // while the lock screen (which follows the rate) stayed paused.
+        MPNowPlayingInfoCenter.default().playbackState = isPlayingForDisplay ? .playing : .paused
     }
 
     // MARK: - Playback engine internals
@@ -1134,7 +1158,7 @@ class AudioEngine: RCTEventEmitter {
                 }
             }
 
-            var trackWithDuration = track
+            let trackWithDuration = track
             // Real bug found here: this only filled `duration` in when it
             // was nil, i.e. only for tracks JS hadn't already tagged with
             // one — meaning queue[idx].duration was the JS/tag-reported
@@ -1153,11 +1177,10 @@ class AudioEngine: RCTEventEmitter {
             // (this scheduler, the natural-end-of-track ramp trigger, the
             // minimum-length-for-crossfade rule) reading the exact same
             // real number the screen is already showing, tag data aside.
-            trackWithDuration.duration = Double(file.length) / file.processingFormat.sampleRate - trailingCutSeconds
-            if idx < queue.count { queue[idx] = trackWithDuration }
+            let liveIdx = commitMeasuredDuration(Double(file.length) / file.processingFormat.sampleRate - trailingCutSeconds, for: trackWithDuration, hint: idx)
 
             if announceChange {
-                sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+                sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": liveIdx])
             }
 
             if !engine.isRunning {
@@ -1173,7 +1196,9 @@ class AudioEngine: RCTEventEmitter {
             activeNode.volume = volume * gainCorrection
 
             if autoPlay {
+                beginColdStartMuteIfNeeded()
                 activeNode.play()
+                lastAudibleAt = Date()
                 setState(.playing)
                 debugLog("[RAMP-DEBUG] native: activeNode.play() + setState(.playing) fired")
             } else {
@@ -1210,8 +1235,10 @@ class AudioEngine: RCTEventEmitter {
         // repeat never goes through advance()/crossfade today (it
         // reschedules the same file silently instead), so this
         // deliberately doesn't try to crossfade a track into itself.
-        guard repeatMode != .track else { return }
         guard let idx = currentIndex, idx >= 0, idx < queue.count, let duration = queue[idx].duration, duration > 0 else { return }
+        // Single-track loop now crossfades too (the song into itself), as
+        // long as the song is long enough for the overlap to make sense.
+        if repeatMode == .track && duration < crossfadeDurationEndOfTrackSeconds * 2 { return }
         let remaining = duration - currentPositionSeconds()
         let fireIn = remaining - crossfadeDurationEndOfTrackSeconds
         // Already inside (or past) the crossfade window, or not enough of
@@ -1234,6 +1261,12 @@ class AudioEngine: RCTEventEmitter {
         // state from when it was scheduled.
         guard state == .playing, !isCrossfading, crossfadeEnabled, crossfadeDurationEndOfTrackSeconds > 0.05 else { return }
         guard let idx = currentIndex else { return }
+        if repeatMode == .track {
+            crossfadeSelfLoop = true
+            startCrossfade(toIndex: idx, duration: crossfadeDurationEndOfTrackSeconds)
+            return
+        }
+        crossfadeSelfLoop = false
         var newIndex = idx + 1
         if newIndex >= queue.count {
             // Nothing to crossfade INTO — off the end of the queue with no
@@ -1300,6 +1333,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingIndex = nil
         crossfadeIncomingNode = nil
         crossfadeAnnouncedIncoming = false
+        crossfadeSelfLoop = false
         nodeA.stop()
         nodeB.stop()
         isCrossfading = false
@@ -1386,6 +1420,7 @@ class AudioEngine: RCTEventEmitter {
         // need an isManualSkip check alongside it to stay scoped correctly.
         if !suppressCrossfade, crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, (direction == 1 || direction == -1), !isCrossfading, state == .playing {
             currentIndex = newIndex
+            crossfadeSelfLoop = false
             startCrossfade(toIndex: newIndex, duration: crossfadeDuration)
             return
         }
@@ -1395,6 +1430,30 @@ class AudioEngine: RCTEventEmitter {
     }
 
     // MARK: - Crossfade
+
+    // Crossfades run for seconds, during which JS can legitimately add or
+    // remove queue entries (top-ups, removals, shuffle). The index captured
+    // when the crossfade began then points at a DIFFERENT slot, and using it
+    // blindly overwrote that slot with this track's stale copy (wrong
+    // title/cover, duplicate entries) and announced the wrong index to JS.
+    // Resolve the slot by identity (qid, then song id) instead, closest to
+    // currentIndex, and only ever patch the measured duration into it.
+    private func liveIndex(for track: Track, hint: Int) -> Int {
+        if hint >= 0, hint < queue.count, queue[hint].id == track.id, queue[hint].qid == track.qid { return hint }
+        var best: Int? = nil
+        for (i, t) in queue.enumerated() where t.id == track.id && (track.qid == nil || t.qid == track.qid) {
+            if best == nil { best = i; continue }
+            let ref = currentIndex ?? hint
+            if abs(i - ref) < abs(best! - ref) { best = i }
+        }
+        return best ?? hint
+    }
+
+    private func commitMeasuredDuration(_ duration: Double, for track: Track, hint: Int) -> Int {
+        let live = liveIndex(for: track, hint: hint)
+        if live >= 0, live < queue.count, queue[live].id == track.id { queue[live].duration = duration }
+        return live
+    }
 
     private func startCrossfade(toIndex idx: Int, duration: Double) {
         guard idx >= 0, idx < queue.count else { return }
@@ -1594,7 +1653,9 @@ class AudioEngine: RCTEventEmitter {
             // JS already no-ops a same-track re-fire (currentTrackRef check
             // in PlaybackContext.js), so firing it twice here is harmless.
             if currentStep == steps / 2 {
-                self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+                if !self.crossfadeSelfLoop {
+                    self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": self.liveIndex(for: track, hint: idx)])
+                }
                 self.crossfadeAnnouncedIncoming = true
             }
 
@@ -1628,14 +1689,15 @@ class AudioEngine: RCTEventEmitter {
                 self.crossfadeIncomingIndex = nil
                 self.crossfadeIncomingNode = nil
 
-                var trackWithDuration = track
                 // Same fix as loadAndScheduleCurrentTrack's equivalent —
                 // always trust the just-measured real duration over
                 // whatever JS/tag value was there, not just when nil.
-                trackWithDuration.duration = Double(file.length) / sampleRate - trailingCutSeconds
-                if idx < self.queue.count { self.queue[idx] = trackWithDuration }
+                let liveIdx = self.commitMeasuredDuration(Double(file.length) / sampleRate - trailingCutSeconds, for: track, hint: idx)
 
-                self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+                if !self.crossfadeSelfLoop {
+                    self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": liveIdx])
+                }
+                self.crossfadeSelfLoop = false
                 self.setState(.playing)
                 self.startProgressTimer()
                 // Handoff just completed — this crossfade's job is done,
@@ -1710,6 +1772,42 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // MARK: - Cold-start pop guard
+
+    // The first play after launch, after a Bluetooth/route change, or after
+    // sitting paused for a while can produce a one-off pop as the EQ,
+    // normalizer and output hardware come alive at the same instant audio
+    // starts. The JS ramp-in can't cover it (it fades the player node, which
+    // is upstream of that). So on a cold start the very last stage, the main
+    // mixer, is held at 0 for a moment and then eased back up, hiding the
+    // wake-up before anything reaches the speaker. Normal warm plays are
+    // untouched.
+    private var outputIsCold: Bool = true
+    private var lastAudibleAt: Date? = nil
+    private var coldStartToken: Int = 0
+
+    private func markOutputCold() { outputIsCold = true }
+
+    private func beginColdStartMuteIfNeeded() {
+        if !outputIsCold, let last = lastAudibleAt, Date().timeIntervalSince(last) > 4 { outputIsCold = true }
+        guard outputIsCold else { return }
+        outputIsCold = false
+        coldStartToken += 1
+        let token = coldStartToken
+        let mixer = engine.mainMixerNode
+        mixer.outputVolume = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+            guard let self = self, token == self.coldStartToken else { return }
+            let steps = 8
+            for i in 1...steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03 * Double(i)) { [weak self] in
+                    guard let self = self, token == self.coldStartToken else { return }
+                    self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
+                }
+            }
+        }
+    }
+
     private func playInternal() {
         guard currentIndex != nil else {
             if !queue.isEmpty {
@@ -1736,7 +1834,9 @@ class AudioEngine: RCTEventEmitter {
         if !engine.isRunning {
             try? engine.start()
         }
+        beginColdStartMuteIfNeeded()
         activeNode.play()
+        lastAudibleAt = Date()
         setState(.playing)
         // Resume — reschedule the lead-in timer from the CURRENT position,
         // not whatever was left when it was invalidated on pause below.
@@ -1786,6 +1886,7 @@ class AudioEngine: RCTEventEmitter {
         // as if it had finished naturally) so everything below then
         // operates on ONE settled node instead of two nodes mid-fight.
         if isCrossfading { settleCrossfadeToIncoming() }
+        lastAudibleAt = Date()
         frozenPositionSeconds = currentPositionSeconds()
         activeNode.pause()
         setState(.paused)
@@ -1850,18 +1951,20 @@ class AudioEngine: RCTEventEmitter {
         segmentStartOffsetSeconds = crossfadeIncomingLeadInSeconds
         currentTrailingCutSeconds = crossfadeIncomingTrailingCutSeconds
 
-        if var trackWithDuration = crossfadeIncomingTrack {
+        if let incomingTrack = crossfadeIncomingTrack {
             // Same fix as loadAndScheduleCurrentTrack's equivalent —
             // always trust the just-measured real duration over whatever
             // JS/tag value was there, not just when nil.
-            trackWithDuration.duration = Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds
-            if idx < queue.count { queue[idx] = trackWithDuration }
+            let liveIdx = commitMeasuredDuration(Double(file.length) / crossfadeIncomingSampleRate - crossfadeIncomingTrailingCutSeconds, for: incomingTrack, hint: idx)
             // Covers landing here before runCrossfade's own halfway-point
             // announcement ever fired — JS still needs to know the track
             // changed. Harmless if it already fired; JS de-dupes by queue
             // slot (see PlaybackContext.js's PlaybackTrackChanged listener).
-            sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": idx])
+            if !crossfadeSelfLoop {
+                sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": liveIdx])
+            }
         }
+        crossfadeSelfLoop = false
 
         crossfadeIncomingFile = nil
         crossfadeIncomingTrack = nil
@@ -2496,6 +2599,10 @@ class AudioEngine: RCTEventEmitter {
     @objc(setRepeatMode:resolver:rejecter:)
     func setRepeatMode(_ mode: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         repeatMode = RepeatModeValue(rawValue: mode.intValue) ?? .off
+        // Re-arm (or disarm) the end-of-track crossfade for the new mode,
+        // otherwise toggling loop mid-song wouldn't take effect until the
+        // next track started.
+        if state == .playing && !isCrossfading { scheduleCrossfadeLeadIn() }
         resolve(nil)
     }
 

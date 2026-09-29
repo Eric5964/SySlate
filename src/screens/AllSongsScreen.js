@@ -202,6 +202,11 @@ export default function AllSongsScreen() {
                     data={filtered}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingBottom: 150 }}
+                    // Keep more rows mounted so covers already on screen stay decoded
+                    // while scrolling back, instead of reloading each time.
+                    initialNumToRender={14}
+                    windowSize={15}
+                    maxToRenderPerBatch={10}
                     onScrollBeginDrag={Keyboard.dismiss}
                     renderItem={({ item }) => (
                         <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>

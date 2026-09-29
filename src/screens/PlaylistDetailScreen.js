@@ -160,7 +160,7 @@ export default function PlaylistDetailScreen() {
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
 
     return (
-        <ScreenBackground style={s.container}>
+        <ScreenBackground ownImage style={s.container}>
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
@@ -201,6 +201,11 @@ export default function PlaylistDetailScreen() {
                 data={filtered}
                 keyExtractor={item => item.id}
                 contentContainerStyle={{ paddingBottom: 160 }}
+                // Keep more rows mounted so covers already on screen stay decoded
+                // while scrolling back, instead of reloading each time.
+                initialNumToRender={14}
+                windowSize={15}
+                maxToRenderPerBatch={10}
                 ListHeaderComponent={
                     <View>
                         <View style={s.coverWrap}>

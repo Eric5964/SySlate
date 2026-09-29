@@ -91,11 +91,18 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     return (
         <TouchableOpacity
-            style={[styles.container, { bottom, borderColor: theme.accentDim, backgroundColor: base.surface }]}
+            style={[styles.shell, { bottom, backgroundColor: base.surface }]}
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >
-            <GradientCap color={theme.accent} height={68} style={{ borderRadius: 16, opacity: 0.5 }} />
+          {/* Outer shell carries the shadow (a shadow can't coexist with
+              overflow: hidden on the same view on iOS). This inner view owns
+              the outline and clips everything inside it, the gradient,
+              progress fill and content, to the exact same rounded shape, so
+              nothing can stop short of or poke past the outline on either
+              side. */}
+          <View style={[styles.container, { borderColor: theme.accentDim, backgroundColor: base.surface }]}>
+            <GradientCap color={theme.accent} height={68} style={{ opacity: 0.5 }} />
             <View pointerEvents="none" style={styles.miniProgressTrack}>
                 <View style={[styles.miniProgressFill, { width: `${livePct * 100}%`, backgroundColor: theme.accent }]} />
             </View>
@@ -127,6 +134,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             <TouchableOpacity onPress={() => skipWithRamp('next')} style={styles.btn} hitSlop={HIT}>
                 <SkipNextIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
+          </View>
         </TouchableOpacity>
     );
 }
@@ -134,7 +142,8 @@ export default function MiniPlayer({ withTabBar = true }) {
 const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 
 const styles = StyleSheet.create({
-    container: { position: 'absolute', left: 10, right: 10, height: 68, borderRadius: 16, backgroundColor: '#111', borderWidth: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12, overflow: 'hidden' },
+    shell: { position: 'absolute', left: 10, right: 10, height: 68, borderRadius: 16, borderCurve: 'continuous', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12 },
+    container: { flex: 1, borderRadius: 16, borderCurve: 'continuous', borderWidth: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, overflow: 'hidden' },
     art: { width: ART_SIZE, height: ART_SIZE, marginRight: 12, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
     info: { flex: 1, marginRight: 4 },
     title: { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },

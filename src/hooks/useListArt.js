@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { InteractionManager } from 'react-native';
-import { extractEmbeddedArt, getCachedArtFast } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk } from '../utils/embeddedArt';
 
 // Returns { songId: uri | null } for whichever songs have resolved so far.
 //
@@ -27,7 +27,10 @@ const YIELD_EVERY = 20;
 const SESSION_ART = {};
 
 export function useListArt(songs, enabled) {
-    const [artMap, setArtMap] = useState(() => (enabled ? { ...SESSION_ART } : {}));
+    // Starts from everything already known (this session's results plus the
+    // on-disk cover cache, read synchronously), so a list's first paint
+    // already has its covers instead of filling in over the next second.
+    const [artMap, setArtMap] = useState(() => (enabled ? { ...peekCachedArtBulk(songs), ...SESSION_ART } : {}));
     const runIdRef = useRef(0);
 
     useEffect(() => {
@@ -57,6 +60,16 @@ export function useListArt(songs, enabled) {
         // re-entering a playlist). A cache hit is cheap — one AsyncStorage
         // lookup, no file I/O — so there's no reason to delay it.
         const runCacheOnly = async () => {
+            // Fast pass: everything the in-memory cache already knows, in one
+            // go and one state update.
+            const bulk = peekCachedArtBulk(songs);
+            for (const id of Object.keys(bulk)) {
+                if (resolved.has(id)) continue;
+                resolved.add(id);
+                pending[id] = bulk[id];
+                pendingCount++;
+            }
+            flush();
             let checked = 0;
             for (const song of songs) {
                 if (isStale()) return;

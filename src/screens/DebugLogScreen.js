@@ -46,7 +46,7 @@ export default function DebugLogScreen({ navigation }) {
 
     const s = styles(base, theme);
     return (
-        <ScreenBackground>
+        <ScreenBackground ownImage>
             <StatusBar barStyle="light-content" />
             <View style={[s.header, { paddingTop: insets.top + 8 }]}>
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>

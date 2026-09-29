@@ -4,6 +4,7 @@ import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
+import { getPlayCounts } from '../utils/storage';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
 import {
@@ -13,10 +14,21 @@ import {
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
     getCrossfadeEnabled, getCrossfadeDurationSkip,
 } from '../utils/storage';
-import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArt, getCachedArtFast } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
 
 const Ctx = createContext(null);
+
+// Smart shuffle needs each song's play count to weight the order, and that
+// lives in async storage, so every queue build goes through this.
+const buildQueueAsync = async (tracks, mode) => {
+    if (mode === 'smart') {
+        const counts = await getPlayCounts(tracks).catch(() => ({}));
+        return buildQueue(tracks, mode, counts);
+    }
+    return buildQueue(tracks, mode);
+};
+
 
 const setQueueLoop = async () => {
     try { const { RepeatMode } = require('react-native-track-player'); await AudioEngine.setRepeatMode(RepeatMode.Queue); } catch { }
@@ -95,6 +107,33 @@ export function PlaybackProvider({ children }) {
     const currentTrackRef = useRef(null);
     useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
 
+    // Warm covers for the next couple of songs whenever the current one
+    // changes, whether or not the current song itself needed art. The
+    // extraction effect below only prefetched when the CURRENT track was
+    // missing art, so a run of songs that already had covers never warmed
+    // what came next, and the next uncached song then sat coverless for
+    // several seconds after it started.
+    useEffect(() => {
+        if (!currentTrack?.id) return;
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            try {
+                const queue = await AudioEngine.getQueue();
+                const idx = queue.findIndex(t => t._qid != null ? t._qid === currentTrack._qid : t.id === currentTrack.id);
+                if (idx === -1) return;
+                for (const t of queue.slice(idx + 1, idx + 3)) {
+                    if (cancelled) return;
+                    const known = await getCachedArtFast(t).catch(() => undefined);
+                    if (known === undefined) {
+                        await extractEmbeddedArt(t).catch(() => { });
+                        await new Promise(r => setTimeout(r, 200));
+                    }
+                }
+            } catch { }
+        }, 3000);
+        return () => { cancelled = true; clearTimeout(timer); };
+    }, [currentTrack?.id]);
+
     // Extracts embedded FLAC/ALAC cover art for whatever's currently playing
     // and merges it into currentTrack once ready. Centralized here (rather
     // than duplicated at each of the several places that call
@@ -168,7 +207,7 @@ export function PlaybackProvider({ children }) {
             // playing; otherwise extract right away.
             AudioEngine.getState().catch(() => null).then((st) => {
                 if (cancelled) return;
-                const delayMs = st === State.Playing ? 4000 : 0;
+                const delayMs = st === State.Playing ? 2500 : 0;
                 timer = setTimeout(() => {
                     if (cancelled) return;
                     extractEmbeddedArt(currentTrack).then(applyArt);
@@ -254,8 +293,15 @@ export function PlaybackProvider({ children }) {
     useEffect(() => () => clearTimeout(sleepTimerTimeoutRef.current), []);
 
 
+    // Track-change events resolve asynchronously (getTrack is a bridge
+    // round trip), so two events close together (crossfade halfway + end,
+    // or a skip during one) could finish out of order and leave the OLDER
+    // track as "current" with its cover. Each event takes a ticket; only
+    // the newest one is allowed to apply.
+    const trackChangeSeqRef = useRef(0);
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
+            const seq = ++trackChangeSeqRef.current;
             if (nextTrack === null || nextTrack === undefined) return;
             try {
                 let track = await AudioEngine.getTrack(nextTrack);
@@ -264,6 +310,15 @@ export function PlaybackProvider({ children }) {
                     track = await AudioEngine.getTrack(nextTrack);
                 }
                 if (!track) return;
+                if (seq !== trackChangeSeqRef.current) return; // a newer change already took over
+                // Attach an already-known cover in the SAME update that
+                // switches the track, so the new song never renders once
+                // with no/old art and then again with the right one.
+                if (!track.artwork) {
+                    const cachedUri = await getCachedArtFast(track).catch(() => undefined);
+                    if (seq !== trackChangeSeqRef.current) return;
+                    if (cachedUri) track = { ...track, artwork: cachedUri };
+                }
                 // Was comparing by song `id` alone — with priority-queuing
                 // now confirmed to genuinely duplicate a song (same id,
                 // different queue slot — see addToQueue/promoteToQueue),
@@ -812,7 +867,7 @@ export function PlaybackProvider({ children }) {
                 // rewritten from the start.
                 const pl = playlistRef.current;
                 if (!pl?.songs?.length) return;
-                const nextPass = buildQueue(pl.songs, shuffleOnRef.current ? shuffleModeRef.current : 'off');
+                const nextPass = await buildQueueAsync(pl.songs, shuffleOnRef.current ? shuffleModeRef.current : 'off');
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
             const currentIndex = await AudioEngine.getCurrentTrack();
@@ -889,7 +944,7 @@ export function PlaybackProvider({ children }) {
         const isOn = session?.shuffleOn ?? await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
-        let queue = session?.queue ?? (isOn ? buildQueue(playlist.songs, mode) : [...playlist.songs]);
+        let queue = session?.queue ?? (isOn ? await buildQueueAsync(playlist.songs, mode) : [...playlist.songs]);
         let startIndex = forceIndex ?? session?.index ?? 0;
         if (startIndex >= queue.length) startIndex = 0;
 
@@ -951,7 +1006,7 @@ export function PlaybackProvider({ children }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
-        const queue = buildQueue(playlist.songs, useMode);
+        const queue = await buildQueueAsync(playlist.songs, useMode);
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp());
@@ -1184,7 +1239,7 @@ export function PlaybackProvider({ children }) {
                     rest = wrapped.filter(s => !usedIds.has(s.id));
                 }
             } else {
-                rest = buildQueue(rest, mode);
+                rest = await buildQueueAsync(rest, mode);
             }
 
             // One bulk removal instead of removing up to ~50 loaded tracks

@@ -324,9 +324,9 @@ export default function SettingsScreen() {
     };
 
     const MODES = [
-        { id: 'full_cycle', label: 'Full Cycle', sub: 'All songs once before repeat' },
-        { id: 'true_random', label: 'True Random', sub: 'Can repeat sooner, no fixed order' },
-        { id: 'smart', label: 'Smart', sub: 'Avoids same artist back to back' },
+        { id: 'full_cycle', label: 'Full Cycle', sub: 'Every song once before any repeat' },
+        { id: 'true_random', label: 'True Random', sub: 'Any song, any time, repeats possible' },
+        { id: 'smart', label: 'Smart', sub: 'Favors songs you play less, spaces out artists' },
     ];
 
     // Best-effort detection of which sideload tool is running this build.
@@ -401,7 +401,10 @@ export default function SettingsScreen() {
         // already use elsewhere in this screen.
         const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
-            allowsEditing: true,
+            // iOS's crop step is always a square (it ignores any aspect
+            // setting), which is why backgrounds came out square. Off now:
+            // the image is drawn to fill the whole screen instead.
+            allowsEditing: false,
             quality: 0.8,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
@@ -498,7 +501,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Crossfade</Text>
-                            <Text style={s.toggleSub}>Overlaps tracks instead of fading between them — replaces the End of Track / On Skip ramps below while it's on (Ramp on Pause/Play are unaffected)</Text>
+                            <Text style={s.toggleSub}>Overlaps songs. Replaces the End of Track and On Skip ramps</Text>
                         </View>
                         <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -515,8 +518,8 @@ export default function SettingsScreen() {
                                 ever runs on a forward track change (see
                                 AudioEngine.swift's advance()), so there's nothing
                                 for a fresh play to overlap FROM. */}
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — End of Track</Text>
-                            <Text style={s.sliderNote}>Overlaps into the next track as this one ends</Text>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade at End of Track</Text>
+                            <Text style={s.sliderNote}>Overlap as a song ends, also when looping</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationEotLocal.toFixed(1)}s</Text>
                             {/* Max lowered 10→6 to match Ramp's End of Track
                                 cap right below — direct ask ("crossfade
@@ -539,8 +542,8 @@ export default function SettingsScreen() {
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade Duration — On Skip</Text>
-                            <Text style={s.sliderNote}>Overlaps into the next track on a manual skip</Text>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade on Skip</Text>
+                            <Text style={s.sliderNote}>Overlap when you skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
                             {/* Max lowered 10→3, matching Ramp's On Skip cap.
                                 minimumValue same fix as above — 0 instead of 1. */}
@@ -552,16 +555,16 @@ export default function SettingsScreen() {
                         </>
                     ) : (
                         <>
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — End of Track</Text>
-                            <Text style={s.sliderNote}>Fades out at the end of a track, fades in the next</Text>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp at End of Track</Text>
+                            <Text style={s.sliderNote}>Fade out at the end, fade in the next</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
                             <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
                                 onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
-                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Skip</Text>
-                            <Text style={s.sliderNote}>Softens manual skips</Text>
+                            <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Skip</Text>
+                            <Text style={s.sliderNote}>Softens skips</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
                             <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
                                 onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
@@ -570,8 +573,8 @@ export default function SettingsScreen() {
                         </>
                     )}
 
-                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Audio Ramp — On Play</Text>
-                    <Text style={s.sliderNote}>Fades in whenever playback starts</Text>
+                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Play</Text>
+                    <Text style={s.sliderNote}>Fade in when playback starts</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
                     <PureSlider style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={ramp}
                         onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
@@ -594,7 +597,7 @@ export default function SettingsScreen() {
                                 Dynamics Processor) is compression WITHIN a
                                 track, not loudness matching across tracks. Split
                                 into two real, separate settings below. */}
-                            <Text style={s.toggleSub}>Evens out loud and quiet moments within a track</Text>
+                            <Text style={s.toggleSub}>Evens out loud and quiet parts of a song</Text>
                         </View>
                         <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -602,7 +605,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Match Volume Between Songs</Text>
-                            <Text style={s.toggleSub}>Keeps different songs at a similar volume — a quick estimate, not exact, and only runs once per song</Text>
+                            <Text style={s.toggleSub}>Keeps songs at a similar volume. An estimate, checked once per song</Text>
                         </View>
                         <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -610,7 +613,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Trim Silence</Text>
-                            <Text style={s.toggleSub}>Skips silence at the start and end of a track</Text>
+                            <Text style={s.toggleSub}>Skips silence at the start and end of songs</Text>
                         </View>
                         <Switch value={silenceTrim} onValueChange={setSilenceTrim}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -634,7 +637,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
-                            <Text style={s.toggleSub}>Keeps your queued-up songs when you switch playlists</Text>
+                            <Text style={s.toggleSub}>Keeps queued songs when you switch playlists</Text>
                         </View>
                         <Switch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -648,7 +651,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Song Covers in Lists</Text>
-                            <Text style={s.toggleSub}>Shows cover art next to songs in a list</Text>
+                            <Text style={s.toggleSub}>Cover art next to songs in lists</Text>
                         </View>
                         <Switch value={showSongCovers} onValueChange={setShowSongCovers}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -656,7 +659,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Play Count</Text>
-                            <Text style={s.toggleSub}>Next to songs in a playlist, and on the player</Text>
+                            <Text style={s.toggleSub}>In lists, the queue and the player</Text>
                         </View>
                         <Switch value={showPlayCount} onValueChange={setShowPlayCount}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -664,7 +667,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Screen Awake</Text>
-                            <Text style={s.toggleSub}>Only while a song is playing</Text>
+                            <Text style={s.toggleSub}>Only while a song plays</Text>
                         </View>
                         <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -672,7 +675,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Rounded Cover Art</Text>
-                            <Text style={s.toggleSub}>Rounds corners on art throughout the app</Text>
+                            <Text style={s.toggleSub}>Rounded corners on covers</Text>
                         </View>
                         <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -680,7 +683,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Player Cover</Text>
-                            <Text style={s.toggleSub}>Shows the album art on the Player screen</Text>
+                            <Text style={s.toggleSub}>Album art on the Player</Text>
                         </View>
                         <Switch value={showPlayerCover} onValueChange={setShowPlayerCover}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -689,7 +692,7 @@ export default function SettingsScreen() {
                         <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                             <View style={{ flex: 1 }}>
                                 <Text style={s.toggleLabel}>Cover Shadow</Text>
-                                <Text style={s.toggleSub}>Adds a drop shadow around the Player cover — matches whichever corner style above is picked</Text>
+                                <Text style={s.toggleSub}>Shadow behind the Player cover</Text>
                             </View>
                             <Switch value={coverShadow} onValueChange={setCoverShadow}
                                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -709,7 +712,7 @@ export default function SettingsScreen() {
                 <Section title="Multiple Artists">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
-                        <Text style={s.toggleSub}>How multiple artists are separated in your files, like "A; B" — pick as many as your library actually uses</Text>
+                        <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
                     </View>
                     <View style={s.sortRow}>
                         {ARTIST_SEPARATORS.map(opt => {
@@ -762,7 +765,7 @@ export default function SettingsScreen() {
                          on here; noted as a followup, not silently skipped. */}
                     <View style={[s.settingHeader, { marginTop: 14 }]}>
                         <Text style={s.toggleLabel}>Artist Display Format</Text>
-                        <Text style={s.toggleSub}>How multiple artists are shown, in-app only for now</Text>
+                        <Text style={s.toggleSub}>How multiple artists show in the app</Text>
                     </View>
                     <View style={s.sortRow}>
                         {[
@@ -787,7 +790,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Track Count</Text>
-                            <Text style={s.toggleSub}>Shows the number of tracks on Playlists and inside each playlist</Text>
+                            <Text style={s.toggleSub}>Track counts on Playlists and inside each one</Text>
                         </View>
                         <Switch value={showPlaylistTrackCount} onValueChange={setShowPlaylistTrackCount}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -795,7 +798,7 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Playlist Titles</Text>
-                            <Text style={s.toggleSub}>Shows each playlist's name under its cover on the Playlists screen</Text>
+                            <Text style={s.toggleSub}>Playlist names under their covers</Text>
                         </View>
                         <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -811,7 +814,7 @@ export default function SettingsScreen() {
                 <Section title="Lyrics">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Show Lyrics</Text>
-                        <Text style={s.toggleSub}>Shows synced lyrics from a matching .lrc file</Text>
+                        <Text style={s.toggleSub}>Synced lyrics from a matching .lrc file</Text>
                     </View>
                     <View style={s.sortRow}>
                         {LYRICS_MODES.map(opt => (
@@ -830,8 +833,7 @@ export default function SettingsScreen() {
                         <>
                             <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
                             <Text style={s.sliderNote}>
-                                How long the lyrics view stays where you scrolled it before
-                                snapping back to follow the song automatically
+                                How long lyrics stay where you scrolled before following the song again
                             </Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(1)}s</Text>
                             <PureSlider style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={lyricsResyncLocal}
@@ -841,8 +843,7 @@ export default function SettingsScreen() {
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
                             <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
                             <Text style={s.sliderNote}>
-                                If a song's lyrics are consistently early or late, nudge them —
-                                positive shows each line sooner, negative later
+                                Fixes lyrics that run early or late. Positive shows lines sooner
                             </Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>
                                 {lyricsOffsetLocal > 0 ? '+' : ''}{lyricsOffsetLocal.toFixed(1)}s
@@ -852,12 +853,13 @@ export default function SettingsScreen() {
                                 onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
-                            <View style={[s.row, { paddingTop: 14 }]}>
+                            <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border, marginTop: 14 }]}>
                                 <View style={{ flex: 1 }}>
-                                    <Text style={s.rowLabel}>Unscrollable Lyrics</Text>
-                                    <Text style={s.rowSub}>Swiping the lyrics closes the player instead of scrolling them</Text>
+                                    <Text style={s.toggleLabel}>Unscrollable Lyrics</Text>
+                                    <Text style={s.toggleSub}>Swiping lyrics closes the player instead of scrolling</Text>
                                 </View>
-                                <Switch value={lyricsScrollLocked} onValueChange={setLyricsScrollLocked} />
+                                <Switch value={lyricsScrollLocked} onValueChange={setLyricsScrollLocked}
+                                    trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                             </View>
                         </>
                     )}
@@ -874,7 +876,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
-                            <Text style={s.toggleSub}>Instead of the song's own Album tag</Text>
+                            <Text style={s.toggleSub}>Instead of the song's Album tag</Text>
                         </View>
                         <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -890,8 +892,7 @@ export default function SettingsScreen() {
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
-                            Always go to the previous track, or restart the current one
-                            if you're still near its start
+                            Always go back, or restart the song if you're past its start
                         </Text>
                     </View>
                     <View style={s.sortRow}>
@@ -911,8 +912,7 @@ export default function SettingsScreen() {
                         <>
                             <Text style={[s.sliderSub, { paddingTop: 6 }]}>Previous-Track Window</Text>
                             <Text style={s.sliderNote}>
-                                Pressing Previous within this window goes back a track;
-                                any later, it restarts the current one
+                                Within this time Previous goes back a song. After it, Previous restarts the song
                             </Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{restartThreshold.toFixed(0)}s</Text>
                             <PureSlider style={s.slider} minimumValue={0} maximumValue={24} step={1} value={restartThreshold}
@@ -941,7 +941,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Light Mode</Text>
-                            <Text style={s.toggleSub}>Switches to a light background — remembers your dark base color and restores it when you turn this back off</Text>
+                            <Text style={s.toggleSub}>Light background. Your dark base color returns when you turn it off</Text>
                         </View>
                         <Switch value={isLight} onValueChange={toggleLightMode}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -968,7 +968,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Background Image</Text>
-                            <Text style={s.toggleSub}>Replaces the background on every screen — colors stay the same</Text>
+                            <Text style={s.toggleSub}>Image behind every screen. Colors stay the same</Text>
                         </View>
                         <Switch value={backgroundImageEnabled} onValueChange={v => {
                             if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
@@ -1043,11 +1043,11 @@ export default function SettingsScreen() {
                         catch (e) { Alert.alert('Export failed', String(e?.message)); }
                     }}>
                         <Text style={s.rowLabel}>Export Settings</Text>
-                        <Text style={s.rowSub}>Share EQ, audio ramp, theme…</Text>
+                        <Text style={s.rowSub}>Share all your settings as text</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
                         <Text style={s.rowLabel}>Import Settings</Text>
-                        <Text style={s.rowSub}>Paste exported JSON</Text>
+                        <Text style={s.rowSub}>Paste settings you exported</Text>
                     </TouchableOpacity>
                 </Section>
 
@@ -1057,7 +1057,7 @@ export default function SettingsScreen() {
                 <Section title="Debug">
                     <TouchableOpacity style={s.row} onPress={() => navigation.navigate('DebugLog')}>
                         <Text style={s.rowLabel}>Debug Log</Text>
-                        <Text style={s.rowSub}>Console output captured this session</Text>
+                        <Text style={s.rowSub}>Console output from this session</Text>
                     </TouchableOpacity>
                 </Section>
             </ScrollView>
