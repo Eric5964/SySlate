@@ -156,7 +156,7 @@ export default function PlaylistDetailScreen() {
         setCover(permanentUri);
     };
 
-    const bg = playlistColor(playlist.name);
+    const bg = base.surface; // neutral placeholder, see PlaylistsScreen's matching comment
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
 
     return (

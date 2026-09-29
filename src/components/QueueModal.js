@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, InteractionManager, Animated } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, InteractionManager, Animated, Easing } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -95,24 +95,25 @@ function FadePill({ isNew, children }) {
 // finished.
 const REMOVE_ANIM_MS = 220;
 function ShrinkOutRow({ removing, children }) {
-    const opacityScale = useRef(new Animated.Value(1)).current;
     const heightAnim = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // Both on the JS driver — see the comment in GrowInRow above for
-        // why: mixing drivers here is what caused the "empty gap sitting
-        // there" glitch (content already gone, space not yet collapsed)
-        // under the JS-thread load a removal itself causes.
-        Animated.parallel([
-            Animated.timing(opacityScale, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }),
-            Animated.timing(heightAnim, { toValue: 0, duration: REMOVE_ANIM_MS, useNativeDriver: false }),
-        ]).start();
+        // Requested: queue deletes were laggy/inconsistent. This used to run
+        // THREE JS-driver animated values at once per removed row (height +
+        // opacity + scaleY, all re-evaluated on the JS thread every frame,
+        // on top of the removal's own re-render work) — the JS thread was
+        // the bottleneck, so the frame budget was easy to blow. Height
+        // alone drives the whole effect now: the row's content is clipped
+        // by the collapsing container (overflow hidden), which reads as the
+        // row sliding shut, with a third of the per-frame JS work and no
+        // way for the fade and the collapse to fall out of step with each
+        // other (the earlier "empty gap" glitch was exactly two separately
+        // driven values disagreeing).
+        Animated.timing(heightAnim, { toValue: 0, duration: REMOVE_ANIM_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
     }, [removing]);
     return (
         <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
-            <Animated.View style={{ opacity: opacityScale, transform: [{ scaleY: opacityScale }] }}>
-                {children}
-            </Animated.View>
+            {children}
         </Animated.View>
     );
 }

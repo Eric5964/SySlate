@@ -42,7 +42,10 @@ const FORMATS = [
 // doesn't force every visible row to re-render — that re-render of the whole
 // list was what made the long-press feel choppy.
 const PlaylistRow = memo(function PlaylistRow({ item, format, numCols, cover, base, coverShape, onOpen, onLongPress, showTitle, showCount }) {
-    const bg = playlistColor(item.name);
+    // Neutral placeholder instead of playlistColor()'s bright per-name
+    // palette — requested: the colorful boxes shown while covers load were
+    // distracting. Same surface tone the rest of the UI already uses.
+    const bg = base.surface;
 
     const renderArt = (size, fontSize) => cover
         ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />

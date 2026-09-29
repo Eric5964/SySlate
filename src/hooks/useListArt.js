@@ -15,8 +15,19 @@ const MAX_NEW_EXTRACTIONS_PER_RUN = 60;
 const FLUSH_BATCH_SIZE = 20;
 const YIELD_EVERY = 20;
 
+// Real cause of "covers still need to load often" / flashing placeholders:
+// artMap lived only in each hook instance's own useState, so every screen
+// or list that mounted (opening a playlist, switching tabs, opening the
+// queue) started from an EMPTY map and had to re-resolve every row before
+// showing a single cover, even though the same songs had already been
+// resolved moments earlier by a different instance. Resolved results now
+// also live in this module-level map for the whole app session, and every
+// new instance starts from it, so a cover that's been found once shows on
+// first render everywhere after.
+const SESSION_ART = {};
+
 export function useListArt(songs, enabled) {
-    const [artMap, setArtMap] = useState({});
+    const [artMap, setArtMap] = useState(() => (enabled ? { ...SESSION_ART } : {}));
     const runIdRef = useRef(0);
 
     useEffect(() => {
@@ -32,6 +43,7 @@ export function useListArt(songs, enabled) {
             const batch = pending;
             pending = {};
             pendingCount = 0;
+            Object.assign(SESSION_ART, batch);
             setArtMap(prev => ({ ...prev, ...batch }));
         };
 

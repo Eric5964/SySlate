@@ -44,10 +44,29 @@ import { useTheme } from '../context/ThemeContext';
 // registered pbxproj entries, no automatic `expo prebuild`/pod install
 // step). Now moot anyway: with only one Image instance that never
 // remounts, plain Image only ever pays the decode cost once per session.
-export default function ScreenBackground({ style, children }) {
+export default function ScreenBackground({ style, children, ownImage }) {
     const { base } = useTheme();
     const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const hasImage = backgroundImageEnabled && backgroundImageUri;
+
+    // ownImage: for a screen that slides over other content (the Player,
+    // dragged down to dismiss). Every other screen deliberately goes
+    // transparent and lets the ONE persistent image behind the navigator
+    // show through — but a sliding card that's transparent shows whatever
+    // screen is underneath it mid-drag (Playlists/queue/miniplayer visible
+    // through the Player — confirmed in a screen recording). This draws its
+    // own copy of the image + scrim so the card stays solid while it moves.
+    // Same file:// URI as the persistent one, so RN's image cache serves it
+    // without a second disk decode in practice.
+    if (hasImage && ownImage) {
+        return (
+            <View style={[styles.flexFill, { backgroundColor: base.bg }]}>
+                <Image source={{ uri: backgroundImageUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" fadeDuration={0} />
+                <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
+                <View style={[styles.flexFill, style]}>{children}</View>
+            </View>
+        );
+    }
 
     return (
         <View style={[styles.flexFill, !hasImage && { backgroundColor: base.bg }]}>

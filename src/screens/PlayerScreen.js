@@ -97,6 +97,22 @@ export default function PlayerScreen() {
     const clearDragTimer = useRef(null);
     const committedRef = useRef(false);
     const gestureTrackIdRef = useRef(null);
+    // Real cause of "the progress bar moves with my taps/drags but never
+    // actually seeks, then snaps back" (no [SEEK-DEBUG] line ever appeared
+    // in a real capture — the commit was being dropped BEFORE reaching
+    // seekTo): the gesture handlers below are created once (useRef(...)
+    // .current, deliberately, to stay referentially stable mid-gesture) so
+    // anything they read directly from render scope is frozen at whatever
+    // it was on the FIRST render. gestureTrackIdRef was being set from that
+    // frozen currentTrack, while onScrub's "did the track change while you
+    // were dragging?" check compares it against the CURRENT one — so as
+    // soon as the playing track differed from whatever was loaded when this
+    // screen first mounted, every seek got dropped as "track changed under
+    // us". Taps were worse: they never set gestureTrackIdRef at all (null
+    // -> always "changed") and never reset committedRef either. This ref is
+    // refreshed every render, so the stable handlers can read it fresh.
+    const nowTrackIdRef = useRef(currentTrack?._qid ?? currentTrack?.id ?? null);
+    nowTrackIdRef.current = currentTrack?._qid ?? currentTrack?.id ?? null;
     // Set whenever the lyrics view's active line is about to move for a
     // reason OTHER than natural playback advancing one line at a time — a
     // manual seek (below) or a track change (see the lyrics reset effect
@@ -189,7 +205,7 @@ export default function PlayerScreen() {
         // fires once per gesture: without this guard, a real release
         // landing right after the safety backstop already fired would
         // seek twice to (almost) the same spot.
-        if (committedRef.current) return;
+        if (committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); return; }
         committedRef.current = true;
         clearTimeout(stuckSafetyTimer.current);
 
@@ -202,7 +218,7 @@ export default function PlayerScreen() {
         // longer corresponds to whatever's playing now, so drop the seek
         // instead of applying it to the wrong track.
         const nowTrackId = currentTrack?._qid ?? currentTrack?.id ?? null;
-        if (nowTrackId !== gestureTrackIdRef.current) { setDragRatio(null); return; }
+        if (nowTrackId !== gestureTrackIdRef.current) { console.log('[SEEK-DEBUG] commit dropped: track id mismatch', { nowTrackId, gesture: gestureTrackIdRef.current }); setDragRatio(null); return; }
 
         if (progress.duration > 0) {
             const targetRatio = ratio;
@@ -328,7 +344,7 @@ export default function PlayerScreen() {
             measureProgress();
             committedRef.current = false;
             realDragMovedRef.current = false;
-            gestureTrackIdRef.current = currentTrack?._qid ?? currentTrack?.id ?? null;
+            gestureTrackIdRef.current = nowTrackIdRef.current;
             onScrubRef.current(absoluteX, false);
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
@@ -369,6 +385,11 @@ export default function PlayerScreen() {
     const onTapStateChange = useRef((e) => {
         if (e.nativeEvent.state === GHState.ACTIVE && !realDragMovedRef.current) {
             measureProgress();
+            // A tap is its own complete gesture: it must start from a
+            // clean slate (see nowTrackIdRef's comment) instead of
+            // inheriting whatever the last drag left behind.
+            committedRef.current = false;
+            gestureTrackIdRef.current = nowTrackIdRef.current;
             onScrubRef.current(e.nativeEvent.absoluteX, true);
         }
     }).current;
@@ -788,7 +809,7 @@ export default function PlayerScreen() {
     };
 
     return (
-        <ScreenBackground style={[s.container, { paddingTop: insets.top + 6 }]}>
+        <ScreenBackground ownImage style={[s.container, { paddingTop: insets.top + 6 }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>

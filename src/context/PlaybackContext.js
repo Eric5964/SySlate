@@ -157,10 +157,23 @@ export function PlaybackProvider({ children }) {
             // (default 3s) before doing the real extraction, since that
             // read + decode is heavy enough to have stalled the ramp's
             // timing-sensitive fade steps (measured via an actual waveform).
-            timer = setTimeout(() => {
+            //
+            // Real bug found here ("song loaded on start has no cover,
+            // but it does after closing and reopening the app"): that
+            // 4s delay applied even to the track a cold launch just
+            // RESTORED paused — nothing is ramping there, so there's
+            // nothing to protect, but the cover sat missing for the
+            // delay (and until the effect's next chance if the user
+            // hit play meanwhile). Only wait when audio is actually
+            // playing; otherwise extract right away.
+            AudioEngine.getState().catch(() => null).then((st) => {
                 if (cancelled) return;
-                extractEmbeddedArt(currentTrack).then(applyArt);
-            }, 4000);
+                const delayMs = st === State.Playing ? 4000 : 0;
+                timer = setTimeout(() => {
+                    if (cancelled) return;
+                    extractEmbeddedArt(currentTrack).then(applyArt);
+                }, delayMs);
+            });
         });
 
         return () => { cancelled = true; if (timer) clearTimeout(timer); };

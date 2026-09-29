@@ -176,19 +176,40 @@ async function waitForPlaying(timeoutMs = 4000) {
             settled = true;
             sub.remove();
             clearTimeout(timer);
+            clearTimeout(graceTimer);
             resolve(result);
         };
         // Covers the race where state already settled and its event
         // already fired BEFORE this listener got attached — startAction()
         // above is awaited, so there's a real window for that.
+        // Real bug found here (straight from a real debug log: "waitForPlaying
+        // resolved, reallyPlaying=false" logged 1ms after "startAction
+        // resolved" — nowhere near the 4s timeout the branch's own log line
+        // claims): a Paused/Stopped snapshot used to resolve false
+        // IMMEDIATELY. But right after a Play command, state is legitimately
+        // still Paused/Ready for however long native takes to (re)load and
+        // schedule the track (a cold-launch or post-interruption first play
+        // goes through a fresh async file load — the same log shows the
+        // native side only finishing that load 20ms AFTER this gave up).
+        // Giving up that early sent every such play down the "quick
+        // catch-up fade" fallback instead of the real configured ramp —
+        // the "hits volume then ramps up / no ramp on first play" report.
+        // Now only a Playing state (or event) resolves true; a
+        // non-playing state just keeps waiting, and a single re-check after
+        // a grace period (long enough for a slow load, short enough not to
+        // hold rampLock for the full timeout on a genuinely rejected play)
+        // resolves false if it still hasn't started.
         AudioEngine.getState().then((state) => {
             if (state === State.Playing) finish(true);
-            else if (state === State.Paused || state === State.Stopped) finish(false);
         }).catch(() => { });
         const sub = AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => {
             if (state === State.Playing) finish(true);
-            else if (state === State.Paused || state === State.Stopped) finish(false);
         });
+        const graceTimer = setTimeout(() => {
+            AudioEngine.getState().then((state) => {
+                if (state !== State.Playing) finish(false);
+            }).catch(() => finish(false));
+        }, 1500);
         const timer = setTimeout(() => finish(false), timeoutMs);
     });
 }
@@ -458,6 +479,10 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
             try {
                 try { await AudioEngine.setVolume(0); } catch { }
                 console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: setVolume(0) done, calling startAction`);
+                // A resume must never leave a leftover "display as paused"
+                // override from an earlier pause fade standing — see
+                // AudioEngine.swift's displayedAsPausedAt comment.
+                try { await AudioEngine.setNowPlayingPaused(false); } catch { }
                 try { await startAction(); } catch { }
                 console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: startAction resolved, waiting for playing`);
                 const reallyPlaying = await waitForPlaying();
@@ -707,6 +732,25 @@ export async function skipWithRamp(direction = 'next') {
                     const { position } = await AudioEngine.getProgress();
                     restartCurrent = position > threshold;
                 } catch { }
+            }
+        }
+        // Real bug found here — Previous never crossfaded at all with
+        // Crossfade on, even though AudioEngine.swift's advance() (as of
+        // this round) fully supports it going backward too: this branch
+        // never existed. Restarting the current track from 0 obviously
+        // isn't a crossfade target, so this only applies once
+        // restartCurrent is known false. Otherwise identical shape to the
+        // 'next' branch above — same skipLock hold for the actual fade
+        // duration, same currentTransitionCrossfading snapshot.
+        if (direction === 'prev' && !restartCurrent) {
+            const crossfadeDur = await getCrossfadeDurationSkip();
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            currentTransitionCrossfading = crossfading;
+            if (crossfading) {
+                skipLockExpectedDurationMs = crossfadeDur * 1000;
+                try { await withTimeout(AudioEngine.skipToPrevious(), 5000); } catch { }
+                await sleep(crossfadeDur * 1000);
+                return;
             }
         }
         const doNativeSkip = async () => {

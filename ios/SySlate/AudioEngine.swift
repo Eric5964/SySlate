@@ -494,6 +494,15 @@ class AudioEngine: RCTEventEmitter {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
+            // [RAMP-DEBUG] Diagnostic — chasing "the starting glitch also
+            // happens after something interrupts playback and you have to
+            // start the song again", same bug class as the cold-launch
+            // repro (see advance()/reset()'s matching comments): logging
+            // currentIndex right at the moment of interruption so a
+            // capture spanning an interruption shows whether it's already
+            // nil here, or goes nil sometime between this and the next
+            // Play tap.
+            debugLog("[RAMP-DEBUG] interruption BEGAN — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state)")
             // Deliberately NOT calling pause() here. Per decision #2,
             // interruptions should fade out using the existing "Ramp on
             // Pause" JS setting, same as a manual pause — and in Milestone
@@ -508,6 +517,7 @@ class AudioEngine: RCTEventEmitter {
             if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             }
+            debugLog("[RAMP-DEBUG] interruption ENDED — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state), shouldResume=\(shouldResume)")
             // Deliberately not auto-resuming even when iOS suggests it's
             // safe to — most players require an explicit tap back to play.
             // Flip this if that's not what's wanted.
@@ -708,6 +718,19 @@ class AudioEngine: RCTEventEmitter {
     // call, so every tick during the fade keeps agreeing with it instead of
     // only the very first one.
     private var displayedAsPaused: Bool? = nil
+    // When displayedAsPaused was last set to true. Real bug found here
+    // (matches a screenshot: Control Center showing PAUSED at 0:03 while
+    // the app itself was playing at 0:36): displayedAsPaused is only ever
+    // cleared by setState(), i.e. by a real state TRANSITION. If a pause
+    // fade starts (setNowPlayingPaused(true)) and then never reaches its
+    // real pause() — interrupted, superseded by a resume/skip/song tap, a
+    // crossfade taking over — state stays .playing the whole time, no
+    // transition ever fires, and this override sticks forever: the lock
+    // screen/Bluetooth display reports "paused" (rate 0) for a song that's
+    // audibly playing. No ramp lasts anywhere near this long, so an
+    // override still standing while state is .playing is stale by
+    // definition — updateNowPlayingInfo drops it (below).
+    private var displayedAsPausedAt: Date? = nil
 
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
@@ -717,6 +740,10 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         let track = queue[idx]
+        if displayedAsPaused == true, state == .playing, let at = displayedAsPausedAt, Date().timeIntervalSince(at) > 12 {
+            displayedAsPaused = nil
+            displayedAsPausedAt = nil
+        }
         let isPlayingForDisplay = displayedAsPaused.map { !$0 } ?? (state == .playing)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title ?? "",
@@ -769,6 +796,7 @@ class AudioEngine: RCTEventEmitter {
         // it so updateNowPlayingInfo goes back to trusting `state` directly
         // instead of possibly holding on to a stale ramp-in-progress guess.
         displayedAsPaused = nil
+        displayedAsPausedAt = nil
         sendEvent(withName: "PlaybackState", body: ["state": newState.rawValue])
         updateNowPlayingInfo()
     }
@@ -1225,6 +1253,13 @@ class AudioEngine: RCTEventEmitter {
     // playbackToken first specifically so this stale callback gets
     // ignored here instead of double-advancing).
     private func handlePlaybackCompleted(token: UInt64) {
+        // [RAMP-DEBUG] Diagnostic only. If this fires with token !=
+        // playbackToken during a "stuck, position past duration" repro,
+        // that confirms a stale/orphaned completion — see startCrossfade's
+        // matching comment for the leading theory on how it gets orphaned.
+        if token != playbackToken {
+            debugLog("[RAMP-DEBUG] handlePlaybackCompleted: STALE token (\(token) != current \(playbackToken)) — ignored, this segment's completion is being dropped")
+        }
         guard token == playbackToken else { return }
 
         if repeatMode == .track {
@@ -1291,6 +1326,7 @@ class AudioEngine: RCTEventEmitter {
         let suppressCrossfade = suppressNextCrossfade
         suppressNextCrossfade = false
         guard !queue.isEmpty else {
+            debugLog("[RAMP-DEBUG] advance(): queue is empty, clearing currentIndex (was \(currentIndex.map(String.init) ?? "nil"))")
             currentIndex = nil
             setState(.stopped)
             return
@@ -1307,6 +1343,17 @@ class AudioEngine: RCTEventEmitter {
             newIndex = wrap ? queue.count - 1 : -1
         }
         if newIndex < 0 || newIndex >= queue.count {
+            // [RAMP-DEBUG] Diagnostic — chasing "first Play after a fresh
+            // launch does a slow reload from 0:00 instead of just resuming
+            // the restored position/track", per playInternal()'s own
+            // nil-currentIndex fallback (see its comment). If this fires
+            // during that repro, it's the direct cause: something called
+            // advance() past the end of the queue (a stray natural-
+            // completion, e.g.) sometime between restore finishing and
+            // Play being tapped, clearing currentIndex in the background
+            // with nothing visibly wrong on screen since nothing was
+            // playing yet to visibly stop.
+            debugLog("[RAMP-DEBUG] advance(): newIndex \(newIndex) out of bounds (queue.count=\(queue.count), from idx=\(idx), direction=\(direction), wrap=\(wrap)) — clearing currentIndex")
             currentIndex = nil
             activeNode.stop()
             setState(.ended)
@@ -1326,7 +1373,18 @@ class AudioEngine: RCTEventEmitter {
         // requested for ramping generally.
         let incomingDuration = queue[newIndex].duration ?? 0
         let incomingLongEnough = incomingDuration <= 0 || incomingDuration >= crossfadeDuration * 2
-        if !suppressCrossfade, crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, direction == 1, !isCrossfading, state == .playing {
+        // Real bug found here: this used to require direction == 1, so the
+        // Previous button could never crossfade at all, even with it on —
+        // it always did a plain cut. startCrossfade(toIndex:duration:)
+        // itself has no notion of direction at all — it just crossfades
+        // from whatever's currently playing to queue[toIndex] — so nothing
+        // about going backward is actually unsupported by the mechanism;
+        // this condition was just never opened up for it. direction == -1
+        // can only ever reach advance() from a manual Previous press
+        // (fireCrossfadeLeadIn, the only caller for the natural
+        // end-of-track case, always passes direction: 1), so this doesn't
+        // need an isManualSkip check alongside it to stay scoped correctly.
+        if !suppressCrossfade, crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, (direction == 1 || direction == -1), !isCrossfading, state == .playing {
             currentIndex = newIndex
             startCrossfade(toIndex: newIndex, duration: crossfadeDuration)
             return
@@ -1391,6 +1449,27 @@ class AudioEngine: RCTEventEmitter {
                     ? self?.analyzeFile(file, path: track.url.path) : nil
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else {
+                        // [RAMP-DEBUG] Diagnostic only, no behavior change —
+                        // logging this rather than acting on it. Real
+                        // question this answers: does a resume tapped close
+                        // to a track's end (ramp-in still active) cause
+                        // playbackToken to get bumped AGAIN before this
+                        // crossfade's own async load finishes, abandoning
+                        // it here with nothing left driving playback
+                        // forward (the outgoing node's OWN completion
+                        // callback was already invalidated by THIS
+                        // crossfade's own earlier token bump above, and
+                        // nothing here replaces it)? That's the leading
+                        // theory for "pause then resume, overlaps the
+                        // natural crossfade out, then position runs past
+                        // the track's length forever until you skip or tap
+                        // another song." Deliberately NOT adding a fallback
+                        // load here yet — a token mismatch is supposed to
+                        // mean something else already took over and is
+                        // responsible for its own scheduling; blindly
+                        // rescheduling here risks fighting whatever that is
+                        // instead. Confirm from this log first.
+                        self?.debugLog("[RAMP-DEBUG] startCrossfade: ABANDONED — token changed during async load/analysis (superseded, or the exact stuck-forever bug)")
                         self?.isCrossfading = false
                         return
                     }
@@ -1888,6 +1967,7 @@ class AudioEngine: RCTEventEmitter {
                     // realIndex values after currentIndex), but handled
                     // rather than left to silently corrupt state if
                     // something ever does hit this path.
+                    debugLog("[RAMP-DEBUG] remove(): removing the CURRENT index (\(current)) itself — clearing currentIndex. If this fires unexpectedly during a repro, a call site is hitting this \"shouldn't happen today\" path.")
                     currentIndex = nil
                 }
             }
@@ -2051,6 +2131,13 @@ class AudioEngine: RCTEventEmitter {
 
     @objc(reset:rejecter:)
     func reset(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // [RAMP-DEBUG] Diagnostic — same chase as advance()'s. If this
+        // fires between a fresh launch's restore finishing and the first
+        // Play tap, something called reset() in that window (a stray
+        // fresh-song-tap sequence, e.g.) and that's the direct cause of
+        // the slow-reload-from-0:00 bug this session's log already
+        // narrowed down to a nil currentIndex.
+        debugLog("[RAMP-DEBUG] reset() called — clearing queue and currentIndex (was \(currentIndex.map(String.init) ?? "nil"), queue had \(queue.count) tracks)")
         stopInternal()
         queue.removeAll()
         currentIndex = nil
@@ -2215,6 +2302,7 @@ class AudioEngine: RCTEventEmitter {
     @objc(setNowPlayingPaused:resolver:rejecter:)
     func setNowPlayingPaused(_ paused: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         displayedAsPaused = paused.boolValue
+        displayedAsPausedAt = paused.boolValue ? Date() : nil
         updateNowPlayingInfo()
         resolve(nil)
     }

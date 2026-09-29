@@ -147,6 +147,11 @@ function Tabs() {
                 // transparent doesn't survive native screens without being
                 // explicit about it).
                 sceneContainerStyle: { backgroundColor: 'transparent' },
+                // @react-navigation/bottom-tabs is v7 here (package.json),
+                // where sceneContainerStyle no longer exists — the v7 name
+                // is sceneStyle, inside screenOptions. The line above is
+                // silently ignored on v7; this is the one that counts.
+                sceneStyle: { backgroundColor: 'transparent' },
                 // The loading screen is meant to hide first-mount cost for
                 // ALL THREE tabs, not just whichever one happens to be
                 // initialRouteName — Tab.Navigator's default (lazy: true)
@@ -181,8 +186,18 @@ function Tabs() {
 
 function MainLayout() {
     const { base } = useTheme();
+    const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
+    // Real cause of "custom background only shows on the Player, not on
+    // Settings/Playlists/All Songs" (confirmed from a screen recording:
+    // toggle ON, image visible on Player, plain black everywhere else):
+    // this wrapper was ALWAYS solid base.bg, sitting directly on top of
+    // PersistentBackgroundImage (rendered behind the whole navigator) and
+    // hiding it for every tab. Player only looked fine because Main is
+    // detached while Player covers it. Transparent when an image is
+    // active, solid otherwise — same rule ScreenBackground already uses.
+    const hasImage = !!(backgroundImageEnabled && backgroundImageUri);
     return (
-        <View style={{ flex: 1, backgroundColor: base.bg }}>
+        <View style={{ flex: 1, backgroundColor: hasImage ? 'transparent' : base.bg }}>
             <Tabs />
             <MiniPlayer />
         </View>

@@ -784,13 +784,21 @@ export default function SettingsScreen() {
                 </Section>
 
                 <Section title="Playlists">
-                    <View style={s.row}>
-                        <Text style={s.rowLabel}>Show Track Count</Text>
-                        <Switch value={showPlaylistTrackCount} onValueChange={setShowPlaylistTrackCount} />
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Show Track Count</Text>
+                            <Text style={s.toggleSub}>Shows the number of tracks on Playlists and inside each playlist</Text>
+                        </View>
+                        <Switch value={showPlaylistTrackCount} onValueChange={setShowPlaylistTrackCount}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={s.row}>
-                        <Text style={s.rowLabel}>Show Playlist Titles</Text>
-                        <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles} />
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Show Playlist Titles</Text>
+                            <Text style={s.toggleSub}>Shows each playlist's name under its cover on the Playlists screen</Text>
+                        </View>
+                        <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
 
