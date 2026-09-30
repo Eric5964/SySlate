@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { InteractionManager } from 'react-native';
-import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk, listArtUri } from '../utils/embeddedArt';
 
 // Returns { songId: uri | null } for whichever songs have resolved so far.
 //
@@ -46,6 +46,7 @@ export function useListArt(songs, enabled) {
             const batch = pending;
             pending = {};
             pendingCount = 0;
+            for (const id of Object.keys(batch)) batch[id] = listArtUri(batch[id]);
             Object.assign(SESSION_ART, batch);
             setArtMap(prev => ({ ...prev, ...batch }));
         };

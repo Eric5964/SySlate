@@ -89,7 +89,6 @@ const PlaylistsStack = createStackNavigator();
 // at the top-level Root stack) keeps the tab bar visible while viewing a
 // playlist, since the tab bar chrome lives outside this nested navigator.
 function PlaylistsStackScreen() {
-    const { base } = useTheme();
     return (
         <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: 'transparent' } }}>
             <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
@@ -207,7 +206,7 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null, covers: {} });
     const [playerReady, setPlayerReady] = useState(false);
-    const { ready: themeReady, base, theme } = useTheme();
+    const { ready: themeReady, base } = useTheme();
     const { showSongCovers, keepScreenAwake, backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const playbackState = usePlaybackState();
 
@@ -374,7 +373,6 @@ function AppInner() {
     // the user.
     const overlayOpacity = useRef(new Animated.Value(1)).current;
     const [showOverlay, setShowOverlay] = useState(true);
-    const mountedAtRef = useRef(Date.now());
     useEffect(() => {
         if (!playerReady || !themeReady) return;
         // Per request: no more icon, no more 500ms floor — just the base

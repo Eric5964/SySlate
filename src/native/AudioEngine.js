@@ -12,7 +12,7 @@
 // until you're ready to do that swap deliberately.
 
 import { NativeModules, NativeEventEmitter, AppState } from 'react-native';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
@@ -134,6 +134,7 @@ const AudioEngine = {
     // finishes (see AudioEngine.swift's setNowPlayingPaused for the full
     // story).
     setNowPlayingPaused: (paused) => NativeAudioEngine.setNowPlayingPaused(paused),
+    makeThumbnail: (src, dest, maxPixel) => NativeAudioEngine.makeThumbnail(src, dest, maxPixel),
     getVolume: () => NativeAudioEngine.getVolume(),
     // Runs the whole from->to fade natively over one bridge call instead of
     // PlaybackService.js looping setVolume() ~25x/sec itself — see

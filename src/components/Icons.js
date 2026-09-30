@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Animated, Text } from 'react-native';
+import { View, Animated } from 'react-native';
 
 // Pure-CSS/View icons — no emoji, no SVG library dependency.
 // Sizes are the visual bounding box; colors passed as `color`.

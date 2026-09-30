@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -19,7 +19,7 @@ import GradientCap from '../components/GradientCap';
 import { squircle } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
 function fmt(sec) {
     if (!sec || isNaN(sec)) return '0:00';
@@ -56,7 +56,7 @@ export default function PlayerScreen() {
     const lyricIdleColor = lyricNeutral ? base.textFaint : base.textDim;
 
     const {
-        currentPlaylist, currentTrack, eqPresetId, shuffleOn, singleLoop,
+        currentPlaylist, currentTrack, shuffleOn, singleLoop,
         loadPlaylist, toggleShuffle, toggleSingleLoop,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
@@ -96,7 +96,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, backgroundImageEnabled, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -1161,7 +1161,6 @@ const s = StyleSheet.create({
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     eqTag: { fontSize: 14, fontWeight: '700' },
     topIcon: { fontSize: 26 },
-    topTag: { fontSize: 16, fontWeight: '700' },
     topLabel: { fontSize: 15, fontWeight: '500', flex: 1, textAlign: 'center' },
     middle: { flex: 1, justifyContent: 'space-evenly' },
     artWrap: { alignItems: 'center' },
@@ -1226,7 +1225,6 @@ const s = StyleSheet.create({
     time: { color: '#3a3a3a', fontSize: 12 },
     controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12 },
     sideBtn: { width: 60, height: 60, alignItems: 'center', justifyContent: 'center' },
-    sideIcon: { fontSize: 29 },
     skipBtn: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center' },
     playBtn: { width: 84, height: 84, borderRadius: 42, justifyContent: 'center', alignItems: 'center', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8 },
 });

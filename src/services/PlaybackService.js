@@ -611,25 +611,13 @@ export async function pauseWithRamp() {
             releaseFade(id);
             try { await AudioEngine.pause(); } catch { }
             try { await AudioEngine.setVolume(1); } catch { }
+            // Say "paused" once more now that the fade-out is fully done, so
+            // the lock screen and Control Center end on the same final state.
+            try { await AudioEngine.setNowPlayingPaused(true); } catch { }
         } else {
             try { await AudioEngine.pause(); } catch { }
+            try { await AudioEngine.setNowPlayingPaused(true); } catch { }
         }
-    } finally {
-        await sleep(60);
-        rampLock = false;
-        drainPending();
-    }
-}
-
-// Currently unused — pauseWithRamp() no longer has a branch that calls
-// this (see its comment: pause always ramps out through the normal path
-// below, never a hard instant cut). Left in case a genuinely urgent
-// no-fade pause is ever needed again.
-async function pauseImmediate() {
-    rampLock = true;
-    try {
-        try { await AudioEngine.pause(); } catch { }
-        try { await AudioEngine.setVolume(1); } catch { }
     } finally {
         await sleep(60);
         rampLock = false;

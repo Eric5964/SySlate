@@ -3,6 +3,7 @@ import AVFoundation
 import AudioToolbox
 import MediaPlayer
 import UIKit
+import ImageIO
 
 // MARK: - Track model
 //
@@ -202,6 +203,15 @@ class AudioEngine: RCTEventEmitter {
     // fading into a fresh copy of itself). Same queue slot, so JS must not
     // be told the track changed.
     private var crossfadeSelfLoop: Bool = false
+    // A skip that arrives while a crossfade is already running. It used to
+    // cancel that crossfade on the spot (current song cut off, next one
+    // started instantly). Now it waits for the running crossfade to finish
+    // and then crossfades into the next song. 1 = next, -1 = previous.
+    private var queuedSkipDirection: Int? = nil
+    // Where the volume ramp currently in flight is headed. If a crossfade
+    // interrupts a fade-in that is still climbing, the crossfade must target
+    // that final level, not whatever partial value the ramp had reached.
+    private var rampInFlightTarget: Float? = nil
     private var crossfadeTargetVolume: Float = 1
     // Raw gain correction alone (crossfadeTargetVolume above is volume ×
     // this, already multiplied together) — settleCrossfadeToIncoming needs
@@ -586,14 +596,25 @@ class AudioEngine: RCTEventEmitter {
     private func configureRemoteCommandCenter() {
         let center = MPRemoteCommandCenter.shared()
 
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.isEnabled = true
         center.playCommand.addTarget { [weak self] _ in
-            self?.optimisticallySetPlaybackRate(1.0)
-            self?.sendEvent(withName: "RemotePlay", body: nil)
+            self?.handleRemotePlayPause(wantsPlay: true)
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.optimisticallySetPlaybackRate(0.0)
-            self?.sendEvent(withName: "RemotePause", body: nil)
+            self?.handleRemotePlayPause(wantsPlay: false)
+            return .success
+        }
+        // Headphone/car/lock-screen single-button toggles. Left unregistered
+        // iOS translates them into play/pause on its own, but only from the
+        // state it last saw, which is what made a quick second press act on
+        // stale info. Handled here from the state the app is showing now.
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self else { return .commandFailed }
+            let showingPlaying = self.displayedAsPaused.map { !$0 } ?? (self.state == .playing)
+            self.handleRemotePlayPause(wantsPlay: !showingPlaying)
             return .success
         }
         center.stopCommand.addTarget { [weak self] _ in
@@ -701,6 +722,22 @@ class AudioEngine: RCTEventEmitter {
     // immediately on tap; setState()'s own update a moment later confirms
     // (or corrects, if JS ends up not honoring it for some reason) it once
     // the real ramp actually starts.
+    // One place for every remote Play/Pause. The fade-out on pause and the
+    // fade-in on play both take a couple of seconds, during which the real
+    // engine state has not flipped yet, so the periodic Now Playing refresh
+    // kept rewriting the OLD state and Control Center bounced back to
+    // "playing" (lock screen only looked right because it happened to
+    // refresh at a different moment). The wanted state is now held as the
+    // displayed state right away, and every refresh during the fade agrees
+    // with it until the real state change lands.
+    private func handleRemotePlayPause(wantsPlay: Bool) {
+        debugLog("[NP] remote \(wantsPlay ? "PLAY" : "PAUSE") command received (engine state=\(state))")
+        displayedAsPaused = !wantsPlay
+        displayedAsPausedAt = Date()
+        optimisticallySetPlaybackRate(wantsPlay ? 1.0 : 0.0)
+        sendEvent(withName: wantsPlay ? "RemotePlay" : "RemotePause", body: nil)
+    }
+
     private func optimisticallySetPlaybackRate(_ rate: Double) {
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyPlaybackRate] = rate
@@ -743,6 +780,61 @@ class AudioEngine: RCTEventEmitter {
     // duration is briefly unknown can't blank the lock screen progress bar.
     // iOS drops the bar entirely when a Now Playing update has no duration.
     private var lastKnownDurationByKey: [String: Double] = [:]
+    private var lastNowPlayingLogKey: String = ""
+
+    // Lock screen / Control Center / car cover fallback. The cover normally
+    // comes from the file JS extracted. If that file can't be read from this
+    // side (sideloaded installs can resolve the Documents folder differently),
+    // the cover is read straight out of the song file instead, which needs no
+    // JS-side path at all. Attempted once per track, off the main thread.
+    // Cover path and display artist JS last sent for each song id. Kept apart
+    // from the queue entries so they survive the queue being rebuilt (reset
+    // and re-add), which used to silently drop the cover and the formatted
+    // artist from the lock screen.
+    private var artworkOverrideById: [String: String] = [:]
+    private var artistOverrideById: [String: String] = [:]
+    private var embeddedArtwork: MPMediaItemArtwork? = nil
+    private var embeddedArtworkKey: String? = nil
+    private var embeddedArtworkAttempted = Set<String>()
+    private var artLogged = Set<String>()
+
+    private func readEmbeddedArtwork(from url: URL) -> UIImage? {
+        let asset = AVURLAsset(url: url)
+        var items = AVMetadataItem.metadataItems(from: asset.commonMetadata, filteredByIdentifier: .commonIdentifierArtwork)
+        if items.isEmpty {
+            items = asset.metadata.filter { item in
+                let id = item.identifier?.rawValue.lowercased() ?? ""
+                let key = (item.commonKey?.rawValue ?? "").lowercased()
+                return key == "artwork" || id.contains("artwork") || id.contains("covr") || id.contains("apic") || id.contains("picture")
+            }
+        }
+        for item in items {
+            if let data = item.dataValue, let image = UIImage(data: data) { return image }
+            if let data = item.value as? Data, let image = UIImage(data: data) { return image }
+        }
+        return nil
+    }
+
+    private func loadEmbeddedArtworkIfNeeded(for track: Track, key: String) {
+        if embeddedArtworkKey == key { return }
+        if embeddedArtworkAttempted.contains(key) { return }
+        embeddedArtworkAttempted.insert(key)
+        let url = track.url
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let image = self?.readEmbeddedArtwork(from: url)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let image = image {
+                    self.embeddedArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    self.embeddedArtworkKey = key
+                    self.debugLog("[ART] lock screen cover read straight from the song file for \(track.title ?? "?")")
+                    self.updateNowPlayingInfo()
+                } else {
+                    self.debugLog("[ART] no cover could be read from the song file for \(track.title ?? "?")")
+                }
+            }
+        }
+    }
 
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
@@ -753,14 +845,27 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         let track = queue[idx]
-        if displayedAsPaused == true, state == .playing, let at = displayedAsPausedAt, Date().timeIntervalSince(at) > 12 {
-            displayedAsPaused = nil
-            displayedAsPausedAt = nil
+        // A held display state that never got confirmed by a real state
+        // change (fade interrupted, action dropped) must not stick forever.
+        if let held = displayedAsPaused, let at = displayedAsPausedAt {
+            let age = Date().timeIntervalSince(at)
+            let contradictsReality = held ? (state == .playing) : (state != .playing)
+            if contradictsReality && age > (held ? 12 : 8) {
+                displayedAsPaused = nil
+                displayedAsPausedAt = nil
+            }
         }
         let isPlayingForDisplay = displayedAsPaused.map { !$0 } ?? (state == .playing)
+        // Logged only when something changes, so the Debug Log shows exactly
+        // what the lock screen / Control Center were told and when.
+        let npKey = "\(isPlayingForDisplay)|\(state)|\(displayedAsPaused.map { String($0) } ?? "nil")"
+        if npKey != lastNowPlayingLogKey {
+            lastNowPlayingLogKey = npKey
+            debugLog("[NP] telling iOS: \(isPlayingForDisplay ? "playing" : "paused") (engine state=\(state), held paused=\(displayedAsPaused.map { String($0) } ?? "nil"))")
+        }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title ?? "",
-            MPMediaItemPropertyArtist: track.artist ?? "",
+            MPMediaItemPropertyArtist: artistOverrideById[track.id] ?? track.artist ?? "",
             MPMediaItemPropertyAlbumTitle: track.album ?? "",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentPositionSeconds(),
             MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? 1.0 : 0.0,
@@ -775,7 +880,7 @@ class AudioEngine: RCTEventEmitter {
         info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
         info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
         info[MPNowPlayingInfoPropertyIsLiveStream] = false
-        if let artworkPath = track.artwork {
+        if let artworkPath = track.artwork ?? artworkOverrideById[track.id] {
             if artworkPath != cachedArtworkPath {
                 // Real bug found here: on failure this still set
                 // cachedArtworkPath = artworkPath below, permanently —
@@ -795,14 +900,29 @@ class AudioEngine: RCTEventEmitter {
                     cachedArtworkPath = artworkPath
                 } else {
                     cachedArtwork = nil
+                    if !artLogged.contains(artworkPath) {
+                        artLogged.insert(artworkPath)
+                        debugLog("[ART] could not load cover file for lock screen: \(artworkPath) exists=\(FileManager.default.fileExists(atPath: URL(string: artworkPath)?.path ?? artworkPath))")
+                    }
                 }
-            }
-            if let artwork = cachedArtwork {
-                info[MPMediaItemPropertyArtwork] = artwork
             }
         } else {
             cachedArtworkPath = nil
             cachedArtwork = nil
+            if !artLogged.contains("none|" + durKey) {
+                artLogged.insert("none|" + durKey)
+                debugLog("[ART] native has no cover path yet for \(track.title ?? "?")")
+            }
+        }
+        if let artwork = cachedArtwork {
+            info[MPMediaItemPropertyArtwork] = artwork
+        } else {
+            // No usable file from JS: fall back to the cover inside the song.
+            if embeddedArtworkKey == durKey, let embedded = embeddedArtwork {
+                info[MPMediaItemPropertyArtwork] = embedded
+            } else {
+                loadEmbeddedArtworkIfNeeded(for: track, key: durKey)
+            }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         // Control Center reads this explicit state, not just the rate above.
@@ -1183,6 +1303,9 @@ class AudioEngine: RCTEventEmitter {
                 sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": liveIdx])
             }
 
+            // Output muted BEFORE the engine/session wake up, so the wake-up
+            // click never reaches the speaker.
+            if autoPlay { beginColdStartMuteIfNeeded() }
             if !engine.isRunning {
                 try engine.start()
             }
@@ -1196,7 +1319,6 @@ class AudioEngine: RCTEventEmitter {
             activeNode.volume = volume * gainCorrection
 
             if autoPlay {
-                beginColdStartMuteIfNeeded()
                 activeNode.play()
                 lastAudibleAt = Date()
                 setState(.playing)
@@ -1321,6 +1443,7 @@ class AudioEngine: RCTEventEmitter {
     // becomes active next gets a fresh schedule right after this runs.
     private func cancelCrossfadeIfNeeded() {
         guard isCrossfading else { return }
+        queuedSkipDirection = nil
         // Also invalidate the fade timer itself here now — it used to only
         // stop implicitly (on its own next tick, once whatever call site
         // bumps playbackToken) rather than immediately. Harmless in
@@ -1485,6 +1608,7 @@ class AudioEngine: RCTEventEmitter {
         // wherever the ramp had actually gotten to and stays accurate
         // instead of going stale the moment a still-running ramp keeps
         // moving it after this snapshot.
+        if let climbing = rampInFlightTarget, climbing > volume { volume = climbing }
         cancelActiveRampLocked()
         debugLog("[RAMP-DEBUG] startCrossfade: cancelled any in-flight JS ramp before starting crossfade")
         let track = queue[idx]
@@ -1705,6 +1829,13 @@ class AudioEngine: RCTEventEmitter {
                 // IS the current track already, currentIndex was updated
                 // when this crossfade started).
                 self.scheduleCrossfadeLeadIn()
+                if let queued = self.queuedSkipDirection {
+                    self.queuedSkipDirection = nil
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self = self, self.state == .playing, !self.isCrossfading else { return }
+                        if queued > 0 { self.skipToNextInternal() } else { self.skipToPreviousInternal() }
+                    }
+                }
             }
         }
         crossfadeFadeTimer = fadeTimer
@@ -1816,6 +1947,7 @@ class AudioEngine: RCTEventEmitter {
             }
             return
         }
+        beginColdStartMuteIfNeeded()
         activateSession()
         frozenPositionSeconds = nil
         // Real bug: unlike finishLoadingTrack and runCrossfade (both check
@@ -1834,13 +1966,33 @@ class AudioEngine: RCTEventEmitter {
         if !engine.isRunning {
             try? engine.start()
         }
-        beginColdStartMuteIfNeeded()
+        pauseReassertToken += 1
         activeNode.play()
         lastAudibleAt = Date()
         setState(.playing)
         // Resume — reschedule the lead-in timer from the CURRENT position,
         // not whatever was left when it was invalidated on pause below.
         scheduleCrossfadeLeadIn()
+    }
+
+    // Tells iOS "paused" again a few times after a pause has finished.
+    // Control Center was reverting to "playing" after a pause while the lock
+    // screen stayed paused, so a single paused update right at the pause is
+    // not trusted to stick. Each repeat only fires if we are still paused,
+    // and does nothing if playback resumed in the meantime.
+    private var pauseReassertToken: Int = 0
+    private func reassertPausedToSystem() {
+        pauseReassertToken += 1
+        let token = pauseReassertToken
+        for delay in [0.25, 0.8, 2.0, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, token == self.pauseReassertToken else { return }
+                guard self.state == .paused, self.displayedAsPaused != false else { return }
+                self.updateNowPlayingInfo()
+                MPNowPlayingInfoCenter.default().playbackState = .paused
+                self.debugLog("[NP] re-sent paused to iOS after \(delay)s")
+            }
+        }
     }
 
     private func pauseInternal() {
@@ -1890,6 +2042,7 @@ class AudioEngine: RCTEventEmitter {
         frozenPositionSeconds = currentPositionSeconds()
         activeNode.pause()
         setState(.paused)
+        reassertPausedToSystem()
         // Don't let a natural-end crossfade fire while paused — playInternal
         // reschedules it from wherever playback actually resumes.
         crossfadeLeadTimer?.invalidate()
@@ -1911,8 +2064,13 @@ class AudioEngine: RCTEventEmitter {
     // same bookkeeping runCrossfade's own completion does on a normal
     // finish — so whatever called this can then operate on ONE consistent,
     // already-correct node instead of stale crossfade leftovers.
-    private func settleCrossfadeToIncoming() {
+    // `snapToFull: false` leaves the incoming song at whatever level the
+    // crossfade had already faded it to instead of jumping it to full
+    // volume. The jump was audible as a loud blip whenever anything (a JS
+    // fade, a volume write) landed in the middle of a crossfade.
+    private func settleCrossfadeToIncoming(snapToFull: Bool = true) {
         guard isCrossfading else { return }
+        queuedSkipDirection = nil
         crossfadeFadeTimer?.invalidate()
         crossfadeFadeTimer = nil
         guard let outgoingNode = activeNode, let file = crossfadeIncomingFile, let idx = crossfadeIncomingIndex else {
@@ -1933,7 +2091,7 @@ class AudioEngine: RCTEventEmitter {
         let incomingNode = idleNode
         outgoingNode.stop()
         outgoingNode.volume = crossfadeTargetVolume
-        incomingNode.volume = crossfadeTargetVolume
+        if snapToFull { incomingNode.volume = crossfadeTargetVolume }
 
         activeNode = incomingNode
         isCrossfading = false
@@ -2000,10 +2158,20 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func skipToNextInternal() {
+        if isCrossfading {
+            queuedSkipDirection = 1
+            debugLog("[RAMP-DEBUG] skip NEXT arrived mid-crossfade, queued until it finishes")
+            return
+        }
         advance(direction: 1, wrap: repeatMode == .queue, autoPlay: true, isManualSkip: true)
     }
 
     private func skipToPreviousInternal() {
+        if isCrossfading {
+            queuedSkipDirection = -1
+            debugLog("[RAMP-DEBUG] skip PREVIOUS arrived mid-crossfade, queued until it finishes")
+            return
+        }
         advance(direction: -1, wrap: repeatMode == .queue, autoPlay: true, isManualSkip: true)
     }
 
@@ -2262,12 +2430,63 @@ class AudioEngine: RCTEventEmitter {
         }
         var track = queue[idx]
         if let title = metadata["title"] as? String { track.title = title }
-        if let artist = metadata["artist"] as? String { track.artist = artist }
+        if let artist = metadata["artist"] as? String {
+            track.artist = artist
+            artistOverrideById[track.id] = artist
+        }
         if let album = metadata["album"] as? String { track.album = album }
-        if let artwork = metadata["artwork"] as? String { track.artwork = artwork }
+        if let artwork = metadata["artwork"] as? String {
+            track.artwork = artwork
+            artworkOverrideById[track.id] = artwork
+        }
         queue[idx] = track
         if idx == currentIndex { updateNowPlayingInfo() }
         resolve(nil)
+    }
+
+    // Writes a downscaled JPEG copy of an image (longest side = maxPixel).
+    // iOS empties React Native's decoded-image cache every time the app goes
+    // to the background, so every cover had to be decoded again from its
+    // full-size file on return, which is the blank-then-fill flash on lists.
+    // A ~160px copy decodes near-instantly, so lists use those; the same
+    // helper makes a screen-sized copy of the custom background.
+    @objc(makeThumbnail:destPath:maxPixel:resolver:rejecter:)
+    func makeThumbnail(_ src: String, destPath dest: String, maxPixel: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.global(qos: .utility).async {
+            func plainPath(_ p: String) -> String {
+                if p.hasPrefix("file://"), let u = URL(string: p) { return u.path }
+                return p
+            }
+            var srcPath = plainPath(src)
+            let destPathPlain = plainPath(dest)
+            if !FileManager.default.fileExists(atPath: srcPath),
+               let range = srcPath.range(of: "/Documents/"),
+               let realDocs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                srcPath = realDocs.appendingPathComponent(String(srcPath[range.upperBound...])).path
+            }
+            guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: srcPath) as CFURL, nil) else {
+                resolve(false)
+                return
+            }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel.intValue,
+            ]
+            guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+                  let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85) else {
+                resolve(false)
+                return
+            }
+            do {
+                try FileManager.default.createDirectory(atPath: (destPathPlain as NSString).deletingLastPathComponent, withIntermediateDirectories: true, attributes: nil)
+                try data.write(to: URL(fileURLWithPath: destPathPlain), options: .atomic)
+                resolve(true)
+            } catch {
+                resolve(false)
+            }
+        }
     }
 
     @objc(play:rejecter:)
@@ -2405,7 +2624,7 @@ class AudioEngine: RCTEventEmitter {
     @objc(setNowPlayingPaused:resolver:rejecter:)
     func setNowPlayingPaused(_ paused: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         displayedAsPaused = paused.boolValue
-        displayedAsPausedAt = paused.boolValue ? Date() : nil
+        displayedAsPausedAt = Date()
         updateNowPlayingInfo()
         resolve(nil)
     }
@@ -2438,7 +2657,17 @@ class AudioEngine: RCTEventEmitter {
         // every JS ramp/fade actually calls. Settling first here means any
         // JS-driven volume change always lands on one already-consistent
         // node, never a node a crossfade timer is still actively fading.
-        if isCrossfading { settleCrossfadeToIncoming() }
+        // While a native crossfade is running it owns both nodes' volume.
+        // JS writes that land mid-crossfade (the "restore to full" or the
+        // start-at-zero of a ramp-in it thinks it needs) used to snap the
+        // crossfade shut: incoming jumped to full volume for an instant,
+        // then JS pulled it to 0 and ramped it back up, which is the
+        // full-volume blip at the start of a crossfade. They are now
+        // ignored; the crossfade finishes at the level it was started for.
+        if isCrossfading {
+            resolve(nil)
+            return
+        }
         // A direct setVolume call always means "I want this volume NOW" —
         // cancel any ramp still in flight so it can't win a race and
         // overwrite this a moment later on its next tick. Resolves the
@@ -2467,6 +2696,7 @@ class AudioEngine: RCTEventEmitter {
     // same way a direct setVolume does). Must only be called on the main
     // thread/queue, same as everything else touching activeNode.
     private func cancelActiveRampLocked() {
+        rampInFlightTarget = nil
         rampTimer?.invalidate()
         rampTimer = nil
         rampGeneration &+= 1
@@ -2497,11 +2727,30 @@ class AudioEngine: RCTEventEmitter {
         // (pause-out, skip-out, a fresh song's ramp-in) calls THIS, not
         // setVolume, for the actual fade. Settle any in-progress crossfade
         // onto a single node before this ramp starts driving activeNode.
-        if isCrossfading { settleCrossfadeToIncoming() }
-        cancelActiveRampLocked()
-        let fromVal = max(0, min(1, from.floatValue))
+        var fromVal = max(0, min(1, from.floatValue))
         let toVal = max(0, min(1, to.floatValue))
         let dur = max(0, duration.doubleValue)
+        if isCrossfading {
+            if toVal >= fromVal {
+                // A fade-IN (or restore) during a crossfade: the crossfade is
+                // already fading the incoming song in, so this is skipped
+                // instead of snapping the crossfade shut. See setVolume.
+                resolve(nil)
+                return
+            }
+            // A fade-OUT (pause, a tap on another song) during a crossfade:
+            // finish the crossfade on the incoming song WITHOUT jumping it
+            // to full volume, and start the fade-out from the level it was
+            // actually at, so there is no blip up before the fade down.
+            // (Only when the incoming song has actually started; if it is
+            // still loading, the outgoing song is the one audible and the
+            // fade-out just starts from where JS said.)
+            let incomingStarted = crossfadeIncomingNode != nil && crossfadeIncomingFile != nil
+            let liveLevel = (crossfadeIncomingNode?.volume ?? 0) / max(crossfadeIncomingGainCorrection, 0.0001)
+            settleCrossfadeToIncoming(snapToFull: false)
+            if incomingStarted { fromVal = min(fromVal, max(0.0, liveLevel)) }
+        }
+        cancelActiveRampLocked()
 
         volume = fromVal
         activeNode.volume = fromVal * currentGainCorrection
@@ -2516,6 +2765,7 @@ class AudioEngine: RCTEventEmitter {
         rampGeneration &+= 1
         let myGeneration = rampGeneration
         pendingRampResolve = resolve
+        rampInFlightTarget = toVal
         let start = Date()
         // 1/60s tick — smooth without being any more bridge/CPU traffic
         // than a single scheduled Timer regardless of interval; the actual
@@ -2533,6 +2783,7 @@ class AudioEngine: RCTEventEmitter {
                 if self.rampGeneration == myGeneration {
                     self.rampTimer = nil
                     self.pendingRampResolve = nil
+                    self.rampInFlightTarget = nil
                 }
                 resolve(nil)
             }

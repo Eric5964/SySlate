@@ -10,7 +10,6 @@ import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
-import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';

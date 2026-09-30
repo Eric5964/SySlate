@@ -376,12 +376,6 @@ function extractTagsFromId3(bytes) {
     return Object.keys(out).length ? out : null;
 }
 
-function hashCode(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-    return Math.abs(hash);
-}
-
 async function extractTagsUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {

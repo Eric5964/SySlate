@@ -3,6 +3,12 @@
 
 @interface RCT_EXTERN_MODULE(AudioEngine, RCTEventEmitter)
 
+RCT_EXTERN_METHOD(makeThumbnail:(NSString *)src
+                  destPath:(NSString *)dest
+                  maxPixel:(nonnull NSNumber *)maxPixel
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(setupPlayer:(NSDictionary *)options
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

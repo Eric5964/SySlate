@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import AudioEngine from '../native/AudioEngine';
 
 // Extracts embedded cover art (the PICTURE block in FLAC, the 'covr' atom in
 // MP4/ALAC) directly, with hand-rolled binary parsers instead of a metadata
@@ -27,6 +28,57 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 //   that path is actually replaced," not literally forever.
 
 const ART_DIR = FileSystem.documentDirectory + '.song-art/';
+
+// Small copies of covers for list rows. iOS throws away React Native's
+// decoded-image cache whenever the app is backgrounded, so on return every
+// row had to decode its full-size cover again (blank squares that fill in
+// over a second). A 160px copy decodes almost instantly, so lists use these.
+const THUMB_DIR = ART_DIR + 'thumbs/';
+const THUMB_PX = 160;
+const thumbNames = new Set();
+const thumbQueued = new Set();
+let thumbQueue = [];
+let thumbRunning = false;
+
+function thumbNameFor(uri) {
+    const file = uri.split('/').pop() || '';
+    return file.replace(/\.[^.]+$/, '') + '.jpg';
+}
+
+async function loadThumbNames() {
+    try {
+        const names = await FileSystem.readDirectoryAsync(THUMB_DIR);
+        names.forEach(n => thumbNames.add(n));
+    } catch { }
+}
+
+async function runThumbQueue() {
+    if (thumbRunning) return;
+    thumbRunning = true;
+    while (thumbQueue.length) {
+        const { uri, name } = thumbQueue.shift();
+        try {
+            const ok = await AudioEngine.makeThumbnail(uri, THUMB_DIR + name, THUMB_PX);
+            if (ok) thumbNames.add(name);
+        } catch { }
+        await new Promise(r => setTimeout(r, 40));
+    }
+    thumbRunning = false;
+}
+
+// The URI a list row should draw: the small copy if it exists, otherwise the
+// full one (and the small one is made in the background for next time).
+export function listArtUri(uri) {
+    if (!uri || typeof uri !== 'string' || !uri.includes('.song-art/')) return uri;
+    const name = thumbNameFor(uri);
+    if (thumbNames.has(name)) return THUMB_DIR + name;
+    if (!thumbQueued.has(name)) {
+        thumbQueued.add(name);
+        thumbQueue.push({ uri, name });
+        runThumbQueue();
+    }
+    return uri;
+}
 // v6: cache entries now store a lightweight fingerprint (file size +
 // modification time) alongside the resolved art URI/null, instead of just
 // the bare value. The cache key is `song.id`, which is the file's PATH —
@@ -61,7 +113,7 @@ async function loadCacheMap() {
 }
 // Call once at app start so the map is already in memory by the time the
 // first list mounts.
-export function preloadArtCache() { return loadCacheMap(); }
+export function preloadArtCache() { return Promise.all([loadCacheMap(), loadThumbNames()]); }
 // Synchronous, no file or storage access. Returns { [song.id]: uri | null }
 // for every given song the cache already has an answer for (null means
 // "checked, no embedded art"). Empty until the map has loaded.
@@ -70,7 +122,7 @@ export function peekCachedArtBulk(songs) {
     if (!cacheMapSync || !songs) return out;
     for (const song of songs) {
         const entry = song?.id ? cacheMapSync[song.id] : undefined;
-        if (entry !== undefined) out[song.id] = entry.uri ?? null;
+        if (entry !== undefined) out[song.id] = listArtUri(entry.uri ?? null);
     }
     return out;
 }
@@ -107,24 +159,7 @@ const B64_LOOKUP = (() => {
     return t;
 })();
 
-function base64ToBytes(b64) {
-    const clean = b64.replace(/=+$/, '');
-    const outLen = Math.floor(clean.length * 3 / 4);
-    const out = new Uint8Array(outLen);
-    let o = 0;
-    for (let i = 0; i < clean.length; i += 4) {
-        const b0 = B64_LOOKUP[clean.charCodeAt(i)];
-        const b1 = B64_LOOKUP[clean.charCodeAt(i + 1)];
-        const b2 = i + 2 < clean.length ? B64_LOOKUP[clean.charCodeAt(i + 2)] : 0;
-        const b3 = i + 3 < clean.length ? B64_LOOKUP[clean.charCodeAt(i + 3)] : 0;
-        if (o < outLen) out[o++] = (b0 << 2) | (b1 >> 4);
-        if (o < outLen) out[o++] = ((b1 & 0xf) << 4) | (b2 >> 2);
-        if (o < outLen) out[o++] = ((b2 & 0x3) << 6) | b3;
-    }
-    return out;
-}
-
-// Same decode as above, but yields back to the event loop every ~250K input
+// Base64 decode that yields back to the event loop every ~250K input
 // characters instead of running as one long uninterrupted synchronous loop.
 // For a 6MB read (~8M base64 characters) the plain version could occupy the
 // JS thread for a real stretch — and this runs right at track-change time,

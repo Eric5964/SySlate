@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, InteractionManager, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -520,7 +520,6 @@ const s = StyleSheet.create({
     sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
     groupPill: { marginHorizontal: 24, marginTop: 14, marginBottom: 6, alignSelf: 'flex-start', backgroundColor: '#1a1a1a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
-    emptyPriorityHint: { color: '#555', fontSize: 13, paddingHorizontal: 24, paddingBottom: 10 },
     divider: { height: 1, backgroundColor: '#1e1e1e', marginHorizontal: 24, marginTop: 8 },
     empty: { color: '#333', fontSize: 14, textAlign: 'center' },
     qRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, marginHorizontal: 14, marginVertical: 2, borderRadius: 12 },

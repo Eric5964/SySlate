@@ -136,13 +136,44 @@ export default function AllSongsScreen() {
         <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
 
-            {/* Same top-bar layout as the playlist screen: title, then a row
-                with centered search (+ clear button), EQ tag, queue icon. */}
-            <View style={s.topBar}>
-                <View style={s.titleRow}>
-                    <Text style={[s.title, { color: base.text }]}>All Songs</Text>
-                    <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
-                        <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
+            {/* Same top row as the playlist screen and the player: EQ and
+                queue sit in the exact same top-right spot on every screen.
+                Title on the left where the back arrow would be. */}
+            <View style={s.topRow}>
+                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                        <MenuBarsIcon size={20} color={theme.accent} />
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            {/* Search with Sort right beside it; the sort choices open
+                underneath the search bar. */}
+            <View style={s.searchBlock}>
+                <View style={s.searchRow}>
+                    <View style={{ flex: 1, justifyContent: 'center' }}>
+                        <TextInput
+                            style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
+                            value={search} onChangeText={setSearch}
+                            placeholder="Search songs, artists..."
+                            placeholderTextColor="#444"
+                        />
+                        {search.length > 0 && (
+                            <TouchableOpacity style={s.clearBtn} onPress={() => { setSearch(''); Keyboard.dismiss(); }} hitSlop={HIT}>
+                                <Text style={[s.clearBtnText, { color: base.textFaint }]}>✕</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                    <TouchableOpacity
+                        style={[s.sortBtn, { backgroundColor: showSort ? theme.accent : base.surface }]}
+                        onPress={() => setShowSort(v => !v)}
+                        hitSlop={HIT}
+                    >
+                        <Text style={[s.sortBtnText, { color: showSort ? theme.onAccent : theme.accent }]} numberOfLines={1}>{sortLabel}</Text>
                     </TouchableOpacity>
                 </View>
                 {showSort && (
@@ -160,35 +191,6 @@ export default function AllSongsScreen() {
                         ))}
                     </View>
                 )}
-                {/* The title/search block above keeps its own wider 24px
-                    edge padding (top-level tab, not a sub-page), but the
-                    EQ/queue icons are pulled out to their own -16px negative
-                    margin so their right edge lands at the same 8px inset
-                    PlaylistDetailScreen/PlayerScreen use — otherwise these
-                    two icons sat visibly further from the edge than on
-                    every other screen they also appear on. topBtn size also
-                    matched to 40 (was 36 here, 44 on the player screen). */}
-                <View style={[s.searchRow, { marginRight: -16 }]}>
-                    <View style={{ flex: 1, justifyContent: 'center' }}>
-                        <TextInput
-                            style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
-                            value={search} onChangeText={setSearch}
-                            placeholder="Search songs, artists..."
-                            placeholderTextColor="#444"
-                        />
-                        {search.length > 0 && (
-                            <TouchableOpacity style={s.clearBtn} onPress={() => { setSearch(''); Keyboard.dismiss(); }} hitSlop={HIT}>
-                                <Text style={[s.clearBtnText, { color: base.textFaint }]}>✕</Text>
-                            </TouchableOpacity>
-                        )}
-                    </View>
-                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
-                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
-                        <MenuBarsIcon size={20} color={theme.accent} />
-                    </TouchableOpacity>
-                </View>
             </View>
 
             {allSongs.length === 0 ? (
@@ -243,17 +245,17 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topBar: { paddingTop: 60, paddingHorizontal: 24, paddingBottom: 10 },
+    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
+    searchBlock: { paddingHorizontal: 16, paddingBottom: 10 },
     // Was 'flex-end' — with paddingTop:60 identical to Playlists' own
     // header, this was the actual cause of "All Songs title sits lower
     // than Playlists" — flex-end bottom-aligns the title against the
     // sortBtn next to it instead of top-aligning it like Playlists' header
     // (flex-start) does.
-    titleRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
-    sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },
+    sortBtn: { paddingHorizontal: 14, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
     sortBtnText: { fontSize: 13, fontWeight: '600' },
-    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingBottom: 10, gap: 8 },
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingTop: 10, gap: 8 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
     sortChipText: { color: '#888', fontSize: 13, fontWeight: '600' },
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },

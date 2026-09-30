@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect, useCallback, useMemo, memo, useRef } from 'react';
+import React, { useContext, useState, useEffect, useCallback, memo, useRef } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated,
 } from 'react-native';
@@ -7,11 +7,10 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
-import { playlistColor } from '../utils/color';
 import { squircle } from '../utils/squircle';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
-    getPlaylistOrder, setPlaylistOrder,
+    setPlaylistOrder,
     getPlaylistCovers, setPlaylistCover, persistCoverImage,
 } from '../utils/storage';
 import BottomSheet from '../components/BottomSheet';

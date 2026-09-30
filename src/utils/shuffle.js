@@ -25,9 +25,8 @@ export function trueRandomArray(arr) {
 // Each song gets a weight of 1 / (1 + plays)^0.4, so a song played 10 times
 // is still about 40% as likely to land early as a never-played one. It's a
 // nudge, not a rule. Uses weighted random sampling (Efraimidis-Spirakis):
-// sorting by random^(1/weight). Then swaps apart same-artist neighbors.
-// `counts` is an object of { [song.id]: playCount }; without it this is
-// just a plain shuffle plus the artist spacing.
+// sort by random^(1/weight). `counts` is { [song.id]: playCount }; without
+// it this is a plain shuffle.
 export function smartShuffle(tracks, counts = {}) {
   const keyed = tracks.map(t => {
     const plays = Math.max(0, counts[t.id] || 0);
@@ -35,18 +34,7 @@ export function smartShuffle(tracks, counts = {}) {
     return { t, k: Math.pow(Math.random() || 1e-9, 1 / weight) };
   });
   keyed.sort((a, b) => b.k - a.k);
-  const shuffled = keyed.map(x => x.t);
-  for (let i = 1; i < shuffled.length - 1; i++) {
-    if (shuffled[i].artist === shuffled[i - 1].artist) {
-      for (let j = i + 1; j < shuffled.length; j++) {
-        if (shuffled[j].artist !== shuffled[i - 1].artist) {
-          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-          break;
-        }
-      }
-    }
-  }
-  return shuffled;
+  return keyed.map(x => x.t);
 }
 
 export function buildQueue(tracks, mode, counts) {

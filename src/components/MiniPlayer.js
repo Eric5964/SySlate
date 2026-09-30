@@ -10,6 +10,7 @@ import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackS
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
+import { formatArtists } from '../utils/artists';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = 44;
@@ -19,13 +20,12 @@ export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack } = usePlayback();
     const { theme, base } = useTheme();
-    const { coverShape, showSongCovers } = usePreferences();
+    const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin } = usePreferences();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
     const insets = useSafeAreaInsets();
 
-    const pct = progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
     // Replaces the old Animated.timing-based smoothing, which only
     // restarted its animation when the freshly-polled pct had "drifted"
     // more than 2% from wherever the animation currently was — meant to
@@ -86,7 +86,7 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
-    const artist = currentTrack.ourArtist ?? currentTrack.artist ?? '';
+    const artist = formatArtists(currentTrack.ourArtist ?? currentTrack.artist ?? '', artistSeparator, artistDisplayJoin);
     const artwork = currentTrack.artwork;
 
     return (

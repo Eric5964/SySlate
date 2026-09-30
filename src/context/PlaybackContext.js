@@ -4,6 +4,8 @@ import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, shuffleArray } from '../utils/shuffle';
+import { formatArtists } from '../utils/artists';
+import { usePreferences } from './PreferencesContext';
 import { getPlayCounts } from '../utils/storage';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { withTimeout } from '../utils/withTimeout';
@@ -133,6 +135,51 @@ export function PlaybackProvider({ children }) {
         }, 3000);
         return () => { cancelled = true; clearTimeout(timer); };
     }, [currentTrack?.id]);
+
+    // Tells the native side (lock screen, Control Center, car display) about
+    // the current song's cover whenever it is known. The extraction effect
+    // below only did this when IT had just found the art, so when the cover
+    // was already attached (from the cache, in the same update as the song
+    // change) nothing ever told the native side, and the cover never showed
+    // outside the app. Deduped so it only fires once per song and cover.
+    // The artist goes out the same way, already formatted with the user's
+    // separator and join settings, so the lock screen, Control Center and
+    // car display match the in-app text instead of showing the raw tag.
+    const { artistSeparator: prefArtistSep, artistDisplayJoin: prefArtistJoin } = usePreferences();
+    const pushedArtRef = useRef('');
+    useEffect(() => {
+        if (!currentTrack?.id) return;
+        const art = currentTrack.artwork || null;
+        const shownArtist = formatArtists(currentTrack.ourArtist ?? currentTrack.artist ?? '', prefArtistSep, prefArtistJoin);
+        const key = `${currentTrack._qid ?? currentTrack.id}|${art}|${shownArtist}`;
+        if (pushedArtRef.current === key) return;
+        let cancelled = false;
+        // When a song is started from a list, JS marks it as current BEFORE
+        // the native queue has been filled, so the first lookup can find
+        // nothing. That used to be treated as done and never retried, which
+        // is why the lock screen never got the cover or the formatted
+        // artist. Now it keeps trying for a few seconds and only counts as
+        // pushed once native actually accepted it.
+        (async () => {
+            const delays = [0, 250, 700, 1500, 3000, 5000];
+            for (const wait of delays) {
+                if (wait) await new Promise(r => setTimeout(r, wait));
+                if (cancelled) return;
+                try {
+                    const queue = await AudioEngine.getQueue();
+                    let idx = currentTrack._qid != null ? queue.findIndex(t => t._qid === currentTrack._qid) : -1;
+                    if (idx === -1) idx = queue.findIndex(t => t.id === currentTrack.id);
+                    if (idx === -1) continue;
+                    const meta = { artist: shownArtist };
+                    if (art) meta.artwork = art;
+                    await AudioEngine.updateMetadataForTrack(idx, meta);
+                    if (!cancelled) pushedArtRef.current = key;
+                    return;
+                } catch { }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [currentTrack?.id, currentTrack?._qid, currentTrack?.artwork, currentTrack?.artist, prefArtistSep, prefArtistJoin]);
 
     // Extracts embedded FLAC/ALAC cover art for whatever's currently playing
     // and merges it into currentTrack once ready. Centralized here (rather
@@ -759,7 +806,7 @@ export function PlaybackProvider({ children }) {
         // crossfade branch above already uses for this — checkRampWindow
         // backs off entirely while it's held, same as it already does for
         // every other transition.
-        const guardId = preClaimFadeForFreshStart();
+        preClaimFadeForFreshStart();
         try {
             const oldQueue = await AudioEngine.getQueue();
             const curIdx = await AudioEngine.getCurrentTrack();
