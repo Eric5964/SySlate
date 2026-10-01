@@ -37,10 +37,25 @@ export function smartShuffle(tracks, counts = {}) {
   return keyed.map(x => x.t);
 }
 
+// "Dumb" shuffle: the mirror image of smart shuffle. Songs you have played
+// more get the bigger weight, (1 + plays)^0.4, so your most-played songs tend
+// to come up earlier. Same gentle nudge, same weighted sampling; a song with
+// zero plays can still land anywhere.
+export function dumbShuffle(tracks, counts = {}) {
+  const keyed = tracks.map(t => {
+    const plays = Math.max(0, counts[t.id] || 0);
+    const weight = Math.pow(1 + plays, 0.4);
+    return { t, k: Math.pow(Math.random() || 1e-9, 1 / weight) };
+  });
+  keyed.sort((a, b) => b.k - a.k);
+  return keyed.map(x => x.t);
+}
+
 export function buildQueue(tracks, mode, counts) {
   switch (mode) {
     case 'true_random': return trueRandomArray(tracks);
     case 'smart':       return smartShuffle(tracks, counts);
+    case 'dumb':        return dumbShuffle(tracks, counts);
     case 'off':         return [...tracks];
     default:            return shuffleArray(tracks); // full_cycle
   }

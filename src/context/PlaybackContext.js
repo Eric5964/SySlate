@@ -24,7 +24,7 @@ const Ctx = createContext(null);
 // Smart shuffle needs each song's play count to weight the order, and that
 // lives in async storage, so every queue build goes through this.
 const buildQueueAsync = async (tracks, mode) => {
-    if (mode === 'smart') {
+    if (mode === 'smart' || mode === 'dumb') {
         const counts = await getPlayCounts(tracks).catch(() => ({}));
         return buildQueue(tracks, mode, counts);
     }
@@ -1174,6 +1174,27 @@ export function PlaybackProvider({ children }) {
         try {
             const queue = last?.playlist?.queue;
             if (!queue?.length || last.index === undefined) return;
+            // The native side writes its own snapshot of "which song, how far
+            // in" every ~1.5s and on pause, interruption, route change and
+            // backgrounding. It is newer and more reliable than the JS save
+            // (JS can be suspended or killed before it gets to run), so when
+            // it names a song in this queue, it wins.
+            try {
+                const snap = await AudioEngine.getSavedSnapshot();
+                if (snap?.id && Number.isFinite(snap.position)) {
+                    let found = snap.qid ? queue.findIndex(t => t._qid === snap.qid) : -1;
+                    if (found === -1) {
+                        // Same song id: take the occurrence closest to the JS-saved index.
+                        let bestDist = Infinity;
+                        queue.forEach((t, i) => {
+                            if (t.id !== snap.id) return;
+                            const d = Math.abs(i - last.index);
+                            if (d < bestDist) { bestDist = d; found = i; }
+                        });
+                    }
+                    if (found !== -1) last = { ...last, index: found, position: snap.position };
+                }
+            } catch { }
             const mode = await getShuffleMode();
             const on = await getShuffleOnStorage();
             await primeNativeQueue(queue, last.index);
@@ -1395,6 +1416,15 @@ export function PlaybackProvider({ children }) {
     }, []);
 
     useEffect(() => { saveSessionRef.current = saveSession; });
+
+    // Another app taking over the audio (a call, a video, a game) is exactly
+    // when this app can get suspended or killed soon after, so the spot is
+    // saved right as the interruption starts instead of waiting for the
+    // 5-second checkpoint.
+    useEffect(() => {
+        const sub = AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => saveSessionRef.current?.());
+        return () => sub?.remove?.();
+    }, []);
 
     // Position wasn't being saved between app opens/closes — saveSession was
     // only ever called on track-change events, so closing mid-song (not at a

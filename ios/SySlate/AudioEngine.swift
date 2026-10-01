@@ -383,6 +383,10 @@ class AudioEngine: RCTEventEmitter {
 
         engine.connect(nodeA, to: preMixNode, format: nil)
         engine.connect(nodeB, to: preMixNode, format: nil)
+        // Node B has never been used before the first crossfade and would
+        // otherwise sit at its default full volume, which is the loud blip at
+        // the start of the first crossfade. Idle nodes now always rest at 0.
+        nodeB.volume = 0
         engine.connect(preMixNode, to: eqNode, format: nil)
         engine.connect(eqNode, to: normalizerNode, format: nil)
         engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
@@ -437,11 +441,50 @@ class AudioEngine: RCTEventEmitter {
         // already-purged app gets no notification whatsoever, nothing to
         // hook for that case.
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate), name: UIApplication.willTerminateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.didEnterBackgroundNotification, object: nil)
+    }
+
+    // MARK: - Playback snapshot (where the user left off)
+
+    // Which song and how far in, written to UserDefaults often and at every
+    // moment the app might be about to lose its chance: pause, another app
+    // taking over the audio, a route change, going to the background,
+    // termination. The JS-side save lives in React Native and can be
+    // suspended or killed before it runs; this one is plain native code
+    // that runs right where the playback state is.
+    private var lastSnapshotAt: Date = .distantPast
+    private static let snapshotKey = "SySlatePlaybackSnapshotV1"
+
+    private func savePlaybackSnapshot(force: Bool = false) {
+        if !force && Date().timeIntervalSince(lastSnapshotAt) < 1.5 { return }
+        guard let idx = currentIndex, idx >= 0, idx < queue.count else { return }
+        let position = frozenPositionSeconds ?? currentPositionSeconds()
+        guard position.isFinite, position >= 0 else { return }
+        lastSnapshotAt = Date()
+        let track = queue[idx]
+        let snapshot: [String: Any] = [
+            "id": track.id,
+            "qid": track.qid ?? "",
+            "position": position,
+            "savedAt": Date().timeIntervalSince1970,
+        ]
+        UserDefaults.standard.set(snapshot, forKey: AudioEngine.snapshotKey)
+    }
+
+    @objc private func handleAppResigned() {
+        savePlaybackSnapshot(force: true)
+    }
+
+    @objc(getSavedSnapshot:rejecter:)
+    func getSavedSnapshot(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        resolve(UserDefaults.standard.dictionary(forKey: AudioEngine.snapshotKey))
     }
 
     // MARK: - App termination
 
     @objc private func handleAppWillTerminate() {
+        savePlaybackSnapshot(force: true)
         guard state == .playing else { return }
         // No guaranteed continuation past this notification — the process
         // can be killed shortly after it returns, so this can't be the
@@ -525,6 +568,7 @@ class AudioEngine: RCTEventEmitter {
             // pause-with-ramp function is expected to call this module's
             // pause()/setVolume() itself, same as it does for a manual
             // pause tap.
+            savePlaybackSnapshot(force: true)
             sendEvent(withName: "AudioInterruptionBegan", body: nil)
         } else if type == .ended {
             var shouldResume = false
@@ -546,6 +590,7 @@ class AudioEngine: RCTEventEmitter {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
         markOutputCold()
+        savePlaybackSnapshot(force: true)
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
                 self?.pauseInternal()
@@ -1305,7 +1350,7 @@ class AudioEngine: RCTEventEmitter {
 
             // Output muted BEFORE the engine/session wake up, so the wake-up
             // click never reaches the speaker.
-            if autoPlay { beginColdStartMuteIfNeeded() }
+            let coldStart = autoPlay ? beginColdStartMuteIfNeeded() : false
             if !engine.isRunning {
                 try engine.start()
             }
@@ -1319,10 +1364,10 @@ class AudioEngine: RCTEventEmitter {
             activeNode.volume = volume * gainCorrection
 
             if autoPlay {
-                activeNode.play()
                 lastAudibleAt = Date()
                 setState(.playing)
-                debugLog("[RAMP-DEBUG] native: activeNode.play() + setState(.playing) fired")
+                startActiveNodeAfterGainSettles(needsSettle: coldStart || activeNode.volume < 0.02)
+                debugLog("[RAMP-DEBUG] native: play requested + setState(.playing) fired")
             } else {
                 setState(.ready)
             }
@@ -1787,7 +1832,7 @@ class AudioEngine: RCTEventEmitter {
                 timer.invalidate()
                 self.crossfadeFadeTimer = nil
                 outgoingNode.stop()
-                outgoingNode.volume = targetVolume
+                outgoingNode.volume = 0
 
                 self.activeNode = incomingNode
                 self.isCrossfading = false
@@ -1881,6 +1926,7 @@ class AudioEngine: RCTEventEmitter {
                 "duration": duration,
                 "buffered": duration, // local files: fully "buffered" once loaded, no network buffering to report
             ])
+            self.savePlaybackSnapshot()
             tickCount += 1
             guard tickCount % nowPlayingInfoEveryNTicks == 0 else { return }
             // Real bug found here: updateNowPlayingInfo() only ever ran
@@ -1919,9 +1965,34 @@ class AudioEngine: RCTEventEmitter {
 
     private func markOutputCold() { outputIsCold = true }
 
-    private func beginColdStartMuteIfNeeded() {
+    // The pop on the first play (and after a route change) was measured from a
+    // screen recording: a full-scale burst about 25ms long at the instant
+    // playback starts, before the fade-in, then a clean ramp. That is the
+    // first slice of real song audio going out at a STALE node gain (the old
+    // 0.4 level, plus the EQ pre-amp, clipping) because the node was told
+    // "volume 0" only a few milliseconds before play(), less than one render
+    // slice, so the mixer had not applied it yet. Giving the gain a moment to
+    // land before play() starts removes the burst.
+    private var pendingPlayToken: Int = 0
+    private let gainSettleDelay: TimeInterval = 0.08
+
+    private func startActiveNodeAfterGainSettles(needsSettle: Bool) {
+        pendingPlayToken += 1
+        if !needsSettle {
+            activeNode.play()
+            return
+        }
+        let token = pendingPlayToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay) { [weak self] in
+            guard let self = self, token == self.pendingPlayToken, self.state == .playing else { return }
+            self.activeNode.play()
+        }
+    }
+
+    @discardableResult
+    private func beginColdStartMuteIfNeeded() -> Bool {
         if !outputIsCold, let last = lastAudibleAt, Date().timeIntervalSince(last) > 4 { outputIsCold = true }
-        guard outputIsCold else { return }
+        guard outputIsCold else { return false }
         outputIsCold = false
         coldStartToken += 1
         let token = coldStartToken
@@ -1937,6 +2008,7 @@ class AudioEngine: RCTEventEmitter {
                 }
             }
         }
+        return true
     }
 
     private func playInternal() {
@@ -1947,7 +2019,7 @@ class AudioEngine: RCTEventEmitter {
             }
             return
         }
-        beginColdStartMuteIfNeeded()
+        let coldStart = beginColdStartMuteIfNeeded()
         activateSession()
         frozenPositionSeconds = nil
         // Real bug: unlike finishLoadingTrack and runCrossfade (both check
@@ -1967,9 +2039,9 @@ class AudioEngine: RCTEventEmitter {
             try? engine.start()
         }
         pauseReassertToken += 1
-        activeNode.play()
         lastAudibleAt = Date()
         setState(.playing)
+        startActiveNodeAfterGainSettles(needsSettle: coldStart || activeNode.volume < 0.02)
         // Resume — reschedule the lead-in timer from the CURRENT position,
         // not whatever was left when it was invalidated on pause below.
         scheduleCrossfadeLeadIn()
@@ -2039,9 +2111,11 @@ class AudioEngine: RCTEventEmitter {
         // operates on ONE settled node instead of two nodes mid-fight.
         if isCrossfading { settleCrossfadeToIncoming() }
         lastAudibleAt = Date()
+        pendingPlayToken += 1
         frozenPositionSeconds = currentPositionSeconds()
         activeNode.pause()
         setState(.paused)
+        savePlaybackSnapshot(force: true)
         reassertPausedToSystem()
         // Don't let a natural-end crossfade fire while paused — playInternal
         // reschedules it from wherever playback actually resumes.
@@ -2090,7 +2164,7 @@ class AudioEngine: RCTEventEmitter {
         }
         let incomingNode = idleNode
         outgoingNode.stop()
-        outgoingNode.volume = crossfadeTargetVolume
+        outgoingNode.volume = 0
         if snapToFull { incomingNode.volume = crossfadeTargetVolume }
 
         activeNode = incomingNode

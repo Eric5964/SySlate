@@ -341,6 +341,7 @@ export default function SettingsScreen() {
         { id: 'full_cycle', label: 'Full Cycle', sub: 'Every song once before any repeat' },
         { id: 'true_random', label: 'True Random', sub: 'Any song, any time, repeats possible' },
         { id: 'smart', label: 'Smart', sub: 'Favors songs you have played less' },
+        { id: 'dumb', label: 'Dumb', sub: 'Favors songs you have played more' },
     ];
 
     // Best-effort detection of which sideload tool is running this build.
