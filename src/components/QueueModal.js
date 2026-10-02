@@ -100,25 +100,23 @@ function FadePill({ isNew, children }) {
 // finished.
 const REMOVE_ANIM_MS = 220;
 function ShrinkOutRow({ removing, children }) {
-    const heightAnim = useRef(new Animated.Value(1)).current;
+    const t = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // Requested: queue deletes were laggy/inconsistent. This used to run
-        // THREE JS-driver animated values at once per removed row (height +
-        // opacity + scaleY, all re-evaluated on the JS thread every frame,
-        // on top of the removal's own re-render work) — the JS thread was
-        // the bottleneck, so the frame budget was easy to blow. Height
-        // alone drives the whole effect now: the row's content is clipped
-        // by the collapsing container (overflow hidden), which reads as the
-        // row sliding shut, with a third of the per-frame JS work and no
-        // way for the fade and the collapse to fall out of step with each
-        // other (the earlier "empty gap" glitch was exactly two separately
-        // driven values disagreeing).
-        Animated.timing(heightAnim, { toValue: 0, duration: REMOVE_ANIM_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        // One value drives everything, so the squeeze can never fall out of
+        // step with the collapse: the container's height shrinks while the
+        // row itself is squashed vertically by the same amount (and fades
+        // near the end), kept centred in the closing gap. Before, only the
+        // height shrank and the row was simply cut off from the bottom.
+        Animated.timing(t, { toValue: 0, duration: REMOVE_ANIM_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [removing]);
+    if (!removing) return <View>{children}</View>;
     return (
-        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
-            {children}
+        <Animated.View style={{ height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden', justifyContent: 'center' }}>
+            <Animated.View style={{ height: ROW_HEIGHT, opacity: t.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0.7, 1] }), transform: [{ scaleY: t }] }}>
+                {children}
+            </Animated.View>
         </Animated.View>
     );
 }

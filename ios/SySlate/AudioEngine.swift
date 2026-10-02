@@ -436,11 +436,14 @@ class AudioEngine: RCTEventEmitter {
         // any play() call happens — first tap included — so there's
         // nothing left to cold-start at that critical moment.
         activateSession()
-        do {
-            try engine.start()
-        } catch {
-            NSLog("AudioEngine: failed to warm-start engine at init: \(error)")
-        }
+        // The engine used to be started here and left running, silently,
+        // from launch. A running engine makes iOS treat the app as
+        // playing, so the lock screen and Control Center showed "playing"
+        // for a paused song every time the app opened. It is now only
+        // prepared (resources allocated, hardware not started); play()
+        // starts it with the output held muted (outputIsCold starts true),
+        // which is what prevents the first-play pop.
+        engine.prepare()
 
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
@@ -1794,7 +1797,7 @@ class AudioEngine: RCTEventEmitter {
         // ms later lets the fade curve's own first values land before any
         // audio does. 50ms of slip on a multi-second crossfade is not
         // audible.
-        debugLog(String(format: "[POP] crossfade arm: incomingVol=%.3f outgoingVol=%.3f mixerVol=%.3f", incomingNode.volume, outgoingNode.volume, engine.mainMixerNode.outputVolume))
+        debugLog(String(format: "[POP] crossfade arm: duration=%.1fs leadIn=%.2fs incomingVol=%.3f outgoingVol=%.3f mixerVol=%.3f", duration, leadInSeconds, incomingNode.volume, outgoingNode.volume, engine.mainMixerNode.outputVolume))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self, token == self.playbackToken, self.isCrossfading, self.state == .playing else { return }
             if !self.engine.isRunning { try? self.engine.start() }
@@ -2716,8 +2719,8 @@ class AudioEngine: RCTEventEmitter {
             for i in 0..<n {
                 // Smoothing: the speed glides toward what the disc asks for
                 // (about 10ms) so a finger's jitter does not crackle.
-                cur += (tgt - cur) * 0.003
-                g += (gTgt - g) * 0.01
+                cur += (tgt - cur) * 0.0018
+                g += (gTgt - g) * 0.0035
                 pos += Double(cur) * step
                 if pos < 0 { pos = 0 }
                 if pos > maxPos { pos = maxPos }
@@ -2748,7 +2751,7 @@ class AudioEngine: RCTEventEmitter {
             guard let self = self else { resolve(false); return }
             guard !self.scratchActive, !self.scratchLoading, !self.isCrossfading,
                   let idx = self.currentIndex, idx >= 0, idx < self.queue.count,
-                  self.state == .playing || self.state == .paused,
+                  self.state == .playing || self.state == .paused || self.state == .ready,
                   let file = self.currentFile, self.ensureScratchNode() else { resolve(false); return }
             let track = self.queue[idx]
             let fileRate = file.processingFormat.sampleRate
@@ -2820,10 +2823,10 @@ class AudioEngine: RCTEventEmitter {
                     // Silence the normal player over ~15ms (the scratch node
                     // fades in over the same time), so there is no click.
                     let startVol = self.activeNode.volume
-                    for i in 1...5 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.003 * Double(i)) { [weak self] in
+                    for i in 1...8 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
                             guard let self = self, self.scratchActive else { return }
-                            self.activeNode.volume = startVol * Float(5 - i) / 5
+                            self.activeNode.volume = startVol * Float(8 - i) / 8
                         }
                     }
                     self.debugLog(String(format: "[SCRATCH] begin at %.2fs window=%.1f-%.1f wasPlaying=%@", nowAfter, windowStart, windowEnd, self.scratchWasPlaying ? "true" : "false"))
@@ -2846,27 +2849,40 @@ class AudioEngine: RCTEventEmitter {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.scratchActive else { resolve(nil); return }
             let core = self.scratchCore
-            let finalSec = max(0, self.scratchWindowStartSeconds + core.pos / self.scratchFileRate)
-            core.gainTarget = 0
             let wasPlaying = self.scratchWasPlaying
             let restoreVol = self.volume * self.currentGainCorrection
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-                guard let self = self else { resolve(nil); return }
-                core.active = false
-                self.scratchActive = false
-                self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: wasPlaying)
-                // New audio starts silent and comes up over ~15ms.
-                self.activeNode.volume = 0
-                for i in 1...5 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.003 * Double(i)) { [weak self] in
-                        guard let self = self, !self.scratchActive else { return }
-                        self.activeNode.volume = restoreVol * Float(i) / 5
+            // Playing before: the disc first glides back up to normal speed
+            // (about 120ms, so letting go sounds like the record catching
+            // up, not a cut), then the normal player takes over from that
+            // exact spot with a short overlap. Paused before: just fade out.
+            core.target = wasPlaying ? 1 : 0
+            let glide: TimeInterval = wasPlaying ? 0.12 : 0.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + glide) { [weak self] in
+                guard let self = self, self.scratchActive else { resolve(nil); return }
+                let finalSec = max(0, self.scratchWindowStartSeconds + core.pos / self.scratchFileRate)
+                core.gainTarget = 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + (wasPlaying ? 0.0 : 0.06)) { [weak self] in
+                    guard let self = self, self.scratchActive else { resolve(nil); return }
+                    self.scratchActive = false
+                    self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: wasPlaying)
+                    // The normal player comes up over ~32ms while the scratch
+                    // audio fades out underneath it.
+                    self.activeNode.volume = 0
+                    for i in 1...8 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
+                            guard let self = self, !self.scratchActive else { return }
+                            self.activeNode.volume = restoreVol * Float(i) / 8
+                        }
                     }
+                    if !wasPlaying, self.engine.isRunning { self.engine.pause() }
+                    // Let the scratch fade finish before its audio is dropped.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                        // A new scratch may have started meanwhile; only drop the audio if not.
+                        if self?.scratchActive == false { core.release() }
+                    }
+                    self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=%@", finalSec, wasPlaying ? "play" : "paused"))
+                    resolve(finalSec)
                 }
-                if !wasPlaying, self.engine.isRunning { self.engine.pause() }
-                core.release()
-                self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=%@", finalSec, wasPlaying ? "play" : "paused"))
-                resolve(finalSec)
             }
         }
     }

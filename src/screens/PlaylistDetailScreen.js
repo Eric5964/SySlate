@@ -123,7 +123,7 @@ export default function PlaylistDetailScreen() {
     const addToQueueRef = useRef(addToQueue);
     addToQueueRef.current = addToQueue;
     const stablePlay = useCallback((song) => playRef.current(song), []);
-    const stableAddToQueue = useCallback((song) => addToQueueRef.current(song), []);
+    const stableAddToQueue = useCallback((song) => addToQueueRef.current(song, playlist?.name), [playlist?.name]);
 
     const handlePlay = async () => {
         // Always starts in order — shuffle is something you turn ON, not a

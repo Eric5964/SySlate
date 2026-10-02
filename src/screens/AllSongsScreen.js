@@ -137,7 +137,7 @@ export default function AllSongsScreen() {
     const addToQueueRef = useRef(addToQueue);
     addToQueueRef.current = addToQueue;
     const stablePlay = useCallback((song) => playRef.current(song), []);
-    const stableAddToQueue = useCallback((song) => addToQueueRef.current(song), []);
+    const stableAddToQueue = useCallback((song) => addToQueueRef.current(song, 'All Songs'), []);
 
     const sortLabel = SORTS.find(o => o.id === sortId)?.label ?? 'Sort';
 

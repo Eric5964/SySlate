@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
@@ -58,7 +58,7 @@ export default function PlayerScreen() {
     const lyricIdleColor = lyricNeutral ? base.textFaint : base.textDim;
 
     const {
-        currentPlaylist, currentTrack, shuffleOn, singleLoop,
+        currentPlaylist, queueSource, currentTrack, shuffleOn, singleLoop,
         loadPlaylist, toggleShuffle, toggleSingleLoop,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
@@ -549,16 +549,16 @@ export default function PlayerScreen() {
     const [showingDisc, setShowingDisc] = useState(false);
     const discFade = useRef(new Animated.Value(0)).current;
     useEffect(() => {
-        Animated.timing(discFade, { toValue: showingDisc ? 1 : 0, duration: 280, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+        Animated.timing(discFade, { toValue: showingDisc ? 1 : 0, duration: 380, easing: Easing.inOut(Easing.cubic), useNativeDriver: true }).start();
     }, [showingDisc]);
     useEffect(() => { if (!djDisc && showingDisc) setShowingDisc(false); }, [djDisc, showingDisc]);
     // The Player's swipe-down-to-close works from anywhere above the controls,
-    // which would close it whenever the disc is dragged downward. While the
-    // disc is showing, that gesture is off (the back arrow still closes it).
-    useEffect(() => {
-        navigation.setOptions({ gestureEnabled: !showingDisc });
-        return () => navigation.setOptions({ gestureEnabled: true });
-    }, [showingDisc, navigation]);
+    // which would close it whenever the disc is dragged downward. It is turned
+    // off only while a finger is on the disc itself (see DJDisc's onTouching).
+    const setDiscTouching = useCallback((touching) => {
+        navigation.setOptions({ gestureEnabled: !touching });
+    }, [navigation]);
+    useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
     useEffect(() => { if (showingLyrics && showingDisc) setShowingDisc(false); }, [showingLyrics, showingDisc]);
     const hasLyricsView = lyricsMode !== 'off' && !!lyricsData;
     const cycleView = () => {
@@ -897,7 +897,7 @@ export default function PlayerScreen() {
                 <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                     <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                 </TouchableOpacity>
-                <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{currentPlaylist?.name ?? 'Now Playing'}</Text>
+                <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? currentPlaylist?.name ?? 'Now Playing'}</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     {/* EQ used to be hidden here with a comment saying
                         react-native-track-player didn't support real audio
@@ -932,7 +932,7 @@ export default function PlayerScreen() {
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
                         <Animated.View style={StyleSheet.absoluteFill} pointerEvents={showingDisc ? 'none' : 'auto'} renderToHardwareTextureAndroid={false}>
-                        <Animated.View style={{ flex: 1, opacity: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }}>
+                        <Animated.View style={{ flex: 1, opacity: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), transform: [{ scale: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] }) }] }}>
                         {showPlayerCover && (
                             // The whole box (background/shadow/rounded corners) now
                             // fades with lyricsFade too, not just the artwork inside
@@ -974,7 +974,7 @@ export default function PlayerScreen() {
                         )}
                         </Animated.View>
                         </Animated.View>
-                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade, transform: [{ scale: discFade.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }] }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
                             {djDisc && (
                                 <DJDisc
                                     size={width - 56}
@@ -985,6 +985,7 @@ export default function PlayerScreen() {
                                     position={progress.position}
                                     duration={progress.duration}
                                     endGuard={scratchEndGuard}
+                                    onTouching={setDiscTouching}
                                 />
                             )}
                         </Animated.View>

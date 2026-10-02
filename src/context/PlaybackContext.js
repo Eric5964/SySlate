@@ -67,6 +67,15 @@ const stampQids = (tracks) => tracks.map(stampQid);
 
 export function PlaybackProvider({ children }) {
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
+    // Which playlist a manually queued song came from (song id -> name),
+    // and the one that applies to the song playing right now. The Player's
+    // top label shows this instead of a generic "Now Playing" once a queued
+    // song starts.
+    const queueSourceRef = useRef({});
+    const [queueSource, setQueueSource] = useState(null); // { id, name }
+    // Bumped by a session restore so the cover lookup below runs again even
+    // though the restored song's id is the one already showing.
+    const [artNonce, setArtNonce] = useState(0);
     const [currentTrack, setCurrentTrack] = useState(null);
     const [shuffleOn, setShuffleOn] = useState(false);
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
@@ -93,6 +102,19 @@ export function PlaybackProvider({ children }) {
 
     const playlistRef = useRef(null);
     useEffect(() => { playlistRef.current = currentPlaylist; }, [currentPlaylist]);
+    // Works for every way a queued song can start (playing through, jumping
+    // to it, skipping): when the current song is one that was queued from
+    // somewhere and is NOT part of the loaded playlist, the label is the
+    // place it was queued from. Songs that belong to the loaded playlist
+    // just show that playlist's own name.
+    useEffect(() => {
+        const id = currentTrack?.id;
+        if (!id) { setQueueSource(null); return; }
+        const src = queueSourceRef.current[id];
+        const pl = playlistRef.current;
+        const inLoaded = !!pl?.songs?.some(x => x.id === id);
+        setQueueSource(src && !inLoaded ? { id, name: src } : null);
+    }, [currentTrack?.id, currentPlaylist]);
     // Mirrors shuffleOn/shuffleMode for topUpQueueIfNeeded — that function
     // gets called from callbacks frozen with an empty dependency array
     // (e.g. jumpToQueueIndex), so reading the state values directly there
@@ -274,7 +296,7 @@ export function PlaybackProvider({ children }) {
         });
 
         return () => { cancelled = true; if (timer) clearTimeout(timer); };
-    }, [currentTrack?.id]);
+    }, [currentTrack?.id, artNonce]);
 
     // "Only count a play after playing half of the song continuously without
     // skipping" — credited the moment real playback position crosses 50% of
@@ -461,7 +483,8 @@ export function PlaybackProvider({ children }) {
     // to fully complete (including writing back to priorityRef) before the
     // next one starts reading.
     const addQueueLockRef = useRef(Promise.resolve());
-    const addToQueue = useCallback((song) => {
+    const addToQueue = useCallback((song, sourceName) => {
+        if (sourceName && song?.id) queueSourceRef.current[song.id] = sourceName;
         const run = async () => {
             try {
                 const currentIndex = await AudioEngine.getCurrentTrack();
@@ -1265,7 +1288,18 @@ export function PlaybackProvider({ children }) {
             await setQueueLoop();
 
             setCurrentPlaylist({ ...last.playlist, queue });
-            setCurrentTrack(queue[last.index] ?? null);
+            // The saved queue carries whatever cover path each song had when
+            // the session was saved. That path can be stale after a restart
+            // or reinstall (the file is gone), and a track that already
+            // "has" artwork is skipped by the resolver effect, so the cover
+            // never showed. Start without it and look the real one up now.
+            let restoredTrack = queue[last.index] ? { ...queue[last.index], artwork: undefined } : null;
+            if (restoredTrack) {
+                const cachedUri = await getCachedArtFast(restoredTrack).catch(() => undefined);
+                if (cachedUri) restoredTrack.artwork = cachedUri;
+            }
+            setCurrentTrack(restoredTrack);
+            setArtNonce(n => n + 1);
             setShuffleModeState(mode);
             setShuffleOn(on);
             const priorityCount = last.priorityCount ?? 0;
@@ -1470,13 +1504,13 @@ export function PlaybackProvider({ children }) {
     // in useMemo is enough to actually get the benefit — consumers now
     // only re-render when a value they actually read changes.
     const value = useMemo(() => ({
-        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
     }), [
-        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue,
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
