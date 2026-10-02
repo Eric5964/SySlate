@@ -275,6 +275,19 @@ class AudioEngine: RCTEventEmitter {
     // the two caused a real "jumps forward" bug on resume.
     private var frozenPositionSeconds: Double?
 
+    // DJ disc scratching (see scratchBegin). A small window of the current
+    // song is held in memory and played by a render-callback node at a
+    // speed (and direction) set from the disc, while the normal player node
+    // is silenced. Position reads come from the scratch while it is active.
+    private let scratchCore = ScratchCore()
+    private var scratchNode: AVAudioSourceNode?
+    private var scratchFormat: AVAudioFormat?
+    private var scratchActive: Bool = false
+    private var scratchWasPlaying: Bool = false
+    private var scratchWindowStartSeconds: Double = 0
+    private var scratchFileRate: Double = 44100
+    private var scratchLoading: Bool = false
+
     // MARK: - RCTEventEmitter
 
     override static func requiresMainQueueSetup() -> Bool { true }
@@ -1167,6 +1180,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func currentPositionSeconds() -> Double {
+        if scratchActive { return scratchWindowStartSeconds + scratchCore.pos / scratchFileRate }
         // Once the halfway announcement has told JS the current track is
         // the INCOMING one (crossfadeAnnouncedIncoming), report ITS elapsed
         // time instead of activeNode's (still the outgoing track until the
@@ -1181,12 +1195,26 @@ class AudioEngine: RCTEventEmitter {
            let nodeTime = incoming.lastRenderTime, let playerTime = incoming.playerTime(forNodeTime: nodeTime) {
             return crossfadeIncomingLeadInSeconds + Double(playerTime.sampleTime) / crossfadeIncomingSampleRate
         }
+        // While paused, always report the frozen snapshot.
+        if state != .playing, let frozen = frozenPositionSeconds { return frozen }
         guard let nodeTime = activeNode.lastRenderTime,
-              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else { return frozenPositionSeconds ?? segmentStartOffsetSeconds }
-        return segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
+              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else {
+            // The node has no render time for a moment after every play()
+            // (more so now that a start is delayed ~80ms and the engine is
+            // restarted after a pause). This used to fall back to the
+            // segment ORIGIN (often 0:00) once the pause snapshot had been
+            // cleared, so the first poll after Play reported the start of
+            // the song and the progress bar jumped back for a beat. The
+            // snapshot is now kept until the node is truly rendering.
+            return frozenPositionSeconds ?? segmentStartOffsetSeconds
+        }
+        let live = segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
+        if state == .playing { frozenPositionSeconds = nil }
+        return live
     }
 
     private func loadAndScheduleCurrentTrack(startAtSeconds: Double = 0, autoPlay: Bool, announceChange: Bool = true) {
+        abortScratch()
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             setState(.stopped)
             return
@@ -1284,6 +1312,7 @@ class AudioEngine: RCTEventEmitter {
                 }
             }
             segmentStartOffsetSeconds = effectiveStartAtSeconds
+            frozenPositionSeconds = nil // new segment: its origin is the truth
             currentTrailingCutSeconds = trailingCutSeconds
             // Stored so setVolume() keeps applying this correction on every
             // subsequent call, not just the activeNode.volume line below —
@@ -1351,6 +1380,7 @@ class AudioEngine: RCTEventEmitter {
             // Output muted BEFORE the engine/session wake up, so the wake-up
             // click never reaches the speaker.
             let coldStart = autoPlay ? beginColdStartMuteIfNeeded() : false
+            let engineWasRunning = engine.isRunning
             if !engine.isRunning {
                 try engine.start()
             }
@@ -1370,6 +1400,12 @@ class AudioEngine: RCTEventEmitter {
                 debugLog("[RAMP-DEBUG] native: play requested + setState(.playing) fired")
             } else {
                 setState(.ready)
+                // A load that does not start playing (a skip while paused)
+                // must not leave the audio hardware running, or iOS shows
+                // the app as playing again. The engine was only started
+                // here so the segment could be scheduled; stop it again if
+                // it was stopped before. play() restarts it.
+                if !engineWasRunning, engine.isRunning { engine.pause() }
             }
             startProgressTimer()
             if autoPlay { scheduleCrossfadeLeadIn() }
@@ -1751,7 +1787,19 @@ class AudioEngine: RCTEventEmitter {
             try? engine.start()
         }
         activateSession()
-        incomingNode.play()
+        // Same stale-level race as the first-play pop: the node's volume was
+        // written only moments before play(), and the first render slice
+        // can still carry an old level (the first crossfade after launch is
+        // the one that sounds like a pop). Starting the incoming node a few
+        // ms later lets the fade curve's own first values land before any
+        // audio does. 50ms of slip on a multi-second crossfade is not
+        // audible.
+        debugLog(String(format: "[POP] crossfade arm: incomingVol=%.3f outgoingVol=%.3f mixerVol=%.3f", incomingNode.volume, outgoingNode.volume, engine.mainMixerNode.outputVolume))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self = self, token == self.playbackToken, self.isCrossfading, self.state == .playing else { return }
+            if !self.engine.isRunning { try? self.engine.start() }
+            incomingNode.play()
+        }
 
         let steps = max(10, Int(duration * 25))
         let stepInterval = duration / Double(steps)
@@ -1853,6 +1901,7 @@ class AudioEngine: RCTEventEmitter {
                 // equivalent point (loadAndScheduleCurrentTrack).
                 self.currentTrailingCutSeconds = trailingCutSeconds
                 self.segmentStartOffsetSeconds = leadInSeconds
+                self.frozenPositionSeconds = nil
                 self.crossfadeIncomingFile = nil
                 self.crossfadeIncomingTrack = nil
                 self.crossfadeIncomingIndex = nil
@@ -1985,7 +2034,41 @@ class AudioEngine: RCTEventEmitter {
         let token = pendingPlayToken
         DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay) { [weak self] in
             guard let self = self, token == self.pendingPlayToken, self.state == .playing else { return }
+            // Belt and braces: a fade-in must start from true silence. If JS
+            // asked for volume 0, write it again right before the node
+            // starts so nothing else can have left a stale level on it.
+            if !self.isCrossfading, self.volume < 0.02 {
+                self.activeNode.volume = 0
+            }
+            self.debugLog(String(format: "[POP] node starts: nodeVol=%.3f mixerVol=%.3f muteHeld=%@", self.activeNode.volume, self.engine.mainMixerNode.outputVolume, self.coldMuteHeld ? "true" : "false"))
             self.activeNode.play()
+        }
+    }
+
+    // True while the main mixer is being held at 0 for a cold start. The
+    // pop on the first play lined up with the moment this mute lifted on a
+    // fixed timer (about 0.33s after play), which is also the moment the
+    // JS fade-in begins, so leftover level on the node leaked through for
+    // one render slice. The mute is now released by the fade-in itself,
+    // only after the node has been written to 0 and a moment has passed,
+    // with a timer only as a fallback for plays that have no fade-in.
+    private var coldMuteHeld: Bool = false
+    // When JS last set the volume to ~0 (the first step of every fade-in).
+    private var lastZeroVolumeAt: Date? = nil
+
+    private func releaseColdStartMute(after delay: TimeInterval) {
+        guard coldMuteHeld else { return }
+        coldMuteHeld = false
+        let token = coldStartToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, token == self.coldStartToken else { return }
+            let steps = 8
+            for i in 1...steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.015 * Double(i)) { [weak self] in
+                    guard let self = self, token == self.coldStartToken else { return }
+                    self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
+                }
+            }
         }
     }
 
@@ -1998,15 +2081,14 @@ class AudioEngine: RCTEventEmitter {
         let token = coldStartToken
         let mixer = engine.mainMixerNode
         mixer.outputVolume = 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+        coldMuteHeld = true
+        // A fade-in is coming if JS just set the volume to 0: wait for it
+        // (it releases the mute itself). Otherwise keep the old short hold.
+        let rampExpected = lastZeroVolumeAt.map { Date().timeIntervalSince($0) < 3 } ?? false
+        let fallback: TimeInterval = rampExpected ? 1.5 : 0.15
+        DispatchQueue.main.asyncAfter(deadline: .now() + fallback) { [weak self] in
             guard let self = self, token == self.coldStartToken else { return }
-            let steps = 8
-            for i in 1...steps {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03 * Double(i)) { [weak self] in
-                    guard let self = self, token == self.coldStartToken else { return }
-                    self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
-                }
-            }
+            self.releaseColdStartMute(after: 0)
         }
         return true
     }
@@ -2021,7 +2103,9 @@ class AudioEngine: RCTEventEmitter {
         }
         let coldStart = beginColdStartMuteIfNeeded()
         activateSession()
-        frozenPositionSeconds = nil
+        // frozenPositionSeconds is deliberately NOT cleared here: it keeps
+        // the position steady until the node reports a real render time
+        // (see currentPositionSeconds).
         // Real bug: unlike finishLoadingTrack and runCrossfade (both check
         // this before calling play()), this never checked whether `engine`
         // itself was actually running before telling the node to play.
@@ -2067,7 +2151,19 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // Drops an in-progress scratch without resuming from it (a pause, stop
+    // or track change arrived mid-scratch). The playhead stays where the
+    // normal player had it; the disc's later scratchEnd then finds nothing
+    // to end.
+    private func abortScratch() {
+        guard scratchActive else { return }
+        scratchCore.release()
+        scratchActive = false
+        if state == .playing { activeNode.volume = volume * currentGainCorrection }
+    }
+
     private func pauseInternal() {
+        abortScratch()
         // Freeze the real position for display while paused — activeNode's
         // lastRenderTime/playerTime go nil/stale once paused, so
         // currentPositionSeconds() needs a snapshot to fall back to.
@@ -2117,6 +2213,17 @@ class AudioEngine: RCTEventEmitter {
         setState(.paused)
         savePlaybackSnapshot(force: true)
         reassertPausedToSystem()
+        // Stop the audio hardware too, not just the player node. With the
+        // engine left running, iOS still sees the app producing output
+        // (silence) and Control Center flips back to "playing" a moment
+        // after a pause. Pausing the engine keeps the node's scheduled
+        // audio (same as the route-change restart does); playInternal
+        // starts it again. The next start is treated as cold so the
+        // restart cannot click.
+        if engine.isRunning {
+            engine.pause()
+        }
+        markOutputCold()
         // Don't let a natural-end crossfade fire while paused — playInternal
         // reschedules it from wherever playback actually resumes.
         crossfadeLeadTimer?.invalidate()
@@ -2206,6 +2313,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func stopInternal() {
+        abortScratch()
         cancelCrossfadeIfNeeded()
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
@@ -2581,6 +2689,188 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // MARK: - DJ disc scratching
+
+    private func ensureScratchNode() -> Bool {
+        if scratchNode != nil { return true }
+        let sr = engine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard let fmt = AVAudioFormat(standardFormatWithSampleRate: sr > 0 ? sr : 44100, channels: 2) else { return false }
+        let core = scratchCore
+        let node = AVAudioSourceNode(format: fmt) { _, _, frameCount, audioBufferList -> OSStatus in
+            let bufs = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let n = Int(frameCount)
+            guard core.active, let l = core.left, let r = core.right, core.frames > 4, bufs.count >= 2,
+                  let outL = bufs[0].mData?.assumingMemoryBound(to: Float.self),
+                  let outR = bufs[1].mData?.assumingMemoryBound(to: Float.self) else {
+                for b in bufs { if let d = b.mData { memset(d, 0, Int(b.mDataByteSize)) } }
+                return noErr
+            }
+            var pos = core.pos
+            var cur = core.cur
+            var g = core.gain
+            let tgt = core.target
+            let gTgt = core.gainTarget
+            let level = core.level
+            let step = core.step
+            let maxPos = Double(core.frames - 2)
+            for i in 0..<n {
+                // Smoothing: the speed glides toward what the disc asks for
+                // (about 10ms) so a finger's jitter does not crackle.
+                cur += (tgt - cur) * 0.003
+                g += (gTgt - g) * 0.01
+                pos += Double(cur) * step
+                if pos < 0 { pos = 0 }
+                if pos > maxPos { pos = maxPos }
+                let i0 = Int(pos)
+                let f = Float(pos - Double(i0))
+                let a = g * level
+                outL[i] = (l[i0] * (1 - f) + l[i0 + 1] * f) * a
+                outR[i] = (r[i0] * (1 - f) + r[i0 + 1] * f) * a
+            }
+            core.pos = pos
+            core.cur = cur
+            core.gain = g
+            return noErr
+        }
+        engine.attach(node)
+        engine.connect(node, to: preMixNode, format: fmt)
+        scratchNode = node
+        scratchFormat = fmt
+        return true
+    }
+
+    // Starts scratching at the current position. Resolves true once audio is
+    // ready (false when it cannot start: crossfading, nothing loaded, or too
+    // close to the start or end of the song).
+    @objc(scratchBegin:rejecter:)
+    func scratchBegin(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(false); return }
+            guard !self.scratchActive, !self.scratchLoading, !self.isCrossfading,
+                  let idx = self.currentIndex, idx >= 0, idx < self.queue.count,
+                  self.state == .playing || self.state == .paused,
+                  let file = self.currentFile, self.ensureScratchNode() else { resolve(false); return }
+            let track = self.queue[idx]
+            let fileRate = file.processingFormat.sampleRate
+            let totalSec = Double(file.length) / fileRate
+            let now = self.currentPositionSeconds()
+            // Native-side backstop for the same rule JS applies.
+            if now < 1.0 || now > totalSec - 4.0 { resolve(false); return }
+            let windowStart = max(0, now - 15)
+            let windowEnd = min(totalSec, now + 15)
+            self.scratchLoading = true
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                var left: UnsafeMutablePointer<Float>? = nil
+                var right: UnsafeMutablePointer<Float>? = nil
+                var frames = 0
+                do {
+                    let f = try AVAudioFile(forReading: track.url)
+                    let startFrame = AVAudioFramePosition(windowStart * fileRate)
+                    let count = AVAudioFrameCount(max(0, (windowEnd - windowStart) * fileRate))
+                    f.framePosition = startFrame
+                    if let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: count), count > 0 {
+                        try f.read(into: buf, frameCount: count)
+                        frames = Int(buf.frameLength)
+                        if frames > 4, let ch = buf.floatChannelData {
+                            let chans = Int(buf.format.channelCount)
+                            let l = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+                            let r = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+                            l.update(from: ch[0], count: frames)
+                            r.update(from: ch[chans > 1 ? 1 : 0], count: frames)
+                            left = l; right = r
+                        }
+                    }
+                } catch { frames = 0 }
+                let leftOut = left, rightOut = right, framesOut = frames
+                DispatchQueue.main.async {
+                    guard let self = self else { leftOut?.deallocate(); rightOut?.deallocate(); resolve(false); return }
+                    self.scratchLoading = false
+                    guard let l = leftOut, let r = rightOut, framesOut > 4, !self.isCrossfading,
+                          self.currentIndex == idx, let fmt = self.scratchFormat else {
+                        leftOut?.deallocate(); rightOut?.deallocate(); resolve(false); return
+                    }
+                    // Use the position as it is NOW (loading took a moment).
+                    let nowAfter = self.currentPositionSeconds()
+                    let startPos = (nowAfter - windowStart) * fileRate
+                    if startPos < 2 || startPos > Double(framesOut - 2) {
+                        l.deallocate(); r.deallocate(); resolve(false); return
+                    }
+                    let core = self.scratchCore
+                    core.release()
+                    core.left = l; core.right = r; core.frames = framesOut
+                    core.step = fileRate / fmt.sampleRate
+                    core.pos = startPos
+                    core.target = 0
+                    core.cur = self.state == .playing ? 1 : 0
+                    core.target = core.cur
+                    core.gain = 0
+                    core.gainTarget = 1
+                    core.level = self.volume * self.currentGainCorrection
+                    self.scratchWindowStartSeconds = windowStart
+                    self.scratchFileRate = fileRate
+                    self.scratchWasPlaying = self.state == .playing
+                    self.crossfadeLeadTimer?.invalidate()
+                    self.crossfadeLeadTimer = nil
+                    if !self.engine.isRunning {
+                        self.activateSession()
+                        try? self.engine.start()
+                    }
+                    self.scratchActive = true
+                    core.active = true
+                    // Silence the normal player over ~15ms (the scratch node
+                    // fades in over the same time), so there is no click.
+                    let startVol = self.activeNode.volume
+                    for i in 1...5 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.003 * Double(i)) { [weak self] in
+                            guard let self = self, self.scratchActive else { return }
+                            self.activeNode.volume = startVol * Float(5 - i) / 5
+                        }
+                    }
+                    self.debugLog(String(format: "[SCRATCH] begin at %.2fs window=%.1f-%.1f wasPlaying=%@", nowAfter, windowStart, windowEnd, self.scratchWasPlaying ? "true" : "false"))
+                    resolve(true)
+                }
+            }
+        }
+    }
+
+    // Speed of the disc: 1 = normal forward, 0 = held, negative = backward.
+    @objc(scratchSetRate:)
+    func scratchSetRate(_ rate: NSNumber) {
+        scratchCore.target = max(-4, min(4, rate.floatValue))
+    }
+
+    // Stops scratching, resumes the song from where the disc left it (playing
+    // if it was playing before) and resolves with that position in seconds.
+    @objc(scratchEnd:rejecter:)
+    func scratchEnd(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.scratchActive else { resolve(nil); return }
+            let core = self.scratchCore
+            let finalSec = max(0, self.scratchWindowStartSeconds + core.pos / self.scratchFileRate)
+            core.gainTarget = 0
+            let wasPlaying = self.scratchWasPlaying
+            let restoreVol = self.volume * self.currentGainCorrection
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+                guard let self = self else { resolve(nil); return }
+                core.active = false
+                self.scratchActive = false
+                self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: wasPlaying)
+                // New audio starts silent and comes up over ~15ms.
+                self.activeNode.volume = 0
+                for i in 1...5 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.003 * Double(i)) { [weak self] in
+                        guard let self = self, !self.scratchActive else { return }
+                        self.activeNode.volume = restoreVol * Float(i) / 5
+                    }
+                }
+                if !wasPlaying, self.engine.isRunning { self.engine.pause() }
+                core.release()
+                self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=%@", finalSec, wasPlaying ? "play" : "paused"))
+                resolve(finalSec)
+            }
+        }
+    }
+
     @objc(seekTo:resolver:rejecter:)
     func seekTo(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let wasPlaying = state == .playing
@@ -2633,6 +2923,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
         segmentStartOffsetSeconds = startAtSeconds
+        frozenPositionSeconds = nil // a seek moves the origin; never keep the pre-seek snapshot
         activeNode.stop()
         playbackToken &+= 1
         let token = playbackToken
@@ -2668,6 +2959,9 @@ class AudioEngine: RCTEventEmitter {
         }
 
         if autoPlay {
+            if !engine.isRunning {
+                try? engine.start()
+            }
             activeNode.play()
             setState(.playing)
             scheduleCrossfadeLeadIn()
@@ -2749,6 +3043,13 @@ class AudioEngine: RCTEventEmitter {
         // still awaiting it doesn't hang.
         cancelActiveRampLocked()
         volume = vol.floatValue
+        if volume < 0.02 {
+            lastZeroVolumeAt = Date()
+        } else {
+            // A real "play at this volume" request: no fade-in is coming,
+            // so a cold-start mute (if one is being held) can lift now.
+            releaseColdStartMute(after: 0.05)
+        }
         // Was `activeNode.volume = volume` — see currentGainCorrection's
         // comment for why that silently discarded Match Volume Between
         // Songs' correction on every single call. `volume` itself stays
@@ -2828,6 +3129,10 @@ class AudioEngine: RCTEventEmitter {
 
         volume = fromVal
         activeNode.volume = fromVal * currentGainCorrection
+        // The fade-in is now genuinely under way and the node has just been
+        // written to its start level: only now is it safe to lift a
+        // cold-start mute (see coldMuteHeld).
+        releaseColdStartMute(after: 0.15)
 
         if dur <= 0.02 {
             volume = toVal
@@ -3043,5 +3348,36 @@ class AudioEngine: RCTEventEmitter {
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+
+// Shared state between the main thread and the scratch render callback.
+// Plain stored values: the audio thread only reads them (and writes pos /
+// cur / gain), the main thread sets them before flipping `active`.
+final class ScratchCore {
+    var active = false
+    var left: UnsafeMutablePointer<Float>?
+    var right: UnsafeMutablePointer<Float>?
+    var frames = 0
+    var pos: Double = 0
+    var step: Double = 1
+    var cur: Float = 0
+    var target: Float = 0
+    var gain: Float = 0
+    var gainTarget: Float = 0
+    var level: Float = 1
+
+    func release() {
+        active = false
+        let l = left, r = right
+        left = nil
+        right = nil
+        frames = 0
+        // Freed a moment later so a render pass already in flight finishes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            l?.deallocate()
+            r?.deallocate()
+        }
     }
 }

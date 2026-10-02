@@ -126,6 +126,10 @@ const AudioEngine = {
     pause: () => NativeAudioEngine.pause(),
     stop: () => NativeAudioEngine.stop(),
     seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
+    // DJ disc: begin resolves true once scratch audio is ready.
+    scratchBegin: () => NativeAudioEngine.scratchBegin(),
+    scratchSetRate: (rate) => NativeAudioEngine.scratchSetRate(rate),
+    scratchEnd: () => NativeAudioEngine.scratchEnd(),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),
     // Updates only the lock screen/Control Center's displayed play/pause
     // state — doesn't touch actual playback. Used to make the lock screen

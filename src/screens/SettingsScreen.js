@@ -62,6 +62,7 @@ import {
     getAlbumFromFolder, setAlbumFromFolder,
     exportAllSettings, importAllSettings,
     persistCoverImage,
+    deleteStoredImage,
 } from '../utils/storage';
 import * as ImagePicker from 'expo-image-picker';
 
@@ -121,7 +122,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -429,8 +430,19 @@ export default function SettingsScreen() {
         // screens. This one decodes far faster and looks identical.
         try {
             const small = permanentUri.replace(/\.[^./]+$/, '') + '_screen.jpg';
-            if (await AudioEngine.makeThumbnail(permanentUri, small, 1800)) permanentUri = small;
+            if (await AudioEngine.makeThumbnail(permanentUri, small, 1800)) {
+                // Keep only the screen-sized copy; the picked original is
+                // never read again, so it is deleted right away.
+                await deleteStoredImage(permanentUri);
+                permanentUri = small;
+                // Tiny copy shown instantly while the full one decodes
+                // (see ScreenBackground), so opening a screen never shows
+                // a black flash.
+                await AudioEngine.makeThumbnail(small, small.replace(/_screen\.jpg$/, '_lo.jpg'), 240).catch(() => { });
+            }
         } catch { }
+        // Replacing the background: the previous picture is deleted.
+        if (backgroundImageUri && backgroundImageUri !== permanentUri) deleteStoredImage(backgroundImageUri);
         setBackgroundImageUri(permanentUri);
         setBackgroundImageEnabled(true);
     };
@@ -452,251 +464,105 @@ export default function SettingsScreen() {
                     builder below (sliders per BAND_HZ), already wired to
                     getCustomPresets/setCustomPresets. */}
 
-                <GroupHeader title="General" sub="Look, screen and how your music is read" />
+                <GroupHeader title="Playback" />
 
-
-                {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
-                     size let 6 fit per row instead of 5, leaving an uneven second row) */}
-                <Section title="Accent Color">
-                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
-                        {swatchRows.map((row, i) => (
-                            <View key={i} style={[s.swatchRow, i > 0 && { marginTop: 14 }]}>
-                                {row.map(renderSwatch)}
+                <Section title="EQ Presets">
+                    {/* Built-ins and custom presets now share one 2-column
+                        grid instead of built-ins living in a grid above a
+                        separate full-width list of customs — tapping a
+                        preset's name (not its checkbox, not its ✕) opens
+                        the same band editor for either kind. Each row is a
+                        plain View with three independently-tappable
+                        children (checkbox / name / delete) instead of one
+                        big TouchableOpacity, since a name tap now needs to
+                        mean something different from a checkbox tap. */}
+                    <View style={s.eqGrid}>
+                        {visiblePresets.map(p => (
+                            <View key={p.id} style={s.eqChip}>
+                                <TouchableOpacity onPress={() => togglePresetVisible(p.id)} hitSlop={HIT} style={s.checkWrapGrid}>
+                                    <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
+                                        {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
+                                    </View>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={s.eqChipNameWrap} onPress={() => openEditPresetSheet(p)}>
+                                    <Text style={s.eqChipName} numberOfLines={1}>
+                                        {p.name}{p.isOverridden ? ' •' : ''}
+                                    </Text>
+                                </TouchableOpacity>
+                                {!p.isBuiltIn && (
+                                    <TouchableOpacity onPress={() => confirmDeleteCustomPreset(p)} hitSlop={HIT} style={s.eqDelWrap}>
+                                        <Text style={s.eqDel}>✕</Text>
+                                    </TouchableOpacity>
+                                )}
                             </View>
                         ))}
                     </View>
-                </Section>
-
-                <Section title="Base Color">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Light Mode</Text>
-                            <Text style={s.toggleSub}>Light background. Your dark base color returns when you turn it off</Text>
-                        </View>
-                        <Switch value={isLight} onValueChange={toggleLightMode}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    {/* Real bug found here: this whole grid used to be
-                        dimmed AND pointerEvents="none" whenever isLight was
-                        true — meaning renderBaseSwatch's careful dark→light
-                        id mapping above was completely unreachable while in
-                        Light Mode. The only way to change hue was to flip
-                        back to dark, pick a swatch, then flip light mode
-                        back on — exactly "light mode is locked, can only
-                        change by picking a dark color then switching."
-                        Nothing else needed to change; the mapping logic was
-                        already correct, this container was just blocking
-                        all touches from ever reaching it. */}
-                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
-                        <View style={s.swatchRow}>
-                            {baseEntries.map(renderBaseSwatch)}
-                        </View>
-                    </View>
-                </Section>
-
-                <Section title="Custom Background">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Use Background Image</Text>
-                            <Text style={s.toggleSub}>Image behind every screen. Colors stay the same</Text>
-                        </View>
-                        <Switch value={backgroundImageEnabled} onValueChange={v => {
-                            if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
-                            setBackgroundImageEnabled(v);
-                        }}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 14, gap: 10 }}>
-                        <TouchableOpacity onPress={pickBackgroundImage} style={[s.sortChip, { backgroundColor: theme.accent }]}>
-                            <Text style={[s.sortChipText, { color: theme.onAccent }]}>
-                                {backgroundImageUri ? 'Change Image' : 'Choose Image'}
-                            </Text>
+                    <View style={s.eqButtonRow}>
+                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
+                            <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        {backgroundImageUri && (
-                            <TouchableOpacity onPress={() => { setBackgroundImageEnabled(false); setBackgroundImageUri(null); }} style={s.sortChip}>
-                                <Text style={s.sortChipText}>Remove</Text>
-                            </TouchableOpacity>
-                        )}
+                        <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
+                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
+                            <Switch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
+                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                        </View>
                     </View>
+
+                    {/* Pre-amp: a single broadband gain on top of whatever
+                        preset is active, not tied to any one preset — lives
+                        here rather than inside the preset editor since it
+                        applies globally regardless of which preset is
+                        picked (same as how a hardware EQ's master gain knob
+                        works alongside its band sliders). */}
+                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Pre-amp</Text>
+                    <Text style={s.sliderNote}>Overall gain on top of the current preset — boost a quiet library or pull back a hot one</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{preAmpLocal > 0 ? '+' : ''}{preAmpLocal.toFixed(1)}dB</Text>
+                    <PureSlider style={s.slider} minimumValue={-12} maximumValue={12} step={0.5} value={preAmpLocal}
+                        onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
                 </Section>
 
-                <Section title="Covers">
+                <Section title="Volume Levelling">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Rounded Cover Art</Text>
-                            <Text style={s.toggleSub}>Rounded corners on covers everywhere</Text>
+                            <Text style={s.toggleLabel}>Volume Normalization</Text>
+                            {/* This label used to say "Equalizes loudness between
+                                tracks" — but the actual implementation (Apple's
+                                Dynamics Processor) is compression WITHIN a
+                                track, not loudness matching across tracks. Split
+                                into two real, separate settings below. */}
+                            <Text style={s.toggleSub}>Evens out loud and quiet parts of a song</Text>
                         </View>
-                        <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
+                        <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Match Volume Between Songs</Text>
+                            <Text style={s.toggleSub}>Keeps songs at a similar volume. An estimate, checked once per song</Text>
+                        </View>
+                        <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
 
-                <Section title="Screen">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Keep Screen Awake</Text>
-                            <Text style={s.toggleSub}>Only while a song plays</Text>
-                        </View>
-                        <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
+                {/* 3. Shuffle */}
+                <Section title="Shuffle Mode">
+                    {MODES.map(m => (
+                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => { setShuffleTypePref(m.id); changeShuffleMode(m.id); }}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.modeLabel}>{m.label}</Text>
+                                <Text style={s.modeSub}>{m.sub}</Text>
+                            </View>
+                            <View style={[s.radio, shuffleTypePref === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
+                        </TouchableOpacity>
+                    ))}
                 </Section>
-
-                {/* Splits a tag's artist field into individual artists on this
-                     character before display/search, so "Artist A; Artist B"
-                     shows and searches as two artists instead of one long
-                     string. 'None' turns splitting off entirely — the tag
-                     displays exactly as stored, same as before this setting
-                     existed. Defaults to ';' (see getArtistSeparator's own
-                     comment for why that's the safe default) — songs with no
-                     separator character in their tag are never affected by
-                     this setting either way. */}
-                <Section title="Multiple Artists">
-                    <View style={s.settingHeader}>
-                        <Text style={s.toggleLabel}>Artist Separator</Text>
-                        <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
-                    </View>
-                    <View style={s.sortRow}>
-                        {ARTIST_SEPARATORS.map(opt => {
-                            // Multi-select now (a library can genuinely mix
-                            // more than one separator convention) — 'None'
-                            // is the one mutually-exclusive option, since it
-                            // means "don't split at all" and picking it
-                            // alongside a real separator wouldn't make
-                            // sense. Selecting 'None' clears everything
-                            // else; selecting any real separator while
-                            // 'None' is active drops 'None'.
-                            const selected = opt.id === 'none'
-                                ? artistSeparator.includes('none') || artistSeparator.length === 0
-                                : artistSeparator.includes(opt.id);
-                            return (
-                                <TouchableOpacity
-                                    key={opt.id}
-                                    style={[s.sortChip, selected && { backgroundColor: theme.accent }]}
-                                    onPress={() => {
-                                        if (opt.id === 'none') {
-                                            setArtistSeparator(['none']);
-                                            return;
-                                        }
-                                        const withoutNone = artistSeparator.filter(sep => sep !== 'none');
-                                        setArtistSeparator(
-                                            withoutNone.includes(opt.id)
-                                                ? withoutNone.filter(sep => sep !== opt.id)
-                                                : [...withoutNone, opt.id]
-                                        );
-                                    }}
-                                >
-                                    <Text style={[s.sortChipText, selected && { color: theme.onAccent }]}>
-                                        {opt.label}
-                                    </Text>
-                                </TouchableOpacity>
-                            );
-                        })}
-                    </View>
-
-                    {/* Separate from the separator picker above — that
-                         controls what counts as a split point in the raw
-                         tag; this controls how the split artists get
-                         re-joined for display. Applies in-app everywhere
-                         formatArtists is used (Player, queue, playlist and
-                         All Songs rows). Does not yet reach the lock-screen/
-                         Bluetooth/CarPlay "Now Playing" artist field — that
-                         goes through native metadata sent at queue-add time
-                         from many call sites, and doing that safely needs
-                         its own centralized pass rather than being bolted
-                         on here; noted as a followup, not silently skipped. */}
-                    <View style={[s.settingHeader, { marginTop: 14 }]}>
-                        <Text style={s.toggleLabel}>Artist Display Format</Text>
-                        <Text style={s.toggleSub}>How multiple artists show in the app</Text>
-                    </View>
-                    <View style={s.sortRow}>
-                        {[
-                            { id: 'comma', label: 'A, B' },
-                            { id: 'ampersand', label: 'A & B' },
-                            { id: 'slash', label: 'A / B' },
-                        ].map(opt => (
-                            <TouchableOpacity
-                                key={opt.id}
-                                style={[s.sortChip, artistDisplayJoin === opt.id && { backgroundColor: theme.accent }]}
-                                onPress={() => setArtistDisplayJoin(opt.id)}
-                            >
-                                <Text style={[s.sortChipText, artistDisplayJoin === opt.id && { color: theme.onAccent }]}>
-                                    {opt.label}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
-                    </View>
-                </Section>
-
-                {/* Off by default: a real ALBUM tag (when tags.js finds one)
-                     is normally more accurate than a folder name, so it wins
-                     by default now that tags are actually read. Flip this on
-                     to go back to how it worked before — folder name always
-                     wins, real tag ignored for this field specifically —
-                     for anyone whose library is organized by folder more
-                     meaningfully than its actual tags are filled in. */}
-                <Section title="Album From Folder Name">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
-                            <Text style={s.toggleSub}>Instead of the song's Album tag</Text>
-                        </View>
-                        <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                </Section>
-
-                {/* 5. Music location */}
-                <Section title="Music Location">
-                    {(showBoth || isLiveContainer) && (
-                        <View style={s.locBlock}>
-                            <Text style={s.locHeading}>If using LiveContainer</Text>
-                            <Text style={s.locBody}>
-                                Files → On My iPhone → LiveContainer → Data → Application → (SySlate's app ID) → Documents
-                            </Text>
-                        </View>
-                    )}
-                    {(showBoth || isSideStore) && (
-                        <View style={s.locBlock}>
-                            <Text style={s.locHeading}>If using SideStore</Text>
-                            <Text style={s.locBody}>
-                                Files → On My iPhone → SideStore → Data → Application → (SySlate's app ID) → Documents
-                            </Text>
-                            <Text style={[s.locNote, { marginTop: 6 }]}>
-                                Known issue: on some SideStore installs this Documents folder shows as empty/unreachable
-                                even though the path above is correct — a sandboxing limitation on SideStore's side, not
-                                something adding files elsewhere (like a manually made top-level "SySlate" folder) works
-                                around, since that folder isn't actually connected to the app's real storage.
-                            </Text>
-                        </View>
-                    )}
-                    <View style={[s.locBlock, { borderBottomWidth: 0 }]}>
-                        <Text style={s.locHeading}>This install's actual path</Text>
-                        <Text style={[s.locPath, { color: theme.accent }]} selectable>
-                            {(scanPath ?? '').replace('file://', '')}
-                        </Text>
-                        <Text style={s.locNote}>Folders become playlists. Files in the root appear in All Songs.</Text>
-                        {scanError && (
-                            <Text style={[s.locNote, { color: '#dc6262', marginTop: 10 }]} selectable>
-                                Scan diagnostic: {scanError}
-                            </Text>
-                        )}
-                    </View>
-                </Section>
-
-                {/* 6. Rescan */}
-                <Section title="Library">
-                    <TouchableOpacity style={s.row} onPress={reload}>
-                        <Text style={s.rowLabel}>Rescan Music</Text>
-                        <Text style={s.rowSub}>Re-reads all folders</Text>
-                    </TouchableOpacity>
-                </Section>
-
-                <GroupHeader title="Playback" sub="Sound, queue and the skip buttons (also used by the lock screen and car)" />
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
                      all together under one heading. */}
-                <Section title="Audio">
+                <Section title="Crossfade & Fades">
                     {/* Moved Crossfade to the top of the section, and now
                         actually REPLACES the End of Track / On Skip ramp
                         controls when it's on, instead of just graying them
@@ -797,27 +663,6 @@ export default function SettingsScreen() {
                         <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Volume Normalization</Text>
-                            {/* This label used to say "Equalizes loudness between
-                                tracks" — but the actual implementation (Apple's
-                                Dynamics Processor) is compression WITHIN a
-                                track, not loudness matching across tracks. Split
-                                into two real, separate settings below. */}
-                            <Text style={s.toggleSub}>Evens out loud and quiet parts of a song</Text>
-                        </View>
-                        <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Match Volume Between Songs</Text>
-                            <Text style={s.toggleSub}>Keeps songs at a similar volume. An estimate, checked once per song</Text>
-                        </View>
-                        <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Trim Silence</Text>
@@ -826,75 +671,6 @@ export default function SettingsScreen() {
                         <Switch value={silenceTrim} onValueChange={setSilenceTrim}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                </Section>
-                <Section title="EQ Presets">
-                    {/* Built-ins and custom presets now share one 2-column
-                        grid instead of built-ins living in a grid above a
-                        separate full-width list of customs — tapping a
-                        preset's name (not its checkbox, not its ✕) opens
-                        the same band editor for either kind. Each row is a
-                        plain View with three independently-tappable
-                        children (checkbox / name / delete) instead of one
-                        big TouchableOpacity, since a name tap now needs to
-                        mean something different from a checkbox tap. */}
-                    <View style={s.eqGrid}>
-                        {visiblePresets.map(p => (
-                            <View key={p.id} style={s.eqChip}>
-                                <TouchableOpacity onPress={() => togglePresetVisible(p.id)} hitSlop={HIT} style={s.checkWrapGrid}>
-                                    <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
-                                        {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
-                                    </View>
-                                </TouchableOpacity>
-                                <TouchableOpacity style={s.eqChipNameWrap} onPress={() => openEditPresetSheet(p)}>
-                                    <Text style={s.eqChipName} numberOfLines={1}>
-                                        {p.name}{p.isOverridden ? ' •' : ''}
-                                    </Text>
-                                </TouchableOpacity>
-                                {!p.isBuiltIn && (
-                                    <TouchableOpacity onPress={() => confirmDeleteCustomPreset(p)} hitSlop={HIT} style={s.eqDelWrap}>
-                                        <Text style={s.eqDel}>✕</Text>
-                                    </TouchableOpacity>
-                                )}
-                            </View>
-                        ))}
-                    </View>
-                    <View style={s.eqButtonRow}>
-                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
-                            <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
-                        </TouchableOpacity>
-                        <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
-                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
-                            <Switch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
-                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                        </View>
-                    </View>
-
-                    {/* Pre-amp: a single broadband gain on top of whatever
-                        preset is active, not tied to any one preset — lives
-                        here rather than inside the preset editor since it
-                        applies globally regardless of which preset is
-                        picked (same as how a hardware EQ's master gain knob
-                        works alongside its band sliders). */}
-                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Pre-amp</Text>
-                    <Text style={s.sliderNote}>Overall gain on top of the current preset — boost a quiet library or pull back a hot one</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{preAmpLocal > 0 ? '+' : ''}{preAmpLocal.toFixed(1)}dB</Text>
-                    <PureSlider style={s.slider} minimumValue={-12} maximumValue={12} step={0.5} value={preAmpLocal}
-                        onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
-                </Section>
-
-                {/* 3. Shuffle */}
-                <Section title="Shuffle Mode">
-                    {MODES.map(m => (
-                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => { setShuffleTypePref(m.id); changeShuffleMode(m.id); }}>
-                            <View style={{ flex: 1 }}>
-                                <Text style={s.modeLabel}>{m.label}</Text>
-                                <Text style={s.modeSub}>{m.sub}</Text>
-                            </View>
-                            <View style={[s.radio, shuffleTypePref === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
-                        </TouchableOpacity>
-                    ))}
                 </Section>
 
                 <Section title="Queue">
@@ -949,7 +725,7 @@ export default function SettingsScreen() {
                     )}
                 </Section>
 
-                <GroupHeader title="Screens" sub="What each screen shows" />
+                <GroupHeader title="Screens" />
 
                 <Section title="All Songs & Playlists">
                     <View style={s.toggleRow}>
@@ -1067,7 +843,257 @@ export default function SettingsScreen() {
                     )}
                 </Section>
 
-                <GroupHeader title="Data" sub="Backup and troubleshooting" />
+                <Section title="DJ Disc">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>DJ Disc</Text>
+                            <Text style={s.toggleSub}>Adds a spinning vinyl with the cover in the middle to the Player. Drag it to scratch. Tap the button under the cover to switch to it</Text>
+                        </View>
+                        <Switch value={djDisc} onValueChange={setDjDisc}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
+                <Section title="Screen">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Keep Screen Awake</Text>
+                            <Text style={s.toggleSub}>Only while a song plays</Text>
+                        </View>
+                        <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
+                <GroupHeader title="Appearance" />
+
+                {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
+                     size let 6 fit per row instead of 5, leaving an uneven second row) */}
+                <Section title="Accent Color">
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
+                        {swatchRows.map((row, i) => (
+                            <View key={i} style={[s.swatchRow, i > 0 && { marginTop: 14 }]}>
+                                {row.map(renderSwatch)}
+                            </View>
+                        ))}
+                    </View>
+                </Section>
+
+                <Section title="Base Color">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Light Mode</Text>
+                            <Text style={s.toggleSub}>Light background. Your dark base color returns when you turn it off</Text>
+                        </View>
+                        <Switch value={isLight} onValueChange={toggleLightMode}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    {/* Real bug found here: this whole grid used to be
+                        dimmed AND pointerEvents="none" whenever isLight was
+                        true — meaning renderBaseSwatch's careful dark→light
+                        id mapping above was completely unreachable while in
+                        Light Mode. The only way to change hue was to flip
+                        back to dark, pick a swatch, then flip light mode
+                        back on — exactly "light mode is locked, can only
+                        change by picking a dark color then switching."
+                        Nothing else needed to change; the mapping logic was
+                        already correct, this container was just blocking
+                        all touches from ever reaching it. */}
+                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
+                        <View style={s.swatchRow}>
+                            {baseEntries.map(renderBaseSwatch)}
+                        </View>
+                    </View>
+                </Section>
+
+                <Section title="Custom Background">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Use Background Image</Text>
+                            <Text style={s.toggleSub}>Image behind every screen. Colors stay the same</Text>
+                        </View>
+                        <Switch value={backgroundImageEnabled} onValueChange={v => {
+                            if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
+                            setBackgroundImageEnabled(v);
+                        }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 14, gap: 10 }}>
+                        <TouchableOpacity onPress={pickBackgroundImage} style={[s.sortChip, { backgroundColor: theme.accent }]}>
+                            <Text style={[s.sortChipText, { color: theme.onAccent }]}>
+                                {backgroundImageUri ? 'Change Image' : 'Choose Image'}
+                            </Text>
+                        </TouchableOpacity>
+                        {backgroundImageUri && (
+                            <TouchableOpacity onPress={() => { setBackgroundImageEnabled(false); deleteStoredImage(backgroundImageUri); setBackgroundImageUri(null); }} style={s.sortChip}>
+                                <Text style={s.sortChipText}>Remove</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                </Section>
+
+                <Section title="Covers">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Rounded Cover Art</Text>
+                            <Text style={s.toggleSub}>Rounded corners on covers everywhere</Text>
+                        </View>
+                        <Switch value={coverShape === 'rounded'} onValueChange={v => setCoverShape(v ? 'rounded' : 'square')}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
+                <GroupHeader title="Library & Data" />
+
+                {/* 5. Music location */}
+                <Section title="Music Location">
+                    {(showBoth || isLiveContainer) && (
+                        <View style={s.locBlock}>
+                            <Text style={s.locHeading}>If using LiveContainer</Text>
+                            <Text style={s.locBody}>
+                                Files → On My iPhone → LiveContainer → Data → Application → (SySlate's app ID) → Documents
+                            </Text>
+                        </View>
+                    )}
+                    {(showBoth || isSideStore) && (
+                        <View style={s.locBlock}>
+                            <Text style={s.locHeading}>If using SideStore</Text>
+                            <Text style={s.locBody}>
+                                Files → On My iPhone → SideStore → Data → Application → (SySlate's app ID) → Documents
+                            </Text>
+                            <Text style={[s.locNote, { marginTop: 6 }]}>
+                                Known issue: on some SideStore installs this Documents folder shows as empty/unreachable
+                                even though the path above is correct — a sandboxing limitation on SideStore's side, not
+                                something adding files elsewhere (like a manually made top-level "SySlate" folder) works
+                                around, since that folder isn't actually connected to the app's real storage.
+                            </Text>
+                        </View>
+                    )}
+                    <View style={[s.locBlock, { borderBottomWidth: 0 }]}>
+                        <Text style={s.locHeading}>This install's actual path</Text>
+                        <Text style={[s.locPath, { color: theme.accent }]} selectable>
+                            {(scanPath ?? '').replace('file://', '')}
+                        </Text>
+                        <Text style={s.locNote}>Folders become playlists. Files in the root appear in All Songs.</Text>
+                        {scanError && (
+                            <Text style={[s.locNote, { color: '#dc6262', marginTop: 10 }]} selectable>
+                                Scan diagnostic: {scanError}
+                            </Text>
+                        )}
+                    </View>
+                </Section>
+
+                {/* 6. Rescan */}
+                <Section title="Library">
+                    <TouchableOpacity style={s.row} onPress={reload}>
+                        <Text style={s.rowLabel}>Rescan Music</Text>
+                        <Text style={s.rowSub}>Re-reads all folders</Text>
+                    </TouchableOpacity>
+                </Section>
+
+                {/* Splits a tag's artist field into individual artists on this
+                     character before display/search, so "Artist A; Artist B"
+                     shows and searches as two artists instead of one long
+                     string. 'None' turns splitting off entirely — the tag
+                     displays exactly as stored, same as before this setting
+                     existed. Defaults to ';' (see getArtistSeparator's own
+                     comment for why that's the safe default) — songs with no
+                     separator character in their tag are never affected by
+                     this setting either way. */}
+                <Section title="Multiple Artists">
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Artist Separator</Text>
+                        <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {ARTIST_SEPARATORS.map(opt => {
+                            // Multi-select now (a library can genuinely mix
+                            // more than one separator convention) — 'None'
+                            // is the one mutually-exclusive option, since it
+                            // means "don't split at all" and picking it
+                            // alongside a real separator wouldn't make
+                            // sense. Selecting 'None' clears everything
+                            // else; selecting any real separator while
+                            // 'None' is active drops 'None'.
+                            const selected = opt.id === 'none'
+                                ? artistSeparator.includes('none') || artistSeparator.length === 0
+                                : artistSeparator.includes(opt.id);
+                            return (
+                                <TouchableOpacity
+                                    key={opt.id}
+                                    style={[s.sortChip, selected && { backgroundColor: theme.accent }]}
+                                    onPress={() => {
+                                        if (opt.id === 'none') {
+                                            setArtistSeparator(['none']);
+                                            return;
+                                        }
+                                        const withoutNone = artistSeparator.filter(sep => sep !== 'none');
+                                        setArtistSeparator(
+                                            withoutNone.includes(opt.id)
+                                                ? withoutNone.filter(sep => sep !== opt.id)
+                                                : [...withoutNone, opt.id]
+                                        );
+                                    }}
+                                >
+                                    <Text style={[s.sortChipText, selected && { color: theme.onAccent }]}>
+                                        {opt.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </View>
+
+                    {/* Separate from the separator picker above — that
+                         controls what counts as a split point in the raw
+                         tag; this controls how the split artists get
+                         re-joined for display. Applies in-app everywhere
+                         formatArtists is used (Player, queue, playlist and
+                         All Songs rows). Does not yet reach the lock-screen/
+                         Bluetooth/CarPlay "Now Playing" artist field — that
+                         goes through native metadata sent at queue-add time
+                         from many call sites, and doing that safely needs
+                         its own centralized pass rather than being bolted
+                         on here; noted as a followup, not silently skipped. */}
+                    <View style={[s.settingHeader, { marginTop: 14 }]}>
+                        <Text style={s.toggleLabel}>Artist Display Format</Text>
+                        <Text style={s.toggleSub}>How multiple artists show in the app</Text>
+                    </View>
+                    <View style={s.sortRow}>
+                        {[
+                            { id: 'comma', label: 'A, B' },
+                            { id: 'ampersand', label: 'A & B' },
+                            { id: 'slash', label: 'A / B' },
+                        ].map(opt => (
+                            <TouchableOpacity
+                                key={opt.id}
+                                style={[s.sortChip, artistDisplayJoin === opt.id && { backgroundColor: theme.accent }]}
+                                onPress={() => setArtistDisplayJoin(opt.id)}
+                            >
+                                <Text style={[s.sortChipText, artistDisplayJoin === opt.id && { color: theme.onAccent }]}>
+                                    {opt.label}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </Section>
+
+                {/* Off by default: a real ALBUM tag (when tags.js finds one)
+                     is normally more accurate than a folder name, so it wins
+                     by default now that tags are actually read. Flip this on
+                     to go back to how it worked before — folder name always
+                     wins, real tag ignored for this field specifically —
+                     for anyone whose library is organized by folder more
+                     meaningfully than its actual tags are filled in. */}
+                <Section title="Album From Folder Name">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
+                            <Text style={s.toggleSub}>Instead of the song's Album tag</Text>
+                        </View>
+                        <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
 
                 {/* 7. Export/Import */}
                 <Section title="Backup & Sync">
@@ -1093,6 +1119,7 @@ export default function SettingsScreen() {
                         <Text style={s.rowSub}>Console output from this session</Text>
                     </TouchableOpacity>
                 </Section>
+
             </ScrollView>
                 </>
             )}
@@ -1176,13 +1203,11 @@ export default function SettingsScreen() {
     );
 }
 
-function GroupHeader({ title, sub }) {
-    const { base, theme } = useTheme();
+function GroupHeader({ title }) {
+    const { base } = useTheme();
     return (
-        <View style={{ marginTop: 26, marginBottom: 12, marginHorizontal: 20, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: base.surface }}>
+        <View style={{ marginTop: 26, marginBottom: 12, marginHorizontal: 20, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface }}>
             <Text style={{ color: base.text, fontSize: 22, fontWeight: '700' }}>{title}</Text>
-            <Text style={{ color: base.textFaint, fontSize: 12, marginTop: 2 }}>{sub}</Text>
-            <View style={{ height: 2, width: 36, borderRadius: 1, backgroundColor: theme.accent, marginTop: 8 }} />
         </View>
     );
 }

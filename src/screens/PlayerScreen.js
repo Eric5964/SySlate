@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { playerArtUri } from '../utils/embeddedArt';
 import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
@@ -16,6 +17,7 @@ import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
 import GradientCap from '../components/GradientCap';
+import DJDisc from '../components/DJDisc';
 import { squircle } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
 
@@ -96,7 +98,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -424,7 +426,7 @@ export default function PlayerScreen() {
     // which is real data we already have. True per-file embedded artwork
     // would need a native module or a metadata-parsing library — a separate,
     // bigger feature if you want it.
-    const artwork = currentTrack?.artwork;
+    const artwork = playerArtUri(currentTrack?.artwork);
     const pct = justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0);
 
     // Lyrics: 'off' never even attempts a .lrc lookup (no wasted file I/O
@@ -541,6 +543,37 @@ export default function PlayerScreen() {
     // the 280ms crossfade on first paint — that fade is for a real
     // cover<->lyrics transition, not something that should visibly happen
     // every time the Player screen opens.
+    // DJ disc view. Lives alongside the lyrics view: the button under the
+    // cover cycles cover -> lyrics (if the song has them) -> disc (if the
+    // setting is on) -> cover. At most one of the two is showing.
+    const [showingDisc, setShowingDisc] = useState(false);
+    const discFade = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        Animated.timing(discFade, { toValue: showingDisc ? 1 : 0, duration: 280, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    }, [showingDisc]);
+    useEffect(() => { if (!djDisc && showingDisc) setShowingDisc(false); }, [djDisc, showingDisc]);
+    // The Player's swipe-down-to-close works from anywhere above the controls,
+    // which would close it whenever the disc is dragged downward. While the
+    // disc is showing, that gesture is off (the back arrow still closes it).
+    useEffect(() => {
+        navigation.setOptions({ gestureEnabled: !showingDisc });
+        return () => navigation.setOptions({ gestureEnabled: true });
+    }, [showingDisc, navigation]);
+    useEffect(() => { if (showingLyrics && showingDisc) setShowingDisc(false); }, [showingLyrics, showingDisc]);
+    const hasLyricsView = lyricsMode !== 'off' && !!lyricsData;
+    const cycleView = () => {
+        // cover -> lyrics -> disc -> cover, skipping what is unavailable.
+        if (showingLyrics) { setShowingLyrics(false); if (djDisc) setShowingDisc(true); return; }
+        if (showingDisc) { setShowingDisc(false); return; }
+        if (hasLyricsView) { setShowingLyrics(true); return; }
+        if (djDisc) setShowingDisc(true);
+    };
+    const nextViewLabel = showingLyrics ? (djDisc ? 'Show disc' : 'Show cover')
+        : showingDisc ? 'Show cover'
+        : hasLyricsView ? 'Show lyrics' : 'Show disc';
+    // Protected zones for scratching: start of the song, and the end where a
+    // crossfade or fade-out runs, plus a safety margin.
+    const scratchEndGuard = Math.max(crossfadeEnabled ? Math.max(crossfadeDuration || 0, crossfadeDurationEndOfTrack || 0) : 0, 2) + 8;
     const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // 0 = cover, 1 = lyrics
     const lyricsFadeMounted = useRef(false);
     useEffect(() => {
@@ -711,6 +744,16 @@ export default function PlayerScreen() {
             stopAnim();
             animPct.setValue(pct);
             animPctValueRef.current = pct;
+            // `pct` can be up to 500ms old at the instant of a pause (lock
+            // screen, Control Center, headphones). Read the exact position
+            // so the frozen bar sits where playback really stopped.
+            const trackAtPause = currentTrack?.id;
+            AudioEngine.getProgress().then(p => {
+                if (lastSyncedTrackIdRef.current !== trackAtPause || !(p?.duration > 0)) return;
+                const exact = Math.max(0, Math.min(1, p.position / p.duration));
+                animPct.setValue(exact);
+                animPctValueRef.current = exact;
+            }).catch(() => { });
             return;
         }
         if (trackChanged) {
@@ -735,12 +778,15 @@ export default function PlayerScreen() {
             startRealTimeAnim(0);
             return;
         }
-        const drift = Math.abs(animPctValueRef.current - pct);
-        if (!animRunRef.current || drift > 0.02) {
+        // Drift is judged in SECONDS now. 2% of the song was 3-4 seconds on
+        // a normal track, which is what let the bar sit visibly wrong
+        // after a skip, resume or outside pause before it corrected.
+        const driftSeconds = Math.abs(animPctValueRef.current - pct) * (progress.duration || 0);
+        if (!animRunRef.current || driftSeconds > 0.35) {
             startRealTimeAnim(pct);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [Math.round(pct * 200), isPlaying, currentTrack?.id]);
+    }, [progress.position, isPlaying, currentTrack?.id]);
 
     // Clears the post-seek drag overlay once the polled position actually
     // agrees with where we told native to seek to — see the commit branch
@@ -885,6 +931,8 @@ export default function PlayerScreen() {
                      instead, no shadow. */}
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
+                        <Animated.View style={StyleSheet.absoluteFill} pointerEvents={showingDisc ? 'none' : 'auto'} renderToHardwareTextureAndroid={false}>
+                        <Animated.View style={{ flex: 1, opacity: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }}>
                         {showPlayerCover && (
                             // The whole box (background/shadow/rounded corners) now
                             // fades with lyricsFade too, not just the artwork inside
@@ -924,6 +972,22 @@ export default function PlayerScreen() {
                                 </Animated.View>
                             </Animated.View>
                         )}
+                        </Animated.View>
+                        </Animated.View>
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
+                            {djDisc && (
+                                <DJDisc
+                                    size={width - 56}
+                                    artwork={artwork}
+                                    accent={theme.accent}
+                                    isPlaying={isPlaying}
+                                    visible={showingDisc}
+                                    position={progress.position}
+                                    duration={progress.duration}
+                                    endGuard={scratchEndGuard}
+                                />
+                            )}
+                        </Animated.View>
                         {lyricsData && (
                             <Animated.View
                                 // Real bug found here: top/bottom -60 made this
@@ -1038,10 +1102,10 @@ export default function PlayerScreen() {
                          here directly — no more competing flex gap. */}
                     <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
                     <View style={[s.lyricsToggleSlot, { marginBottom: 14 }]}>
-                        {lyricsMode !== 'off' && lyricsData && (
-                            <TouchableOpacity onPress={() => setShowingLyrics(v => !v)} style={s.lyricsToggleBtn}>
+                        {(hasLyricsView || djDisc) && (
+                            <TouchableOpacity onPress={cycleView} style={s.lyricsToggleBtn}>
                                 <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
-                                    {showingLyrics ? 'Show cover' : 'Show lyrics'}
+                                    {nextViewLabel}
                                 </Text>
                             </TouchableOpacity>
                         )}

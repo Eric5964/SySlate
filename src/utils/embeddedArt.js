@@ -35,6 +35,16 @@ const ART_DIR = FileSystem.documentDirectory + '.song-art/';
 // over a second). A 160px copy decodes almost instantly, so lists use these.
 const THUMB_DIR = ART_DIR + 'thumbs/';
 const THUMB_PX = 160;
+// Mid-size copies (720px) for the big Player cover. The full-size art can be
+// several thousand pixels wide; React Native does not keep decoded images
+// that large in its cache, so the Player re-decoded it every time it was
+// opened or the song changed. 720px stays small enough to be kept.
+const MID_DIR = ART_DIR + 'mid/';
+const MID_PX = 720;
+const midNames = new Set();
+const midQueued = new Set();
+let midQueue = [];
+let midRunning = false;
 const thumbNames = new Set();
 const thumbQueued = new Set();
 let thumbQueue = [];
@@ -50,6 +60,37 @@ async function loadThumbNames() {
         const names = await FileSystem.readDirectoryAsync(THUMB_DIR);
         names.forEach(n => thumbNames.add(n));
     } catch { }
+    try {
+        const names = await FileSystem.readDirectoryAsync(MID_DIR);
+        names.forEach(n => midNames.add(n));
+    } catch { }
+}
+
+async function runMidQueue() {
+    if (midRunning) return;
+    midRunning = true;
+    while (midQueue.length) {
+        const { uri, name } = midQueue.shift();
+        try {
+            const ok = await AudioEngine.makeThumbnail(uri, MID_DIR + name, MID_PX);
+            if (ok) midNames.add(name);
+        } catch { }
+        await new Promise(r => setTimeout(r, 40));
+    }
+    midRunning = false;
+}
+
+// The URI the big Player cover should draw (720px copy once it exists).
+export function playerArtUri(uri) {
+    if (!uri || typeof uri !== 'string' || !uri.includes('.song-art/')) return uri;
+    const name = thumbNameFor(uri);
+    if (midNames.has(name)) return MID_DIR + name;
+    if (!midQueued.has(name)) {
+        midQueued.add(name);
+        midQueue.push({ uri, name });
+        runMidQueue();
+    }
+    return uri;
 }
 
 async function runThumbQueue() {

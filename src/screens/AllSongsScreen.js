@@ -1,4 +1,4 @@
-import React, { useContext, useState, useMemo, useRef, useEffect } from 'react';
+import React, { useContext, useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
@@ -129,6 +129,16 @@ export default function AllSongsScreen() {
         await playSongFromPlaylist(playlist, song.id);
     };
 
+    // Stable wrappers: `play` and `addToQueue` are new functions on every
+    // render, which would defeat the memoized SongRow. These keep the same
+    // identity and always call the latest version.
+    const playRef = useRef(play);
+    playRef.current = play;
+    const addToQueueRef = useRef(addToQueue);
+    addToQueueRef.current = addToQueue;
+    const stablePlay = useCallback((song) => playRef.current(song), []);
+    const stableAddToQueue = useCallback((song) => addToQueueRef.current(song), []);
+
     const sortLabel = SORTS.find(o => o.id === sortId)?.label ?? 'Sort';
 
     return (
@@ -211,26 +221,21 @@ export default function AllSongsScreen() {
                     maxToRenderPerBatch={10}
                     onScrollBeginDrag={Keyboard.dismiss}
                     renderItem={({ item }) => (
-                        <SwipeableRow onSwipeRight={() => addToQueue(item)} rightColor={theme.accent}>
-                            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => play(item)} activeOpacity={0.7}>
-                                {showSongCovers && (
-                                    <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
-                                        {artMap[item.id]
-                                            ? <Image source={{ uri: artMap[item.id] }} style={s.thumbImg} resizeMode="cover" />
-                                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                        }
-                                    </View>
-                                )}
-                                <View style={{ flex: 1 }}>
-                                    <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.title}</Text>
-                                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator, artistDisplayJoin)}</Text>
-                                </View>
-                                {showPlayCount && playCounts[item.id] > 0 && (
-                                    <Text style={[s.playCount, { color: base.textFaint }]}>{playCounts[item.id]}×</Text>
-                                )}
-                            </TouchableOpacity>
-                        </SwipeableRow>
-                    )}
+                    <SongRow
+                        item={item}
+                        art={artMap[item.id]}
+                        count={playCounts[item.id]}
+                        showSongCovers={showSongCovers}
+                        showPlayCount={showPlayCount}
+                        coverShape={coverShape}
+                        artistSeparator={artistSeparator}
+                        artistDisplayJoin={artistDisplayJoin}
+                        theme={theme}
+                        base={base}
+                        onPlay={stablePlay}
+                        onQueue={stableAddToQueue}
+                    />
+                )}
                 />
             )}
 
@@ -242,6 +247,34 @@ export default function AllSongsScreen() {
 }
 
 const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
+
+// One song row. Memoized so that unrelated state changes on this screen
+// (opening the queue or EQ sheet, a cover finishing loading for another
+// row, the play counts arriving) do not re-render every visible row, which
+// is what made the sheets stutter when they opened and closed.
+const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue }) {
+    return (
+        <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
+            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => onPlay(item)} activeOpacity={0.7}>
+                {showSongCovers && (
+                    <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                        {art
+                            ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
+                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                        }
+                    </View>
+                )}
+                <View style={{ flex: 1 }}>
+                    <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.title}</Text>
+                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator, artistDisplayJoin)}</Text>
+                </View>
+                {showPlayCount && count > 0 && (
+                    <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
+                )}
+            </TouchableOpacity>
+        </SwipeableRow>
+    );
+});
 
 const s = StyleSheet.create({
     container: { flex: 1 },

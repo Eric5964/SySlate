@@ -7,6 +7,7 @@ import { squircle } from '../utils/squircle';
 import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
+import { listArtUri } from '../utils/embeddedArt';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
 import { getPlayCounts } from '../utils/storage';
@@ -19,6 +20,10 @@ import { getPlayCounts } from '../utils/storage';
 // title/artist are single-line truncated), so a constant is close enough
 // that the couple of px of slop is not visible.
 const ROW_HEIGHT = 74;
+// Rows built when the sheet opens (about a screenful and a half), then more
+// shortly after the open animation, then more as the list is scrolled.
+const INITIAL_ROWS = 16;
+const MORE_ROWS = 80;
 
 // Grows a newly-added row in from nothing instead of it just abruptly
 // appearing in the list (same idea as Spotify's queue-add animation) — both
@@ -127,11 +132,70 @@ function ShrinkOutRow({ removing, children }) {
 // of its own left to key its fade-out off of), which is a bigger, riskier
 // change than this pass — the appearing half was the specific complaint.
 
+// One queue row. Memoized: a refresh builds brand new row objects even when
+// nothing changed, and art / play-count lookups land one at a time, so
+// without this every visible row re-rendered on each of those.
+const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playCount, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, actions }) {
+    const { song, realIndex, isPriority, stableKey } = row;
+    return (
+        <GrowInRow isNew={isNew}>
+            <ShrinkOutRow removing={removing}>
+                <SwipeableRow
+                    onSwipeLeft={() => actions.remove(realIndex, stableKey)}
+                    // Only meaningful for Up Next rows: promoting a row that is
+                    // already Priority does nothing useful (see promoteToQueue's
+                    // guard for the duplicate-entry bug this used to cause).
+                    onSwipeRight={isPriority ? undefined : () => actions.promote(realIndex)}
+                    rightColor={theme.accent}
+                    leftColor="#dc2626"
+                >
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => actions.jump(realIndex)} activeOpacity={0.7}>
+                        {showSongCovers && (
+                            <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                                {art
+                                    ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
+                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                }
+                            </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                            <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
+                            <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator, artistDisplayJoin)}</Text>
+                        </View>
+                        {showPlayCount && playCount > 0 && (
+                            <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCount}×</Text>
+                        )}
+                    </TouchableOpacity>
+                </SwipeableRow>
+            </ShrinkOutRow>
+        </GrowInRow>
+    );
+}, (prev, next) => {
+    for (const k in next) {
+        if (k === 'row') continue;
+        if (prev[k] !== next[k]) return false;
+    }
+    const a = prev.row, b = next.row;
+    return a.stableKey === b.stableKey && a.realIndex === b.realIndex && a.isPriority === b.isPriority
+        && a.song.id === b.song.id && a.song.title === b.song.title && a.song.artist === b.song.artist
+        && a.song.ourTitle === b.song.ourTitle && a.song.ourArtist === b.song.ourArtist;
+});
+
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
     const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
-    const [rows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
+    // allRows is the whole upcoming queue; only the first `visibleCount` are
+    // ever turned into list items, cover lookups and row components. A queue
+    // built from All Songs can be thousands long, and building all of it on
+    // open (and again on every song change) was a large part of the choppy
+    // opening and scrolling. More rows are added as the list is scrolled.
+    const [allRows, setRows] = useState([]); // [{ realIndex, song, isPriority, stableKey }]
+    const [visibleCount, setVisibleCount] = useState(INITIAL_ROWS);
+    const rows = useMemo(
+        () => (allRows.length > visibleCount ? allRows.slice(0, visibleCount) : allRows),
+        [allRows, visibleCount]
+    );
     const [newKeys, setNewKeys] = useState(() => new Set());
     const [removingKeys, setRemovingKeys] = useState(() => new Set());
     const [playCounts, setPlayCounts] = useState({});
@@ -231,7 +295,12 @@ export default function QueueModal({ visible, onClose }) {
         // (which used to shift with every priorityQueue change) was wrong.
         if (!visible) return;
         setHasLoadedOnce(false);
+        setVisibleCount(INITIAL_ROWS);
         refresh();
+        // The rest of the first window is added once the open animation has
+        // finished, so building it never competes with that animation.
+        const t = setTimeout(() => setVisibleCount(c => Math.max(c, MORE_ROWS)), 450);
+        return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible]);
 
@@ -380,48 +449,33 @@ export default function QueueModal({ visible, onClose }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, currentTrack, newKeys]);
 
-    const renderRow = ({ song, realIndex, isPriority, stableKey }) => (
-        <GrowInRow key={stableKey} isNew={newKeys.has(stableKey)}>
-            <ShrinkOutRow removing={removingKeys.has(stableKey)}>
-                <SwipeableRow
-                    onSwipeLeft={() => remove(realIndex, stableKey)}
-                    // Only meaningful for Up Next rows — "promote to
-                    // Priority" doesn't mean anything for a row that's
-                    // already in Priority (see promoteToQueue's guard for
-                    // the duplicate-queue-entry bug this used to cause).
-                    // Omitting the prop entirely disables the swipe-right
-                    // reveal for these rows, same as Now Playing's row
-                    // below omits onSwipeLeft.
-                    onSwipeRight={isPriority ? undefined : () => promote(realIndex)}
-                    rightColor={theme.accent}
-                    leftColor="#dc2626"
-                >
-                    {/* Same shape as the All Songs / Playlist rows (rounded card,
-                        same padding/margins) — border tier instead of surface, since
-                        the sheet itself is already surface (using the same color for
-                        both left rows with no visible shape against their own
-                        container). Interaction (swipe feedback, glow, etc.) stays
-                        specific to the queue context. */}
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => jump(realIndex)} activeOpacity={0.7}>
-                        {showSongCovers && (
-                            <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
-                                {artMap[song.id]
-                                    ? <Image source={{ uri: artMap[song.id] }} style={s.thumbImg} resizeMode="cover" />
-                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
-                                }
-                            </View>
-                        )}
-                        <View style={{ flex: 1 }}>
-                            <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
-                            <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator, artistDisplayJoin)}</Text>
-                        </View>
-                        {showPlayCount && playCounts[song.id] > 0 && (
-                            <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCounts[song.id]}×</Text>
-                        )}
-                    </TouchableOpacity>
-                </SwipeableRow>
-            </ShrinkOutRow>
-        </GrowInRow>
+    // Stable handlers so memoized rows are not re-rendered just because the
+    // parent re-rendered (every closure above is new on each render).
+    const actionsRef = useRef({});
+    actionsRef.current = { remove, promote, jump };
+    const rowActions = useRef({
+        remove: (i, k) => actionsRef.current.remove(i, k),
+        promote: (i) => actionsRef.current.promote(i),
+        jump: (i) => actionsRef.current.jump(i),
+    }).current;
+
+    const renderRow = (row) => (
+        <QueueRow
+            key={row.stableKey}
+            row={row}
+            isNew={newKeys.has(row.stableKey)}
+            removing={removingKeys.has(row.stableKey)}
+            art={artMap[row.song.id]}
+            playCount={playCounts[row.song.id]}
+            showSongCovers={showSongCovers}
+            showPlayCount={showPlayCount}
+            coverShape={coverShape}
+            artistSeparator={artistSeparator}
+            artistDisplayJoin={artistDisplayJoin}
+            theme={theme}
+            base={base}
+            actions={rowActions}
+        />
     );
 
     // Dispatches by the `type` tag listData built above. Content for each
@@ -438,7 +492,7 @@ export default function QueueModal({ visible, onClose }) {
                             {showSongCovers && (
                                 <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
                                     {currentTrack.artwork
-                                        ? <Image source={{ uri: currentTrack.artwork }} style={s.thumbImg} resizeMode="cover" />
+                                        ? <Image source={{ uri: listArtUri(currentTrack.artwork) }} style={s.thumbImg} resizeMode="cover" />
                                         : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
                                     }
                                 </View>
@@ -505,8 +559,12 @@ export default function QueueModal({ visible, onClose }) {
                     // (getItemLayout would need per-type-accurate heights to
                     // be exact), enough to help FlatList size its initial
                     // window reasonably without a measurement pass.
-                    initialNumToRender={12}
+                    initialNumToRender={10}
+                    maxToRenderPerBatch={8}
+                    updateCellsBatchingPeriod={60}
                     windowSize={7}
+                    onEndReachedThreshold={1.5}
+                    onEndReached={() => setVisibleCount(c => (c < allRows.length ? Math.min(allRows.length, c + MORE_ROWS) : c))}
                 />
             )}
         </BottomSheet>

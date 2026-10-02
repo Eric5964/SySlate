@@ -17,6 +17,11 @@ export default function SwipeableRow({
     // reads as part of the same shape, not a differently-rounded layer
     // behind it.
     radius = 12,
+    // The row's own outer margin (every song row uses 14 / 2). The glow,
+    // the swipe underlay and the Added badge are placed relative to the
+    // visible pill, not the full-width wrapper, so the outline hugs it.
+    insetX = 14,
+    insetY = 2,
     // Excludes a strip at the left edge from this row's own pan gesture, so
     // a screen-level edge-swipe-back gesture (e.g. leaving a playlist) can
     // claim that zone instead of this row eating it as a queue-swipe. 0 by
@@ -157,10 +162,18 @@ export default function SwipeableRow({
     // there's no separate fill layer, no transform-origin math — just a
     // solid color the row slides off of. The icon/text still fade in via
     // the opacity interpolations above so they don't pop in instantly.
+    // Outline sits just outside the pill (2px), same corner shape plus
+    // the 2px, so it reads as a thin ring around it with no empty walls.
+    const GLOW_OUT = 2;
+    const glowBox = {
+        left: insetX - GLOW_OUT, right: insetX - GLOW_OUT,
+        top: insetY - GLOW_OUT, bottom: insetY - GLOW_OUT,
+        borderRadius: radius + GLOW_OUT,
+    };
     return (
         <View style={styles.wrap}>
             {onSwipeRight && (
-                <Animated.View style={[styles.underlay, { backgroundColor: rightColor, borderRadius: radius, opacity: rightOpacity }]}>
+                <Animated.View style={[styles.underlay, { left: insetX, right: insetX, top: insetY, bottom: insetY, backgroundColor: rightColor, borderRadius: radius, opacity: rightOpacity }]}>
                     <View style={[styles.underlayContent, styles.underlayContentLeft]}>
                         <AddQueueIcon size={15} color="#fff" />
                         <Text style={styles.underlayText}>Next</Text>
@@ -168,7 +181,7 @@ export default function SwipeableRow({
                 </Animated.View>
             )}
             {onSwipeLeft && (
-                <Animated.View style={[styles.underlay, { backgroundColor: leftColor, borderRadius: radius, opacity: leftOpacity }]}>
+                <Animated.View style={[styles.underlay, { left: insetX, right: insetX, top: insetY, bottom: insetY, backgroundColor: leftColor, borderRadius: radius, opacity: leftOpacity }]}>
                     <View style={[styles.underlayContent, styles.underlayContentRight]}>
                         <Text style={styles.underlayText}>Remove</Text>
                         <TrashIcon size={15} color="#fff" />
@@ -186,13 +199,13 @@ export default function SwipeableRow({
                 <Animated.View style={{ transform: [{ translateX: displayX }] }}>
                     {children}
                     {onSwipeRight && (
-                        <Animated.View pointerEvents="none" style={[styles.glow, { borderColor: rightColor, shadowColor: rightColor, opacity: rightGlowOpacity }]} />
+                        <Animated.View pointerEvents="none" style={[styles.glow, glowBox, { borderColor: rightColor, shadowColor: rightColor, opacity: rightGlowOpacity }]} />
                     )}
                     {onSwipeLeft && (
-                        <Animated.View pointerEvents="none" style={[styles.glow, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
+                        <Animated.View pointerEvents="none" style={[styles.glow, glowBox, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
                     )}
                     {onSwipeRight && (
-                        <Animated.View pointerEvents="none" style={[styles.addedBadgeZone, { opacity: addedTextOpacity }]}>
+                        <Animated.View pointerEvents="none" style={[styles.addedBadgeZone, { right: 80 + insetX - 14, opacity: addedTextOpacity }]}>
                             <View style={[styles.addedBadge, { backgroundColor: rightColor }]}>
                                 <Text style={styles.addedText}>Added</Text>
                             </View>
@@ -221,8 +234,7 @@ const styles = StyleSheet.create({
     // Static border + shadow — only `opacity` is ever animated (native-driver
     // safe), same principle as the underlay opacity interpolations above.
     glow: {
-        ...StyleSheet.absoluteFillObject,
-        borderRadius: 14,
+        position: 'absolute',
         borderWidth: 1.5,
         shadowOffset: { width: 0, height: 0 },
         shadowRadius: 5,

@@ -173,6 +173,17 @@ export function PlaybackProvider({ children }) {
                     const meta = { artist: shownArtist };
                     if (art) meta.artwork = art;
                     await AudioEngine.updateMetadataForTrack(idx, meta);
+                    // Also hand the next few songs their formatted artist
+                    // now, so when a crossfade or skip makes one of them
+                    // current the lock screen already has the right text
+                    // instead of flashing the raw tag until JS catches up.
+                    for (let k = idx + 1; k < Math.min(queue.length, idx + 4); k++) {
+                        const nt = queue[k];
+                        const fa = formatArtists(nt?.artist ?? '', prefArtistSep, prefArtistJoin);
+                        if (fa && fa !== nt.artist) {
+                            await AudioEngine.updateMetadataForTrack(k, { artist: fa }).catch(() => { });
+                        }
+                    }
                     if (!cancelled) pushedArtRef.current = key;
                     return;
                 } catch { }

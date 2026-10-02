@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Image, StyleSheet } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import AudioEngine from '../native/AudioEngine';
 import { usePreferences } from '../context/PreferencesContext';
 import { useTheme } from '../context/ThemeContext';
 
@@ -44,6 +46,52 @@ import { useTheme } from '../context/ThemeContext';
 // registered pbxproj entries, no automatic `expo prebuild`/pod install
 // step). Now moot anyway: with only one Image instance that never
 // remounts, plain Image only ever pays the decode cost once per session.
+// A 240px copy of the background, shown instantly underneath the full one.
+// The full-size image is too big for React Native to keep decoded, so each
+// time a screen mounts it (or the app returns from the background) it is
+// read and decoded again, and for a few frames that showed black. The tiny
+// copy is always cached and paints on the first frame; the sharp one fades
+// in on top of it. Files are made when the background is chosen; an older
+// background without one gets it made here once.
+const loReady = new Set();
+function loUriFor(uri) {
+    return uri && /_screen\.jpg$/.test(uri) ? uri.replace(/_screen\.jpg$/, '_lo.jpg') : null;
+}
+function useLowResBackground(uri) {
+    const lo = loUriFor(uri);
+    const [ready, setReady] = useState(() => !!lo && loReady.has(lo));
+    useEffect(() => {
+        if (!lo) { setReady(false); return; }
+        if (loReady.has(lo)) { setReady(true); return; }
+        let cancelled = false;
+        (async () => {
+            try {
+                const info = await FileSystem.getInfoAsync(lo);
+                if (!info.exists) {
+                    const ok = await AudioEngine.makeThumbnail(uri, lo, 240);
+                    if (!ok) return;
+                }
+                loReady.add(lo);
+                if (!cancelled) setReady(true);
+            } catch { }
+        })();
+        return () => { cancelled = true; };
+    }, [lo, uri]);
+    return ready ? lo : null;
+}
+
+// The two stacked images (tiny first, full on top) plus the dark scrim.
+function BackgroundLayers({ uri, onError }) {
+    const lo = useLowResBackground(uri);
+    return (
+        <>
+            {lo && <Image source={{ uri: lo }} style={StyleSheet.absoluteFillObject} resizeMode="cover" fadeDuration={0} />}
+            <Image source={{ uri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" fadeDuration={0} onError={onError} />
+            <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
+        </>
+    );
+}
+
 export default function ScreenBackground({ style, children, ownImage }) {
     const { base } = useTheme();
     const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
@@ -61,8 +109,7 @@ export default function ScreenBackground({ style, children, ownImage }) {
     if (hasImage && ownImage) {
         return (
             <View style={[styles.flexFill, { backgroundColor: base.bg }]}>
-                <Image source={{ uri: backgroundImageUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" fadeDuration={0} />
-                <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
+                <BackgroundLayers uri={backgroundImageUri} />
                 <View style={[styles.flexFill, style]}>{children}</View>
             </View>
         );
@@ -82,30 +129,16 @@ export function PersistentBackgroundImage() {
     const hasImage = backgroundImageEnabled && backgroundImageUri;
     if (!hasImage) return null;
     return (
-        <>
-            <Image
-                source={{ uri: backgroundImageUri }}
-                style={StyleSheet.absoluteFillObject}
-                resizeMode="cover"
-                fadeDuration={0}
-                // Was silent — a failed load (a stale path from before a
-                // reinstall, a file that got evicted, whatever) just showed
-                // nothing with no way to tell why. Logged for whoever's
-                // debugging next, and auto-disabling rather than leaving
-                // the toggle stuck "on" pointing at an image that will
-                // never load — Settings will show "Choose Image" again
-                // instead of silently claiming an image is active when it
-                // isn't.
-                onError={(e) => {
-                    console.error('PersistentBackgroundImage failed to load:', backgroundImageUri, e.nativeEvent?.error);
-                    setBackgroundImageEnabled(false);
-                }}
-            />
-            {/* Scrim so existing text (styled assuming a plain dark
-                 background) stays legible over an arbitrary photo —
-                 explicitly asked not to harshly hurt legibility. */}
-            <View style={[StyleSheet.absoluteFillObject, styles.scrim]} pointerEvents="none" />
-        </>
+        <BackgroundLayers
+            uri={backgroundImageUri}
+            // A failed load (stale path, file evicted) used to show nothing
+            // with no way to tell why. Logged, and the toggle is switched
+            // off instead of staying "on" for an image that never loads.
+            onError={(e) => {
+                console.error('PersistentBackgroundImage failed to load:', backgroundImageUri, e.nativeEvent?.error);
+                setBackgroundImageEnabled(false);
+            }}
+        />
     );
 }
 

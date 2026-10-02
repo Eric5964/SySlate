@@ -11,7 +11,7 @@ import { squircle } from '../utils/squircle';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
     setPlaylistOrder,
-    getPlaylistCovers, setPlaylistCover, persistCoverImage,
+    getPlaylistCovers, setPlaylistCover, persistCoverImage, shrinkOldPlaylistCovers,
 } from '../utils/storage';
 import BottomSheet from '../components/BottomSheet';
 import ScreenBackground from '../components/ScreenBackground';
@@ -111,6 +111,13 @@ export default function PlaylistsScreen() {
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
+    // Shrinks any older full-size covers once per launch, then refreshes.
+    useEffect(() => {
+        const t = setTimeout(() => {
+            shrinkOldPlaylistCovers().then(changed => { if (changed) getPlaylistCovers().then(setCovers); });
+        }, 3000);
+        return () => clearTimeout(t);
+    }, []);
     useFocusEffect(useCallback(() => { getPlaylistCovers().then(setCovers); }, []));
 
     const listOpacity = useRef(new Animated.Value(1)).current;
@@ -189,7 +196,7 @@ export default function PlaylistsScreen() {
             quality: 0.4,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
-        const permanentUri = await persistCoverImage(result.assets[0].uri);
+        const permanentUri = await persistCoverImage(result.assets[0].uri, 600);
         // Real gap found here: App.js's reload() prefetches every playlist
         // cover, but only the ones already saved at COLD START — a cover
         // set or changed mid-session (right here) never went through
@@ -214,9 +221,12 @@ export default function PlaylistsScreen() {
     return (
         <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
+            {/* Same top row as All Songs and the Player: title where the back
+                arrow sits, buttons in the exact same top-right spots as EQ
+                and queue (same sizes, same gap, same top padding). */}
             <View style={s.header}>
-                <Text style={[s.title, { color: base.text }]}>Playlists</Text>
-                <View style={{ flexDirection: 'row' }}>
+                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
                     <TouchableOpacity onPress={cycleFormat} style={s.btn} hitSlop={HIT}>
                         <Text style={[s.btnText, { color: theme.accent }]}>{fmtIcon}</Text>
                     </TouchableOpacity>
@@ -298,10 +308,10 @@ const s = StyleSheet.create({
     // (see below, fixed this round), not header height. 44 just made this
     // screen's title sit noticeably higher than All Songs/Settings (both
     // paddingTop:60) and Playlist Detail (56) — restored to match.
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 60, paddingHorizontal: 24, paddingBottom: 4 },
+    header: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
-    btn: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
-    btnText: { fontSize: 24 },
+    btn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    btnText: { fontSize: 20 },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },

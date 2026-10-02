@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 import { EQ_MIN, EQ_MAX } from './eq';
+import AudioEngine from '../native/AudioEngine';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
@@ -238,10 +239,40 @@ export const getPlaylistCovers = () => safe(async () => {
 }, {});
 export const setPlaylistCover = async (path, uri) => {
     const covers = await getPlaylistCovers();
+    const previous = covers[path];
     if (uri) covers[path] = uri; else delete covers[path];
+    // A replaced or removed cover picture is deleted from storage so old
+    // picks do not pile up (only ever touches files in our own .covers/).
+    if (previous && previous !== uri) deleteStoredImage(previous);
     await safe(() => AsyncStorage.setItem('playlist_covers', JSON.stringify(covers)), null);
     await writeBackup({ playlist_covers: covers });
     return covers;
+};
+
+// One-time (per app launch) shrink of playlist covers picked before covers
+// were stored at 600px: those full-size pictures were being decoded again on
+// every render of the grid. Returns true when anything changed.
+let oldCoversChecked = false;
+export const shrinkOldPlaylistCovers = async () => {
+    if (oldCoversChecked) return false;
+    oldCoversChecked = true;
+    let changed = false;
+    try {
+        const covers = await getPlaylistCovers();
+        const uses = {};
+        Object.values(covers).forEach(u => { uses[u] = (uses[u] || 0) + 1; });
+        for (const [path, uri] of Object.entries(covers)) {
+            if (!uri || typeof uri !== 'string' || !uri.includes('/.covers/') || /_s\.jpg$/.test(uri) || uses[uri] > 1) continue;
+            const small = uri.replace(/\.[^./]+$/, '') + '_s.jpg';
+            try {
+                if (await AudioEngine.makeThumbnail(uri, small, 600)) {
+                    await setPlaylistCover(path, small); // also deletes the big original
+                    changed = true;
+                }
+            } catch { }
+        }
+    } catch { }
+    return changed;
 };
 
 export const getShowPlayCount = () => safe(() => AsyncStorage.getItem('show_play_count').then(v => v !== 'false'), true);
@@ -318,6 +349,8 @@ export const setArtistSeparator = (arr) => safe(() => AsyncStorage.setItem('arti
 // requiring a tap each time.
 export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'off'), 'off');
 export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode', v), null);
+export const getDjDisc = () => safe(() => AsyncStorage.getItem('dj_disc').then(v => v === '1'), false);
+export const setDjDisc = (v) => safe(() => AsyncStorage.setItem('dj_disc', v ? '1' : '0'), null);
 
 // 'rounded' (squircle, matches the app's existing default everywhere) or
 // 'square' (sharp corners) — applies to every cover-art element app-wide
@@ -452,13 +485,38 @@ export const setPlaylistSort = async (playlistPath, sortId) => {
 // clear at any time and which was also the likely cause of covers flashing
 // on re-render (the cache file wasn't being decoded/served consistently).
 // Copying it into Documents gives it a permanent, stable path.
-export const persistCoverImage = async (pickerUri) => {
+// Deletes a picture we stored under .covers/ (and the small companion copy
+// of a background, if any). Anything outside .covers/ is left alone.
+export const deleteStoredImage = async (uri) => {
+    try {
+        if (!uri || typeof uri !== 'string' || !uri.includes('/.covers/')) return;
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+        if (/_screen\.jpg$/.test(uri)) {
+            await FileSystem.deleteAsync(uri.replace(/_screen\.jpg$/, '_lo.jpg'), { idempotent: true });
+        }
+    } catch { }
+};
+
+// maxPx (optional): also shrinks the stored copy so its decoded size stays
+// small. Playlist covers are drawn at ~150pt, so 600px is plenty, and a
+// multi-megapixel picker result was being decoded again on every render.
+export const persistCoverImage = async (pickerUri, maxPx = 0) => {
     try {
         const dir = FileSystem.documentDirectory + '.covers/';
         await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => { });
         const ext = pickerUri.split('.').pop().split('?')[0] || 'jpg';
-        const dest = dir + 'cover_' + Date.now() + '_' + Math.floor(Math.random() * 10000) + '.' + ext;
+        const stamp = Date.now() + '_' + Math.floor(Math.random() * 10000);
+        const dest = dir + 'cover_' + stamp + '.' + ext;
         await FileSystem.copyAsync({ from: pickerUri, to: dest });
+        if (maxPx > 0) {
+            try {
+                const small = dir + 'cover_' + stamp + '_s.jpg';
+                if (await AudioEngine.makeThumbnail(dest, small, maxPx)) {
+                    await FileSystem.deleteAsync(dest, { idempotent: true });
+                    return small;
+                }
+            } catch { }
+        }
         return dest;
     } catch (e) {
         console.error('persistCoverImage:', e);
@@ -534,7 +592,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join'];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });

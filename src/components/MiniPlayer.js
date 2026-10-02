@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { usePlaybackState, State, useProgress } from '../native/AudioEngine';
+import { listArtUri } from '../utils/embeddedArt';
+import AudioEngine, { usePlaybackState, State, useProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -70,7 +71,28 @@ export default function MiniPlayer({ withTabBar = true }) {
             basisRef.current = { position: progress.position, duration: progress.duration, at: Date.now() };
         }
         forceTick(t => t + 1);
-    }, [progress.position, progress.duration, currentTrack?.id]);
+        // Depends on the whole `progress` object (a new one arrives on every
+        // poll) and on isPlaying. Before, a poll that returned the SAME
+        // position (always the case while paused) never re-stamped the
+        // basis time, so on Play the bar computed "time since the last
+        // change" (the whole pause) and leapt toward the end until the
+        // next poll moved. Now the basis is re-stamped on every poll and
+        // on every play/pause toggle.
+    }, [progress, isPlaying, currentTrack?.id]);
+
+    // On every play/pause change, read the true position right now instead
+    // of trusting a poll that can be up to 500ms old (a pause from the lock
+    // screen or Control Center otherwise left the bar a beat behind/ahead).
+    useEffect(() => {
+        let cancelled = false;
+        const trackAtStart = lastTrackIdRef.current;
+        AudioEngine.getProgress().then(p => {
+            if (cancelled || lastTrackIdRef.current !== trackAtStart || !(p?.duration > 0)) return;
+            basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
+            forceTick(t => t + 1);
+        }).catch(() => { });
+        return () => { cancelled = true; };
+    }, [isPlaying]);
 
     useEffect(() => {
         if (!isPlaying) return;
@@ -87,7 +109,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
     const title = currentTrack.ourTitle ?? currentTrack.title ?? '';
     const artist = formatArtists(currentTrack.ourArtist ?? currentTrack.artist ?? '', artistSeparator, artistDisplayJoin);
-    const artwork = currentTrack.artwork;
+    const artwork = listArtUri(currentTrack.artwork);
 
     return (
         <TouchableOpacity
