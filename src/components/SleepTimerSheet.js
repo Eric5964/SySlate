@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import PureSlider from './PureSlider';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -46,6 +46,7 @@ export default function SleepTimerSheet({ visible, onClose }) {
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             {active && (
                 <View style={[s.activeRow, { borderBottomColor: base.border }]}>
                     <Text style={[s.activeLabel, { color: base.textDim }]}>
@@ -83,6 +84,7 @@ export default function SleepTimerSheet({ visible, onClose }) {
             >
                 <Text style={[s.rowText, { color: base.text }]}>End of current track</Text>
             </TouchableOpacity>
+            </ScrollView>
         </BottomSheet>
     );
 }

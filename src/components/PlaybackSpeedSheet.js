@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import BottomSheet from './BottomSheet';
@@ -29,6 +29,7 @@ export default function PlaybackSpeedSheet({ visible, onClose }) {
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Playback Speed</Text>}>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             {PRESETS.map(p => {
                 const on = Math.abs(p - playbackRate) < 0.001;
                 return (
@@ -57,13 +58,14 @@ export default function PlaybackSpeedSheet({ visible, onClose }) {
                     </TouchableOpacity>
                 </View>
             )}
+            </ScrollView>
         </BottomSheet>
     );
 }
 
 const s = StyleSheet.create({
     sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
-    row: { paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1 },
+    row: { paddingVertical: 15, paddingHorizontal: 24, borderBottomWidth: 1 },
     rowText: { fontSize: 17 },
     customBox: { paddingVertical: 16, paddingHorizontal: 24, borderBottomWidth: 1, alignItems: 'stretch' },
     customVal: { fontSize: 22, fontWeight: '700', textAlign: 'center', marginBottom: 4 },

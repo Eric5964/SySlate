@@ -13,14 +13,15 @@ import { subscribeTransportRamp } from '../utils/transportRamp';
 // fade-ins happen, plus a safety margin): the disc dims and ignores touches.
 
 // Two linked speeds (change both together):
-//  - SPIN_TURN_MS: how long one idle turn takes while playing (3s = 120 deg/s,
-//    slower than a real 33 1/3 rpm platter, which is 1.8s).
+//  - SPIN_TURN_MS: how long one idle turn takes while playing (4s = 90 deg/s,
+//    slower than a real 33 1/3 rpm platter, which is 1.8s). Kept equal to
+//    RPM_DEG_PER_SEC so a finger turning at the idle pace plays normal speed.
 //  - RPM_DEG_PER_SEC: finger speed that plays the song at normal speed. It was
 //    360, and is now 600 to match the slower disc (360 x 1.8/3.0 ratio of the
 //    old and new idle speeds), so forwarding and rewinding are 40% slower.
-const SPIN_TURN_MS = 3000;
-const RPM_DEG_PER_SEC = 600;
-const MAX_RATE = 2.5;
+const SPIN_TURN_MS = 4000;
+const RPM_DEG_PER_SEC = 90;
+const MAX_RATE = 3;
 const TICK_MS = 20;
 
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
@@ -192,8 +193,8 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
                 // still finger holds the record dead still. Hysteresis keeps
                 // it from flickering at the edges of the lock.
                 const a = Math.abs(rate);
-                if (a < 0.07) rate = 0;
-                else if (Math.abs(a - 1) < (snapped.current ? 0.22 : 0.14)) { snapped.current = true; rate = rate < 0 ? -1 : 1; }
+                if (a < 0.1) rate = 0;
+                else if (Math.abs(a - 1) < (snapped.current ? 0.4 : 0.25)) { snapped.current = true; rate = rate < 0 ? -1 : 1; }
                 else snapped.current = false;
                 const L = live.current;
                 // Never scratch into the protected zones at the ends.

@@ -14,7 +14,7 @@ import {
     getEQPreset, setEQPreset,
     getSession, setSession, getLastSession, setLastSession, incrementPlayCount,
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
-    getCrossfadeEnabled, getCrossfadeDurationSkip,
+    getCrossfadeEnabled, getCrossfadeDurationSkip, getPlaybackRate, setPlaybackRateStored,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt, getCachedArtFast } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
@@ -73,12 +73,25 @@ export function PlaybackProvider({ children }) {
     // song starts.
     const queueSourceRef = useRef({});
     const [queueSource, setQueueSource] = useState(null); // { id, name }
-    // Playback speed (pitch is kept). Session-only: 1x again on relaunch.
+    // Playback speed (pitch is kept). Saved, so it survives relaunches and
+    // new playlists.
     const [playbackRate, setPlaybackRateState] = useState(1);
+    const userSetRateRef = useRef(false);
     const setPlaybackRate = useCallback((r) => {
         const v = Math.max(0.25, Math.min(3, r));
+        userSetRateRef.current = true;
         setPlaybackRateState(v);
+        setPlaybackRateStored(v);
         AudioEngine.setPlaybackRate(v).catch(() => { });
+    }, []);
+    useEffect(() => {
+        (async () => {
+            const v = await getPlaybackRate();
+            // If he already changed it before the saved value came back, keep his change.
+            if (userSetRateRef.current || Math.abs(v - 1) < 0.001) return;
+            setPlaybackRateState(v);
+            AudioEngine.setPlaybackRate(v).catch(() => { });
+        })();
     }, []);
     // Bumped by a session restore so the cover lookup below runs again even
     // though the restored song's id is the one already showing.

@@ -1739,6 +1739,11 @@ class AudioEngine: RCTEventEmitter {
         if let climbing = rampInFlightTarget, climbing > volume { volume = climbing }
         cancelActiveRampLocked()
         debugLog("[RAMP-DEBUG] startCrossfade: cancelled any in-flight JS ramp before starting crossfade")
+        // Forget the previous crossfade's incoming file. Until runCrossfade sets
+        // it again (after the async load below), a settle call must see "nothing
+        // loaded yet" instead of the stale file from an earlier crossfade.
+        crossfadeIncomingFile = nil
+        crossfadeIncomingIndex = nil
         let track = queue[idx]
         let outgoingNode = activeNode!
         let incomingNode = idleNode

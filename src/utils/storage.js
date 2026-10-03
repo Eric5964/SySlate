@@ -353,6 +353,8 @@ export const getDjDisc = () => safe(() => AsyncStorage.getItem('dj_disc').then(v
 export const setDjDisc = (v) => safe(() => AsyncStorage.setItem('dj_disc', v ? '1' : '0'), null);
 export const getDjDiscAuto = () => safe(() => AsyncStorage.getItem('dj_disc_auto').then(v => v === '1'), false);
 export const setDjDiscAuto = (v) => safe(() => AsyncStorage.setItem('dj_disc_auto', v ? '1' : '0'), null);
+export const getPlaybackRate = () => safe(() => AsyncStorage.getItem('playback_rate').then(v => { const n = v !== null ? parseFloat(v) : 1; return Number.isFinite(n) ? Math.max(0.25, Math.min(3, n)) : 1; }), 1);
+export const setPlaybackRateStored = (v) => safe(() => AsyncStorage.setItem('playback_rate', String(v)), null);
 
 // 'rounded' (squircle, matches the app's existing default everywhere) or
 // 'square' (sharp corners) — applies to every cover-art element app-wide
@@ -594,7 +596,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto'];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -649,6 +651,7 @@ export const importAllSettings = async (jsonString) => {
         lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
         restart_threshold_sec: [0, 24],
         preamp_db: [-12, 12],
+        playback_rate: [0.25, 3],
     };
     // Keys whose value is itself a JSON-encoded string — validated by
     // shape (array vs plain object), not by deep-inspecting every entry.
