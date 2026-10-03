@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Easing, StyleSheet, Text, View } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { AddQueueIcon, TrashIcon } from './Icons';
 
@@ -107,7 +107,9 @@ export default function SwipeableRow({
             // real data update lands.
             glowPulse(leftGlow);
             onSwipeLeftRef.current();
-            Animated.spring(translateX, { toValue: -400, useNativeDriver: true, friction: 9, tension: 100 }).start();
+            // Slides fully off the left edge (not a spring that overshoots
+            // and settles), so the row is gone before the gap closes.
+            Animated.timing(translateX, { toValue: -Dimensions.get('window').width, duration: 190, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start();
             return;
         }
         Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();

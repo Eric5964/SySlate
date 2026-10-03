@@ -19,7 +19,7 @@ const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
-    const { currentTrack } = usePlayback();
+    const { currentTrack, playbackRate } = usePlayback();
     const { theme, base } = useTheme();
     const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin } = usePreferences();
     const playbackState = usePlaybackState();
@@ -78,7 +78,7 @@ export default function MiniPlayer({ withTabBar = true }) {
         // change" (the whole pause) and leapt toward the end until the
         // next poll moved. Now the basis is re-stamped on every poll and
         // on every play/pause toggle.
-    }, [progress, isPlaying, currentTrack?.id]);
+    }, [progress, isPlaying, currentTrack?.id, playbackRate]);
 
     // On every play/pause change, read the true position right now instead
     // of trusting a poll that can be up to 500ms old (a pause from the lock
@@ -101,7 +101,7 @@ export default function MiniPlayer({ withTabBar = true }) {
     }, [isPlaying]);
 
     const basis = basisRef.current;
-    const elapsed = isPlaying ? (Date.now() - basis.at) / 1000 : 0;
+    const elapsed = isPlaying ? ((Date.now() - basis.at) / 1000) * (playbackRate || 1) : 0;
     const livePct = basis.duration > 0 ? Math.min(1, Math.max(0, (basis.position + elapsed) / basis.duration)) : 0;
 
     if (!currentTrack) return null;

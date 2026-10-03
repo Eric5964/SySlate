@@ -1,3 +1,4 @@
+import { emitTransportRamp } from '../utils/transportRamp';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getCrossfadeEnabled, getCrossfadeDurationSkip, getCrossfadeDurationEndOfTrack } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
@@ -502,6 +503,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                 // a genuine failure, but not a jarring cut either).
                 if (!reallyPlaying) {
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: took the !reallyPlaying branch (timed out) — quick catch-up fade only, not the full configured ramp`);
+                    emitTransportRamp('play', Math.min(0.4, ramp));
                     await fadeVol(0, 1, Math.min(0.4, ramp), id);
                     try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
@@ -520,6 +522,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                     // means the ramp can start, and sometimes nearly
                     // finish, before there's anything audible for it to
                     // apply to — sounding exactly like no ramp happened.
+                    emitTransportRamp('play', ramp + 0.32);
                     await sleep(320);
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: 320ms settle done, calling fadeVol(0,1,${ramp})`);
                     await fadeVol(0, 1, ramp, id);
@@ -607,6 +610,7 @@ export async function pauseWithRamp() {
         if (useFade && ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
             const id = claimFade();
             try { await AudioEngine.setNowPlayingPaused(true); } catch { }
+            emitTransportRamp('pause', ramp);
             await fadeVol(1, 0, ramp, id);
             releaseFade(id);
             try { await AudioEngine.pause(); } catch { }
@@ -615,6 +619,7 @@ export async function pauseWithRamp() {
             // the lock screen and Control Center end on the same final state.
             try { await AudioEngine.setNowPlayingPaused(true); } catch { }
         } else {
+            emitTransportRamp('pause', 0);
             try { await AudioEngine.pause(); } catch { }
             try { await AudioEngine.setNowPlayingPaused(true); } catch { }
         }

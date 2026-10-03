@@ -18,6 +18,7 @@ import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
 import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
+import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
 
@@ -58,7 +59,7 @@ export default function PlayerScreen() {
     const lyricIdleColor = lyricNeutral ? base.textFaint : base.textDim;
 
     const {
-        currentPlaylist, queueSource, currentTrack, shuffleOn, singleLoop,
+        currentPlaylist, queueSource, playbackRate, currentTrack, shuffleOn, singleLoop,
         loadPlaylist, toggleShuffle, toggleSingleLoop,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
@@ -86,6 +87,7 @@ export default function PlayerScreen() {
     // const [showEQ, setShowEQ] = useState(false); // EQ hidden
     const [showQueue, setShowQueue] = useState(false);
     const [showSleepTimer, setShowSleepTimer] = useState(false);
+    const [showSpeed, setShowSpeed] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
     const [playCount, setPlayCount] = useState(0);
     // This used to be its own local `useState(true)`, loaded once on mount
@@ -98,7 +100,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, djDiscAuto, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -179,7 +181,8 @@ export default function PlayerScreen() {
         animPct.setValue(fromPct);
         animPctValueRef.current = fromPct;
         if (!isPlaying || progress.duration <= 0 || fromPct >= 1) return;
-        const remainingMs = Math.max(0, (1 - fromPct) * progress.duration * 1000);
+        // Real time to the end = remaining song time / playback speed.
+        const remainingMs = Math.max(0, ((1 - fromPct) * progress.duration * 1000) / (playbackRate || 1));
         const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
         animRunRef.current = anim;
         anim.start();
@@ -548,10 +551,20 @@ export default function PlayerScreen() {
     // setting is on) -> cover. At most one of the two is showing.
     const [showingDisc, setShowingDisc] = useState(false);
     const discFade = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        Animated.timing(discFade, { toValue: showingDisc ? 1 : 0, duration: 380, easing: Easing.inOut(Easing.cubic), useNativeDriver: true }).start();
-    }, [showingDisc]);
+    // True from the moment the disc is chosen until it has completely faded
+    // out again: the disc keeps spinning for that whole time, so switching
+    // away looks like it is still playing in the background.
+    const [discActive, setDiscActive] = useState(false);
+    useEffect(() => { if (showingDisc) setDiscActive(true); }, [showingDisc]);
     useEffect(() => { if (!djDisc && showingDisc) setShowingDisc(false); }, [djDisc, showingDisc]);
+    // Auto Disc: every new song opens on the disc (like Auto-show lyrics does
+    // for lyrics; the two settings can never both be on). Otherwise each new
+    // song goes back to the cover unless the lyrics view claims it.
+    useEffect(() => {
+        if (djDisc && djDiscAuto) { setShowingLyrics(false); setShowingDisc(true); }
+        else setShowingDisc(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentTrack?.id, djDisc, djDiscAuto]);
     // The Player's swipe-down-to-close works from anywhere above the controls,
     // which would close it whenever the disc is dragged downward. It is turned
     // off only while a finger is on the disc itself (see DJDisc's onTouching).
@@ -574,12 +587,25 @@ export default function PlayerScreen() {
     // Protected zones for scratching: start of the song, and the end where a
     // crossfade or fade-out runs, plus a safety margin.
     const scratchEndGuard = Math.max(crossfadeEnabled ? Math.max(crossfadeDuration || 0, crossfadeDurationEndOfTrack || 0) : 0, 2) + 8;
-    const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // 0 = cover, 1 = lyrics
-    const lyricsFadeMounted = useRef(false);
+    // Cover / lyrics / disc share one slot. Each has ONE opacity (no nested
+    // fades, no scaling: stacked fades on the shadowed cover were what made
+    // its outline flash). The outgoing view fades out first and the incoming
+    // one starts a moment later, so the two never sit on screen half
+    // transparent on top of each other (the old cover-peeking-through).
+    const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // lyrics layer
+    const coverFade = useRef(new Animated.Value(showingLyrics || showingDisc ? 0 : 1)).current; // cover layer
+    const viewMounted = useRef(false);
     useEffect(() => {
-        if (!lyricsFadeMounted.current) { lyricsFadeMounted.current = true; return; }
-        Animated.timing(lyricsFade, { toValue: showingLyrics ? 1 : 0, duration: 280, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
-    }, [showingLyrics]);
+        if (!viewMounted.current) { viewMounted.current = true; return; }
+        const go = (v, on) => on
+            ? Animated.sequence([Animated.delay(170), Animated.timing(v, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true })])
+            : Animated.timing(v, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true });
+        const coverOn = !showingLyrics && !showingDisc;
+        Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)]).start(({ finished }) => {
+            if (finished && !showingDisc) setDiscActive(false);
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [showingLyrics, showingDisc]);
 
     const lyricsScrollRef = useRef(null);
     // Drives the per-line opacity fade (Spotify-style — replaces the old
@@ -782,11 +808,12 @@ export default function PlayerScreen() {
         // a normal track, which is what let the bar sit visibly wrong
         // after a skip, resume or outside pause before it corrected.
         const driftSeconds = Math.abs(animPctValueRef.current - pct) * (progress.duration || 0);
+        // (the bar's running speed already follows playbackRate: see startRealTimeAnim)
         if (!animRunRef.current || driftSeconds > 0.35) {
             startRealTimeAnim(pct);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [progress.position, isPlaying, currentTrack?.id]);
+    }, [progress.position, isPlaying, currentTrack?.id, playbackRate]);
 
     // Clears the post-seek drag overlay once the polled position actually
     // agrees with where we told native to seek to — see the commit branch
@@ -908,6 +935,9 @@ export default function PlayerScreen() {
                     <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : base.textFaint} />
                     </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.eqTag, { color: Math.abs(playbackRate - 1) > 0.001 ? theme.accent : base.textFaint }]}>{formatSpeed(playbackRate)}</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
                     </TouchableOpacity>
@@ -931,8 +961,8 @@ export default function PlayerScreen() {
                      instead, no shadow. */}
                 <View style={[s.artWrap, { paddingTop: 20 }]}>
                     <View style={{ width: width - 56, height: width - 56 }}>
-                        <Animated.View style={StyleSheet.absoluteFill} pointerEvents={showingDisc ? 'none' : 'auto'} renderToHardwareTextureAndroid={false}>
-                        <Animated.View style={{ flex: 1, opacity: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }), transform: [{ scale: discFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] }) }] }}>
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: coverFade }]} pointerEvents={showingDisc || showingLyrics ? 'none' : 'auto'}>
+                        <View style={{ flex: 1 }}>
                         {showPlayerCover && (
                             // The whole box (background/shadow/rounded corners) now
                             // fades with lyricsFade too, not just the artwork inside
@@ -960,9 +990,9 @@ export default function PlayerScreen() {
                             // own base style already has the correct shadowColor
                             // ('#000'), same idea as the lyrics text using a dark
                             // shadow for legibility, not an accent-colored one.
-                            <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape) }, { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }] : null}>
+                            <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape) }, ] : null}>
                                 <Animated.View
-                                    style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, coverShadow ? null : { opacity: lyricsFade.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+                                    style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, ]}
                                     pointerEvents={showingLyrics ? 'none' : 'auto'}
                                 >
                                     {artwork
@@ -972,9 +1002,9 @@ export default function PlayerScreen() {
                                 </Animated.View>
                             </Animated.View>
                         )}
+                        </View>
                         </Animated.View>
-                        </Animated.View>
-                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade, transform: [{ scale: discFade.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }] }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
+                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
                             {djDisc && (
                                 <DJDisc
                                     size={width - 56}
@@ -982,6 +1012,7 @@ export default function PlayerScreen() {
                                     accent={theme.accent}
                                     isPlaying={isPlaying}
                                     visible={showingDisc}
+                                    active={discActive}
                                     position={progress.position}
                                     duration={progress.duration}
                                     endGuard={scratchEndGuard}
@@ -1203,6 +1234,7 @@ export default function PlayerScreen() {
             <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
             <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
+            <PlaybackSpeedSheet visible={showSpeed} onClose={() => setShowSpeed(false)} />
         </ScreenBackground>
     );
 }

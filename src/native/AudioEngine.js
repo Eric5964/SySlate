@@ -127,6 +127,7 @@ const AudioEngine = {
     stop: () => NativeAudioEngine.stop(),
     seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
     // DJ disc: begin resolves true once scratch audio is ready.
+    setPlaybackRate: (rate) => NativeAudioEngine.setPlaybackRate(rate),
     scratchBegin: () => NativeAudioEngine.scratchBegin(),
     scratchSetRate: (rate) => NativeAudioEngine.scratchSetRate(rate),
     scratchEnd: () => NativeAudioEngine.scratchEnd(),

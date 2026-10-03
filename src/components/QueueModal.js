@@ -98,25 +98,28 @@ function FadePill({ isNew, children }) {
 // shut at the end). The row stays in `rows` (and keeps its layout slot) for
 // the duration of this animation and is only actually removed once it's
 // finished.
-const REMOVE_ANIM_MS = 220;
+const REMOVE_SLIDE_MS = 190;
+const REMOVE_COLLAPSE_MS = 240;
+const REMOVE_ANIM_MS = REMOVE_SLIDE_MS + REMOVE_COLLAPSE_MS;
 function ShrinkOutRow({ removing, children }) {
     const t = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // One value drives everything, so the squeeze can never fall out of
-        // step with the collapse: the container's height shrinks while the
-        // row itself is squashed vertically by the same amount (and fades
-        // near the end), kept centred in the closing gap. Before, only the
-        // height shrank and the row was simply cut off from the bottom.
-        Animated.timing(t, { toValue: 0, duration: REMOVE_ANIM_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        // Two beats: the row is swiped away to the left first (that part is
+        // SwipeableRow's own slide-off, REMOVE_SLIDE_MS), then the gap it
+        // leaves closes smoothly so the rows below glide up. Nothing is
+        // squashed or cropped, because by the time the gap starts to close
+        // the row is already off screen.
+        Animated.sequence([
+            Animated.delay(REMOVE_SLIDE_MS),
+            Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.inOut(Easing.cubic), useNativeDriver: false }),
+        ]).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [removing]);
     if (!removing) return <View>{children}</View>;
     return (
-        <Animated.View style={{ height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden', justifyContent: 'center' }}>
-            <Animated.View style={{ height: ROW_HEIGHT, opacity: t.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0.7, 1] }), transform: [{ scaleY: t }] }}>
-                {children}
-            </Animated.View>
+        <Animated.View style={{ height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
+            <View style={{ height: ROW_HEIGHT }}>{children}</View>
         </Animated.View>
     );
 }

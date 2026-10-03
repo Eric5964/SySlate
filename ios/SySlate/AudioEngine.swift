@@ -105,6 +105,11 @@ class AudioEngine: RCTEventEmitter {
     // exactly (32/64/125/250/500/1k/2k/4k/8k/16k) so a preset's `bands`
     // array maps directly onto eqNode.bands by index with no translation.
     private let eqNode = AVAudioUnitEQ(numberOfBands: 10)
+    // Playback speed with the pitch kept. Sits between the two players'
+    // mixer and the EQ, so everything (crossfades included) is stretched
+    // together. Bypassed at 1x so normal listening is untouched.
+    private let timePitchNode = AVAudioUnitTimePitch()
+    private var playbackRate: Float = 1.0
     // Apple's built-in dynamics processor AudioUnit — used here as a
     // volume-normalization approximation (consistent perceived loudness
     // across tracks recorded at different levels) since these are local
@@ -287,6 +292,9 @@ class AudioEngine: RCTEventEmitter {
     private var scratchWindowStartSeconds: Double = 0
     private var scratchFileRate: Double = 44100
     private var scratchLoading: Bool = false
+    // Length chosen when the natural-end crossfade timer was armed (shorter
+    // than the setting when the song's audible end leaves less runway).
+    private var crossfadeLeadDurationSeconds: Double? = nil
 
     // MARK: - RCTEventEmitter
 
@@ -392,6 +400,7 @@ class AudioEngine: RCTEventEmitter {
         engine.attach(nodeB)
         engine.attach(preMixNode)
         engine.attach(eqNode)
+        engine.attach(timePitchNode)
         engine.attach(normalizerNode)
 
         engine.connect(nodeA, to: preMixNode, format: nil)
@@ -400,7 +409,11 @@ class AudioEngine: RCTEventEmitter {
         // otherwise sit at its default full volume, which is the loud blip at
         // the start of the first crossfade. Idle nodes now always rest at 0.
         nodeB.volume = 0
-        engine.connect(preMixNode, to: eqNode, format: nil)
+        engine.connect(preMixNode, to: timePitchNode, format: nil)
+        engine.connect(timePitchNode, to: eqNode, format: nil)
+        timePitchNode.rate = 1.0
+        timePitchNode.pitch = 0
+        timePitchNode.bypass = true
         engine.connect(eqNode, to: normalizerNode, format: nil)
         engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
 
@@ -897,6 +910,22 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // Where the song shown on the lock screen / Control Center is. During a
+    // crossfade the shown song is already the incoming one (title, cover and
+    // length switch the moment it starts), so its elapsed time has to come
+    // from the incoming player too. It used to read the outgoing player until
+    // the crossfade finished, so iOS showed the new song with the old song's
+    // position until then.
+    private func nowPlayingElapsedSeconds() -> Double {
+        if isCrossfading, let node = crossfadeIncomingNode, crossfadeIncomingSampleRate > 0 {
+            if let nt = node.lastRenderTime, let pt = node.playerTime(forNodeTime: nt) {
+                return max(0, crossfadeIncomingLeadInSeconds + Double(pt.sampleTime) / crossfadeIncomingSampleRate)
+            }
+            return crossfadeIncomingLeadInSeconds
+        }
+        return currentPositionSeconds()
+    }
+
     private func updateNowPlayingInfo() {
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -928,8 +957,8 @@ class AudioEngine: RCTEventEmitter {
             MPMediaItemPropertyTitle: track.title ?? "",
             MPMediaItemPropertyArtist: artistOverrideById[track.id] ?? track.artist ?? "",
             MPMediaItemPropertyAlbumTitle: track.album ?? "",
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentPositionSeconds(),
-            MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: nowPlayingElapsedSeconds(),
+            MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? Double(playbackRate) : 0.0,
         ]
         let durKey = "\(track.id)|\(track.qid ?? "")"
         if let duration = track.duration, duration > 0 {
@@ -1445,13 +1474,28 @@ class AudioEngine: RCTEventEmitter {
         // Single-track loop now crossfades too (the song into itself), as
         // long as the song is long enough for the overlap to make sense.
         if repeatMode == .track && duration < crossfadeDurationEndOfTrackSeconds * 2 { return }
-        let remaining = duration - currentPositionSeconds()
-        let fireIn = remaining - crossfadeDurationEndOfTrackSeconds
-        // Already inside (or past) the crossfade window, or not enough of
-        // the track left for it to make sense — let natural completion's
-        // existing handlePlaybackCompleted path handle this one instead of
-        // firing on a negative/near-zero delay.
-        guard fireIn > 0.1 else { return }
+        // The song's REAL end is earlier than the file's when Trim Silence
+        // cut its tail (currentTrailingCutSeconds). The timer used to count
+        // down to the file's full length, so the crossfade started after the
+        // audible end: the old song had already finished and the next one
+        // simply started (or faded in out of a gap).
+        let audibleEnd = duration - max(0, currentTrailingCutSeconds)
+        let remaining = audibleEnd - currentPositionSeconds()
+        // At a playback speed other than 1x the song's remaining time passes
+        // faster or slower in real time, and a crossfade of N real seconds
+        // eats N x speed seconds of the song.
+        let speed = Double(max(0.25, playbackRate))
+        var fireIn = (remaining - crossfadeDurationEndOfTrackSeconds * speed) / speed
+        var useDuration = crossfadeDurationEndOfTrackSeconds
+        if fireIn <= 0.1 {
+            // Not enough runway for the full length (short song, or a long
+            // trimmed tail): still crossfade, as long as what is left allows.
+            guard remaining / speed > 0.8 else { return }
+            fireIn = 0.05
+            useDuration = max(0.3, remaining / speed - 0.4)
+        }
+        crossfadeLeadDurationSeconds = useDuration
+        debugLog(String(format: "[XFADE] lead-in armed: fires in %.2fs, length %.2fs (audibleEnd=%.2fs, trailingCut=%.2fs)", fireIn, useDuration, audibleEnd, currentTrailingCutSeconds))
         let timer = Timer.scheduledTimer(withTimeInterval: fireIn, repeats: false) { [weak self] _ in
             self?.fireCrossfadeLeadIn()
         }
@@ -1469,7 +1513,7 @@ class AudioEngine: RCTEventEmitter {
         guard let idx = currentIndex else { return }
         if repeatMode == .track {
             crossfadeSelfLoop = true
-            startCrossfade(toIndex: idx, duration: crossfadeDurationEndOfTrackSeconds)
+            startCrossfade(toIndex: idx, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds)
             return
         }
         crossfadeSelfLoop = false
@@ -1484,7 +1528,7 @@ class AudioEngine: RCTEventEmitter {
         }
         guard newIndex >= 0, newIndex < queue.count else { return }
         currentIndex = newIndex
-        startCrossfade(toIndex: newIndex, duration: crossfadeDurationEndOfTrackSeconds)
+        startCrossfade(toIndex: newIndex, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds)
     }
 
     // Fires when a scheduled segment finishes playing to the end on its
@@ -1797,11 +1841,19 @@ class AudioEngine: RCTEventEmitter {
         // ms later lets the fade curve's own first values land before any
         // audio does. 50ms of slip on a multi-second crossfade is not
         // audible.
+        debugLog(String(format: "[XFADE] arm: outgoingTrailingCut=%.2fs", currentTrailingCutSeconds))
         debugLog(String(format: "[POP] crossfade arm: duration=%.1fs leadIn=%.2fs incomingVol=%.3f outgoingVol=%.3f mixerVol=%.3f", duration, leadInSeconds, incomingNode.volume, outgoingNode.volume, engine.mainMixerNode.outputVolume))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self, token == self.playbackToken, self.isCrossfading, self.state == .playing else { return }
             if !self.engine.isRunning { try? self.engine.start() }
             incomingNode.play()
+            // Tell iOS about the incoming song's position straight away (it
+            // extrapolates from there), instead of waiting for the next
+            // periodic push or the end of the crossfade.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self = self, token == self.playbackToken, self.isCrossfading else { return }
+                self.updateNowPlayingInfo()
+            }
         }
 
         let steps = max(10, Int(duration * 25))
@@ -2162,6 +2214,7 @@ class AudioEngine: RCTEventEmitter {
         guard scratchActive else { return }
         scratchCore.release()
         scratchActive = false
+        timePitchNode.bypass = abs(playbackRate - 1) < 0.001
         if state == .playing { activeNode.volume = volume * currentGainCorrection }
     }
 
@@ -2692,6 +2745,25 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    @objc(setPlaybackRate:resolver:rejecter:)
+    func setPlaybackRate(_ rate: NSNumber, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { resolve(nil); return }
+            let r = max(0.25, min(3.0, rate.floatValue))
+            self.playbackRate = r
+            self.timePitchNode.rate = r
+            self.timePitchNode.pitch = 0
+            // While scratching the stretch stays off so the scratch sounds like
+            // a record; it is applied again when the scratch ends.
+            self.timePitchNode.bypass = abs(r - 1) < 0.001 || self.scratchActive
+            // The song's end now comes sooner or later in real time.
+            if self.state == .playing, !self.isCrossfading { self.scheduleCrossfadeLeadIn() }
+            self.updateNowPlayingInfo()
+            self.debugLog(String(format: "[RATE] playback speed %.2fx", r))
+            resolve(nil)
+        }
+    }
+
     // MARK: - DJ disc scratching
 
     private func ensureScratchNode() -> Bool {
@@ -2804,8 +2876,10 @@ class AudioEngine: RCTEventEmitter {
                     core.step = fileRate / fmt.sampleRate
                     core.pos = startPos
                     core.target = 0
-                    core.cur = self.state == .playing ? 1 : 0
-                    core.target = core.cur
+                    // Like a hand on a turntable: the sound stops the moment the
+                    // disc is touched and only moves when the disc moves.
+                    core.cur = 0
+                    core.target = 0
                     core.gain = 0
                     core.gainTarget = 1
                     core.level = self.volume * self.currentGainCorrection
@@ -2819,6 +2893,7 @@ class AudioEngine: RCTEventEmitter {
                         try? self.engine.start()
                     }
                     self.scratchActive = true
+                    self.timePitchNode.bypass = true
                     core.active = true
                     // Silence the normal player over ~15ms (the scratch node
                     // fades in over the same time), so there is no click.
@@ -2827,6 +2902,9 @@ class AudioEngine: RCTEventEmitter {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
                             guard let self = self, self.scratchActive else { return }
                             self.activeNode.volume = startVol * Float(8 - i) / 8
+                            // Once silent, actually pause the normal player so
+                            // nothing of the song can play underneath the scratch.
+                            if i == 8, self.scratchWasPlaying { self.activeNode.pause() }
                         }
                     }
                     self.debugLog(String(format: "[SCRATCH] begin at %.2fs window=%.1f-%.1f wasPlaying=%@", nowAfter, windowStart, windowEnd, self.scratchWasPlaying ? "true" : "false"))
@@ -2864,6 +2942,7 @@ class AudioEngine: RCTEventEmitter {
                 DispatchQueue.main.asyncAfter(deadline: .now() + (wasPlaying ? 0.0 : 0.06)) { [weak self] in
                     guard let self = self, self.scratchActive else { resolve(nil); return }
                     self.scratchActive = false
+                    self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
                     self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: wasPlaying)
                     // The normal player comes up over ~32ms while the scratch
                     // audio fades out underneath it.

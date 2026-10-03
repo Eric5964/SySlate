@@ -7,6 +7,7 @@ import {
     getArtistSeparator, setArtistSeparator as persistArtistSeparator,
     getLyricsMode, setLyricsMode as persistLyricsMode,
     getDjDisc, setDjDisc as persistDjDisc,
+    getDjDiscAuto, setDjDiscAuto as persistDjDiscAuto,
     getLyricsResyncSec, setLyricsResyncSec as persistLyricsResyncSec,
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
@@ -41,6 +42,7 @@ const Ctx = createContext({
     artistSeparator: [';'], setArtistSeparator: () => { },
     lyricsMode: 'off', setLyricsMode: () => { },
     djDisc: false, setDjDisc: () => { },
+    djDiscAuto: false, setDjDiscAuto: () => { },
     lyricsResyncSec: 4, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
@@ -75,6 +77,7 @@ export function PreferencesProvider({ children }) {
     const [artistSeparator, setArtistSeparatorState] = useState([';']);
     const [lyricsMode, setLyricsModeState] = useState('off');
     const [djDisc, setDjDiscState] = useState(false);
+    const [djDiscAuto, setDjDiscAutoState] = useState(false);
     const [lyricsResyncSec, setLyricsResyncSecState] = useState(4);
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
@@ -108,6 +111,7 @@ export function PreferencesProvider({ children }) {
         getArtistSeparator().then(setArtistSeparatorState);
         getLyricsMode().then(setLyricsModeState);
         getDjDisc().then(setDjDiscState);
+        getDjDiscAuto().then(setDjDiscAutoState);
         getLyricsResyncSec().then(setLyricsResyncSecState);
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
@@ -184,13 +188,28 @@ export function PreferencesProvider({ children }) {
         setArtistSeparatorState(v);
         persistArtistSeparator(v);
     }, []);
+    // Auto Lyrics and Auto Disc can never both be on: each setter turns the
+    // other one off. (Auto Disc also needs the disc itself enabled.)
+    const setDjDiscAuto = useCallback((v) => {
+        setDjDiscAutoState(v);
+        persistDjDiscAuto(v);
+        if (v) {
+            setLyricsModeState(m => {
+                if (m !== 'auto') return m;
+                persistLyricsMode('manual');
+                return 'manual';
+            });
+        }
+    }, []);
     const setDjDisc = useCallback((v) => {
         setDjDiscState(v);
         persistDjDisc(v);
+        if (!v) { setDjDiscAutoState(false); persistDjDiscAuto(false); }
     }, []);
     const setLyricsMode = useCallback((v) => {
         setLyricsModeState(v);
         persistLyricsMode(v);
+        if (v === 'auto') { setDjDiscAutoState(false); persistDjDiscAuto(false); }
     }, []);
     const setLyricsResyncSec = useCallback((v) => {
         setLyricsResyncSecState(v);
@@ -288,7 +307,7 @@ export function PreferencesProvider({ children }) {
         showSongCovers, setShowSongCovers,
         artistSeparator, setArtistSeparator,
         lyricsMode, setLyricsMode,
-        djDisc, setDjDisc,
+        djDisc, setDjDisc, djDiscAuto, setDjDiscAuto,
         lyricsResyncSec, setLyricsResyncSec,
         lyricsOffsetSec, setLyricsOffsetSec,
         keepScreenAwake, setKeepScreenAwake,
@@ -309,7 +328,7 @@ export function PreferencesProvider({ children }) {
         lyricsScrollLocked, setLyricsScrollLocked,
         artistDisplayJoin, setArtistDisplayJoin,
     }), [
-        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc,
+        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,

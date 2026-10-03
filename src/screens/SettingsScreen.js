@@ -122,7 +122,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, djDiscAuto, setDjDiscAuto, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -762,7 +762,7 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                <Section title="Player">
+                <Section title="Cover, Lyrics & Disc">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Player Cover</Text>
@@ -781,15 +781,30 @@ export default function SettingsScreen() {
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     )}
-                </Section>
-
-                {/* 'Off' never attempts a .lrc lookup on the Player screen at
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>DJ Disc</Text>
+                            <Text style={s.toggleSub}>A spinning vinyl with the cover in the middle. Drag it to scratch. Use the button under the cover to switch to it</Text>
+                        </View>
+                        <Switch value={djDisc} onValueChange={setDjDisc}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    {djDisc && (
+                        <View style={s.toggleRow}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.toggleLabel}>Auto Disc</Text>
+                                <Text style={s.toggleSub}>Start every song on the disc. Turns off Auto-show lyrics, since both cannot open first</Text>
+                            </View>
+                            <Switch value={djDiscAuto} onValueChange={setDjDiscAuto}
+                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                        </View>
+                    )}
+                    {/* 'Off' never attempts a .lrc lookup on the Player screen at
                      all. 'Auto-show' opens straight into lyrics (if a
                      matching .lrc file exists) whenever a track with lyrics
                      starts. 'Manual' still fetches lyrics in the background
                      so the toggle button under the cover art appears, but
                      leaves the cover showing until the user taps it. */}
-                <Section title="Lyrics">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Show Lyrics</Text>
                         <Text style={s.toggleSub}>Synced lyrics from a matching .lrc file</Text>
@@ -841,17 +856,6 @@ export default function SettingsScreen() {
                             </View>
                         </>
                     )}
-                </Section>
-
-                <Section title="DJ Disc">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>DJ Disc</Text>
-                            <Text style={s.toggleSub}>Adds a spinning vinyl with the cover in the middle to the Player. Drag it to scratch. Tap the button under the cover to switch to it</Text>
-                        </View>
-                        <Switch value={djDisc} onValueChange={setDjDisc}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
                 </Section>
 
                 <Section title="Screen">

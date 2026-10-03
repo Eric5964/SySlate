@@ -73,6 +73,13 @@ export function PlaybackProvider({ children }) {
     // song starts.
     const queueSourceRef = useRef({});
     const [queueSource, setQueueSource] = useState(null); // { id, name }
+    // Playback speed (pitch is kept). Session-only: 1x again on relaunch.
+    const [playbackRate, setPlaybackRateState] = useState(1);
+    const setPlaybackRate = useCallback((r) => {
+        const v = Math.max(0.25, Math.min(3, r));
+        setPlaybackRateState(v);
+        AudioEngine.setPlaybackRate(v).catch(() => { });
+    }, []);
     // Bumped by a session restore so the cover lookup below runs again even
     // though the restored song's id is the one already showing.
     const [artNonce, setArtNonce] = useState(0);
@@ -1508,13 +1515,13 @@ export function PlaybackProvider({ children }) {
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
-        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
+        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
-        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer,
+        sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 
     return (
