@@ -23,7 +23,7 @@ export const getEQPreset = (path) => safe(async () => {
     const global = await AsyncStorage.getItem('eq:global');
     return global ?? 'flat';
 }, 'flat');
-export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v === 'true'), false);
+export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v !== 'false'), true);
 export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
 export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('crossfade_duration').then(v => v !== null ? parseFloat(v) : 4), 4);
 // setCrossfadeDuration (the writer) was removed — nothing writes the old
@@ -37,7 +37,7 @@ export const getCrossfadeDuration = () => safe(() => AsyncStorage.getItem('cross
 // either new key has ever been written), so an existing install's
 // already-configured duration carries over as the starting point for
 // both instead of silently resetting to a fresh default of 4.
-export const getCrossfadeDurationSkip = () => safe(() => AsyncStorage.getItem('crossfade_duration_skip').then(v => v !== null ? parseFloat(v) : getCrossfadeDuration()), 4);
+export const getCrossfadeDurationSkip = () => safe(() => AsyncStorage.getItem('crossfade_duration_skip').then(v => v !== null ? parseFloat(v) : 2), 2);
 export const setCrossfadeDurationSkip = (v) => safe(() => AsyncStorage.setItem('crossfade_duration_skip', String(v)), null);
 export const getCrossfadeDurationEndOfTrack = () => safe(() => AsyncStorage.getItem('crossfade_duration_eot').then(v => v !== null ? parseFloat(v) : getCrossfadeDuration()), 4);
 export const setCrossfadeDurationEndOfTrack = (v) => safe(() => AsyncStorage.setItem('crossfade_duration_eot', String(v)), null);
@@ -105,7 +105,7 @@ export const setSession = (path, data) => safe(() => AsyncStorage.setItem(`sessi
 // same 'vol_norm' storage key so nobody's existing setting gets reset.
 // getBetweenTrackNorm/getSilenceTrim below are the new ones, both new
 // keys defaulting off.
-export const getWithinTrackNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v !== 'false'), true);
+export const getWithinTrackNorm = () => safe(() => AsyncStorage.getItem('vol_norm').then(v => v === 'true'), false);
 export const setWithinTrackNorm = (v) => safe(() => AsyncStorage.setItem('vol_norm', String(v)), null);
 
 // Pre-amp: a single broadband gain in dB (-12 to +12), applied on top of
@@ -127,7 +127,7 @@ export const getBetweenTrackNorm = () => safe(() => AsyncStorage.getItem('betwee
 export const setBetweenTrackNorm = (v) => safe(() => AsyncStorage.setItem('between_track_norm', String(v)), null);
 export const getSilenceTrim = () => safe(() => AsyncStorage.getItem('silence_trim').then(v => v === 'true'), false);
 export const setSilenceTrim = (v) => safe(() => AsyncStorage.setItem('silence_trim', String(v)), null);
-export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const getAudioRamp = () => safe(() => AsyncStorage.getItem('audio_ramp').then(v => v !== null ? parseFloat(v) : 2), 2);
 export const setAudioRamp = (s) => safe(() => AsyncStorage.setItem('audio_ramp', String(s)), null);
 export const getRampOnPause = () => safe(() => AsyncStorage.getItem('ramp_on_pause').then(v => v === 'true'), false);
 export const setRampOnPause = (v) => safe(() => AsyncStorage.setItem('ramp_on_pause', String(v)), null);
@@ -249,6 +249,20 @@ export const setPlaylistCover = async (path, uri) => {
     return covers;
 };
 
+// Wipes every playlist cover picture and puts the playlists back in
+// alphabetical order, and the layout back to the default list. Clears the documentDirectory backup copy too, since
+// the getters would otherwise restore both from it.
+export const resetPlaylistScreen = async () => {
+    try {
+        const covers = await getPlaylistCovers();
+        for (const uri of new Set(Object.values(covers || {}))) await deleteStoredImage(uri);
+    } catch { }
+    await safe(() => AsyncStorage.setItem('playlist_covers', '{}'), null);
+    await safe(() => AsyncStorage.setItem('playlist_order', '[]'), null);
+    await safe(() => AsyncStorage.setItem('playlist_view_format', 'list'), null);
+    await writeBackup({ playlist_covers: {}, playlist_order: [] });
+};
+
 // One-time (per app launch) shrink of playlist covers picked before covers
 // were stored at 600px: those full-size pictures were being decoded again on
 // every render of the grid. Returns true when anything changed.
@@ -282,7 +296,7 @@ export const setShowPlayCount = (v) => safe(() => AsyncStorage.setItem('show_pla
 // for the whole visible list (not just the currently-playing song), which
 // is real, noticeable work for a big library. Opt-in rather than surprising
 // someone with a slow first load.
-export const getShowSongCovers = () => safe(() => AsyncStorage.getItem('show_song_covers').then(v => v === 'true'), false);
+export const getShowSongCovers = () => safe(() => AsyncStorage.getItem('show_song_covers').then(v => v !== 'false'), true);
 export const setShowSongCovers = (v) => safe(() => AsyncStorage.setItem('show_song_covers', String(v)), null);
 
 // New settings this round: independent show/hide for playlist track counts
@@ -347,12 +361,16 @@ export const setArtistSeparator = (arr) => safe(() => AsyncStorage.setItem('arti
 // the cover each time a new song starts. 'auto' — same, but defaults to
 // showing lyrics automatically whenever the new song has them, rather than
 // requiring a tap each time.
-export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'off'), 'off');
+export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'manual'), 'manual');
 export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode', v), null);
 export const getDjDisc = () => safe(() => AsyncStorage.getItem('dj_disc').then(v => v === '1'), false);
 export const setDjDisc = (v) => safe(() => AsyncStorage.setItem('dj_disc', v ? '1' : '0'), null);
 export const getDjDiscAuto = () => safe(() => AsyncStorage.getItem('dj_disc_auto').then(v => v === '1'), false);
 export const setDjDiscAuto = (v) => safe(() => AsyncStorage.setItem('dj_disc_auto', v ? '1' : '0'), null);
+// Which of the Player's four top-right buttons are shown (all on by default).
+// Only affects the Player screen; EQ and Queue stay reachable elsewhere.
+export const getPlayerBtn = (name) => safe(() => AsyncStorage.getItem(`player_btn_${name}`).then(v => v !== '0'), true);
+export const setPlayerBtn = (name, v) => safe(() => AsyncStorage.setItem(`player_btn_${name}`, v ? '1' : '0'), null);
 export const getPlaybackRate = () => safe(() => AsyncStorage.getItem('playback_rate').then(v => { const n = v !== null ? parseFloat(v) : 1; return Number.isFinite(n) ? Math.max(0.25, Math.min(3, n)) : 1; }), 1);
 export const setPlaybackRateStored = (v) => safe(() => AsyncStorage.setItem('playback_rate', String(v)), null);
 
@@ -379,7 +397,7 @@ export const setShowPlayerCover = (v) => safe(() => AsyncStorage.setItem('show_p
 // matches whatever squircle(...) the cover itself is using — see
 // PlayerScreen's coverShadowWrap style) and is simply never rendered when
 // show_player_cover is off, same as the cover art itself.
-export const getCoverShadow = () => safe(() => AsyncStorage.getItem('cover_shadow').then(v => v === 'true'), false);
+export const getCoverShadow = () => safe(() => AsyncStorage.getItem('cover_shadow').then(v => v !== 'false'), true);
 export const setCoverShadow = (v) => safe(() => AsyncStorage.setItem('cover_shadow', String(v)), null);
 
 // Whole-app custom background image — off by default, and the URI is only
@@ -440,7 +458,7 @@ export const setRestartThresholdSec = (v) => safe(() => AsyncStorage.setItem('re
 // snaps back to following the song automatically. 0 = never auto-follow
 // again until the user re-enables it — wait, 0 actually means "snap back
 // immediately", i.e. effectively no manual scrolling sticks at all.
-export const getLyricsResyncSec = () => safe(() => AsyncStorage.getItem('lyrics_resync_sec').then(v => v !== null ? parseFloat(v) : 4), 4);
+export const getLyricsResyncSec = () => safe(() => AsyncStorage.getItem('lyrics_resync_sec').then(v => v !== null ? parseFloat(v) : 2), 2);
 export const setLyricsResyncSec = (v) => safe(() => AsyncStorage.setItem('lyrics_resync_sec', String(v)), null);
 
 // Shifts which line counts as "active" earlier/later relative to the
@@ -596,7 +614,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate'];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back'];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -629,6 +647,7 @@ export const importAllSettings = async (jsonString) => {
     const obj = JSON.parse(jsonString);
     if (!obj || typeof obj !== 'object') throw new Error('Not a settings object');
 
+    const ONE_ZERO_KEYS = new Set(['dj_disc', 'dj_disc_auto', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back']);
     const BOOL_KEYS = new Set([
         'crossfade_enabled', 'vol_norm', 'between_track_norm', 'silence_trim',
         'ramp_on_pause', 'show_play_count', 'show_song_covers',
@@ -688,6 +707,10 @@ export const importAllSettings = async (jsonString) => {
             if (value === 'true' || value === 'false') toWrite.push([key, value]);
         } else if (BOOL_KEYS.has(key)) {
             if (value === 'true' || value === 'false') toWrite.push([key, value]);
+        } else if (ONE_ZERO_KEYS.has(key)) {
+            // Saved as 1 / 0 (not true / false). dj_disc and dj_disc_auto were
+            // missing here, so restoring a backup silently dropped them.
+            if (value === '1' || value === '0') toWrite.push([key, value]);
         } else if (key in NUMERIC_RANGES) {
             const [min, max] = NUMERIC_RANGES[key];
             const n = parseFloat(value);

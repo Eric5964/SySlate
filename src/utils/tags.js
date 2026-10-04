@@ -33,7 +33,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // clean re-extraction; fixing the parser alone does nothing for a song
 // that was already scanned once. Bump again any time the extraction logic
 // itself changes in a way that should apply to already-scanned libraries.
-const CACHE_KEY = 'song_tags_cache_v3';
+const CACHE_KEY = 'song_tags_cache_v4';
 const FRONT_PREFIX_BYTES = 1 * 1024 * 1024; // tags live at the front for every format handled here
 
 let cacheMapPromise = null;
@@ -96,12 +96,29 @@ function readU24BE(bytes, o) { return ((bytes[o] << 16) | (bytes[o + 1] << 8) | 
 function readSynchsafe32(bytes, o) { return ((bytes[o] & 0x7f) << 21) | ((bytes[o + 1] & 0x7f) << 14) | ((bytes[o + 2] & 0x7f) << 7) | (bytes[o + 3] & 0x7f); }
 
 function utf8Decode(bytes) {
-    try { return new TextDecoder('utf-8').decode(bytes); } catch { }
-    // Fallback if TextDecoder isn't available in this JS engine — plain
-    // decode, good enough for ASCII-range tag text.
-    let s = '';
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-    return s;
+    // Hermes (React Native's JS engine) has no TextDecoder, so decode by hand.
+    // The old fallback treated every byte as its own character, which turned
+    // emoji and accented letters into garbage symbols.
+    let out = '';
+    const n = bytes.length;
+    let i = 0;
+    while (i < n) {
+        const b = bytes[i];
+        let cp = 0xFFFD, len = 1;
+        if (b < 0x80) { cp = b; }
+        else if (b >= 0xC2 && b < 0xE0 && i + 1 < n && (bytes[i + 1] & 0xC0) === 0x80) {
+            cp = ((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F); len = 2;
+        } else if (b >= 0xE0 && b < 0xF0 && i + 2 < n && (bytes[i + 1] & 0xC0) === 0x80 && (bytes[i + 2] & 0xC0) === 0x80) {
+            cp = ((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F); len = 3;
+        } else if (b >= 0xF0 && b < 0xF5 && i + 3 < n && (bytes[i + 1] & 0xC0) === 0x80 && (bytes[i + 2] & 0xC0) === 0x80 && (bytes[i + 3] & 0xC0) === 0x80) {
+            cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3F) << 12) | ((bytes[i + 2] & 0x3F) << 6) | (bytes[i + 3] & 0x3F); len = 4;
+        }
+        if (cp > 0x10FFFF) cp = 0xFFFD;
+        if (cp >= 0x10000) { cp -= 0x10000; out += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF)); }
+        else out += String.fromCharCode(cp);
+        i += len;
+    }
+    return out;
 }
 function utf16Decode(bytes) {
     if (bytes.length < 2) return '';

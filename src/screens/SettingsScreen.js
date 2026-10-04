@@ -63,6 +63,7 @@ import {
     exportAllSettings, importAllSettings,
     persistCoverImage,
     deleteStoredImage,
+    resetPlaylistScreen,
 } from '../utils/storage';
 import * as ImagePicker from 'expo-image-picker';
 
@@ -85,7 +86,7 @@ export default function SettingsScreen() {
 
     const [eotRamp, setEotRampState] = useState(3.0);
     const [skipRamp, setSkipRampState] = useState(0.5);
-    const [ramp, setRamp] = useState(0);
+    const [ramp, setRamp] = useState(2);
     const [rampPause, setRampPause] = useState(false);
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
@@ -122,7 +123,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, djDiscAuto, setDjDiscAuto, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, djDiscAuto, setDjDiscAuto, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -762,6 +763,57 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                <Section title="Player Buttons">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Sleep Timer</Text>
+                            <Text style={s.toggleSub}>Moon button in the Player</Text>
+                        </View>
+                        <Switch value={playerBtns.sleep} onValueChange={(v) => setPlayerBtnShown('sleep', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Playback Speed</Text>
+                            <Text style={s.toggleSub}>Speed button in the Player</Text>
+                        </View>
+                        <Switch value={playerBtns.speed} onValueChange={(v) => setPlayerBtnShown('speed', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>EQ</Text>
+                            <Text style={s.toggleSub}>EQ button in the Player (EQ stays in Settings)</Text>
+                        </View>
+                        <Switch value={playerBtns.eq} onValueChange={(v) => setPlayerBtnShown('eq', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Queue</Text>
+                            <Text style={s.toggleSub}>Queue button in the Player (the mini player still opens it)</Text>
+                        </View>
+                        <Switch value={playerBtns.queue} onValueChange={(v) => setPlayerBtnShown('queue', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Down Arrow</Text>
+                            <Text style={s.toggleSub}>Closes the Player (you can still swipe down)</Text>
+                        </View>
+                        <Switch value={playerBtns.back} onValueChange={(v) => setPlayerBtnShown('back', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Playlist Name</Text>
+                            <Text style={s.toggleSub}>Title at the top of the Player</Text>
+                        </View>
+                        <Switch value={playerBtns.label} onValueChange={(v) => setPlayerBtnShown('label', v)}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
                 <Section title="Cover, Lyrics & Disc">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -992,6 +1044,17 @@ export default function SettingsScreen() {
                     <TouchableOpacity style={s.row} onPress={reload}>
                         <Text style={s.rowLabel}>Rescan Music</Text>
                         <Text style={s.rowSub}>Re-reads all folders</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={() => Alert.alert(
+                        'Reset Playlist Screen?',
+                        'This removes every playlist cover picture, puts the playlists back in alphabetical order and resets the layout to the default list. Your music is not touched.',
+                        [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Reset', style: 'destructive', onPress: async () => { await resetPlaylistScreen(); reload(); } },
+                        ],
+                    )}>
+                        <Text style={s.rowLabel}>Reset Playlist Screen</Text>
+                        <Text style={s.rowSub}>Remove covers, sort A to Z, default layout</Text>
                     </TouchableOpacity>
                 </Section>
 

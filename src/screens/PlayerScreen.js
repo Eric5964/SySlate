@@ -100,7 +100,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, djDiscAuto, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, djDiscAuto, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -549,12 +549,14 @@ export default function PlayerScreen() {
     // DJ disc view. Lives alongside the lyrics view: the button under the
     // cover cycles cover -> lyrics (if the song has them) -> disc (if the
     // setting is on) -> cover. At most one of the two is showing.
-    const [showingDisc, setShowingDisc] = useState(false);
-    const discFade = useRef(new Animated.Value(0)).current;
+    // Starts already on the disc when Auto Disc is on, so reopening the Player
+    // does not show the cover for a moment and then fade over to the disc.
+    const [showingDisc, setShowingDisc] = useState(() => !!(djDisc && djDiscAuto));
+    const discFade = useRef(new Animated.Value(showingDisc ? 1 : 0)).current;
     // True from the moment the disc is chosen until it has completely faded
     // out again: the disc keeps spinning for that whole time, so switching
     // away looks like it is still playing in the background.
-    const [discActive, setDiscActive] = useState(false);
+    const [discActive, setDiscActive] = useState(() => !!(djDisc && djDiscAuto));
     useEffect(() => { if (showingDisc) setDiscActive(true); }, [showingDisc]);
     useEffect(() => { if (!djDisc && showingDisc) setShowingDisc(false); }, [djDisc, showingDisc]);
     // Auto Disc: every new song opens on the disc (like Auto-show lyrics does
@@ -801,6 +803,7 @@ export default function PlayerScreen() {
             // for the position text above — never shows that wrong
             // intermediate value; the very next real poll corrects it via
             // the ordinary drift check below, same as always.
+            console.log(`[BAR] track changed: bar reset to 0, last poll said ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
             startRealTimeAnim(0);
             return;
         }
@@ -810,6 +813,7 @@ export default function PlayerScreen() {
         const driftSeconds = Math.abs(animPctValueRef.current - pct) * (progress.duration || 0);
         // (the bar's running speed already follows playbackRate: see startRealTimeAnim)
         if (!animRunRef.current || driftSeconds > 0.35) {
+            if (animRunRef.current) console.log(`[BAR] resync: bar was ${driftSeconds.toFixed(1)}s off, poll says ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
             startRealTimeAnim(pct);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -848,14 +852,14 @@ export default function PlayerScreen() {
     // Duration bumped from 120 -> 180ms per feedback ("slightly longer
     // fade"). Kept as one constant so the press-time trigger below and the
     // fallback useEffect can't drift apart from each other.
-    const SIDE_BTN_FADE_MS = 180;
+    // Just a quick fade between dark (off) and light (on). No press-dim, no
+    // other motion. A tap within 250ms of the last one on the same button is
+    // ignored, so a double tap counts once and the button never shows two
+    // changes while only one registered.
+    const SIDE_BTN_FADE_MS = 120;
+    const SIDE_BTN_IGNORE_MS = 250;
     const shuffleAnim = useRef(new Animated.Value(shuffleOn ? 1 : 0)).current;
     const loopAnim = useRef(new Animated.Value(singleLoop ? 1 : 0)).current;
-    // Each button's animation used to start TWICE per tap: once right at the
-    // press, and again when the state change re-rendered and the effect
-    // below fired. The second start restarted the fade mid-flight, which is
-    // the choppy feel. Now the target is remembered, so whichever one
-    // arrives second sees it's already headed there and does nothing.
     const shuffleTargetRef = useRef(shuffleOn ? 1 : 0);
     const loopTargetRef = useRef(singleLoop ? 1 : 0);
     const animateSideBtn = (anim, targetRef, to) => {
@@ -863,57 +867,27 @@ export default function PlayerScreen() {
         targetRef.current = to;
         Animated.timing(anim, { toValue: to, duration: SIDE_BTN_FADE_MS, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     };
+    // Also follows changes that come from somewhere else (restoring a session).
     useEffect(() => { animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleOn ? 1 : 0); }, [shuffleOn]);
     useEffect(() => { animateSideBtn(loopAnim, loopTargetRef, singleLoop ? 1 : 0); }, [singleLoop]);
     const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
     const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
 
-    // Triggers the animation immediately, synchronously, right at the tap —
-    // not waiting on the setShuffleOn -> re-render -> useEffect round trip
-    // above, which costs at least one full extra render cycle before the
-    // animation even starts. The useEffect above still exists as a fallback
-    // for shuffleOn/singleLoop changing from somewhere else entirely (e.g.
-    // restoring a session), so nothing relies exclusively on this.
-    //
-    // Both back on the JS driver (useNativeDriver: false) — tried moving
-    // just these two onto the native driver to dodge the JS-thread
-    // congestion toggleShuffle's real queue work causes (see below), since
-    // color interpolation IS natively supported in general. But loop icon
-    // uses Animated.Text with the interpolation directly in its own style,
-    // while ShuffleIcon renders two separate Animated.Views and only
-    // receives the interpolation through a `color` prop — and on the
-    // native driver specifically, shuffle came out visibly wrong (loop,
-    // same change, stayed correct). Not confident enough in the exact
-    // mechanism there to leave it that way with no way to test it, so
-    // reverted to the driver that's actually known to render both
-    // correctly, and the congestion problem is addressed differently below
-    // instead.
-    // A second tap landing before the first has applied would read the
-    // not-yet-updated state and undo/duplicate it, so taps are ignored for
-    // the short window while one is in flight.
-    const sideLockRef = useRef({ shuffle: false, loop: false });
+    const lastTapRef = useRef({ shuffle: 0, loop: 0 });
     const onPressShuffle = () => {
-        if (sideLockRef.current.shuffle) return;
-        sideLockRef.current.shuffle = true;
-        setTimeout(() => { sideLockRef.current.shuffle = false; }, SIDE_BTN_FADE_MS + 350);
-        animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleOn ? 0 : 1);
-        // Deferred one tick so the animation's first, most important frames
-        // get a clear run on the JS thread before toggleShuffle's real
-        // native-queue work (reading the current track, reading the whole
-        // queue, rebuilding and re-adding it — see reshuffleUpcoming) starts
-        // competing with it. toggleSingleLoop below doesn't need this — it's
-        // one setRepeatMode() call, not enough concurrent work to visibly
-        // compete with an 180ms animation in the first place.
-        // Held until the fade has finished, so the queue rebuild and the
-        // re-render it causes never land in the middle of the animation.
-        setTimeout(() => toggleShuffle(), SIDE_BTN_FADE_MS + 20);
+        const now = Date.now();
+        if (now - lastTapRef.current.shuffle < SIDE_BTN_IGNORE_MS) return;
+        lastTapRef.current.shuffle = now;
+        animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleTargetRef.current ? 0 : 1);
+        // The queue rebuild is heavy, so it starts once the quick fade is done.
+        setTimeout(() => toggleShuffle(), SIDE_BTN_FADE_MS + 10);
     };
     const onPressLoop = () => {
-        if (sideLockRef.current.loop) return;
-        sideLockRef.current.loop = true;
-        setTimeout(() => { sideLockRef.current.loop = false; }, SIDE_BTN_FADE_MS + 150);
-        animateSideBtn(loopAnim, loopTargetRef, singleLoop ? 0 : 1);
-        setTimeout(() => toggleSingleLoop(), SIDE_BTN_FADE_MS + 20);
+        const now = Date.now();
+        if (now - lastTapRef.current.loop < SIDE_BTN_IGNORE_MS) return;
+        lastTapRef.current.loop = now;
+        animateSideBtn(loopAnim, loopTargetRef, loopTargetRef.current ? 0 : 1);
+        toggleSingleLoop();   // one cheap call: applied right at the tap
     };
 
     return (
@@ -921,10 +895,14 @@ export default function PlayerScreen() {
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>
-                <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
-                    <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
-                </TouchableOpacity>
-                <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? currentPlaylist?.name ?? 'Now Playing'}</Text>
+                {playerBtns.back
+                    ? <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
+                    </TouchableOpacity>
+                    : <View style={s.topBtn} />}
+                {playerBtns.label
+                    ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? currentPlaylist?.name ?? 'Now Playing'}</Text>
+                    : <View style={{ flex: 1 }} />}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     {/* EQ used to be hidden here with a comment saying
                         react-native-track-player didn't support real audio
@@ -932,18 +910,18 @@ export default function PlayerScreen() {
                         engine was replaced with the custom AudioEngine
                         (which DOES support EQ) several rounds ago and this
                         was never un-hidden. */}
-                    <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
+                    {playerBtns.sleep && <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : base.textFaint} />
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
+                    </TouchableOpacity>}
+                    {playerBtns.speed && <TouchableOpacity onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: Math.abs(playbackRate - 1) > 0.001 ? theme.accent : base.textFaint }]}>{formatSpeed(playbackRate)}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    </TouchableOpacity>}
+                    {playerBtns.eq && <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                    </TouchableOpacity>}
+                    {playerBtns.queue && <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
-                    </TouchableOpacity>
+                    </TouchableOpacity>}
                 </View>
             </View>
 
@@ -1210,23 +1188,23 @@ export default function PlayerScreen() {
                         gated behind JS work even at its quickest. This gives
                         an instant visual response the moment the finger
                         touches down, independent of everything else. */}
-                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
-                        <ShuffleIcon size={28} color={shuffleColor} />
+                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                        <ShuffleIcon size={42} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipPrevIcon size={31} color={skipIconColor} />
+                        <SkipPrevIcon size={46} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity
                         onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
                         style={[s.playBtn, { backgroundColor: theme.accent, shadowColor: theme.accent }]}
                     >
-                        {isPlaying ? <PauseIcon size={26} color={theme.onAccent} /> : <PlayIcon size={26} color={theme.onAccent} />}
+                        {isPlaying ? <PauseIcon size={39} color={theme.onAccent} /> : <PlayIcon size={39} color={theme.onAccent} />}
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipNextIcon size={31} color={skipIconColor} />
+                        <SkipNextIcon size={46} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={0.5}>
-                        <LoopIcon size={28} color={loopColor} single={singleLoop} />
+                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                        <LoopIcon size={42} color={loopColor} single={singleLoop} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -1321,7 +1299,7 @@ const s = StyleSheet.create({
     times: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
     time: { color: '#3a3a3a', fontSize: 12 },
     controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12 },
-    sideBtn: { width: 60, height: 60, alignItems: 'center', justifyContent: 'center' },
-    skipBtn: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center' },
+    sideBtn: { width: 62, height: 62, alignItems: 'center', justifyContent: 'center' },
+    skipBtn: { width: 70, height: 70, alignItems: 'center', justifyContent: 'center' },
     playBtn: { width: 84, height: 84, borderRadius: 42, justifyContent: 'center', alignItems: 'center', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8 },
 });

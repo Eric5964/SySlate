@@ -248,7 +248,10 @@ export function PlaybackProvider({ children }) {
         const pushMetadataAndPrefetch = async (uri) => {
             try {
                 const queue = await AudioEngine.getQueue();
-                const idx = queue.findIndex(t => t.id === currentTrack.id);
+                // Match by queue-slot id when there is one, so a duplicate of
+                // the same song (or a queue that just shifted) cannot receive
+                // another slot's cover.
+                const idx = queue.findIndex(t => (currentTrack._qid != null ? t._qid === currentTrack._qid : t.id === currentTrack.id));
                 if (idx !== -1) await AudioEngine.updateMetadataForTrack(idx, { artwork: uri });
                 // Warm the cache for what's coming up next. Sequential with a
                 // small stagger (not fired concurrently) — this used to be a
@@ -414,10 +417,15 @@ export function PlaybackProvider({ children }) {
                 // Attach an already-known cover in the SAME update that
                 // switches the track, so the new song never renders once
                 // with no/old art and then again with the right one.
-                if (!track.artwork) {
+                // The saved cover for THIS song always wins over whatever cover
+                // the native queue entry carries: a cover push that landed on
+                // the wrong queue slot (the queue shifted while it was in
+                // flight) used to hand the next song the wrong picture, and
+                // since it "had" art the resolver never corrected it.
+                {
                     const cachedUri = await getCachedArtFast(track).catch(() => undefined);
                     if (seq !== trackChangeSeqRef.current) return;
-                    if (cachedUri) track = { ...track, artwork: cachedUri };
+                    if (cachedUri && cachedUri !== track.artwork) track = { ...track, artwork: cachedUri };
                 }
                 // Was comparing by song `id` alone — with priority-queuing
                 // now confirmed to genuinely duplicate a song (same id,
@@ -968,7 +976,9 @@ export function PlaybackProvider({ children }) {
                 // rewritten from the start.
                 const pl = playlistRef.current;
                 if (!pl?.songs?.length) return;
-                const nextPass = await buildQueueAsync(pl.songs, shuffleOnRef.current ? shuffleModeRef.current : 'off');
+                const passMode = shuffleOnRef.current ? shuffleModeRef.current : 'off';
+                console.log(`[LOOP] playlist finished a round: next round is ${shuffleOnRef.current ? 'shuffled (' + passMode + ')' : 'in order'}`);
+                const nextPass = await buildQueueAsync(pl.songs, passMode);
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
             const currentIndex = await AudioEngine.getCurrentTrack();
@@ -1041,8 +1051,9 @@ export function PlaybackProvider({ children }) {
         // that's the whole point of per-playlist memory. Falls back to the
         // global default for a playlist that's never been played before
         // (no session yet, or an old session from before this existed).
-        const mode = session?.shuffleMode ?? await getShuffleMode();
-        const isOn = session?.shuffleOn ?? await getShuffleOnStorage();
+        // Shuffle on/off and mode are GLOBAL (one setting for every playlist).
+        const mode = await getShuffleMode();
+        const isOn = await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         let queue = session?.queue ?? (isOn ? await buildQueueAsync(playlist.songs, mode) : [...playlist.songs]);
@@ -1093,12 +1104,15 @@ export function PlaybackProvider({ children }) {
             const next = queue[0] ?? null;
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
         });
-        setShuffleModeState('off');
+        // (shuffle MODE is left alone: 'off' is not a mode, it is just the
+        // order used for this queue. Setting it here made a later shuffle
+        // toggle rebuild the queue with no shuffling at all.)
         setShuffleOn(false);
         setEqPresetId(eq);
         setSingleLoop(false);
         const existing = await getSession(playlist.path);
-        await setSession(playlist.path, { ...existing, queue, index: 0 });
+        await setSession(playlist.path, { ...existing, queue, index: 0, shuffleOn: false });
+        await setShuffleOnStorage(false);
     }), []);
 
     const playPlaylistShuffled = useCallback((playlist) => runExclusivePlayAction(async () => {
@@ -1139,8 +1153,8 @@ export function PlaybackProvider({ children }) {
         // silently do nothing.
         if (isTransitionLocked()) { queueAction(() => playSongFromPlaylist(playlist, songId)); return; }
         const songSession = await getSession(playlist.path);
-        const mode = songSession?.shuffleMode ?? await getShuffleMode();
-        const isOn = songSession?.shuffleOn ?? await getShuffleOnStorage();
+        const mode = await getShuffleMode();
+        const isOn = await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         const song = playlist.songs.find(s => s.id === songId);
@@ -1464,7 +1478,13 @@ export function PlaybackProvider({ children }) {
             ]);
             if (index !== null) {
                 const pos = progress?.position ?? 0;
-                await setSession(pl.path, { queue, index });
+                // Merge into what is already saved: this used to replace the whole
+                // entry, which erased the playlist's own shuffle on/off and mode
+                // at every track change (so a later reload fell back to the
+                // global shuffle setting, even after pressing Play in order).
+                const prevSession = await getSession(pl.path);
+                const shufOn = shuffleOnRef.current;
+                await setSession(pl.path, { ...(prevSession || {}), queue, index, shuffleOn: shufOn, shuffleMode: shuffleModeRef.current });
                 // priorityCount is enough to reconstruct which of the
                 // tracks right after `index` were priority-queued on
                 // restore — the queue array already preserves their actual
@@ -1475,7 +1495,7 @@ export function PlaybackProvider({ children }) {
                 // there in the restored queue, just no longer TRACKED as
                 // priority, which is what "priority gets mushed together
                 // with up next after closing and reopening" was describing.
-                await setLastSession({ playlist: { ...pl, queue }, index, position: pos, priorityCount: priorityRef.current.length });
+                await setLastSession({ playlist: { ...pl, queue }, index, position: pos, priorityCount: priorityRef.current.length, shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
             }
         } catch { }
     }, []);

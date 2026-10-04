@@ -24,13 +24,28 @@ const RPM_DEG_PER_SEC = 90;
 const MAX_RATE = 3;
 const TICK_MS = 20;
 
+// Where the disc was when the Player last closed, so reopening it shows the
+// disc at the same angle (and keeps it turning as if it never stopped).
+let savedDisc = null;
+
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
 export default function DJDisc({ size, artwork, accent, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching }) {
-    const spin = useRef(new Animated.Value(0)).current;
-    const userRot = useRef(new Animated.Value(0)).current;
-    const userRotVal = useRef(0);
+    const startAt = useRef(null);
+    if (startAt.current === null) {
+        let sp = 0, us = 0;
+        if (savedDisc) {
+            const adv = (savedDisc.spinning && isPlaying) ? (Date.now() - savedDisc.at) / SPIN_TURN_MS : 0;
+            sp = (savedDisc.spin + adv) % 1;
+            us = savedDisc.user;
+        }
+        startAt.current = { sp, us };
+    }
+    const spin = useRef(new Animated.Value(startAt.current.sp)).current;
+    const userRot = useRef(new Animated.Value(startAt.current.us)).current;
+    const userRotVal = useRef(startAt.current.us);
+    const dim = useRef(new Animated.Value(0)).current;
     const viewRef = useRef(null);
     const center = useRef({ x: 0, y: 0, valid: false });
     const samples = useRef([]);
@@ -43,8 +58,16 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
     const tickTimer = useRef(null);
     const lastTouch = useRef({ x: 0, y: 0 });
     const smoothRate = useRef(0);
+    const sentRate = useRef(0);
 
     const allowed = visible && duration > 0 && position >= startGuard && position <= duration - endGuard;
+    // Fade between enabled and disabled (near the song's ends) instead of
+    // switching at once.
+    const dimInit = useRef(false);
+    useEffect(() => {
+        if (!dimInit.current) { dimInit.current = true; dim.setValue(allowed ? 0 : 1); return; }
+        Animated.timing(dim, { toValue: allowed ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    }, [allowed, dim]);
     const live = useRef({});
     live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard };
 
@@ -66,6 +89,31 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             if (rampMs > 0) {
                 base = v + 0.5 * (rampMs / SPIN_TURN_MS);
                 seq.push(Animated.timing(spin, { toValue: base, duration: rampMs, easing: Easing.in(Easing.quad), useNativeDriver: true }));
+            }
+            seq.push(Animated.timing(spin, { toValue: base + 1000, duration: 1000 * SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true }));
+            Animated.sequence(seq).start();
+        });
+    }, [spin]);
+    // Letting go: the disc keeps the speed the finger left it at and settles
+    // to the idle speed over a few tens of ms (the sound does the same), so
+    // it never stops dead and then winds back up.
+    const releaseSpin = useCallback((rate) => {
+        const token = ++spinToken.current;
+        spinState.current = 'spinning';
+        spin.stopAnimation((v) => {
+            if (token !== spinToken.current) return;
+            const idle = 1000 / SPIN_TURN_MS;                 // turns per second
+            const v0 = (rate * RPM_DEG_PER_SEC) / 360;        // turns per second
+            const T = 0.08;
+            const D = 0.5 * (v0 + idle) * T;
+            const seq = [];
+            let base = v;
+            if (Math.abs(D) > 1e-5) {
+                base = v + D;
+                seq.push(Animated.timing(spin, {
+                    toValue: base, duration: T * 1000, useNativeDriver: true,
+                    easing: (u) => (v0 * T * u + ((idle - v0) * T / 2) * u * u) / D,
+                }));
             }
             seq.push(Animated.timing(spin, { toValue: base + 1000, duration: 1000 * SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true }));
             Animated.sequence(seq).start();
@@ -104,6 +152,10 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
         }
         return () => { if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; } };
     }, [active, isPlaying, startSpin, slowSpin, stopSpin]);
+    useEffect(() => () => {
+        const wasSpinning = spinState.current === 'spinning';
+        spin.stopAnimation((v) => { savedDisc = { spin: v, user: userRotVal.current, at: Date.now(), spinning: wasSpinning }; });
+    }, [spin]);
     useEffect(() => stopSpin, [stopSpin]);
 
     // Play / pause ramps announce themselves, so the disc follows them.
@@ -141,8 +193,12 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
         pendingDeg.current = 0;
         if (onTouching) onTouching(false);
         if (wasScratching) AudioEngine.scratchEnd().catch(() => { });
-        if (live.current.active && live.current.isPlaying) startSpin(450);
-    }, [startSpin]);
+        const rel = sentRate.current;
+        sentRate.current = 0;
+        if (live.current.active && live.current.isPlaying) {
+            if (wasScratching) releaseSpin(rel); else startSpin(450);
+        }
+    }, [startSpin, releaseSpin]);
 
     // Leaving the disc view (or the song changing) mid-scratch ends it.
     useEffect(() => {
@@ -164,12 +220,18 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
                 center.current = { x: x + w / 2, y: y + h / 2 };
                 if (draggingRef.current) lastAngle.current = angleOf(lastTouch.current.x, lastTouch.current.y, center.current);
             });
-            AudioEngine.scratchBegin().then((ok) => {
+            // Grabbing the disc again within ~130ms of letting go is refused by
+            // native (the last scratch is still finishing), which used to leave
+            // the finger moving a silent disc. Retry a few times instead.
+            const tryBegin = (n) => AudioEngine.scratchBegin().then((ok) => {
                 if (!draggingRef.current) { if (ok) AudioEngine.scratchEnd().catch(() => { }); return; }
+                if (!ok && n < 4) { setTimeout(() => { if (draggingRef.current && !scratchingRef.current) tryBegin(n + 1); }, 70); return; }
                 scratchingRef.current = !!ok;
             }).catch(() => { });
+            tryBegin(0);
             lastTick.current = Date.now();
             smoothRate.current = 0;
+            sentRate.current = 0;
             samples.current = [];
             snapped.current = false;
             tickTimer.current = setInterval(() => {
@@ -200,6 +262,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
                 // Never scratch into the protected zones at the ends.
                 if (rate > 0 && L.position >= L.duration - L.endGuard) rate = 0;
                 if (rate < 0 && L.position <= L.startGuard) rate = 0;
+                sentRate.current = rate;
                 AudioEngine.scratchSetRate(rate);
             }, TICK_MS);
         },
@@ -224,16 +287,17 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
     const rings = [0.97, 0.91, 0.85, 0.79, 0.73, 0.67, 0.61];
 
     return (
-        <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R, opacity: allowed ? 1 : 0.55 }} {...pan.panHandlers}
+        <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R }} {...pan.panHandlers}
             // Turns the Player's swipe-down-to-close off the moment a finger
             // lands ON the disc (only when the disc will take the touch), so
             // swiping anywhere else on the screen still closes the Player.
             onTouchStart={(e) => { if (live.current.allowed && onTouching && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY)) onTouching(true); }}
             onTouchEnd={() => { if (!draggingRef.current && onTouching) onTouching(false); }}
             onTouchCancel={() => { if (!draggingRef.current && onTouching) onTouching(false); }}>
+            <Animated.View style={{ width: R, height: R, opacity: dim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.55] }) }}>
             <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: spinDeg }] }]}>
                 <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
-                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: allowed ? accent : '#2a2a2a' }]}>
+                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: accent }]}>
                         {rings.map((f, i) => (
                             <View key={f} style={{
                                 position: 'absolute', width: R * f, height: R * f, borderRadius: (R * f) / 2,
@@ -250,7 +314,9 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
                         </View>
                         <View style={{ position: 'absolute', width: R * 0.04, height: R * 0.04, borderRadius: R * 0.02, backgroundColor: '#000', left: R / 2 - R * 0.02 - 2, top: R / 2 - R * 0.02 - 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }} />
                     </View>
+                    <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
                 </Animated.View>
+            </Animated.View>
             </Animated.View>
         </View>
     );

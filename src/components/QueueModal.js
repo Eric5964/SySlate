@@ -98,28 +98,24 @@ function FadePill({ isNew, children }) {
 // shut at the end). The row stays in `rows` (and keeps its layout slot) for
 // the duration of this animation and is only actually removed once it's
 // finished.
-const REMOVE_SLIDE_MS = 190;
-const REMOVE_COLLAPSE_MS = 240;
-const REMOVE_ANIM_MS = REMOVE_SLIDE_MS + REMOVE_COLLAPSE_MS;
+const REMOVE_COLLAPSE_MS = 260;
+const REMOVE_ANIM_MS = REMOVE_COLLAPSE_MS + 20;
 function ShrinkOutRow({ removing, children }) {
     const t = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // Two beats: the row is swiped away to the left first (that part is
-        // SwipeableRow's own slide-off, REMOVE_SLIDE_MS), then the gap it
-        // leaves closes smoothly so the rows below glide up. Nothing is
-        // squashed or cropped, because by the time the gap starts to close
-        // the row is already off screen.
-        Animated.sequence([
-            Animated.delay(REMOVE_SLIDE_MS),
-            Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.inOut(Easing.cubic), useNativeDriver: false }),
-        ]).start();
+        // The gap closes WHILE the row slides off to the left, so the row
+        // squishes away and the rows below glide up with it.
+        Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [removing]);
-    if (!removing) return <View>{children}</View>;
+    // The same two views are rendered whether or not the row is being
+    // removed (only their styles change). Swapping to a different wrapper
+    // when removal began used to remount the whole swipeable row, which
+    // threw away its slide-off and made the row jump back mid-removal.
     return (
-        <Animated.View style={{ height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
-            <View style={{ height: ROW_HEIGHT }}>{children}</View>
+        <Animated.View style={removing ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' } : null}>
+            <View style={removing ? { height: ROW_HEIGHT } : null}>{children}</View>
         </Animated.View>
     );
 }

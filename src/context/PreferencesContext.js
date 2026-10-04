@@ -8,6 +8,7 @@ import {
     getLyricsMode, setLyricsMode as persistLyricsMode,
     getDjDisc, setDjDisc as persistDjDisc,
     getDjDiscAuto, setDjDiscAuto as persistDjDiscAuto,
+    getPlayerBtn, setPlayerBtn,
     getLyricsResyncSec, setLyricsResyncSec as persistLyricsResyncSec,
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
@@ -43,6 +44,7 @@ const Ctx = createContext({
     lyricsMode: 'off', setLyricsMode: () => { },
     djDisc: false, setDjDisc: () => { },
     djDiscAuto: false, setDjDiscAuto: () => { },
+    playerBtns: { sleep: true, speed: true, eq: true, queue: true, label: true, back: true }, setPlayerBtnShown: () => { },
     lyricsResyncSec: 4, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
@@ -73,23 +75,28 @@ const Ctx = createContext({
 
 export function PreferencesProvider({ children }) {
     const [showPlayCount, setShowPlayCountState] = useState(true);
-    const [showSongCovers, setShowSongCoversState] = useState(false);
+    const [showSongCovers, setShowSongCoversState] = useState(true);
     const [artistSeparator, setArtistSeparatorState] = useState([';']);
-    const [lyricsMode, setLyricsModeState] = useState('off');
+    const [lyricsMode, setLyricsModeState] = useState('manual');
     const [djDisc, setDjDiscState] = useState(false);
     const [djDiscAuto, setDjDiscAutoState] = useState(false);
-    const [lyricsResyncSec, setLyricsResyncSecState] = useState(4);
+    const [playerBtns, setPlayerBtns] = useState({ sleep: true, speed: true, eq: true, queue: true, label: true, back: true });
+    const setPlayerBtnShown = useCallback((name, v) => {
+        setPlayerBtns(prev => ({ ...prev, [name]: v }));
+        setPlayerBtn(name, v);
+    }, []);
+    const [lyricsResyncSec, setLyricsResyncSecState] = useState(2);
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
     const [showPlayerCover, setShowPlayerCoverState] = useState(true);
-    const [coverShadow, setCoverShadowState] = useState(false);
+    const [coverShadow, setCoverShadowState] = useState(true);
     const [backgroundImageEnabled, setBackgroundImageEnabledState] = useState(false);
     const [backgroundImageUri, setBackgroundImageUriState] = useState(null);
-    const [crossfadeEnabled, setCrossfadeEnabledState] = useState(false);
-    const [crossfadeDuration, setCrossfadeDurationState] = useState(4);
+    const [crossfadeEnabled, setCrossfadeEnabledState] = useState(true);
+    const [crossfadeDuration, setCrossfadeDurationState] = useState(2);
     const [crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrackState] = useState(4);
-    const [withinTrackNorm, setWithinTrackNormState] = useState(true);
+    const [withinTrackNorm, setWithinTrackNormState] = useState(false);
     const [preAmp, setPreAmpState] = useState(0);
     const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
     const [silenceTrim, setSilenceTrimState] = useState(false);
@@ -112,6 +119,7 @@ export function PreferencesProvider({ children }) {
         getLyricsMode().then(setLyricsModeState);
         getDjDisc().then(setDjDiscState);
         getDjDiscAuto().then(setDjDiscAutoState);
+        ['sleep', 'speed', 'eq', 'queue', 'label', 'back'].forEach(n => getPlayerBtn(n).then(v => setPlayerBtns(prev => ({ ...prev, [n]: v }))));
         getLyricsResyncSec().then(setLyricsResyncSecState);
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
@@ -308,6 +316,7 @@ export function PreferencesProvider({ children }) {
         artistSeparator, setArtistSeparator,
         lyricsMode, setLyricsMode,
         djDisc, setDjDisc, djDiscAuto, setDjDiscAuto,
+        playerBtns, setPlayerBtnShown,
         lyricsResyncSec, setLyricsResyncSec,
         lyricsOffsetSec, setLyricsOffsetSec,
         keepScreenAwake, setKeepScreenAwake,
@@ -328,7 +337,7 @@ export function PreferencesProvider({ children }) {
         lyricsScrollLocked, setLyricsScrollLocked,
         artistDisplayJoin, setArtistDisplayJoin,
     }), [
-        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto,
+        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,
