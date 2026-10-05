@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, TouchableWithoutFeedback, Image, FlatList, StyleSheet, Animated, Easing, PanResponder } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -23,6 +23,30 @@ const ROW_HEIGHT = 74;
 // Rows built when the sheet opens (about a screenful and a half), then more
 // shortly after the open animation, then more as the list is scrolled.
 const INITIAL_ROWS = 16;
+// Same timing as moving playlists: hold half a second to pick a row up (a
+// tenth of a second once the queue is already being edited).
+const LIFT_MS = 500;
+const EDIT_LIFT_MS = 120;
+// Which list cell is being dragged, so its cell can be drawn above the rest,
+// and where every cell sits (measured), so a drag can find the slot under the
+// finger even after the list has scrolled.
+let draggedListIndex = -1;
+const cellLayouts = {};
+function Cell({ children, style, index, onLayout, ...props }) {
+    return (
+        <View
+            {...props}
+            onLayout={(e) => { cellLayouts[index] = e.nativeEvent.layout; if (onLayout) onLayout(e); }}
+            style={[style, { zIndex: index === draggedListIndex ? 50 : 0 }]}
+        >
+            {children}
+        </View>
+    );
+}
+const EDGE = 90;          // auto-scroll zone at the top and bottom of the list
+const MAX_SCROLL = 14;    // px per frame at the very edge
+const DRAG_SLOP = 6;
+// Rows built shortly after the open animation, then more as the list is scrolled.
 const MORE_ROWS = 80;
 
 // Grows a newly-added row in from nothing instead of it just abruptly
@@ -132,26 +156,34 @@ function ShrinkOutRow({ removing, children }) {
 // One queue row. Memoized: a refresh builds brand new row objects even when
 // nothing changed, and art / play-count lookups land one at a time, so
 // without this every visible row re-rendered on each of those.
-const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playCount, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, actions }) {
+const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playCount, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, actions, editing, dragging, shift, live, dragY }) {
     const { song, realIndex, isPriority, stableKey } = row;
+    // Rows between the dragged one and its target slide out of the way.
+    const shiftAnim = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        const to = shift;
+        if (live) Animated.timing(shiftAnim, { toValue: to, duration: 150, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        else shiftAnim.setValue(0);
+    }, [shift, live, shiftAnim]);
     return (
         <GrowInRow isNew={isNew}>
             <ShrinkOutRow removing={removing}>
+                <Animated.View style={[{ transform: [{ translateY: dragging ? dragY : shiftAnim }, { scale: dragging ? 1.03 : 1 }] }, dragging && s.dragged]}>
                 <SwipeableRow
-                    onSwipeLeft={() => actions.remove(realIndex, stableKey)}
+                    onSwipeLeft={editing ? undefined : () => actions.remove(realIndex, stableKey)}
                     // Only meaningful for Up Next rows: promoting a row that is
                     // already Priority does nothing useful (see promoteToQueue's
                     // guard for the duplicate-entry bug this used to cause).
-                    onSwipeRight={isPriority ? undefined : () => actions.promote(realIndex)}
+                    onSwipeRight={isPriority || editing ? undefined : () => actions.promote(realIndex)}
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => actions.jump(realIndex)} activeOpacity={0.7}>
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => actions.jump(realIndex)} onPressIn={() => actions.pressIn(stableKey)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
                         {showSongCovers && (
-                            <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                            <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
                                 {art
                                     ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
-                                    : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                    : null
                                 }
                             </View>
                         )}
@@ -164,6 +196,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                         )}
                     </TouchableOpacity>
                 </SwipeableRow>
+                </Animated.View>
             </ShrinkOutRow>
         </GrowInRow>
     );
@@ -180,7 +213,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, currentTrack, addToQueue } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue } = usePlayback();
     const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
     // allRows is the whole upcoming queue; only the first `visibleCount` are
     // ever turned into list items, cover lookups and row components. A queue
@@ -393,7 +426,167 @@ export default function QueueModal({ visible, onClose }) {
         getPlayCounts(toFetch).then(setPlayCounts);
     }, [songsForArt, showPlayCount, currentTrack]);
 
-    const jump = async (realIndex) => { await jumpToQueueIndex(realIndex); await refresh(); };
+    // ---- Moving rows (hold to pick up, drag, Done) -----------------------
+    // Works like moving playlists: same hold times, the list scrolls by
+    // itself when the finger nears the top or bottom edge, and the held row
+    // follows the finger while the list scrolls under it.
+    const [editMode, setEditMode] = useState(false);
+    const [dragKey, setDragKey] = useState(null);     // the row being held
+    const [dragTo, setDragTo] = useState(null);       // the slot it is over (index in `rows`)
+    const editRef = useRef(false);
+    const holdTimer = useRef(null);
+    const armedKey = useRef(null);
+    const suppressPress = useRef(false);
+    const dragging = useRef(false);
+    const startIdx = useRef(0);
+    const toIdx = useRef(0);
+    const dragY = useRef(new Animated.Value(0)).current;
+    const rowsRef = useRef(rows);
+    rowsRef.current = rows;
+    const totalRowsRef = useRef(0);
+    totalRowsRef.current = allRows.length;
+    const visibleRef = useRef(0);
+    visibleRef.current = visibleCount;
+    const listRef = useRef(null);
+    const boxRef = useRef(null);
+    const scrollY = useRef(0);
+    const viewH = useRef(0);
+    const contentH = useRef(0);
+    const listTop = useRef(0);
+    const drag = useRef({ dy: 0, scroll0: 0, fingerY: -1 });
+    const scrollTimer = useRef(null);
+    const rowListIdx = useRef([]);     // rows index -> index in the list data
+    const finishRef = useRef(null);
+
+    const stopAutoScroll = () => { clearInterval(scrollTimer.current); scrollTimer.current = null; };
+
+    const layoutOfRow = (i) => cellLayouts[rowListIdx.current[i]];
+    const refreshDrag = () => {
+        const d = drag.current;
+        const startL = layoutOfRow(startIdx.current);
+        if (!startL) return;
+        dragY.setValue(d.dy + (scrollY.current - d.scroll0));
+        // The slot under the finger, in list (content) coordinates.
+        const pos = (d.fingerY - listTop.current) + scrollY.current;
+        const list = rowsRef.current;
+        let best = toIdx.current;
+        const first = layoutOfRow(0), last = layoutOfRow(list.length - 1);
+        if (first && pos < first.y) best = 0;
+        else if (last && pos > last.y) best = list.length - 1;
+        else {
+            for (let j = 0; j < list.length; j++) {
+                const l = layoutOfRow(j);
+                if (l && pos >= l.y && pos < l.y + l.height) { best = j; break; }
+            }
+        }
+        if (best !== toIdx.current) { toIdx.current = best; setDragTo(best); }
+    };
+
+    const exitEdit = useCallback(() => {
+        clearTimeout(holdTimer.current);
+        clearInterval(scrollTimer.current); scrollTimer.current = null;
+        armedKey.current = null;
+        dragging.current = false;
+        editRef.current = false;
+        draggedListIndex = -1;
+        setEditMode(false); setDragKey(null); setDragTo(null);
+        dragY.setValue(0);
+    }, [dragY]);
+    useEffect(() => { if (!visible) exitEdit(); }, [visible, exitEdit]);
+
+    const arm = useCallback((key) => {
+        const idx = rowsRef.current.findIndex(r => r.stableKey === key);
+        if (idx < 0) return;
+        armedKey.current = key;
+        suppressPress.current = true;        // letting go after the hold must not play the song
+        startIdx.current = idx; toIdx.current = idx;
+        dragY.setValue(0);
+        editRef.current = true;
+        if (boxRef.current) boxRef.current.measureInWindow((x, y) => { listTop.current = y; });
+        // More rows are built while a row is held, so there is always list
+        // below to scroll into (rows are only ever appended, so the held
+        // row and the slots measured so far keep their places).
+        setVisibleCount(c => (c < totalRowsRef.current ? Math.min(totalRowsRef.current, c + MORE_ROWS) : c));
+        setEditMode(true);
+        setDragKey(key);
+        setDragTo(idx);
+    }, [dragY]);
+
+    const pressIn = useCallback((key) => {
+        clearTimeout(holdTimer.current);
+        suppressPress.current = false;
+        // Same timing as moving playlists.
+        holdTimer.current = setTimeout(() => arm(key), editRef.current ? EDIT_LIFT_MS : LIFT_MS);
+    }, [arm]);
+    const pressOut = useCallback(() => {
+        clearTimeout(holdTimer.current);
+        // Held and let go without dragging: the row is just put back down.
+        if (armedKey.current && !dragging.current) { armedKey.current = null; setDragKey(null); setDragTo(null); }
+    }, []);
+
+    const finishDrag = useCallback(async () => {
+        stopAutoScroll();
+        if (!dragging.current) return;
+        dragging.current = false;
+        const list = rowsRef.current;
+        const from = startIdx.current, to = toIdx.current;
+        armedKey.current = null;
+        const fromL = layoutOfRow(from), toL = layoutOfRow(to);
+        if (from !== to && list[from] && list[to] && fromL && toL) {
+            // Settle the held row into its slot, then do the real move.
+            Animated.timing(dragY, { toValue: toL.y - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+            const next = await moveInQueue(list[from].realIndex, list[to].realIndex);
+            await refresh(next);
+        }
+        draggedListIndex = -1;
+        setDragKey(null); setDragTo(null);
+        dragY.setValue(0);
+    }, [dragY, moveInQueue, refresh]);
+    finishRef.current = finishDrag;
+
+    const dragPan = useRef(PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        // Only once a row has been picked up, and the finger has moved a little.
+        onMoveShouldSetPanResponderCapture: (_e, g) => armedKey.current != null && Math.abs(g.dy) > DRAG_SLOP,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => {
+            dragging.current = true;
+            const idx = rowsRef.current.findIndex(r => r.stableKey === armedKey.current);
+            if (idx >= 0) { startIdx.current = idx; toIdx.current = idx; }
+            drag.current = { dy: 0, scroll0: scrollY.current, fingerY: e.nativeEvent.pageY };
+            clearInterval(scrollTimer.current);
+            scrollTimer.current = setInterval(() => {
+                if (!dragging.current) return;
+                const fy = drag.current.fingerY - listTop.current;
+                let v = 0;
+                if (fy < EDGE) v = -((EDGE - fy) / EDGE) * MAX_SCROLL;
+                else if (fy > viewH.current - EDGE) v = ((fy - (viewH.current - EDGE)) / EDGE) * MAX_SCROLL;
+                if (!v) return;
+                const maxY = Math.max(0, contentH.current - viewH.current);
+                if (v > 0 && scrollY.current > maxY - viewH.current * 1.5 && visibleRef.current < totalRowsRef.current) {
+                    setVisibleCount(c => (c < totalRowsRef.current ? Math.min(totalRowsRef.current, c + MORE_ROWS) : c));
+                }
+                const ny = Math.max(0, Math.min(maxY, scrollY.current + v));
+                if (ny === scrollY.current) return;
+                scrollY.current = ny;
+                if (listRef.current) listRef.current.scrollToOffset({ offset: ny, animated: false });
+                refreshDrag();
+            }, 16);
+        },
+        onPanResponderMove: (e, g) => {
+            drag.current.dy = g.dy;
+            drag.current.fingerY = g.moveY;
+            refreshDrag();
+        },
+        onPanResponderRelease: () => { finishRef.current(); },
+        onPanResponderTerminate: () => { finishRef.current(); },
+    })).current;
+    useEffect(() => () => clearInterval(scrollTimer.current), []);
+
+    const jump = async (realIndex) => {
+        if (suppressPress.current || editRef.current) return;
+        await jumpToQueueIndex(realIndex); await refresh();
+    };
     const remove = async (realIndex, stableKey) => {
         // Let the shrink play out first, then do the real removal + refresh
         // — see ShrinkOutRow above for why.
@@ -445,16 +638,36 @@ export default function QueueModal({ visible, onClose }) {
         return items;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, currentTrack, newKeys]);
+    draggedListIndex = dragKey == null ? -1 : listData.findIndex(it => it.key === dragKey);
+    {
+        const byKey = new Map();
+        listData.forEach((it, i) => { if (it.type === 'row') byKey.set(it.key, i); });
+        rowListIdx.current = rows.map(r => byKey.get(r.stableKey));
+    }
 
     // Stable handlers so memoized rows are not re-rendered just because the
     // parent re-rendered (every closure above is new on each render).
     const actionsRef = useRef({});
-    actionsRef.current = { remove, promote, jump };
+    actionsRef.current = { remove, promote, jump, pressIn, pressOut };
     const rowActions = useRef({
+        pressIn: (k) => actionsRef.current.pressIn(k),
+        pressOut: () => actionsRef.current.pressOut(),
         remove: (i, k) => actionsRef.current.remove(i, k),
         promote: (i) => actionsRef.current.promote(i),
         jump: (i) => actionsRef.current.jump(i),
     }).current;
+
+    // How far a row slides to make room for the held one (0 for rows that stay).
+    const rowShift = (key) => {
+        if (dragKey == null || dragTo == null) return 0;
+        const i = rows.findIndex(r => r.stableKey === key);
+        const f = startIdx.current;
+        if (i < 0 || i === f) return 0;
+        const h = layoutOfRow(f)?.height ?? ROW_HEIGHT;
+        if (f < dragTo && i > f && i <= dragTo) return -h;
+        if (f > dragTo && i >= dragTo && i < f) return h;
+        return 0;
+    };
 
     const renderRow = (row) => (
         <QueueRow
@@ -472,6 +685,11 @@ export default function QueueModal({ visible, onClose }) {
             theme={theme}
             base={base}
             actions={rowActions}
+            editing={editMode}
+            dragging={dragKey === row.stableKey}
+            live={dragKey != null && dragTo != null}
+            shift={rowShift(row.stableKey)}
+            dragY={dragY}
         />
     );
 
@@ -487,10 +705,10 @@ export default function QueueModal({ visible, onClose }) {
                     <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
                         <View style={[s.qRow, { backgroundColor: base.border }]}>
                             {showSongCovers && (
-                                <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                                <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
                                     {currentTrack.artwork
                                         ? <Image source={{ uri: listArtUri(currentTrack.artwork) }} style={s.thumbImg} resizeMode="cover" />
-                                        : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                                        : null
                                     }
                                 </View>
                             )}
@@ -516,7 +734,21 @@ export default function QueueModal({ visible, onClose }) {
     };
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={
+            // Title on the left, Done (while moving) on the right at the same
+            // distance from the edge. Tapping the top while moving finishes
+            // the move without closing the queue.
+            <TouchableWithoutFeedback onPress={editMode ? exitEdit : undefined}>
+                <View style={s.headerRow}>
+                    <Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>
+                    {editMode && (
+                        <TouchableOpacity onPress={exitEdit} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+                            <Text style={[s.doneText, { color: theme.accent }]}>Done</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
+            </TouchableWithoutFeedback>
+        }>
             {rows.length === 0 && hasLoadedOnce ? (
                 <View style={{ flex: 1, justifyContent: 'center' }}>
                     <Text style={[s.empty, { color: base.textFaint }]}>Nothing up next</Text>
@@ -529,8 +761,15 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
+                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y) => { listTop.current = y; }); }} {...dragPan.panHandlers}>
                 <FlatList
+                    ref={listRef}
+                    scrollEventThrottle={16}
+                    onScroll={(e) => { scrollY.current = e.nativeEvent.contentOffset.y; }}
+                    onContentSizeChange={(w, h) => { contentH.current = h; }}
                     data={listData}
+                    scrollEnabled={dragKey == null}
+                    CellRendererComponent={Cell}
                     keyExtractor={item => item.key}
                     renderItem={renderItem}
                     showsVerticalScrollIndicator={false}
@@ -549,7 +788,7 @@ export default function QueueModal({ visible, onClose }) {
                     // grow-shrink updates could land in state but not
                     // actually repaint an already-mounted, off-window-edge
                     // row.
-                    extraData={{ artMap, playCounts, newKeys, removingKeys }}
+                    extraData={{ artMap, playCounts, newKeys, removingKeys, editMode, dragKey, dragTo }}
                     // Row height is a known constant (see ROW_HEIGHT above)
                     // for ordinary rows — pill/divider/now-playing rows are
                     // shorter, so this is deliberately just an estimate
@@ -563,6 +802,7 @@ export default function QueueModal({ visible, onClose }) {
                     onEndReachedThreshold={1.5}
                     onEndReached={() => setVisibleCount(c => (c < allRows.length ? Math.min(allRows.length, c + MORE_ROWS) : c))}
                 />
+                </View>
             )}
         </BottomSheet>
     );
@@ -572,7 +812,10 @@ const s = StyleSheet.create({
     // Matches SettingsScreen's "New EQ Preset" sheet title font — that was
     // the reference Eric pointed at (bigger/brighter, not the small dim
     // uppercase "eyebrow" style this used before).
-    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
+    sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4 },
+    headerRow: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24 },
+    doneText: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
+    dragged: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.42, shadowRadius: 3, elevation: 6 },
     groupPill: { marginHorizontal: 24, marginTop: 14, marginBottom: 6, alignSelf: 'flex-start', backgroundColor: '#1a1a1a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
     divider: { height: 1, backgroundColor: '#1e1e1e', marginHorizontal: 24, marginTop: 8 },

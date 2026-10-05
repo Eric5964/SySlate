@@ -975,7 +975,7 @@ export default function PlayerScreen() {
                                 >
                                     {artwork
                                         ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
-                                        : <Text style={[s.artNote, { color: theme.accentDim }]}>♪</Text>
+                                        : null
                                     }
                                 </Animated.View>
                             </Animated.View>
@@ -990,6 +990,7 @@ export default function PlayerScreen() {
                                     accent={theme.accent}
                                     isPlaying={isPlaying}
                                     visible={showingDisc}
+                                    trackKey={currentTrack?._qid ?? currentTrack?.id}
                                     active={discActive}
                                     position={progress.position}
                                     duration={progress.duration}
@@ -1189,22 +1190,22 @@ export default function PlayerScreen() {
                         an instant visual response the moment the finger
                         touches down, independent of everything else. */}
                     <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
-                        <ShuffleIcon size={42} color={shuffleColor} />
+                        <ShuffleIcon size={35} color={shuffleColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipPrevIcon size={46} color={skipIconColor} />
+                        <SkipPrevIcon size={38} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity
                         onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
                         style={[s.playBtn, { backgroundColor: theme.accent, shadowColor: theme.accent }]}
                     >
-                        {isPlaying ? <PauseIcon size={39} color={theme.onAccent} /> : <PlayIcon size={39} color={theme.onAccent} />}
+                        {isPlaying ? <PauseIcon size={33} color={theme.onAccent} /> : <PlayIcon size={33} color={theme.onAccent} />}
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
-                        <SkipNextIcon size={46} color={skipIconColor} />
+                        <SkipNextIcon size={38} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
-                        <LoopIcon size={42} color={loopColor} single={singleLoop} />
+                        <LoopIcon size={35} color={loopColor} single={singleLoop} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -1250,7 +1251,7 @@ const s = StyleSheet.create({
     // than anything else on this screen. Scaled down to roughly match the
     // lyrics' own textShadowRadius:4 glow instead of standing out as its
     // own much bigger effect.
-    coverShadowWrap: { width: width - 56, height: width - 56, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 5, elevation: 4 },
+    coverShadowWrap: { width: width - 56, height: width - 56, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.38, shadowRadius: 3.5, elevation: 4 },
     artImg: { width: '100%', height: '100%' },
     artNote: { fontSize: 80 },
     // Small text button matching the sort-label style used elsewhere

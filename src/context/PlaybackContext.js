@@ -640,6 +640,35 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('removeFromQueue:', e); return priorityRef.current; }
     }, []);
 
+    // Moves one upcoming song to a new slot (drag to reorder in the Queue).
+    // `toReal` is the slot it should end up in. Which zone (Priority or Up
+    // Next) it lands in follows from where it is dropped: inside the
+    // priority rows it becomes priority, after them it becomes Up Next.
+    const moveInQueue = useCallback(async (fromReal, toReal) => {
+        try {
+            const currentIndex = await AudioEngine.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
+            if (fromReal === toReal || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
+            const queue = await AudioEngine.getQueue();
+            const track = queue[fromReal];
+            if (!track) return priorityRef.current;
+            const pc = priorityRef.current.length;
+            const pStart = currentIndex + 1;
+            const wasPriority = fromReal < pStart + pc;
+            const pcWithout = wasPriority ? pc - 1 : pc;
+            const ins = toReal - pStart;   // its place among the upcoming songs without itself
+            const becomesPriority = ins < pcWithout || (ins === pcWithout && wasPriority);
+            const pcNew = pcWithout + (becomesPriority ? 1 : 0);
+            await AudioEngine.remove(fromReal);
+            await AudioEngine.add(track, toReal);
+            const after = await AudioEngine.getQueue();
+            const next = after.slice(pStart, pStart + pcNew).map(t => t.id);
+            priorityRef.current = next;
+            setPriorityQueue(next);
+            return next;
+        } catch (e) { console.error('moveInQueue:', e); return priorityRef.current; }
+    }, []);
+
     const jumpToQueueIndex = useCallback(async (realIndex) => {
         // Real gap found here: tapping a song while something else was
         // already mid-transition (most commonly: the current track fading
@@ -1547,13 +1576,13 @@ export function PlaybackProvider({ children }) {
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, jumpToQueueIndex,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

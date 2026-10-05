@@ -48,7 +48,7 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, ui } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -174,9 +174,12 @@ export default function PlaylistDetailScreen() {
 
             {/* Top bar: back, centered search, EQ + queue */}
             <View style={s.topBar}>
-                <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
-                    <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
-                </TouchableOpacity>
+                {ui.pd_back !== false ? (
+                    <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
+                        <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
+                    </TouchableOpacity>
+                ) : <View style={s.topBtn} />}
+                {ui.pd_search !== false ? (
                 <View style={{ flex: 1, marginHorizontal: 4, justifyContent: 'center' }}>
                     <TextInput
                         style={[s.searchBar, { backgroundColor: base.surface, marginHorizontal: 0, color: base.text }]}
@@ -192,17 +195,22 @@ export default function PlaylistDetailScreen() {
                         </TouchableOpacity>
                     )}
                 </View>
+                ) : <View style={{ flex: 1 }} />}
                 {/* Wrapped with the same gap:6 PlayerScreen/AllSongsScreen use
                     between EQ and queue — this row had no gap at all before,
                     so the two 40x40 buttons sat flush against each other with
                     their 12px hitSlop zones actually overlapping. */}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
+                    {ui.pd_eq !== false ? (
                     <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
                     </TouchableOpacity>
+                    ) : <View style={s.topBtn} />}
+                    {ui.pd_queue !== false ? (
                     <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>
+                    ) : <View style={s.topBtn} />}
                 </View>
             </View>
 
@@ -217,6 +225,7 @@ export default function PlaylistDetailScreen() {
                 maxToRenderPerBatch={10}
                 ListHeaderComponent={
                     <View>
+                        {ui.pd_cover !== false && (
                         <View style={s.coverWrap}>
                             <TouchableOpacity
                                 style={[s.cover, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(180, coverShape) }]}
@@ -226,20 +235,25 @@ export default function PlaylistDetailScreen() {
                             >
                                 {cover
                                     ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                                    : <Text style={s.coverNote}>♪</Text>
+                                    : null
                                 }
                             </TouchableOpacity>
                         </View>
+                        )}
 
                         <View style={s.actionRow}>
+                            {ui.pd_play !== false && (
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
                             </TouchableOpacity>
+                            )}
+                            {ui.pd_shuffle !== false && (
                             <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
                                 <ShuffleIcon size={16} color={theme.accent} />
                                 <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
                             </TouchableOpacity>
+                            )}
                         </View>
 
                         <View style={s.titleRow}>
@@ -247,12 +261,14 @@ export default function PlaylistDetailScreen() {
                                 <Text style={[s.title, { color: base.text }]} numberOfLines={1}>{playlist.name}</Text>
                                 {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} tracks</Text>}
                             </View>
+                            {ui.pd_sort !== false && (
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
                             </TouchableOpacity>
+                            )}
                         </View>
 
-                        {showSort && (
+                        {showSort && ui.pd_sort !== false && (
                             <View style={s.sortRow}>
                                 {SORTS.map(opt => (
                                     <TouchableOpacity
@@ -304,10 +320,10 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
             <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => onPlay(item)} activeOpacity={0.7}>
                 {showSongCovers && (
-                    <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
-                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                            : null
                         }
                     </View>
                 )}

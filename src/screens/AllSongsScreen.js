@@ -46,7 +46,7 @@ export default function AllSongsScreen() {
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, ui } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -149,22 +149,30 @@ export default function AllSongsScreen() {
             {/* Same top row as the playlist screen and the player: EQ and
                 queue sit in the exact same top-right spot on every screen.
                 Title on the left where the back arrow would be. */}
-            <View style={s.topRow}>
-                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
+            <View style={[s.topRow, topBarColor && { backgroundColor: base.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: base.border }]}>
+                {ui.as_title !== false
+                    ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
+                    : <View style={{ flex: 1, height: 40 }} />}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
-                        <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
-                        <MenuBarsIcon size={20} color={theme.accent} />
-                    </TouchableOpacity>
+                    {ui.as_eq !== false && (
+                        <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                            <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
+                        </TouchableOpacity>
+                    )}
+                    {ui.as_queue !== false && (
+                        <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                            <MenuBarsIcon size={20} color={theme.accent} />
+                        </TouchableOpacity>
+                    )}
                 </View>
             </View>
 
             {/* Search with Sort right beside it; the sort choices open
                 underneath the search bar. */}
+            {(ui.as_search !== false || ui.as_sort !== false) && (
             <View style={s.searchBlock}>
                 <View style={s.searchRow}>
+                    {ui.as_search !== false ? (
                     <View style={{ flex: 1, justifyContent: 'center' }}>
                         <TextInput
                             style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
@@ -178,6 +186,8 @@ export default function AllSongsScreen() {
                             </TouchableOpacity>
                         )}
                     </View>
+                    ) : <View style={{ flex: 1 }} />}
+                    {ui.as_sort !== false && (
                     <TouchableOpacity
                         style={[s.sortBtn, { backgroundColor: showSort ? theme.accent : base.surface }]}
                         onPress={() => setShowSort(v => !v)}
@@ -185,8 +195,9 @@ export default function AllSongsScreen() {
                     >
                         <Text style={[s.sortBtnText, { color: showSort ? theme.onAccent : theme.accent }]} numberOfLines={1}>{sortLabel}</Text>
                     </TouchableOpacity>
+                    )}
                 </View>
-                {showSort && (
+                {showSort && ui.as_sort !== false && (
                     <View style={s.sortRow}>
                         {SORTS.map(opt => (
                             <TouchableOpacity
@@ -202,6 +213,7 @@ export default function AllSongsScreen() {
                     </View>
                 )}
             </View>
+            )}
 
             {allSongs.length === 0 ? (
                 <View style={s.empty}>
@@ -257,10 +269,10 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
             <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => onPlay(item)} activeOpacity={0.7}>
                 {showSongCovers && (
-                    <View style={[s.thumb, { backgroundColor: base.bg, borderRadius: squircle(42, coverShape) }]}>
+                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
-                            : <Text style={[s.thumbNote, { color: theme.accentDim }]}>♪</Text>
+                            : null
                         }
                     </View>
                 )}

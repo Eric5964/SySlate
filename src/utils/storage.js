@@ -210,43 +210,80 @@ const readBackup = async () => {
     try { return JSON.parse(await FileSystem.readAsStringAsync(BACKUP_PATH)); } catch { return null; }
 };
 
+// Playlist covers, playlist order and per-playlist sort were all saved under
+// the playlist's full file path. That path contains an app-container ID which
+// iOS changes whenever the app is reinstalled or updated (and with sideloading
+// it changes often), so after an update every saved cover, order and sort
+// was filed under a path that no longer existed. They are now saved relative
+// to the Documents folder ("doc:Name/") and turned back into the current full
+// path when read. Anything saved the old way is converted on the way in, so
+// existing covers, orders and sorts come back as long as the folder is still
+// in Documents.
+const docDir = () => FileSystem.documentDirectory || '';
+export const toStablePath = (p) => {
+    if (typeof p !== 'string' || p.startsWith('doc:')) return p;
+    if (!p.startsWith('file:') && !p.startsWith('/')) return p;      // not a path (e.g. the All Songs key)
+    const d = docDir();
+    if (d && p.startsWith(d)) return 'doc:' + p.slice(d.length);
+    const i = p.lastIndexOf('/Documents/');
+    return i >= 0 ? 'doc:' + p.slice(i + '/Documents/'.length) : p;
+};
+export const fromStablePath = (p) => (typeof p === 'string' && p.startsWith('doc:') && docDir()) ? docDir() + p.slice(4) : p;
+const stableMap = (map, valuesArePaths) => {
+    const out = {};
+    for (const [k, v] of Object.entries(map || {})) out[toStablePath(k)] = valuesArePaths ? toStablePath(v) : v;
+    return out;
+};
+const expandMap = (map, valuesArePaths) => {
+    const out = {};
+    for (const [k, v] of Object.entries(map || {})) out[fromStablePath(k)] = valuesArePaths ? fromStablePath(v) : v;
+    return out;
+};
+
 // Persisted playlist order — array of playlist paths, most-preferred first
 export const getPlaylistOrder = () => safe(async () => {
+    let raw = null;
     const v = await AsyncStorage.getItem('playlist_order');
-    if (v) return JSON.parse(v);
-    const backup = await readBackup();
-    if (backup?.playlist_order?.length) {
-        await AsyncStorage.setItem('playlist_order', JSON.stringify(backup.playlist_order));
-        return backup.playlist_order;
+    if (v) raw = JSON.parse(v);
+    else {
+        const backup = await readBackup();
+        if (backup?.playlist_order?.length) {
+            raw = backup.playlist_order;
+            await AsyncStorage.setItem('playlist_order', JSON.stringify(raw));
+        }
     }
-    return [];
+    return (raw || []).map(p => fromStablePath(toStablePath(p)));
 }, []);
-export const setPlaylistOrder = (order) => safe(async () => {
+export const setPlaylistOrder = (orderIn) => safe(async () => {
+    const order = (orderIn || []).map(toStablePath);
     await AsyncStorage.setItem('playlist_order', JSON.stringify(order));
     await writeBackup({ playlist_order: order });
 }, null);
 
 // Custom cover image per playlist, keyed by playlist path -> local image URI
-export const getPlaylistCovers = () => safe(async () => {
+// (both saved relative to Documents, see toStablePath above).
+const readCoverMap = async () => {
     const v = await AsyncStorage.getItem('playlist_covers');
-    if (v) return JSON.parse(v);
+    if (v) return stableMap(JSON.parse(v), true);
     const backup = await readBackup();
     if (backup?.playlist_covers && Object.keys(backup.playlist_covers).length) {
         await AsyncStorage.setItem('playlist_covers', JSON.stringify(backup.playlist_covers));
-        return backup.playlist_covers;
+        return stableMap(backup.playlist_covers, true);
     }
     return {};
-}, {});
+};
+export const getPlaylistCovers = () => safe(async () => expandMap(await readCoverMap(), true), {});
 export const setPlaylistCover = async (path, uri) => {
-    const covers = await getPlaylistCovers();
-    const previous = covers[path];
-    if (uri) covers[path] = uri; else delete covers[path];
+    const covers = await readCoverMap();
+    const key = toStablePath(path);
+    const previous = covers[key];
+    if (uri) covers[key] = toStablePath(uri); else delete covers[key];
     // A replaced or removed cover picture is deleted from storage so old
     // picks do not pile up (only ever touches files in our own .covers/).
-    if (previous && previous !== uri) deleteStoredImage(previous);
+    if (previous && previous !== covers[key]) deleteStoredImage(fromStablePath(previous));
     await safe(() => AsyncStorage.setItem('playlist_covers', JSON.stringify(covers)), null);
     await writeBackup({ playlist_covers: covers });
-    return covers;
+    return expandMap(covers, true);
 };
 
 // Wipes every playlist cover picture and puts the playlists back in
@@ -371,6 +408,26 @@ export const setDjDiscAuto = (v) => safe(() => AsyncStorage.setItem('dj_disc_aut
 // Only affects the Player screen; EQ and Queue stay reachable elsewhere.
 export const getPlayerBtn = (name) => safe(() => AsyncStorage.getItem(`player_btn_${name}`).then(v => v !== '0'), true);
 export const setPlayerBtn = (name, v) => safe(() => AsyncStorage.setItem(`player_btn_${name}`, v ? '1' : '0'), null);
+
+// Colored top bars on the three main screens (Playlists, All Songs, Settings).
+export const getTopBarColor = () => safe(() => AsyncStorage.getItem('top_bar_color').then(v => v !== 'false'), true);
+export const setTopBarColor = (v) => safe(() => AsyncStorage.setItem('top_bar_color', String(v)), null);
+// Playlist covers have their own shape and shadow, separate from song covers
+// and the Player cover.
+export const getPlaylistCoverShape = () => safe(() => AsyncStorage.getItem('playlist_cover_shape').then(v => v || 'rounded'), 'rounded');
+export const setPlaylistCoverShape = (v) => safe(() => AsyncStorage.setItem('playlist_cover_shape', v), null);
+export const getPlaylistCoverShadow = () => safe(() => AsyncStorage.getItem('playlist_cover_shadow').then(v => v !== 'false'), true);
+export const setPlaylistCoverShadow = (v) => safe(() => AsyncStorage.setItem('playlist_cover_shadow', String(v)), null);
+// A card behind each playlist (all layouts), and the arrow on the bar layouts.
+export const getPlaylistCards = () => safe(() => AsyncStorage.getItem('playlist_cards').then(v => v !== 'false'), true);
+export const setPlaylistCards = (v) => safe(() => AsyncStorage.setItem('playlist_cards', String(v)), null);
+export const getPlaylistArrow = () => safe(() => AsyncStorage.getItem('playlist_arrow').then(v => v !== 'false'), true);
+export const setPlaylistArrow = (v) => safe(() => AsyncStorage.setItem('playlist_arrow', String(v)), null);
+// Show or hide individual items on the Playlists, All Songs and Playlist
+// screens (stored as ui_<name>, '1' / '0', default on).
+export const UI_TOGGLE_NAMES = ['pl_title', 'pl_layout', 'pl_reload', 'as_title', 'as_search', 'as_sort', 'as_eq', 'as_queue', 'pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_sort'];
+export const getUiToggle = (name) => safe(() => AsyncStorage.getItem(`ui_${name}`).then(v => v !== '0'), true);
+export const setUiToggle = (name, v) => safe(() => AsyncStorage.setItem(`ui_${name}`, v ? '1' : '0'), null);
 export const getPlaybackRate = () => safe(() => AsyncStorage.getItem('playback_rate').then(v => { const n = v !== null ? parseFloat(v) : 1; return Number.isFinite(n) ? Math.max(0.25, Math.min(3, n)) : 1; }), 1);
 export const setPlaybackRateStored = (v) => safe(() => AsyncStorage.setItem('playback_rate', String(v)), null);
 
@@ -483,21 +540,24 @@ export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics
 // "some of this resets and some doesn't" better than "everything's equally
 // broken." Same backup pattern as the other two, applied here too.
 export const getPlaylistSort = (playlistPath) => safe(async () => {
+    let map = null;
     const all = await AsyncStorage.getItem('playlist_sort_orders');
-    if (all) return (JSON.parse(all)[playlistPath]) ?? 'alpha';
-    const backup = await readBackup();
-    if (backup?.playlist_sort_orders && Object.keys(backup.playlist_sort_orders).length) {
-        await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(backup.playlist_sort_orders));
-        return backup.playlist_sort_orders[playlistPath] ?? 'alpha';
+    if (all) map = JSON.parse(all);
+    else {
+        const backup = await readBackup();
+        if (backup?.playlist_sort_orders && Object.keys(backup.playlist_sort_orders).length) {
+            map = backup.playlist_sort_orders;
+            await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
+        }
     }
-    return 'alpha';
+    return stableMap(map || {})[toStablePath(playlistPath)] ?? 'alpha';
 }, 'alpha');
 
 export const setPlaylistSort = async (playlistPath, sortId) => {
     try {
         const all = await AsyncStorage.getItem('playlist_sort_orders');
-        const map = all ? JSON.parse(all) : {};
-        map[playlistPath] = sortId;
+        const map = stableMap(all ? JSON.parse(all) : {});
+        map[toStablePath(playlistPath)] = sortId;
         await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
         await writeBackup({ playlist_sort_orders: map });
     } catch { }
@@ -614,7 +674,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back'];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -647,7 +707,7 @@ export const importAllSettings = async (jsonString) => {
     const obj = JSON.parse(jsonString);
     if (!obj || typeof obj !== 'object') throw new Error('Not a settings object');
 
-    const ONE_ZERO_KEYS = new Set(['dj_disc', 'dj_disc_auto', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back']);
+    const ONE_ZERO_KEYS = new Set(['dj_disc', 'dj_disc_auto', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)]);
     const BOOL_KEYS = new Set([
         'crossfade_enabled', 'vol_norm', 'between_track_norm', 'silence_trim',
         'ramp_on_pause', 'show_play_count', 'show_song_covers',
@@ -655,6 +715,7 @@ export const importAllSettings = async (jsonString) => {
         'show_player_cover', 'bg_image_enabled',
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
+        'top_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -684,7 +745,7 @@ export const importAllSettings = async (jsonString) => {
     const STRING_KEYS = new Set([
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
-        'prev_button_mode', 'cover_shape', 'bg_image_uri',
+        'prev_button_mode', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
         'artist_display_join',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can

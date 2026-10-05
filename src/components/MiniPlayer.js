@@ -136,7 +136,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 <View style={[styles.art, { backgroundColor: base.surface, borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                     {artwork
                         ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                        : <Text style={{ fontSize: 18, color: theme.accentDim }}>♪</Text>
+                        : null
                     }
                 </View>
             )}

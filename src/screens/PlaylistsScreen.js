@@ -13,7 +13,7 @@ import {
     setPlaylistOrder,
     getPlaylistCovers, setPlaylistCover, persistCoverImage, shrinkOldPlaylistCovers,
 } from '../utils/storage';
-import BottomSheet from '../components/BottomSheet';
+import { COVER_SHADOW } from '../utils/shadow';
 import ScreenBackground from '../components/ScreenBackground';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -30,15 +30,40 @@ function cellSize(cols) {
 }
 const CELL_SIZES = { 2: cellSize(2), 3: cellSize(3) };
 
-// The 3-column layout's button: a 3 by 3 grid of dots, drawn instead of typed,
-// so it looks like the layout and stays the same height as the other icons.
-function DotsGridIcon({ color }) {
-    const dot = { width: 4, height: 4, borderRadius: 1, backgroundColor: color };
+// Layout buttons: every icon is drawn (not typed) inside the same 18 by 18
+// box, so they all look the same size and each one looks like its layout.
+const ICON_BOX = 18;
+function FormatIcon({ id, color }) {
+    const box = { width: ICON_BOX, height: ICON_BOX };
+    if (id === 'list') {
+        return (
+            <View style={[box, { justifyContent: 'space-between' }]}>
+                {[0, 1, 2].map(i => <View key={i} style={{ height: 4, borderRadius: 2, backgroundColor: color }} />)}
+            </View>
+        );
+    }
+    if (id === 'list_art') {
+        return (
+            <View style={[box, { justifyContent: 'space-between' }]}>
+                {[0, 1, 2].map(i => (
+                    <View key={i} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <View style={{ width: 5, height: 5, borderRadius: 1.5, backgroundColor: color }} />
+                        <View style={{ flex: 1, height: 3, marginLeft: 2, borderRadius: 1.5, backgroundColor: color }} />
+                    </View>
+                ))}
+            </View>
+        );
+    }
+    const n = id === 'grid2' ? 2 : 3;
+    const gap = n === 2 ? 2 : 2;
+    const cell = (ICON_BOX - gap * (n - 1)) / n;
     return (
-        <View style={{ width: 18, height: 18, justifyContent: 'space-between' }}>
-            {[0, 1, 2].map(r => (
+        <View style={[box, { justifyContent: 'space-between' }]}>
+            {Array.from({ length: n }).map((_, r) => (
                 <View key={r} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    {[0, 1, 2].map(c => <View key={c} style={dot} />)}
+                    {Array.from({ length: n }).map((__, c) => (
+                        <View key={c} style={{ width: cell, height: cell, borderRadius: n === 2 ? 2.5 : 1.5, backgroundColor: color }} />
+                    ))}
                 </View>
             ))}
         </View>
@@ -46,10 +71,10 @@ function DotsGridIcon({ color }) {
 }
 
 const FORMATS = [
-    { id: 'list', label: '☰', cols: 1 },
-    { id: 'list_art', label: '⊟', cols: 1 },
-    { id: 'grid2', label: '⊞', cols: 2 },
-    { id: 'grid3', label: '⋮⋮', cols: 3 },
+    { id: 'list', cols: 1 },
+    { id: 'list_art', cols: 1 },
+    { id: 'grid2', cols: 2 },
+    { id: 'grid3', cols: 3 },
 ];
 
 // Reordering needs each playlist's position on screen. The FlatList's own
@@ -71,36 +96,40 @@ function RowCell({ index, onLayout, style, children, ...rest }) {
 
 // Memoized so the hold/drag state living in the parent doesn't re-render
 // every visible row, only the one being held.
-const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, cover, base, coverShape, showTitle, showCount, isActive, isDragging, editing, anim, lift, onItemLayout, onPressIn, onPressOut, onPress }) {
-    // Edit mode: every playlist wiggles, like the iOS home screen (each one a
-    // little out of step with the others). The one being held stays still.
-    const jig = useRef(new Animated.Value(0)).current;
+const WIGGLE_MS = 300;       // one full back-and-forth
+const WIGGLE_STEPS = 16;
+const CARD_INSET = 3;        // how far a grid card reaches past its playlist
+const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, cover, base, shape, showTitle, showCount, cardOn, arrowOn, shadowOn, isActive, isDragging, editing, anim, lift, onItemLayout, onPressIn, onPressOut, onPress, onRemoveCover }) {
+    // Edit mode: every playlist wiggles, like the iOS home screen. The sway
+    // is a pure sine (same distance each way, smooth at both ends, no
+    // bounce), and each playlist starts at its own point in the cycle.
+    // `phase` runs 0 to 1 forever; `on` fades the wiggle in and out.
+    const phase = useRef(new Animated.Value(0)).current;
+    const on = useRef(new Animated.Value(0)).current;
     const jiggling = !!editing && !isActive;
     useEffect(() => {
         if (!jiggling) {
-            jig.stopAnimation();
-            Animated.timing(jig, { toValue: 0, duration: 90, useNativeDriver: true }).start();
+            Animated.timing(on, { toValue: 0, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(({ finished }) => { if (finished) phase.stopAnimation(); });
             return undefined;
         }
-        const leg = 105 + (index % 4) * 9;
-        jig.setValue(index % 2 ? -1 : 1);
-        const loop = Animated.loop(Animated.sequence([
-            Animated.timing(jig, { toValue: index % 2 ? 1 : -1, duration: leg, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-            Animated.timing(jig, { toValue: index % 2 ? -1 : 1, duration: leg, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        ]));
-        loop.start();
-        return () => loop.stop();
-    }, [jiggling, index, jig]);
-    const amp = format.startsWith('grid') ? (numCols === 3 ? 2.4 : 1.8) : 0.5;
-    const jigDeg = jig.interpolate({ inputRange: [-1, 1], outputRange: [`-${amp}deg`, `${amp}deg`] });
-    // Neutral placeholder instead of playlistColor()'s bright per-name
-    // palette — requested: the colorful boxes shown while covers load were
-    // distracting. Same surface tone the rest of the UI already uses.
+        phase.setValue(0);
+        Animated.loop(Animated.timing(phase, { toValue: 1, duration: WIGGLE_MS, easing: Easing.linear, useNativeDriver: true })).start();
+        Animated.timing(on, { toValue: 1, duration: 140, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        return () => { phase.stopAnimation(); };
+    }, [jiggling, phase, on]);
+    const amp = format.startsWith('grid') ? (numCols === 3 ? 1.5 : 1.1) : 0.3;
+    const offset = ((index * 37) % 100) / 100;   // each playlist starts at a different point
+    const sway = useMemo(() => phase.interpolate({
+        inputRange: Array.from({ length: WIGGLE_STEPS + 1 }, (_, k) => k / WIGGLE_STEPS),
+        outputRange: Array.from({ length: WIGGLE_STEPS + 1 }, (_, k) => Math.sin(2 * Math.PI * (k / WIGGLE_STEPS + offset))),
+    }), [phase, offset]);
+    const jigDeg = useMemo(() => Animated.multiply(sway, on).interpolate({ inputRange: [-1, 1], outputRange: [`-${amp}deg`, `${amp}deg`] }), [sway, on, amp]);
+    // Blank placeholder in the base color (no letters, no bright colors).
     const bg = base.surface;
 
-    const renderArt = (size, fontSize) => cover
+    const art = cover
         ? <Image source={{ uri: cover }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-        : <Text style={{ fontSize, color: 'rgba(255,255,255,0.4)' }}>♪</Text>;
+        : null;
 
     const wrapStyle = [
         { transform: [...anim.getTranslateTransform(), { scale: isActive ? lift : 1 }, { rotate: jigDeg }] },
@@ -111,17 +140,41 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
         onPressOut: () => onPressOut(item, index),
         onPress: () => onPress(item, index),
     };
+    const hasText = showTitle !== false || showCount !== false;
+    // Small "-" while rearranging: asks first, then removes this playlist's cover picture.
+    const minus = (editing && cover && onRemoveCover) ? (
+        <Pressable
+            onPressIn={() => onRemoveCover(item, true)}
+            onPress={() => onRemoveCover(item, false)}
+            hitSlop={8}
+            style={[s.minus, { backgroundColor: base.surface, borderColor: base.border }]}
+        >
+            <View style={[s.minusBar, { backgroundColor: base.text }]} />
+        </Pressable>
+    ) : null;
 
     if (format.startsWith('grid')) {
         const size = CELL_SIZES[numCols];
+        const r = squircle(size, shape);
         return (
             <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
                 <Pressable
                     style={({ pressed }) => [s.gridItem, { width: size, margin: CELL_MARGIN, opacity: pressed && !isActive ? 0.75 : 1 }]}
                     {...handlers}
                 >
-                    <View style={[s.gridArt, { width: size, height: size, backgroundColor: bg, borderRadius: squircle(size, coverShape) }]}>
-                        {renderArt(numCols === 3 ? 28 : 40, numCols === 3 ? 28 : 40)}
+                    {cardOn && (
+                        <View
+                            pointerEvents="none"
+                            style={[
+                                s.card,
+                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -CARD_INSET, backgroundColor: base.surface, borderRadius: squircle(size + CARD_INSET * 2, shape) },
+                                shadowOn && COVER_SHADOW,
+                            ]}
+                        />
+                    )}
+                    <View style={[{ width: size, height: size, marginBottom: hasText ? 8 : 0, borderRadius: r, backgroundColor: bg }, shadowOn && COVER_SHADOW]}>
+                        <View style={[s.gridArt, { width: size, height: size, borderRadius: r }]}>{art}</View>
+                        {minus}
                     </View>
                     {showTitle !== false && <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>}
                     {showCount !== false && <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
@@ -131,23 +184,27 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
     }
     return (
         <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
-            <Pressable style={({ pressed }) => [s.row, { backgroundColor: base.surface, opacity: pressed && !isActive ? 0.75 : 1 }]} {...handlers}>
+            <Pressable
+                style={({ pressed }) => [s.row, { backgroundColor: cardOn ? base.surface : 'transparent' }, cardOn && shadowOn && COVER_SHADOW, { opacity: pressed && !isActive ? 0.75 : 1 }]}
+                {...handlers}
+            >
                 {format === 'list_art' && (
-                    <View style={[s.listArt, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(50, coverShape) }]}>
-                        {renderArt(22, 22)}
+                    <View style={[s.listArt, { backgroundColor: bg, borderRadius: squircle(50, shape) }, shadowOn && COVER_SHADOW]}>
+                        <View style={{ width: 50, height: 50, overflow: 'hidden', borderRadius: squircle(50, shape) }}>{art}</View>
                     </View>
                 )}
                 <View style={{ flex: 1 }}>
                     {showTitle !== false && <Text style={[s.rowName, { color: base.text }]}>{item.name}</Text>}
                     {showCount !== false && <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
                 </View>
-                <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>
+                {format === 'list_art' && minus ? <View style={{ marginLeft: 8 }}>{minus}</View> : (arrowOn && <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>)}
             </Pressable>
         </Animated.View>
     );
 });
 
-const LIFT_MS = 500;        // iOS touch-and-hold: the playlist lifts. Let go = menu, move = drag
+const COVER_MS = 350;       // hold this long and let go: the cover picker opens
+const LIFT_MS = 500;        // hold this long: the playlist can be moved (iOS touch-and-hold)
 const EDIT_LIFT_MS = 120;   // in edit mode a playlist can be grabbed almost at once
 const EMPTY_HOLD_MS = 600;  // hold empty space to enter edit mode
 const DRAG_SLOP = 6;        // points the finger must move after the lift to start a drag
@@ -157,7 +214,7 @@ const MAX_SCROLL = 14;      // px per frame at the very edge
 export default function PlaylistsScreen() {
     const { playlists, covers: initialCovers, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
-    const { coverShape, showPlaylistTrackCount, showPlaylistTitles } = usePreferences();
+    const { playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, topBarColor, ui, showPlaylistTrackCount, showPlaylistTitles } = usePreferences();
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
     // Real gap found here: this always started at {} and waited on its own
@@ -170,9 +227,6 @@ export default function PlaylistsScreen() {
     // fresh afterward (a playlist-covers change elsewhere, or refocusing
     // this screen) exactly as before.
     const [covers, setCovers] = useState(initialCovers || {});
-    const [menuFor, setMenuFor] = useState(null);
-    const [displayedMenuFor, setDisplayedMenuFor] = useState(null);
-    useEffect(() => { if (menuFor) setDisplayedMenuFor(menuFor); }, [menuFor]);
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
@@ -214,8 +268,7 @@ export default function PlaylistsScreen() {
 
     const isGrid = format.startsWith('grid');
     const numCols = FORMATS.find(f => f.id === format)?.cols ?? 1;
-    const fmtIcon = FORMATS.find(f => f.id === format)?.label ?? '☰';
-
+    
     // Pass the cover URI we already have in memory (from this screen's own
     // grid thumbnails) straight through as a nav param — see
     // PlaylistDetailScreen's own comment on why it used the initial state
@@ -238,7 +291,7 @@ export default function PlaylistsScreen() {
     const [editMode, setEditMode] = useState(false);
     const editRef = useRef(false);
     const pressingRef = useRef(false);
-    const emptyHold = useRef({ timer: null, x: 0, y: 0 });
+    const emptyHold = useRef({ timer: null, x: 0, y: 0, moved: false, onItem: false });
     const enterEdit = useCallback(() => { editRef.current = true; setEditMode(true); }, []);
     const exitEdit = useCallback(() => { editRef.current = false; setEditMode(false); }, []);
     const [activeIndex, setActiveIndex] = useState(-1);
@@ -253,7 +306,7 @@ export default function PlaylistsScreen() {
     const scrollY = useRef(0);
     const viewH = useRef(0);
     const contentH = useRef(0);
-    const timers = useRef({ lift: null, pick: null, scroll: null, reset: null });
+    const timers = useRef({ cover: null, lift: null, pick: null, scroll: null, reset: null });
     const flags = useRef({ lifted: false, picked: false, captured: false, dropping: false });
     const drag = useRef({ active: false, from: -1, target: -1, slots: [], scroll0: 0, listTop: 0, fingerVY: 0, dx: 0, dy: 0, preDx: 0, preDy: 0 });
     const playlistsRef = useRef(playlists);
@@ -279,8 +332,8 @@ export default function PlaylistsScreen() {
     };
 
     const clearTimers = () => {
-        clearTimeout(timers.current.lift); clearTimeout(timers.current.pick);
-        timers.current.lift = null; timers.current.pick = null;
+        clearTimeout(timers.current.cover); clearTimeout(timers.current.lift); clearTimeout(timers.current.pick);
+        timers.current.cover = null; timers.current.lift = null; timers.current.pick = null;
     };
     const stopAutoScroll = () => { clearInterval(timers.current.scroll); timers.current.scroll = null; };
 
@@ -327,14 +380,20 @@ export default function PlaylistsScreen() {
         updateTarget();
     };
 
-    // Called once the hold is long enough (like iOS: the item lifts). From
-    // here a finger movement starts a drag; letting go in place opens the menu.
-    const liftUp = (index) => {
+    // First stage of a hold (a bit under half a second): the playlist lifts.
+    // Letting go now opens the cover picker.
+    const coverReady = (index) => {
         flags.current.lifted = true;
         setActiveIndex(index);
         Animated.spring(lift, { toValue: 1.05, friction: 8, tension: 170, useNativeDriver: true }).start();
+    };
+    // Second stage (half a second, like iOS): the playlist can be moved. From
+    // here a finger movement starts a drag; letting go in place still opens
+    // the cover picker.
+    const liftUp = (index) => {
+        if (!flags.current.lifted) coverReady(index);
         const slots = getSlots();
-        if (!slots || slots.length < 2) return;   // nothing to reorder: stays a menu hold
+        if (!slots || slots.length < 2) return;   // nothing to reorder: stays a cover hold
         const d = drag.current;
         d.active = true; d.from = index; d.target = index; d.slots = slots;
         d.scroll0 = scrollY.current; d.dx = 0; d.dy = 0; d.preDx = 0; d.preDy = 0; d.fingerVY = -1;
@@ -403,8 +462,10 @@ export default function PlaylistsScreen() {
         if (drag.current.active || flags.current.dropping) return;
         flags.current = { lifted: false, picked: false, captured: false, dropping: false };
         pressingRef.current = true;
-        // iOS: a touch-and-hold of about half a second lifts the item (in edit
-        // mode it takes a tenth of a second).
+        emptyHold.current.onItem = true;
+        // The cover picker is ready a little sooner than moving is. In edit
+        // mode both happen after a tenth of a second.
+        if (!editRef.current) timers.current.cover = setTimeout(() => latest.current.coverReady(index), COVER_MS);
         timers.current.lift = setTimeout(() => latest.current.liftUp(index), editRef.current ? EDIT_LIFT_MS : LIFT_MS);
     }, []);
 
@@ -423,13 +484,13 @@ export default function PlaylistsScreen() {
         if (flags.current.dropping) return;
         if (flags.current.captured) { latest.current.endDrag(); return; }
         if (flags.current.lifted) {
-            // Held, then let go without dragging: the menu (not in edit mode).
+            // Held, then let go without dragging: pick a new cover.
             clearTimeout(timers.current.reset);
             latest.current.resetHold();
-            setMenuFor(item);   // also in edit mode: tap or short hold opens the cover menu
+            latest.current.changeCover(item);
             return;
         }
-        if (editRef.current) { setMenuFor(item); return; }   // edit mode: a tap opens the cover menu
+        if (editRef.current) { latest.current.changeCover(item); return; }   // edit mode: a tap picks a cover
         openPlaylistRef.current(item);
     }, []);
 
@@ -477,26 +538,22 @@ export default function PlaylistsScreen() {
         setPlaylistOrder(newList.map(p => p.path));
         reorderPlaylists(newList);
     };
-    latest.current = { liftUp, endDrag, resetHold, applyDrag };
 
-    const moveItem = async (item, action) => {
-        const list = [...playlists];
-        const idx = list.findIndex(p => p.path === item.path);
-        if (idx === -1) return;
-        list.splice(idx, 1);
-        let target;
-        if (action === 'top') target = 0;
-        else if (action === 'bottom') target = list.length;
-        else if (action === 'up') target = Math.max(0, idx - 1);
-        else if (action === 'down') target = Math.min(list.length, idx + 1);
-        list.splice(target, 0, item);
-        setMenuFor(null);
-        await persistOrder(list);
+    // Asks before removing a cover. The first call (press down) only marks the
+    // touch as being on a playlist, so it is not read as a tap on empty space.
+    const removeCoverAsk = (item, down) => {
+        if (down) { emptyHold.current.onItem = true; return; }
+        Alert.alert(
+            'Remove cover picture?',
+            `"${item.name}" will go back to a blank cover.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Yes, remove', style: 'destructive', onPress: async () => { setCovers(await setPlaylistCover(item.path, null)); } },
+            ]
+        );
     };
 
     const changeCover = async (item) => {
-        setMenuFor(null);
-        await new Promise(r => setTimeout(r, 320));
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
             Alert.alert('Permission needed', 'Allow Photos access in Settings to set a playlist cover.');
@@ -527,11 +584,7 @@ export default function PlaylistsScreen() {
         setCovers(next);
     };
 
-    const removeCover = async (item) => {
-        setMenuFor(null);
-        const next = await setPlaylistCover(item.path, null);
-        setCovers(next);
-    };
+    latest.current = { coverReady, liftUp, endDrag, resetHold, applyDrag, changeCover };
 
     return (
         <ScreenBackground style={s.container}>
@@ -539,22 +592,26 @@ export default function PlaylistsScreen() {
             {/* Same top row as All Songs and the Player: title where the back
                 arrow sits, buttons in the exact same top-right spots as EQ
                 and queue (same sizes, same gap, same top padding). */}
-            <View style={s.header}>
-                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
+            <View style={[s.header, topBarColor && { backgroundColor: base.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: base.border }]}>
+                {ui.pl_title !== false
+                    ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
+                    : <View style={{ flex: 1, height: 40 }} />}
                 {editMode ? (
                     <TouchableOpacity onPress={exitEdit} style={s.doneBtn} hitSlop={HIT}>
                         <Text style={[s.doneText, { color: theme.accent }]}>Done</Text>
                     </TouchableOpacity>
                 ) : (
                     <View style={{ flexDirection: 'row', gap: 6 }}>
-                        <TouchableOpacity onPress={cycleFormat} style={s.btn} hitSlop={HIT}>
-                            {format === 'grid3'
-                                ? <DotsGridIcon color={theme.accent} />
-                                : <Text style={[s.btnText, { color: theme.accent }]}>{fmtIcon}</Text>}
-                        </TouchableOpacity>
-                        <TouchableOpacity onPress={reload} style={s.btn} hitSlop={HIT}>
-                            <Text style={[s.btnText, { color: theme.accent }]}>↻</Text>
-                        </TouchableOpacity>
+                        {ui.pl_layout !== false && (
+                            <TouchableOpacity onPress={cycleFormat} style={s.btn} hitSlop={HIT}>
+                                <FormatIcon id={format} color={theme.accent} />
+                            </TouchableOpacity>
+                        )}
+                        {ui.pl_reload !== false && (
+                            <TouchableOpacity onPress={reload} style={s.btn} hitSlop={HIT}>
+                                <Text style={[s.btnText, { color: theme.accent }]}>↻</Text>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 )}
             </View>
@@ -572,8 +629,10 @@ export default function PlaylistsScreen() {
                         onTouchStart={(e) => {
                             const eh = emptyHold.current;
                             clearTimeout(eh.timer);
-                            if (editRef.current || e.nativeEvent.touches.length > 1) return;
+                            eh.moved = false;
+                            if (e.nativeEvent.touches.length > 1) return;
                             eh.x = e.nativeEvent.pageX; eh.y = e.nativeEvent.pageY;
+                            if (editRef.current) return;
                             // A touch on a playlist is handled by the playlist itself; this
                             // only fires when the finger is on empty space.
                             eh.timer = setTimeout(() => {
@@ -582,10 +641,19 @@ export default function PlaylistsScreen() {
                         }}
                         onTouchMove={(e) => {
                             const eh = emptyHold.current;
-                            if (eh.timer && Math.hypot(e.nativeEvent.pageX - eh.x, e.nativeEvent.pageY - eh.y) > 10) { clearTimeout(eh.timer); eh.timer = null; }
+                            if (Math.hypot(e.nativeEvent.pageX - eh.x, e.nativeEvent.pageY - eh.y) > 10) {
+                                eh.moved = true;
+                                if (eh.timer) { clearTimeout(eh.timer); eh.timer = null; }
+                            }
                         }}
-                        onTouchEnd={() => { clearTimeout(emptyHold.current.timer); }}
-                        onTouchCancel={() => { clearTimeout(emptyHold.current.timer); }}
+                        onTouchEnd={() => {
+                            const eh = emptyHold.current;
+                            clearTimeout(eh.timer);
+                            // Edit mode: a plain tap on empty space is "Done".
+                            if (editRef.current && !eh.moved && !eh.onItem && !drag.current.active && !flags.current.dropping) exitEdit();
+                            eh.onItem = false;
+                        }}
+                        onTouchCancel={() => { clearTimeout(emptyHold.current.timer); emptyHold.current.onItem = false; }}
                         {...pan.panHandlers}
                     >
                     <DragCtx.Provider value={ctxValue}>
@@ -618,7 +686,10 @@ export default function PlaylistsScreen() {
                                 numCols={numCols}
                                 cover={covers[item.path]}
                                 base={base}
-                                coverShape={coverShape}
+                                shape={playlistCoverShape}
+                                cardOn={playlistCards}
+                                arrowOn={playlistArrow}
+                                shadowOn={playlistCoverShadow}
                                 showTitle={showPlaylistTitles}
                                 showCount={showPlaylistTrackCount}
                                 isActive={index === activeIndex}
@@ -630,6 +701,7 @@ export default function PlaylistsScreen() {
                                 onPressIn={pressIn}
                                 onPressOut={pressOut}
                                 onPress={pressRelease}
+                                onRemoveCover={removeCoverAsk}
                             />
                         )}
                     />
@@ -638,30 +710,7 @@ export default function PlaylistsScreen() {
                 </Animated.View>
             )}
 
-            <BottomSheet visible={!!menuFor} onClose={() => setMenuFor(null)}>
-                {displayedMenuFor && (
-                    <>
-                        <Text style={[s.menuTitle, { color: base.textFaint }]} numberOfLines={1}>{displayedMenuFor.name}</Text>
-                        <MenuRow label="Change Cover Image" onPress={() => changeCover(displayedMenuFor)} />
-                        {covers[displayedMenuFor.path] && <MenuRow label="Remove Cover Image" onPress={() => removeCover(displayedMenuFor)} />}
-                        <MenuRow label="Move to Top" onPress={() => moveItem(displayedMenuFor, 'top')} />
-                        <MenuRow label="Move Up" onPress={() => moveItem(displayedMenuFor, 'up')} />
-                        <MenuRow label="Move Down" onPress={() => moveItem(displayedMenuFor, 'down')} />
-                        <MenuRow label="Move to Bottom" onPress={() => moveItem(displayedMenuFor, 'bottom')} />
-                        <MenuRow label="Cancel" onPress={() => setMenuFor(null)} muted />
-                    </>
-                )}
-            </BottomSheet>
         </ScreenBackground>
-    );
-}
-
-function MenuRow({ label, onPress, muted }) {
-    const { base } = useTheme();
-    return (
-        <TouchableOpacity style={s.menuRow} onPress={onPress}>
-            <Text style={[s.menuRowText, { color: base.text }, muted && { color: base.textFaint }]}>{label}</Text>
-        </TouchableOpacity>
     );
 }
 
@@ -685,7 +734,7 @@ const s = StyleSheet.create({
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },
     row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 14, marginVertical: 3, paddingVertical: 16, paddingHorizontal: 16, backgroundColor: '#0f0f0f', borderRadius: 14, minHeight: 68 },
-    listArt: { width: 50, height: 50, marginRight: 14, justifyContent: 'center', alignItems: 'center' },
+    listArt: { width: 50, height: 50, marginRight: 14 },
     rowName: { color: '#e5e5e5', fontSize: 16, fontWeight: '500' },
     rowCount: { color: '#555', fontSize: 12, marginTop: 3 },
     arrow: { color: '#333', fontSize: 22 },
@@ -698,7 +747,10 @@ const s = StyleSheet.create({
     // No padding/background here now — the cell is just a layout box, the
     // cover image is the only visible surface.
     gridItem: { borderRadius: 14, alignItems: 'center' },
-    gridArt: { justifyContent: 'center', alignItems: 'center', marginBottom: 8, overflow: 'hidden' },
+    gridArt: { justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+    card: { position: 'absolute' },
+    minus: { position: 'absolute', top: -6, right: -6, width: 24, height: 24, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center', zIndex: 5 },
+    minusBar: { width: 12, height: 2.5, borderRadius: 1.25 },
     gridName: { color: '#e5e5e5', fontSize: 13, fontWeight: '600', textAlign: 'center' },
     gridCount: { color: '#555', fontSize: 11, marginTop: 3 },
     menuTitle: { color: '#555', fontSize: 13, fontWeight: '600', textAlign: 'center', marginBottom: 8, paddingHorizontal: 20 },

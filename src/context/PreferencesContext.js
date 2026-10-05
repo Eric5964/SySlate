@@ -28,6 +28,12 @@ import {
     getShowPlaylistTitles, setShowPlaylistTitles as persistShowPlaylistTitles,
     getLyricsScrollLocked, setLyricsScrollLocked as persistLyricsScrollLocked,
     getArtistDisplayJoin, setArtistDisplayJoin as persistArtistDisplayJoin,
+    getTopBarColor, setTopBarColor as persistTopBarColor,
+    getPlaylistCoverShape, setPlaylistCoverShape as persistPlaylistCoverShape,
+    getPlaylistCoverShadow, setPlaylistCoverShadow as persistPlaylistCoverShadow,
+    getPlaylistCards, setPlaylistCards as persistPlaylistCards,
+    getPlaylistArrow, setPlaylistArrow as persistPlaylistArrow,
+    getUiToggle, setUiToggle, UI_TOGGLE_NAMES,
 } from '../utils/storage';
 
 // Previously each screen (Settings, All Songs, Playlist Detail, Queue) kept
@@ -71,6 +77,12 @@ const Ctx = createContext({
     showPlaylistTitles: true, setShowPlaylistTitles: () => { },
     lyricsScrollLocked: false, setLyricsScrollLocked: () => { },
     artistDisplayJoin: 'comma', setArtistDisplayJoin: () => { },
+    topBarColor: true, setTopBarColor: () => { },
+    playlistCoverShape: 'rounded', setPlaylistCoverShape: () => { },
+    playlistCoverShadow: true, setPlaylistCoverShadow: () => { },
+    playlistCards: true, setPlaylistCards: () => { },
+    playlistArrow: true, setPlaylistArrow: () => { },
+    ui: {}, setUiShown: () => { },
 });
 
 export function PreferencesProvider({ children }) {
@@ -104,6 +116,18 @@ export function PreferencesProvider({ children }) {
     const [showPlaylistTitles, setShowPlaylistTitlesState] = useState(true);
     const [lyricsScrollLocked, setLyricsScrollLockedState] = useState(false);
     const [artistDisplayJoin, setArtistDisplayJoinState] = useState('comma');
+    const [topBarColor, setTopBarColorState] = useState(true);
+    const [playlistCoverShape, setPlaylistCoverShapeState] = useState('rounded');
+    const [playlistCoverShadow, setPlaylistCoverShadowState] = useState(true);
+    const [playlistCards, setPlaylistCardsState] = useState(true);
+    const [playlistArrow, setPlaylistArrowState] = useState(true);
+    // Show/hide switches for items on the Playlists, All Songs and Playlist
+    // screens. A missing name counts as shown.
+    const [ui, setUi] = useState({});
+    const setUiShown = useCallback((name, v) => {
+        setUi(prev => ({ ...prev, [name]: v }));
+        setUiToggle(name, v);
+    }, []);
 
     // Kept in sync so the AppState listener below (set up once, in the
     // mount-only effect right after this) always re-prefetches whatever
@@ -177,6 +201,12 @@ export function PreferencesProvider({ children }) {
         getShowPlaylistTitles().then(setShowPlaylistTitlesState);
         getLyricsScrollLocked().then(setLyricsScrollLockedState);
         getArtistDisplayJoin().then(setArtistDisplayJoinState);
+        getTopBarColor().then(setTopBarColorState);
+        getPlaylistCoverShape().then(setPlaylistCoverShapeState);
+        getPlaylistCoverShadow().then(setPlaylistCoverShadowState);
+        getPlaylistCards().then(setPlaylistCardsState);
+        getPlaylistArrow().then(setPlaylistArrowState);
+        UI_TOGGLE_NAMES.forEach(n => getUiToggle(n).then(v => setUi(prev => ({ ...prev, [n]: v }))));
         return () => appStateSub.remove();
     }, []);
 
@@ -304,6 +334,12 @@ export function PreferencesProvider({ children }) {
         persistArtistDisplayJoin(v);
     }, []);
 
+    const setTopBarColor = useCallback((v) => { setTopBarColorState(v); persistTopBarColor(v); }, []);
+    const setPlaylistCoverShape = useCallback((v) => { setPlaylistCoverShapeState(v); persistPlaylistCoverShape(v); }, []);
+    const setPlaylistCoverShadow = useCallback((v) => { setPlaylistCoverShadowState(v); persistPlaylistCoverShadow(v); }, []);
+    const setPlaylistCards = useCallback((v) => { setPlaylistCardsState(v); persistPlaylistCards(v); }, []);
+    const setPlaylistArrow = useCallback((v) => { setPlaylistArrowState(v); persistPlaylistArrow(v); }, []);
+
     // This context now has more consumers than just SettingsScreen (art
     // rendering across MiniPlayer, playlists, queue, etc. all read
     // coverShape) — without this useMemo, every one of those re-renders on
@@ -336,12 +372,19 @@ export function PreferencesProvider({ children }) {
         showPlaylistTitles, setShowPlaylistTitles,
         lyricsScrollLocked, setLyricsScrollLocked,
         artistDisplayJoin, setArtistDisplayJoin,
+        topBarColor, setTopBarColor,
+        playlistCoverShape, setPlaylistCoverShape,
+        playlistCoverShadow, setPlaylistCoverShadow,
+        playlistCards, setPlaylistCards,
+        playlistArrow, setPlaylistArrow,
+        ui, setUiShown,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,
         showPlaylistTrackCount, showPlaylistTitles, lyricsScrollLocked, artistDisplayJoin,
+        topBarColor, playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, ui,
     ]);
 
     return (

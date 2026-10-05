@@ -31,7 +31,7 @@ let savedDisc = null;
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
-export default function DJDisc({ size, artwork, accent, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching }) {
+export default function DJDisc({ size, artwork, accent, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
     const startAt = useRef(null);
     if (startAt.current === null) {
         let sp = 0, us = 0;
@@ -43,6 +43,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
         startAt.current = { sp, us };
     }
     const spin = useRef(new Animated.Value(startAt.current.sp)).current;
+    const lag = useRef(new Animated.Value(0)).current;
     const userRot = useRef(new Animated.Value(startAt.current.us)).current;
     const userRotVal = useRef(startAt.current.us);
     const dim = useRef(new Animated.Value(0)).current;
@@ -76,24 +77,36 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
     // time), so the record winds up and down smoothly. The ease length is the
     // length of the audio ramp, so the disc is at full speed exactly when the
     // sound is, and stopped exactly when the fade-out ends.
+    // How it is built: `spin` turns forever at idle speed, looped by the
+    // native side itself (one turn per loop), so nothing on the JS side has
+    // to restart it (the old version queued a 1000-turn animation, which
+    // made a huge frame table and caused a hitch when winding up). Winding
+    // up, slowing down and letting go of a scratch move a second value,
+    // `lag`, which is added to the turn. Both run at once, so nothing is
+    // handed over between animations and there is no stutter.
     const spinToken = useRef(0);
     const spinState = useRef('stopped');
-    const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); }, [spin]);
+    const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); lag.stopAnimation(); }, [spin, lag]);
+    const loopFrom = useCallback((v) => {
+        Animated.loop(Animated.timing(spin, { toValue: v + 1, duration: SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true })).start();
+    }, [spin]);
     const startSpin = useCallback((rampMs) => {
         const token = ++spinToken.current;
         spinState.current = 'spinning';
         spin.stopAnimation((v) => {
             if (token !== spinToken.current) return;
-            const seq = [];
-            let base = v;
-            if (rampMs > 0) {
-                base = v + 0.5 * (rampMs / SPIN_TURN_MS);
-                seq.push(Animated.timing(spin, { toValue: base, duration: rampMs, easing: Easing.in(Easing.quad), useNativeDriver: true }));
-            }
-            seq.push(Animated.timing(spin, { toValue: base + 1000, duration: 1000 * SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true }));
-            Animated.sequence(seq).start();
+            lag.stopAnimation((l) => {
+                if (token !== spinToken.current) return;
+                loopFrom(v);
+                if (rampMs > 0) {
+                    // Quadratic wind-up = the full-speed turn minus a gap that
+                    // closes with an out-quad ease; the gap ends at half a
+                    // turn-time of the ramp.
+                    Animated.timing(lag, { toValue: l - 0.5 * (rampMs / SPIN_TURN_MS), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                }
+            });
         });
-    }, [spin]);
+    }, [spin, lag, loopFrom]);
     // Letting go: the disc keeps the speed the finger left it at and settles
     // to the idle speed over a few tens of ms (the sound does the same), so
     // it never stops dead and then winds back up.
@@ -102,23 +115,19 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
         spinState.current = 'spinning';
         spin.stopAnimation((v) => {
             if (token !== spinToken.current) return;
-            const idle = 1000 / SPIN_TURN_MS;                 // turns per second
-            const v0 = (rate * RPM_DEG_PER_SEC) / 360;        // turns per second
-            const T = 0.08;
-            const D = 0.5 * (v0 + idle) * T;
-            const seq = [];
-            let base = v;
-            if (Math.abs(D) > 1e-5) {
-                base = v + D;
-                seq.push(Animated.timing(spin, {
-                    toValue: base, duration: T * 1000, useNativeDriver: true,
-                    easing: (u) => (v0 * T * u + ((idle - v0) * T / 2) * u * u) / D,
-                }));
-            }
-            seq.push(Animated.timing(spin, { toValue: base + 1000, duration: 1000 * SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true }));
-            Animated.sequence(seq).start();
+            lag.stopAnimation((l) => {
+                if (token !== spinToken.current) return;
+                const idle = 1000 / SPIN_TURN_MS;                 // turns per second
+                const v0 = (rate * RPM_DEG_PER_SEC) / 360;        // turns per second
+                const T = 0.08;
+                loopFrom(v);
+                const A = (v0 - idle) * T / 2;
+                if (Math.abs(A) > 1e-5) {
+                    Animated.timing(lag, { toValue: l + A, duration: T * 1000, easing: (u) => 2 * u - u * u, useNativeDriver: true }).start();
+                }
+            });
         });
-    }, [spin]);
+    }, [spin, lag, loopFrom]);
     const slowSpin = useCallback((rampMs) => {
         if (rampMs <= 0) { stopSpin(); return; }
         const token = ++spinToken.current;
@@ -145,7 +154,10 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             else if (spinState.current !== 'spinning') {
                 // Give the ramp announcement (below) a moment to arrive first,
                 // so the wind-up can match the audio fade-in exactly.
-                startTimer.current = setTimeout(() => { if (spinState.current !== 'spinning') startSpin(600); }, 160);
+                // The disc never winds up on its own: if music is already
+                // playing it turns at full speed at once. A real play fade-in
+                // announces itself below and gets its own wind-up.
+                startTimer.current = setTimeout(() => { if (spinState.current !== 'spinning') startSpin(0); }, 160);
             }
         } else if (spinState.current === 'spinning') {
             slowSpin(500);
@@ -154,8 +166,8 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
     }, [active, isPlaying, startSpin, slowSpin, stopSpin]);
     useEffect(() => () => {
         const wasSpinning = spinState.current === 'spinning';
-        spin.stopAnimation((v) => { savedDisc = { spin: v, user: userRotVal.current, at: Date.now(), spinning: wasSpinning }; });
-    }, [spin]);
+        spin.stopAnimation((v) => { lag.stopAnimation((l) => { savedDisc = { spin: v + l, user: userRotVal.current, at: Date.now(), spinning: wasSpinning }; }); });
+    }, [spin, lag]);
     useEffect(() => stopSpin, [stopSpin]);
 
     // Play / pause ramps announce themselves, so the disc follows them.
@@ -199,6 +211,17 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             if (wasScratching) releaseSpin(rel); else startSpin(450);
         }
     }, [startSpin, releaseSpin]);
+
+    // The song changing mid-scratch ends the scratch right away. The finger
+    // may still be on the disc, but it does nothing until it is lifted and
+    // put down again (it used to keep scratching the old song underneath
+    // the new one).
+    const lastTrackKey = useRef(trackKey);
+    useEffect(() => {
+        if (lastTrackKey.current === trackKey) return;
+        lastTrackKey.current = trackKey;
+        if (draggingRef.current || scratchingRef.current) { finishScratch(); draggingRef.current = false; }
+    }, [trackKey, finishScratch]);
 
     // Leaving the disc view (or the song changing) mid-scratch ends it.
     useEffect(() => {
@@ -282,7 +305,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
 
     const R = size;
     const labelD = R * 0.4;
-    const spinDeg = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+    const spinDeg = Animated.add(spin, lag).interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
     const userDeg = userRot.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] });
     const rings = [0.97, 0.91, 0.85, 0.79, 0.73, 0.67, 0.61];
 
