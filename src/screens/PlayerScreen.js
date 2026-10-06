@@ -19,7 +19,7 @@ import ScreenBackground from '../components/ScreenBackground';
 import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
-import { squircle } from '../utils/squircle';
+import { squircle, cardRadius } from '../utils/squircle';
 import { getPlayCounts } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
@@ -100,7 +100,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsMode, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, djDisc, djDiscAuto, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, autoShowCover, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -440,11 +440,11 @@ export default function PlayerScreen() {
     // cover but makes the toggle available. Either way this resets on
     // every track change, not just once — a manual toggle from a previous
     // song shouldn't carry over to the next one.
-    const initialLyricsPeek = lyricsMode !== 'off' ? peekLyrics(currentTrack?.id) : undefined;
+    const initialLyricsPeek = peekLyrics(currentTrack?.id);
     const [lyricsData, setLyricsData] = useState(() => (initialLyricsPeek !== undefined ? initialLyricsPeek : null));
-    const [showingLyrics, setShowingLyrics] = useState(() => lyricsMode === 'auto' && !!initialLyricsPeek);
+    const [showingLyrics, setShowingLyrics] = useState(() => autoShowLyrics && !!initialLyricsPeek);
     useEffect(() => {
-        if (lyricsMode === 'off' || !currentTrack?.id) {
+        if (!currentTrack?.id) {
             setLyricsData(null);
             setShowingLyrics(false);
             return;
@@ -459,17 +459,17 @@ export default function PlayerScreen() {
         const cached = peekLyrics(currentTrack.id);
         if (cached !== undefined) {
             setLyricsData(cached);
-            setShowingLyrics(lyricsMode === 'auto' && !!cached);
+            setShowingLyrics(autoShowLyrics && !!cached);
             return;
         }
         let cancelled = false;
         getLyrics(currentTrack).then(data => {
             if (cancelled) return;
             setLyricsData(data);
-            setShowingLyrics(lyricsMode === 'auto' && !!data);
+            setShowingLyrics(autoShowLyrics && !!data);
         });
         return () => { cancelled = true; };
-    }, [currentTrack?.id, lyricsMode]);
+    }, [currentTrack?.id, autoShowLyrics]);
 
     // Only polls directly when useProgress doesn't yet have real data to
     // offer — either genuinely paused (position isn't moving on its own, so
@@ -551,22 +551,25 @@ export default function PlayerScreen() {
     // setting is on) -> cover. At most one of the two is showing.
     // Starts already on the disc when Auto Disc is on, so reopening the Player
     // does not show the cover for a moment and then fade over to the disc.
-    const [showingDisc, setShowingDisc] = useState(() => !!(djDisc && djDiscAuto));
+    const [showingDisc, setShowingDisc] = useState(() => !!(autoShowDisc && !autoShowLyrics));
     const discFade = useRef(new Animated.Value(showingDisc ? 1 : 0)).current;
     // True from the moment the disc is chosen until it has completely faded
     // out again: the disc keeps spinning for that whole time, so switching
     // away looks like it is still playing in the background.
-    const [discActive, setDiscActive] = useState(() => !!(djDisc && djDiscAuto));
+    const [discActive, setDiscActive] = useState(() => !!(autoShowDisc && !autoShowLyrics));
     useEffect(() => { if (showingDisc) setDiscActive(true); }, [showingDisc]);
-    useEffect(() => { if (!djDisc && showingDisc) setShowingDisc(false); }, [djDisc, showingDisc]);
     // Auto Disc: every new song opens on the disc (like Auto-show lyrics does
     // for lyrics; the two settings can never both be on). Otherwise each new
     // song goes back to the cover unless the lyrics view claims it.
+    // A new song opens on lyrics if Auto Show Lyrics is on and the song has
+    // them, else on the disc if Auto Show Disc is on, else the cover (also
+    // the fallback when all three are off). The lyrics part is decided in the
+    // lyrics effect above once the lyrics are known.
     useEffect(() => {
-        if (djDisc && djDiscAuto) { setShowingLyrics(false); setShowingDisc(true); }
+        if (autoShowDisc && !(autoShowLyrics && peekLyrics(currentTrack?.id))) setShowingDisc(true);
         else setShowingDisc(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentTrack?.id, djDisc, djDiscAuto]);
+    }, [currentTrack?.id, autoShowDisc, autoShowLyrics]);
     // The Player's swipe-down-to-close works from anywhere above the controls,
     // which would close it whenever the disc is dragged downward. It is turned
     // off only while a finger is on the disc itself (see DJDisc's onTouching).
@@ -575,7 +578,8 @@ export default function PlayerScreen() {
     }, [navigation]);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
     useEffect(() => { if (showingLyrics && showingDisc) setShowingDisc(false); }, [showingLyrics, showingDisc]);
-    const hasLyricsView = lyricsMode !== 'off' && !!lyricsData;
+    const hasLyricsView = !!lyricsData;
+    const djDisc = true;   // the disc is always one tap away on the view button
     const cycleView = () => {
         // cover -> lyrics -> disc -> cover, skipping what is unavailable.
         if (showingLyrics) { setShowingLyrics(false); if (djDisc) setShowingDisc(true); return; }
@@ -901,7 +905,7 @@ export default function PlayerScreen() {
                     </TouchableOpacity>
                     : <View style={s.topBtn} />}
                 {playerBtns.label
-                    ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? currentPlaylist?.name ?? 'Now Playing'}</Text>
+                    ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? (currentPlaylist?.name && (!currentPlaylist.songs || currentPlaylist.songs.some(x => x.id === currentTrack?.id)) ? currentPlaylist.name : null) ?? 'Now Playing'}</Text>
                     : <View style={{ flex: 1 }} />}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     {/* EQ used to be hidden here with a comment saying
@@ -969,6 +973,11 @@ export default function PlayerScreen() {
                             // ('#000'), same idea as the lyrics text using a dark
                             // shadow for legibility, not an accent-colored one.
                             <Animated.View style={coverShadow ? [s.coverShadowWrap, { borderRadius: squircle(width - 56, coverShape) }, ] : null}>
+                                {/* Card-style outline, like the playlist cards: a band of card color
+                                    behind the cover, same thickness all the way round. */}
+                                {playerOutline && (
+                                    <View pointerEvents="none" style={[{ position: 'absolute', top: -3, left: -3, right: -3, bottom: -3, backgroundColor: base.surface, borderRadius: cardRadius(width - 56, 3, coverShape) }]} />
+                                )}
                                 <Animated.View
                                     style={[s.art, { backgroundColor: base.surface, shadowColor: theme.accent, borderRadius: squircle(width - 56, coverShape) }, ]}
                                     pointerEvents={showingLyrics ? 'none' : 'auto'}
@@ -988,6 +997,10 @@ export default function PlayerScreen() {
                                     size={width - 56}
                                     artwork={artwork}
                                     accent={theme.accent}
+                                    shadow={coverShadow}
+                                    outline={playerOutline}
+                                    outlineColor={base.surface}
+                                    spinDegPerSec={discRpmValue * 6 * (playbackRate || 1)}
                                     isPlaying={isPlaying}
                                     visible={showingDisc}
                                     trackKey={currentTrack?._qid ?? currentTrack?.id}

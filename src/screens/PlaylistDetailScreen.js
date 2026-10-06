@@ -10,13 +10,15 @@ import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
-import { squircle } from '../utils/squircle';
+import { squircle, cardRadius } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
-import { EDGE_SWIPE_WIDTH } from '../utils/layout';
+import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import { COVER_SHADOW } from '../utils/shadow';
+import TopBarBack from '../components/TopBarFade';
 import { useListArt } from '../hooks/useListArt';
 
 const SORTS = [
@@ -48,7 +50,7 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, ui } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -227,6 +229,10 @@ export default function PlaylistDetailScreen() {
                     <View>
                         {ui.pd_cover !== false && (
                         <View style={s.coverWrap}>
+                            {/* Card-style outline, same look as the cards on the Playlists screen. */}
+                            {detailOutline && (
+                                <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: -3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
+                            )}
                             <TouchableOpacity
                                 style={[s.cover, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(180, coverShape) }]}
                                 onLongPress={changeCover}
@@ -316,11 +322,12 @@ const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 // row, the play counts arriving) do not re-render every visible row, which
 // is what made the sheets stutter when they opened and closed.
 const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue }) {
+    const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
-            <TouchableOpacity style={[s.row, { backgroundColor: base.surface }]} onPress={() => onPlay(item)} activeOpacity={0.7}>
+            <TouchableOpacity style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)} activeOpacity={0.7}>
                 {showSongCovers && (
-                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
+                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
                             : null
@@ -341,7 +348,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
+    topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE },
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     backIcon: { fontSize: 24 },
     eqTag: { fontSize: 14, fontWeight: '700' },
@@ -368,7 +375,7 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumb: { width: 44, height: 44, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },
 });

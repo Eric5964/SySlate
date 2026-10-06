@@ -474,10 +474,14 @@ export function PlaybackProvider({ children }) {
                     // the loaded playlist's own song list, so this never
                     // fires for the common case (queuing a song that
                     // happens to already be in the current playlist).
-                    const pl = playlistRef.current;
-                    if (pl?.songs && !pl.songs.some(s => s.id === track.id)) {
-                        setCurrentPlaylist(null);
-                    }
+                    // Update 94: this used to clear currentPlaylist when a
+                    // queued song from elsewhere came up. That is what made
+                    // the Player title fall back to "Now Playing" AND what
+                    // stopped the session from saving (saveSession quits when
+                    // there is no playlist), so after one such song the app
+                    // kept re-opening on an older spot. The playlist now stays
+                    // loaded; the title decides what to show (see PlayerScreen
+                    // and the queueSource effect above).
                 }
                 // Session save now lives HERE (always active) instead of in a
                 // listener inside PlayerScreen — that one only ran while the

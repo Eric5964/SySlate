@@ -5,9 +5,13 @@ import {
     getShowPlayCount, setShowPlayCount as persistShowPlayCount,
     getShowSongCovers, setShowSongCovers as persistShowSongCovers,
     getArtistSeparator, setArtistSeparator as persistArtistSeparator,
-    getLyricsMode, setLyricsMode as persistLyricsMode,
-    getDjDisc, setDjDisc as persistDjDisc,
-    getDjDiscAuto, setDjDiscAuto as persistDjDiscAuto,
+    getAutoShowCover, setAutoShowCover as persistAutoShowCover,
+    getAutoShowLyrics, setAutoShowLyrics as persistAutoShowLyrics,
+    getAutoShowDisc, setAutoShowDisc as persistAutoShowDisc,
+    getDjDiscRpm, setDjDiscRpm as persistDjDiscRpm, DISC_RPMS,
+    getPlayerOutline, setPlayerOutline as persistPlayerOutline,
+    getDetailOutline, setDetailOutline as persistDetailOutline,
+    getSongPillShadow, setSongPillShadow as persistSongPillShadow,
     getPlayerBtn, setPlayerBtn,
     getLyricsResyncSec, setLyricsResyncSec as persistLyricsResyncSec,
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
@@ -47,9 +51,13 @@ const Ctx = createContext({
     showPlayCount: true, setShowPlayCount: () => { },
     showSongCovers: false, setShowSongCovers: () => { },
     artistSeparator: [';'], setArtistSeparator: () => { },
-    lyricsMode: 'off', setLyricsMode: () => { },
-    djDisc: false, setDjDisc: () => { },
-    djDiscAuto: false, setDjDiscAuto: () => { },
+    autoShowCover: true, setAutoShowCover: () => { },
+    autoShowLyrics: false, setAutoShowLyrics: () => { },
+    autoShowDisc: false, setAutoShowDisc: () => { },
+    djDiscRpm: '33', setDjDiscRpm: () => { }, discRpmValue: 100 / 3,
+    playerOutline: false, setPlayerOutline: () => { },
+    detailOutline: false, setDetailOutline: () => { },
+    songPillShadow: false, setSongPillShadow: () => { },
     playerBtns: { sleep: true, speed: true, eq: true, queue: true, label: true, back: true }, setPlayerBtnShown: () => { },
     lyricsResyncSec: 4, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
@@ -89,9 +97,13 @@ export function PreferencesProvider({ children }) {
     const [showPlayCount, setShowPlayCountState] = useState(true);
     const [showSongCovers, setShowSongCoversState] = useState(true);
     const [artistSeparator, setArtistSeparatorState] = useState([';']);
-    const [lyricsMode, setLyricsModeState] = useState('manual');
-    const [djDisc, setDjDiscState] = useState(false);
-    const [djDiscAuto, setDjDiscAutoState] = useState(false);
+    const [autoShowCover, setAutoShowCoverState] = useState(true);
+    const [autoShowLyrics, setAutoShowLyricsState] = useState(false);
+    const [autoShowDisc, setAutoShowDiscState] = useState(false);
+    const [djDiscRpm, setDjDiscRpmState] = useState('33');
+    const [playerOutline, setPlayerOutlineState] = useState(false);
+    const [detailOutline, setDetailOutlineState] = useState(false);
+    const [songPillShadow, setSongPillShadowState] = useState(false);
     const [playerBtns, setPlayerBtns] = useState({ sleep: true, speed: true, eq: true, queue: true, label: true, back: true });
     const setPlayerBtnShown = useCallback((name, v) => {
         setPlayerBtns(prev => ({ ...prev, [name]: v }));
@@ -140,9 +152,13 @@ export function PreferencesProvider({ children }) {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
         getArtistSeparator().then(setArtistSeparatorState);
-        getLyricsMode().then(setLyricsModeState);
-        getDjDisc().then(setDjDiscState);
-        getDjDiscAuto().then(setDjDiscAutoState);
+        getAutoShowCover().then(setAutoShowCoverState);
+        getAutoShowLyrics().then(setAutoShowLyricsState);
+        getAutoShowDisc().then(setAutoShowDiscState);
+        getDjDiscRpm().then(setDjDiscRpmState);
+        getPlayerOutline().then(setPlayerOutlineState);
+        getDetailOutline().then(setDetailOutlineState);
+        getSongPillShadow().then(setSongPillShadowState);
         ['sleep', 'speed', 'eq', 'queue', 'label', 'back'].forEach(n => getPlayerBtn(n).then(v => setPlayerBtns(prev => ({ ...prev, [n]: v }))));
         getLyricsResyncSec().then(setLyricsResyncSecState);
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
@@ -226,29 +242,13 @@ export function PreferencesProvider({ children }) {
         setArtistSeparatorState(v);
         persistArtistSeparator(v);
     }, []);
-    // Auto Lyrics and Auto Disc can never both be on: each setter turns the
-    // other one off. (Auto Disc also needs the disc itself enabled.)
-    const setDjDiscAuto = useCallback((v) => {
-        setDjDiscAutoState(v);
-        persistDjDiscAuto(v);
-        if (v) {
-            setLyricsModeState(m => {
-                if (m !== 'auto') return m;
-                persistLyricsMode('manual');
-                return 'manual';
-            });
-        }
-    }, []);
-    const setDjDisc = useCallback((v) => {
-        setDjDiscState(v);
-        persistDjDisc(v);
-        if (!v) { setDjDiscAutoState(false); persistDjDiscAuto(false); }
-    }, []);
-    const setLyricsMode = useCallback((v) => {
-        setLyricsModeState(v);
-        persistLyricsMode(v);
-        if (v === 'auto') { setDjDiscAutoState(false); persistDjDiscAuto(false); }
-    }, []);
+    const setAutoShowCover = useCallback((v) => { setAutoShowCoverState(v); persistAutoShowCover(v); }, []);
+    const setAutoShowLyrics = useCallback((v) => { setAutoShowLyricsState(v); persistAutoShowLyrics(v); }, []);
+    const setAutoShowDisc = useCallback((v) => { setAutoShowDiscState(v); persistAutoShowDisc(v); }, []);
+    const setDjDiscRpm = useCallback((v) => { setDjDiscRpmState(v); persistDjDiscRpm(v); }, []);
+    const setPlayerOutline = useCallback((v) => { setPlayerOutlineState(v); persistPlayerOutline(v); }, []);
+    const setDetailOutline = useCallback((v) => { setDetailOutlineState(v); persistDetailOutline(v); }, []);
+    const setSongPillShadow = useCallback((v) => { setSongPillShadowState(v); persistSongPillShadow(v); }, []);
     const setLyricsResyncSec = useCallback((v) => {
         setLyricsResyncSecState(v);
         persistLyricsResyncSec(v);
@@ -350,8 +350,9 @@ export function PreferencesProvider({ children }) {
         showPlayCount, setShowPlayCount,
         showSongCovers, setShowSongCovers,
         artistSeparator, setArtistSeparator,
-        lyricsMode, setLyricsMode,
-        djDisc, setDjDisc, djDiscAuto, setDjDiscAuto,
+        autoShowCover, setAutoShowCover, autoShowLyrics, setAutoShowLyrics, autoShowDisc, setAutoShowDisc,
+        djDiscRpm, setDjDiscRpm, discRpmValue: DISC_RPMS[djDiscRpm] || 100 / 3,
+        playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow,
         playerBtns, setPlayerBtnShown,
         lyricsResyncSec, setLyricsResyncSec,
         lyricsOffsetSec, setLyricsOffsetSec,
@@ -379,7 +380,7 @@ export function PreferencesProvider({ children }) {
         playlistArrow, setPlaylistArrow,
         ui, setUiShown,
     }), [
-        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto, playerBtns,
+        showPlayCount, showSongCovers, artistSeparator, autoShowCover, autoShowLyrics, autoShowDisc, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,

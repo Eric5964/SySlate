@@ -184,8 +184,6 @@ export const setEQOverrides = (o) => safe(async () => {
     await AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(o));
     await writeBackup({ eq_preset_overrides: o });
 }, null);
-export const getPlaylistViewFormat = () => safe(() => AsyncStorage.getItem('playlist_view_format').then(v => v ?? 'list'), 'list');
-export const setPlaylistViewFormat = (f) => safe(() => AsyncStorage.setItem('playlist_view_format', f), null);
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
 export const setLastSession = (d) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(d)), null);
 
@@ -209,6 +207,23 @@ const writeBackup = async (patch) => {
 const readBackup = async () => {
     try { return JSON.parse(await FileSystem.readAsStringAsync(BACKUP_PATH)); } catch { return null; }
 };
+
+// The Playlists screen layout is kept in the Documents backup file too, like
+// the order, covers and sorts, so it also comes back after an update.
+export const getPlaylistViewFormat = () => safe(async () => {
+    const v = await AsyncStorage.getItem('playlist_view_format');
+    if (v) return v;
+    const backup = await readBackup();
+    if (backup?.playlist_view_format) {
+        await AsyncStorage.setItem('playlist_view_format', backup.playlist_view_format);
+        return backup.playlist_view_format;
+    }
+    return 'list';
+}, 'list');
+export const setPlaylistViewFormat = (f) => safe(async () => {
+    await AsyncStorage.setItem('playlist_view_format', f);
+    await writeBackup({ playlist_view_format: f });
+}, null);
 
 // Playlist covers, playlist order and per-playlist sort were all saved under
 // the playlist's full file path. That path contains an app-container ID which
@@ -297,7 +312,7 @@ export const resetPlaylistScreen = async () => {
     await safe(() => AsyncStorage.setItem('playlist_covers', '{}'), null);
     await safe(() => AsyncStorage.setItem('playlist_order', '[]'), null);
     await safe(() => AsyncStorage.setItem('playlist_view_format', 'list'), null);
-    await writeBackup({ playlist_covers: {}, playlist_order: [] });
+    await writeBackup({ playlist_covers: {}, playlist_order: [], playlist_view_format: 'list' });
 };
 
 // One-time (per app launch) shrink of playlist covers picked before covers
@@ -404,6 +419,38 @@ export const getDjDisc = () => safe(() => AsyncStorage.getItem('dj_disc').then(v
 export const setDjDisc = (v) => safe(() => AsyncStorage.setItem('dj_disc', v ? '1' : '0'), null);
 export const getDjDiscAuto = () => safe(() => AsyncStorage.getItem('dj_disc_auto').then(v => v === '1'), false);
 export const setDjDiscAuto = (v) => safe(() => AsyncStorage.setItem('dj_disc_auto', v ? '1' : '0'), null);
+// What a new song opens on in the Player. Three separate switches replace the
+// old Show Lyrics (Off / Auto-show / Manual), DJ Disc and Auto Disc settings:
+// lyrics and the disc are always one tap away on the button under the cover,
+// and these only say which view opens first. Anything saved under the old
+// settings is carried over the first time these are read.
+export const getAutoShowCover = () => safe(() => AsyncStorage.getItem('auto_show_cover').then(v => v !== 'false'), true);
+export const setAutoShowCover = (v) => safe(() => AsyncStorage.setItem('auto_show_cover', String(v)), null);
+export const getAutoShowLyrics = () => safe(async () => {
+    const v = await AsyncStorage.getItem('auto_show_lyrics');
+    if (v !== null) return v === 'true';
+    return (await AsyncStorage.getItem('lyrics_mode')) === 'auto';
+}, false);
+export const setAutoShowLyrics = (v) => safe(() => AsyncStorage.setItem('auto_show_lyrics', String(v)), null);
+export const getAutoShowDisc = () => safe(async () => {
+    const v = await AsyncStorage.getItem('auto_show_disc');
+    if (v !== null) return v === 'true';
+    return (await AsyncStorage.getItem('dj_disc')) === '1' && (await AsyncStorage.getItem('dj_disc_auto')) === '1';
+}, false);
+export const setAutoShowDisc = (v) => safe(() => AsyncStorage.setItem('auto_show_disc', String(v)), null);
+// How fast the DJ disc turns: a real record speed ('33' is 33 1/3 rpm).
+export const DISC_RPMS = { '33': 100 / 3, '45': 45, '78': 78 };
+export const getDjDiscRpm = () => safe(() => AsyncStorage.getItem('dj_disc_rpm').then(v => (v && DISC_RPMS[v] ? v : '33')), '33');
+export const setDjDiscRpm = (v) => safe(() => AsyncStorage.setItem('dj_disc_rpm', v), null);
+// Card-style outline around the Player cover and disc, and around the cover
+// on the Playlist screen (same look as the cards on the Playlists screen).
+export const getPlayerOutline = () => safe(() => AsyncStorage.getItem('player_outline').then(v => v === 'true'), false);
+export const setPlayerOutline = (v) => safe(() => AsyncStorage.setItem('player_outline', String(v)), null);
+export const getDetailOutline = () => safe(() => AsyncStorage.getItem('detail_outline').then(v => v === 'true'), false);
+export const setDetailOutline = (v) => safe(() => AsyncStorage.setItem('detail_outline', String(v)), null);
+// Shadow under the song pills (All Songs, Playlist screen and the queue).
+export const getSongPillShadow = () => safe(() => AsyncStorage.getItem('song_pill_shadow').then(v => v === 'true'), false);
+export const setSongPillShadow = (v) => safe(() => AsyncStorage.setItem('song_pill_shadow', String(v)), null);
 // Which of the Player's four top-right buttons are shown (all on by default).
 // Only affects the Player screen; EQ and Queue stay reachable elsewhere.
 export const getPlayerBtn = (name) => safe(() => AsyncStorage.getItem(`player_btn_${name}`).then(v => v !== '0'), true);
@@ -510,6 +557,12 @@ export const setPrevButtonMode = (v) => safe(() => AsyncStorage.setItem('prev_bu
 // goes to the previous track instead of restarting the current one.
 export const getRestartThresholdSec = () => safe(() => AsyncStorage.getItem('restart_threshold_sec').then(v => v !== null ? parseFloat(v) : 3), 3);
 export const setRestartThresholdSec = (v) => safe(() => AsyncStorage.setItem('restart_threshold_sec', String(v)), null);
+// The Previous-Track Window can be a flat number of seconds ('sec', above) or
+// a percentage of the song's length ('pct'), so long songs get a longer window.
+export const getRestartThresholdUnit = () => safe(() => AsyncStorage.getItem('restart_threshold_unit').then(v => (v === 'pct' ? 'pct' : 'sec')), 'sec');
+export const setRestartThresholdUnit = (v) => safe(() => AsyncStorage.setItem('restart_threshold_unit', v), null);
+export const getRestartThresholdPct = () => safe(() => AsyncStorage.getItem('restart_threshold_pct').then(v => v !== null ? parseFloat(v) : 5), 5);
+export const setRestartThresholdPct = (v) => safe(() => AsyncStorage.setItem('restart_threshold_pct', String(v)), null);
 
 // How long a manual scroll through the lyrics view sits idle before it
 // snaps back to following the song automatically. 0 = never auto-follow
@@ -540,23 +593,21 @@ export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics
 // "some of this resets and some doesn't" better than "everything's equally
 // broken." Same backup pattern as the other two, applied here too.
 export const getPlaylistSort = (playlistPath) => safe(async () => {
-    let map = null;
+    // Both copies are read and merged (the app's own storage wins), so a
+    // sort that only made it into one of them is still found.
+    let map = {};
+    const backup = await readBackup();
+    if (backup?.playlist_sort_orders) map = { ...stableMap(backup.playlist_sort_orders) };
     const all = await AsyncStorage.getItem('playlist_sort_orders');
-    if (all) map = JSON.parse(all);
-    else {
-        const backup = await readBackup();
-        if (backup?.playlist_sort_orders && Object.keys(backup.playlist_sort_orders).length) {
-            map = backup.playlist_sort_orders;
-            await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
-        }
-    }
-    return stableMap(map || {})[toStablePath(playlistPath)] ?? 'alpha';
+    if (all) map = { ...map, ...stableMap(JSON.parse(all)) };
+    return map[toStablePath(playlistPath)] ?? 'alpha';
 }, 'alpha');
 
 export const setPlaylistSort = async (playlistPath, sortId) => {
     try {
         const all = await AsyncStorage.getItem('playlist_sort_orders');
-        const map = stableMap(all ? JSON.parse(all) : {});
+        const backup = await readBackup();
+        const map = { ...stableMap(backup?.playlist_sort_orders || {}), ...stableMap(all ? JSON.parse(all) : {}) };
         map[toStablePath(playlistPath)] = sortId;
         await AsyncStorage.setItem('playlist_sort_orders', JSON.stringify(map));
         await writeBackup({ playlist_sort_orders: map });
@@ -674,7 +725,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'auto_show_cover', 'auto_show_lyrics', 'auto_show_disc', 'dj_disc_rpm', 'player_outline', 'detail_outline', 'song_pill_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -716,6 +767,7 @@ export const importAllSettings = async (jsonString) => {
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
         'top_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
+        'auto_show_cover', 'auto_show_lyrics', 'auto_show_disc', 'player_outline', 'detail_outline', 'song_pill_shadow',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -730,6 +782,7 @@ export const importAllSettings = async (jsonString) => {
         audio_ramp: [0, 3],
         lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
         restart_threshold_sec: [0, 24],
+        restart_threshold_pct: [0, 50],
         preamp_db: [-12, 12],
         playback_rate: [0.25, 3],
     };
@@ -745,8 +798,8 @@ export const importAllSettings = async (jsonString) => {
     const STRING_KEYS = new Set([
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
-        'prev_button_mode', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
-        'artist_display_join',
+        'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
+        'artist_display_join', 'dj_disc_rpm',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.

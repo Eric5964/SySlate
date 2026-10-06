@@ -7,7 +7,9 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
-import { squircle } from '../utils/squircle';
+import { squircle, cardRadius } from '../utils/squircle';
+import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import TopBarBack from '../components/TopBarFade';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
     setPlaylistOrder,
@@ -73,8 +75,8 @@ function FormatIcon({ id, color }) {
 const FORMATS = [
     { id: 'list', cols: 1 },
     { id: 'list_art', cols: 1 },
-    { id: 'grid2', cols: 2 },
     { id: 'grid3', cols: 3 },
+    { id: 'grid2', cols: 2 },
 ];
 
 // Reordering needs each playlist's position on screen. The FlatList's own
@@ -167,7 +169,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                             pointerEvents="none"
                             style={[
                                 s.card,
-                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -CARD_INSET, backgroundColor: base.surface, borderRadius: squircle(size + CARD_INSET * 2, shape) },
+                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -CARD_INSET, backgroundColor: base.surface, borderRadius: cardRadius(size, CARD_INSET, shape) },
                                 shadowOn && COVER_SHADOW,
                             ]}
                         />
@@ -185,12 +187,12 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
     return (
         <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
             <Pressable
-                style={({ pressed }) => [s.row, { backgroundColor: cardOn ? base.surface : 'transparent' }, cardOn && shadowOn && COVER_SHADOW, { opacity: pressed && !isActive ? 0.75 : 1 }]}
+                style={({ pressed }) => [s.row, { backgroundColor: cardOn ? base.surface : 'transparent' }, pillPad(format === 'list_art'), format === 'list_art' && { paddingRight: 12 }, cardOn && shadowOn && COVER_SHADOW, { opacity: pressed && !isActive ? 0.75 : 1 }]}
                 {...handlers}
             >
                 {format === 'list_art' && (
-                    <View style={[s.listArt, { backgroundColor: bg, borderRadius: squircle(50, shape) }, shadowOn && COVER_SHADOW]}>
-                        <View style={{ width: 50, height: 50, overflow: 'hidden', borderRadius: squircle(50, shape) }}>{art}</View>
+                    <View style={[s.listArt, { backgroundColor: bg, borderRadius: squircle(PILL_COVER, shape) }, shadowOn && COVER_SHADOW]}>
+                        <View style={{ width: PILL_COVER, height: PILL_COVER, overflow: 'hidden', borderRadius: squircle(PILL_COVER, shape) }}>{art}</View>
                     </View>
                 )}
                 <View style={{ flex: 1 }}>
@@ -592,7 +594,8 @@ export default function PlaylistsScreen() {
             {/* Same top row as All Songs and the Player: title where the back
                 arrow sits, buttons in the exact same top-right spots as EQ
                 and queue (same sizes, same gap, same top padding). */}
-            <View style={[s.header, topBarColor && { backgroundColor: base.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: base.border }]}>
+            <View style={s.header}>
+                {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pl_title !== false
                     ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
                     : <View style={{ flex: 1, height: 40 }} />}
@@ -621,7 +624,7 @@ export default function PlaylistsScreen() {
                     <Text style={[s.emptyText, { color: base.textFaint }]}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
                 </View>
             ) : (
-                <Animated.View style={{ flex: 1, opacity: listOpacity }}>
+                <Animated.View style={{ flex: 1, opacity: listOpacity, marginTop: topBarColor ? -TOP_FADE : 0 }}>
                     <View
                         ref={listBoxRef}
                         style={{ flex: 1 }}
@@ -677,7 +680,7 @@ export default function PlaylistsScreen() {
                         // was double-spacing, showing up as a noticeably
                         // fatter gap above the grid than above the list rows
                         // (which only rely on their own marginVertical).
-                        contentContainerStyle={{ paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
+                        contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : 0, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
                         renderItem={({ item, index }) => (
                             <PlaylistRow
                                 item={item}
@@ -724,17 +727,17 @@ const s = StyleSheet.create({
     // (see below, fixed this round), not header height. 44 just made this
     // screen's title sit noticeably higher than All Songs/Settings (both
     // paddingTop:60) and Playlist Detail (56) — restored to match.
-    header: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
+    header: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5 },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     btn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-    btnText: { fontSize: 20 },
+    btnText: { fontSize: 28, lineHeight: 34, fontWeight: '600' },
     doneBtn: { height: 40, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center' },
     doneText: { fontSize: 17, fontWeight: '700' },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },
     row: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 14, marginVertical: 3, paddingVertical: 16, paddingHorizontal: 16, backgroundColor: '#0f0f0f', borderRadius: 14, minHeight: 68 },
-    listArt: { width: 50, height: 50, marginRight: 14 },
+    listArt: { width: 44, height: 44, marginRight: 12 },
     rowName: { color: '#e5e5e5', fontSize: 16, fontWeight: '500' },
     rowCount: { color: '#555', fontSize: 12, marginTop: 3 },
     arrow: { color: '#333', fontSize: 22 },

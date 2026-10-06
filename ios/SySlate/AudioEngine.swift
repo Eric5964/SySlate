@@ -251,7 +251,17 @@ class AudioEngine: RCTEventEmitter {
     // time would appear to snap back to 0 and count up from there every
     // time you seek, while the audio itself correctly plays from the seeked
     // position — a real, easy-to-miss AVAudioEngine gotcha.
-    private var segmentStartOffsetSeconds: Double = 0
+    // The origin of the scheduled segment. Whenever it changes (new load, seek,
+    // crossfade handoff) the remembered live position below is dropped too.
+    private var segmentStartOffsetSeconds: Double = 0 { didSet { lastLivePositionSeconds = nil } }
+    // Last position read from the node while it was really rendering, and when.
+    // The node briefly reports no render time after an interruption, a pause or
+    // a restart of the engine. Reading the segment ORIGIN then (e.g. 67s after a
+    // scratch ended there) made the position, the pause snapshot and the
+    // natural-end crossfade timer all wrong by however long the song had played
+    // since: a crossfade that fired 20s early/late. This is used instead.
+    private var lastLivePositionSeconds: Double?
+    private var lastLivePositionAt: Date = .distantPast
     // How much silence was cut from the END of the current file by silence
     // trim (0 when trim is off, or when the current track arrived via
     // crossfade — see runCrossfade/settleCrossfadeToIncoming, which don't
@@ -1248,9 +1258,20 @@ class AudioEngine: RCTEventEmitter {
             // cleared, so the first poll after Play reported the start of
             // the song and the progress bar jumped back for a beat. The
             // snapshot is now kept until the node is truly rendering.
-            return frozenPositionSeconds ?? segmentStartOffsetSeconds
+            if let frozen = frozenPositionSeconds { return frozen }
+            if let lp = lastLivePositionSeconds {
+                if state == .playing {
+                    // Still playing: carry on from the last real reading (capped, so
+                    // a long gap cannot run the position away).
+                    return lp + min(Date().timeIntervalSince(lastLivePositionAt), 1.5) * Double(playbackRate)
+                }
+                return lp
+            }
+            return segmentStartOffsetSeconds
         }
         let live = segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
+        lastLivePositionSeconds = live
+        lastLivePositionAt = Date()
         if state == .playing { frozenPositionSeconds = nil }
         return live
     }

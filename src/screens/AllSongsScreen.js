@@ -16,6 +16,9 @@ import { MenuBarsIcon } from '../components/Icons';
 import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
+import { COVER_SHADOW } from '../utils/shadow';
+import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import TopBarBack from '../components/TopBarFade';
 import ScreenBackground from '../components/ScreenBackground';
 
 // Reuses the exact same 4 sorts as the playlist screen, for the same reason
@@ -149,7 +152,8 @@ export default function AllSongsScreen() {
             {/* Same top row as the playlist screen and the player: EQ and
                 queue sit in the exact same top-right spot on every screen.
                 Title on the left where the back arrow would be. */}
-            <View style={[s.topRow, topBarColor && { backgroundColor: base.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: base.border }]}>
+            <View style={s.topRow}>
+                {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.as_title !== false
                     ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
                     : <View style={{ flex: 1, height: 40 }} />}
@@ -265,11 +269,12 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 // row, the play counts arriving) do not re-render every visible row, which
 // is what made the sheets stutter when they opened and closed.
 const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue }) {
+    const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
-            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }]} onPress={() => onPlay(item)} activeOpacity={0.7}>
+            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)} activeOpacity={0.7}>
                 {showSongCovers && (
-                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
+                    <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
                             : null
@@ -290,7 +295,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingHorizontal: 8, paddingBottom: 8 },
+    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE },
     searchBlock: { paddingHorizontal: 16, paddingBottom: 10 },
     // Was 'flex-end' — with paddingTop:60 identical to Playlists' own
     // header, this was the actual cause of "All Songs title sits lower
@@ -316,7 +321,7 @@ const s = StyleSheet.create({
     rowTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     rowSub: { color: '#555', fontSize: 12, marginTop: 3 },
     playCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumb: { width: 44, height: 44, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },
 });

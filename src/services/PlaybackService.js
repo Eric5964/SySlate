@@ -1,6 +1,6 @@
 import { emitTransportRamp } from '../utils/transportRamp';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
-import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getCrossfadeEnabled, getCrossfadeDurationSkip, getCrossfadeDurationEndOfTrack } from '../utils/storage';
+import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getRestartThresholdUnit, getRestartThresholdPct, getCrossfadeEnabled, getCrossfadeDurationSkip, getCrossfadeDurationEndOfTrack } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
 
 // --- Fade ownership -----------------------------------------------------
@@ -720,10 +720,13 @@ export async function skipWithRamp(direction = 'next') {
         if (direction === 'prev') {
             const mode = await getPrevButtonMode();
             if (mode === 'restart_or_previous') {
-                const threshold = await getRestartThresholdSec();
+                const unit = await getRestartThresholdUnit();
+                const threshold = unit === 'pct' ? null : await getRestartThresholdSec();
+                const pct = unit === 'pct' ? await getRestartThresholdPct() : 0;
                 try {
-                    const { position } = await AudioEngine.getProgress();
-                    restartCurrent = position > threshold;
+                    const { position, duration } = await AudioEngine.getProgress();
+                    // Percent of the song's length, or flat seconds.
+                    restartCurrent = position > (unit === 'pct' ? (duration || 0) * pct / 100 : threshold);
                 } catch { }
             }
         }

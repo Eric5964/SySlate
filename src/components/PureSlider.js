@@ -1,5 +1,6 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { View, PanResponder, StyleSheet } from 'react-native';
+import { isScrolling } from '../utils/scrollGuard';
 
 export default function PureSlider({
     minimumValue = 0, maximumValue = 1, step = 0.5, value = 0,
@@ -8,27 +9,22 @@ export default function PureSlider({
     maximumTrackTintColor = '#222',
     thumbTintColor = '#7c3aed',
     disabled = false,
-    // Settings sliders: a plain tap or a swipe that happens to start on the
-    // slider does nothing (a swipe just scrolls the page). Press and hold
-    // for a moment, then drag; the value moves relative to where it was, so
-    // it can't jump to the finger.
-    holdToAdjust = false,
+    // Sliders on a scrolling page (Settings): a touch moves the slider right
+    // away, as usual, but not while the page itself is moving (scroll speed
+    // above a few pixels per second), and an up-down swipe is left to the
+    // page: only a mostly sideways drag, or a plain tap, changes the value.
+    guardScroll = false,
     style,
 }) {
-    const [armed, setArmed] = useState(false);
-    const armedRef = useRef(false);
-    const holdTimer = useRef(null);
-    const drag0 = useRef({ x: 0, v: 0 });
-    const lastX = useRef(0);
     const containerRef = useRef(null);
     const layoutRef = useRef({ pageX: 0, width: 1 });
     const valRef = useRef(value);
+    const engaged = useRef(false);
     // Keep ALL props fresh — avoids stale closure in PanResponder
-    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, holdToAdjust });
+    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, guardScroll });
     useEffect(() => {
-        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, holdToAdjust };
+        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, guardScroll };
     });
-    useEffect(() => () => clearTimeout(holdTimer.current), []);
 
     const measure = () => {
         containerRef.current?.measure((_x, _y, w, _h, pageX) => {
@@ -44,69 +40,56 @@ export default function PureSlider({
         if (st > 0) v = Math.round((v - mn) / st) * st + mn;
         return Math.round(v * 1000) / 1000;
     };
-
-    const relativeVal = (pageX) => {
-        const { minimumValue: mn, maximumValue: mx, step: st } = propsRef.current;
-        let v = drag0.current.v + ((pageX - drag0.current.x) / layoutRef.current.width) * (mx - mn);
-        v = Math.max(mn, Math.min(mx, v));
-        if (st > 0) v = Math.round((v - mn) / st) * st + mn;
-        return Math.round(v * 1000) / 1000;
+    const apply = (pageX) => {
+        valRef.current = computeVal(pageX);
+        propsRef.current.onValueChange?.(valRef.current);
     };
-    const endHold = () => { clearTimeout(holdTimer.current); armedRef.current = false; setArmed(false); };
 
     const pan = useRef(PanResponder.create({
         // Per-preset lock (premade EQ bands shouldn't be draggable, only
         // custom ones) — reads propsRef so a `disabled` prop change takes
         // effect immediately without needing to recreate the PanResponder.
-        onStartShouldSetPanResponder: () => !!propsRef.current.holdToAdjust && !propsRef.current.disabled,
-        onStartShouldSetPanResponderCapture: () => !propsRef.current.holdToAdjust && !propsRef.current.disabled,
-        onMoveShouldSetPanResponderCapture: () => !propsRef.current.holdToAdjust && !propsRef.current.disabled,
-        // Once armed the page must not scroll away from under the finger.
-        onPanResponderTerminationRequest: () => !armedRef.current,
+        // Plain sliders (sheets, EQ bands) grab the touch at once, ahead of
+        // any scroll view. Guarded sliders only take it when the page is
+        // not scrolling.
+        onStartShouldSetPanResponder: () => !!propsRef.current.guardScroll && !propsRef.current.disabled && !isScrolling(),
+        onStartShouldSetPanResponderCapture: () => !propsRef.current.guardScroll && !propsRef.current.disabled,
+        onMoveShouldSetPanResponderCapture: () => !propsRef.current.guardScroll && !propsRef.current.disabled,
+        // Once the slider is moving the page must not take the touch away.
+        onPanResponderTerminationRequest: () => !engaged.current,
         onPanResponderGrant: (e) => {
             if (propsRef.current.disabled) return;
             measure();
-            if (propsRef.current.holdToAdjust) {
-                lastX.current = e.nativeEvent.pageX;
-                clearTimeout(holdTimer.current);
-                holdTimer.current = setTimeout(() => {
-                    armedRef.current = true;
-                    setArmed(true);
-                    drag0.current = { x: lastX.current, v: propsRef.current.value };
-                    valRef.current = propsRef.current.value;
-                }, 350);
-                return;
-            }
-            valRef.current = computeVal(e.nativeEvent.pageX);
-            propsRef.current.onValueChange?.(valRef.current);
+            engaged.current = false;
+            if (propsRef.current.guardScroll) return;   // waits for a sideways move or a tap
+            engaged.current = true;
+            apply(e.nativeEvent.pageX);
         },
         onPanResponderMove: (e, g) => {
             if (propsRef.current.disabled) return;
-            if (propsRef.current.holdToAdjust) {
-                lastX.current = e.nativeEvent.pageX;
-                if (!armedRef.current) {
-                    // Moved before the hold finished: this was a scroll or a slip, not an adjustment.
-                    if (Math.hypot(g.dx, g.dy) > 10) clearTimeout(holdTimer.current);
-                    return;
-                }
-                valRef.current = relativeVal(e.nativeEvent.pageX);
-                propsRef.current.onValueChange?.(valRef.current);
-                return;
+            if (propsRef.current.guardScroll && !engaged.current) {
+                // Mostly sideways and far enough to be a drag; an up-down swipe is a scroll.
+                if (Math.abs(g.dx) < 5 || Math.abs(g.dx) < Math.abs(g.dy) * 1.3 || isScrolling()) return;
+                engaged.current = true;
             }
-            valRef.current = computeVal(e.nativeEvent.pageX);
-            propsRef.current.onValueChange?.(valRef.current);
+            apply(e.nativeEvent.pageX);
         },
-        onPanResponderRelease: () => {
+        onPanResponderRelease: (e, g) => {
             if (propsRef.current.disabled) return;
-            const wasArmed = armedRef.current;
-            if (propsRef.current.holdToAdjust) {
-                endHold();
-                if (wasArmed) propsRef.current.onSlidingComplete?.(valRef.current);
-                return;
+            if (propsRef.current.guardScroll && !engaged.current) {
+                // A plain tap (finger barely moved, page still): jump to the tapped spot.
+                if (Math.hypot(g.dx, g.dy) > 8 || isScrolling()) return;
+                apply(e.nativeEvent.pageX);
+                engaged.current = true;
             }
-            propsRef.current.onSlidingComplete?.(valRef.current);
+            if (engaged.current) propsRef.current.onSlidingComplete?.(valRef.current);
+            engaged.current = false;
         },
-        onPanResponderTerminate: () => { if (propsRef.current.holdToAdjust) endHold(); },
+        onPanResponderTerminate: () => {
+            // Taken over by the page's scrolling: keep what the slider already had.
+            if (engaged.current) propsRef.current.onSlidingComplete?.(valRef.current);
+            engaged.current = false;
+        },
     })).current;
 
     const pct = Math.max(0, Math.min(1,
@@ -127,8 +110,6 @@ export default function PureSlider({
                 left: `${pct * 100}%`,
                 marginLeft: -14,
                 backgroundColor: thumbTintColor,
-                transform: [{ scale: armed ? 1.25 : 1 }],
-                opacity: holdToAdjust && !armed ? 0.75 : 1,
             }]} />
         </View>
     );

@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import { View, Image, Text, Animated, Easing, PanResponder, StyleSheet } from 'react-native';
 import AudioEngine from '../native/AudioEngine';
 import { subscribeTransportRamp } from '../utils/transportRamp';
+import { COVER_SHADOW } from '../utils/shadow';
 
 // A vinyl record with the song's cover as its label. It spins while the song
 // plays. Dragging it scratches: the song plays at the speed and direction of
@@ -12,14 +13,12 @@ import { subscribeTransportRamp } from '../utils/transportRamp';
 // Scratching is switched off near both ends of a song (where crossfades and
 // fade-ins happen, plus a safety margin): the disc dims and ignores touches.
 
-// Two linked speeds (change both together):
-//  - SPIN_TURN_MS: how long one idle turn takes while playing (4s = 90 deg/s,
-//    slower than a real 33 1/3 rpm platter, which is 1.8s). Kept equal to
-//    RPM_DEG_PER_SEC so a finger turning at the idle pace plays normal speed.
-//  - RPM_DEG_PER_SEC: finger speed that plays the song at normal speed. It was
-//    360, and is now 600 to match the slower disc (360 x 1.8/3.0 ratio of the
-//    old and new idle speeds), so forwarding and rewinding are 40% slower.
-const SPIN_TURN_MS = 4000;
+// Speeds:
+//  - The idle spin is a real record speed (Settings: 33 1/3, 45 or 78 rpm,
+//    6 degrees per second per rpm) times the Player's playback speed, passed
+//    in as spinDegPerSec. turnMsRef holds the length of one idle turn.
+//  - RPM_DEG_PER_SEC: finger speed that plays the song at normal speed
+//    while scratching. Unchanged (90), the scratch feel was fine.
 const RPM_DEG_PER_SEC = 90;
 const MAX_RATE = 3;
 const TICK_MS = 20;
@@ -31,12 +30,16 @@ let savedDisc = null;
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
-export default function DJDisc({ size, artwork, accent, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+    // One idle turn, in ms (read at call time so a speed change applies to
+    // the next animation without rebuilding the callbacks).
+    const turnMsRef = useRef(360000 / 200);
+    turnMsRef.current = 360000 / Math.max(20, spinDegPerSec);
     const startAt = useRef(null);
     if (startAt.current === null) {
         let sp = 0, us = 0;
         if (savedDisc) {
-            const adv = (savedDisc.spinning && isPlaying) ? (Date.now() - savedDisc.at) / SPIN_TURN_MS : 0;
+            const adv = (savedDisc.spinning && isPlaying) ? (Date.now() - savedDisc.at) / turnMsRef.current : 0;
             sp = (savedDisc.spin + adv) % 1;
             us = savedDisc.user;
         }
@@ -88,7 +91,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
     const spinState = useRef('stopped');
     const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); lag.stopAnimation(); }, [spin, lag]);
     const loopFrom = useCallback((v) => {
-        Animated.loop(Animated.timing(spin, { toValue: v + 1, duration: SPIN_TURN_MS, easing: Easing.linear, useNativeDriver: true })).start();
+        Animated.loop(Animated.timing(spin, { toValue: v + 1, duration: turnMsRef.current, easing: Easing.linear, useNativeDriver: true })).start();
     }, [spin]);
     const startSpin = useCallback((rampMs) => {
         const token = ++spinToken.current;
@@ -102,7 +105,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
                     // Quadratic wind-up = the full-speed turn minus a gap that
                     // closes with an out-quad ease; the gap ends at half a
                     // turn-time of the ramp.
-                    Animated.timing(lag, { toValue: l - 0.5 * (rampMs / SPIN_TURN_MS), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                    Animated.timing(lag, { toValue: l - 0.5 * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
                 }
             });
         });
@@ -117,7 +120,7 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             if (token !== spinToken.current) return;
             lag.stopAnimation((l) => {
                 if (token !== spinToken.current) return;
-                const idle = 1000 / SPIN_TURN_MS;                 // turns per second
+                const idle = 1000 / turnMsRef.current;                 // turns per second
                 const v0 = (rate * RPM_DEG_PER_SEC) / 360;        // turns per second
                 const T = 0.08;
                 loopFrom(v);
@@ -128,13 +131,20 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             });
         });
     }, [spin, lag, loopFrom]);
+    // Speed changed (rpm setting or the Player's speed button) while the disc
+    // is turning: carry on from the same angle at the new speed.
+    useEffect(() => {
+        if (spinState.current !== 'spinning') return;
+        const token = ++spinToken.current;
+        spin.stopAnimation((v) => { if (token === spinToken.current) loopFrom(v); });
+    }, [spinDegPerSec, spin, loopFrom]);
     const slowSpin = useCallback((rampMs) => {
         if (rampMs <= 0) { stopSpin(); return; }
         const token = ++spinToken.current;
         spinState.current = 'stopped';
         spin.stopAnimation((v) => {
             if (token !== spinToken.current) return;
-            Animated.timing(spin, { toValue: v + 0.5 * (rampMs / SPIN_TURN_MS), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+            Animated.timing(spin, { toValue: v + 0.5 * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
         });
     }, [spin, stopSpin]);
 
@@ -318,9 +328,20 @@ export default function DJDisc({ size, artwork, accent, isPlaying, visible, acti
             onTouchEnd={() => { if (!draggingRef.current && onTouching) onTouching(false); }}
             onTouchCancel={() => { if (!draggingRef.current && onTouching) onTouching(false); }}>
             <Animated.View style={{ width: R, height: R, opacity: dim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.55] }) }}>
+            {/* Card-style outline (same look as the playlist cards): a ring
+                of card color behind the disc, so it does not turn with it.
+                Takes the shadow when there is one, otherwise the disc does. */}
+            {outline && (
+                <View pointerEvents="none" style={[{ position: 'absolute', top: -outlineInset, left: -outlineInset, right: -outlineInset, bottom: -outlineInset, borderRadius: (R + outlineInset * 2) / 2, backgroundColor: outlineColor }, shadow && COVER_SHADOW]} />
+            )}
+            {/* Shadow of the disc itself: a plain round shape under it (the
+                turning layers clip their children, which would cut it off). */}
+            {shadow && !outline && (
+                <View pointerEvents="none" style={[{ position: 'absolute', width: R, height: R, borderRadius: R / 2, backgroundColor: '#0a0a0a' }, COVER_SHADOW]} />
+            )}
             <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: spinDeg }] }]}>
                 <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
-                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: accent }]}>
+                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: '#2a2a2a' }]}>
                         {rings.map((f, i) => (
                             <View key={f} style={{
                                 position: 'absolute', width: R * f, height: R * f, borderRadius: (R * f) / 2,

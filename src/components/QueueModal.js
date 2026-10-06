@@ -4,6 +4,8 @@ import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { squircle } from '../utils/squircle';
+import { COVER_SHADOW } from '../utils/shadow';
+import { pillPad, PILL_COVER } from '../utils/layout';
 import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
@@ -19,7 +21,7 @@ import { getPlayCounts } from '../utils/storage';
 // rows are a consistent height regardless of content (thumb is fixed size,
 // title/artist are single-line truncated), so a constant is close enough
 // that the couple of px of slop is not visible.
-const ROW_HEIGHT = 74;
+const ROW_HEIGHT = 68;   // pill height (64) + 2 + 2 margin
 // Rows built when the sheet opens (about a screenful and a half), then more
 // shortly after the open animation, then more as the list is scrolled.
 const INITIAL_ROWS = 16;
@@ -157,6 +159,7 @@ function ShrinkOutRow({ removing, children }) {
 // nothing changed, and art / play-count lookups land one at a time, so
 // without this every visible row re-rendered on each of those.
 const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playCount, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, actions, editing, dragging, shift, live, dragY }) {
+    const { songPillShadow } = usePreferences();
     const { song, realIndex, isPriority, stableKey } = row;
     // Rows between the dragged one and its target slide out of the way.
     const shiftAnim = useRef(new Animated.Value(0)).current;
@@ -178,9 +181,9 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }]} onPress={() => actions.jump(realIndex)} onPressIn={() => actions.pressIn(stableKey)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={() => actions.pressIn(stableKey)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
                         {showSongCovers && (
-                            <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
+                            <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                                 {art
                                     ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
                                     : null
@@ -214,7 +217,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue } = usePlayback();
-    const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin } = usePreferences();
+    const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow } = usePreferences();
     // allRows is the whole upcoming queue; only the first `visibleCount` are
     // ever turned into list items, cover lookups and row components. A queue
     // built from All Songs can be thousands long, and building all of it on
@@ -703,9 +706,9 @@ export default function QueueModal({ visible, onClose }) {
                 <>
                     <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Now Playing</Text></View>
                     <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
-                        <View style={[s.qRow, { backgroundColor: base.border }]}>
+                        <View style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]}>
                             {showSongCovers && (
-                                <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(42, coverShape) }]}>
+                                <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                                     {currentTrack.artwork
                                         ? <Image source={{ uri: listArtUri(currentTrack.artwork) }} style={s.thumbImg} resizeMode="cover" />
                                         : null
@@ -824,7 +827,7 @@ const s = StyleSheet.create({
     qTitle: { color: '#e5e5e5', fontSize: 15, fontWeight: '500' },
     qArtist: { color: '#555', fontSize: 12, marginTop: 3 },
     qPlayCount: { color: '#333', fontSize: 12, marginLeft: 8 },
-    thumb: { width: 42, height: 42, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+    thumb: { width: 44, height: 44, marginRight: 12, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
     thumbImg: { width: '100%', height: '100%' },
     thumbNote: { fontSize: 18 },
 });
