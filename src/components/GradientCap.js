@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
+import { usePreferences } from '../context/PreferencesContext';
 
 // Second rewrite. First version (stacked flat-opacity View bands) was
 // "visibly steppy". Second version (Image + tintColor stretching a real
@@ -31,12 +32,15 @@ function buildBands(n) {
 }
 
 const BANDS_48 = buildBands(48);
+const BANDS_10 = buildBands(10);   // Performance mode: 10 Views instead of 48
 
 export default function GradientCap({ color = '#7c3aed', height = 90, style, flip = false }) {
-    const bandHeight = height / BANDS_48.length;
+    const { performanceMode } = usePreferences();
+    const BANDS = performanceMode ? BANDS_10 : BANDS_48;
+    const bandHeight = height / BANDS.length;
     return (
         <View pointerEvents="none" style={[styles.wrap, { height }, flip && styles.flip, style]}>
-            {BANDS_48.map((alpha, i) => (
+            {BANDS.map((alpha, i) => (
                 <View
                     key={i}
                     style={{ height: bandHeight, backgroundColor: color, opacity: alpha }}

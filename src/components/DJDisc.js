@@ -19,7 +19,11 @@ import { COVER_SHADOW } from '../utils/shadow';
 //    in as spinDegPerSec. turnMsRef holds the length of one idle turn.
 //  - RPM_DEG_PER_SEC: finger speed that plays the song at normal speed
 //    while scratching. Unchanged (90), the scratch feel was fine.
-const RPM_DEG_PER_SEC = 90;
+// Finger speed that plays the song at normal speed while scratching is the
+// disc's own speed at the Settings RPM (6 degrees per second per rpm), so a
+// finger that turns the disc as fast as it idles plays at 1x. (Passed in as
+// scratchDegPerSec; this is only the fallback.)
+const RPM_DEG_PER_SEC = 200;
 const MAX_RATE = 3;
 const TICK_MS = 20;
 
@@ -30,7 +34,7 @@ let savedDisc = null;
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
-export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', assist = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
     // One idle turn, in ms (read at call time so a speed change applies to
     // the next animation without rebuilding the callbacks).
     const turnMsRef = useRef(360000 / 200);
@@ -53,7 +57,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const viewRef = useRef(null);
     const center = useRef({ x: 0, y: 0, valid: false });
     const samples = useRef([]);
-    const snapped = useRef(false);
+    const snapped = useRef(0);
     const draggingRef = useRef(false);
     const scratchingRef = useRef(false);
     const lastAngle = useRef(null);
@@ -73,7 +77,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         Animated.timing(dim, { toValue: allowed ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
     }, [allowed, dim]);
     const live = useRef({});
-    live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard };
+    live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist };
 
     // Starting and stopping use a quadratic ease over the distance that
     // exactly matches idle speed at the join (distance = half of speed x
@@ -266,7 +270,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             smoothRate.current = 0;
             sentRate.current = 0;
             samples.current = [];
-            snapped.current = false;
+            snapped.current = 0;
             tickTimer.current = setInterval(() => {
                 const now = Date.now();
                 lastTick.current = now;
@@ -280,17 +284,23 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                 while (arr.length > 2 && now - arr[0][0] > 110) arr.shift();
                 const span = (now - arr[0][0]) / 1000;
                 const vel = span >= 0.04 ? (userRotVal.current - arr[0][1]) / span : 0;
-                let rate = Math.max(-MAX_RATE, Math.min(MAX_RATE, vel / RPM_DEG_PER_SEC));
+                let rate = Math.max(-MAX_RATE, Math.min(MAX_RATE, vel / Math.max(20, live.current.scratchDegPerSec)));
                 rate = smoothRate.current * 0.5 + rate * 0.5;
                 smoothRate.current = rate;
-                // Detents that make a steady pace easy: close to normal speed
-                // (forward or backward) it locks onto exactly 1x, and a nearly
-                // still finger holds the record dead still. Hysteresis keeps
-                // it from flickering at the edges of the lock.
+                // Speed assist (Settings): the rate clings to 0.5x, 1x and 2x
+                // (forward or backward) when the finger is close to one of
+                // them, and a nearly still finger holds the record dead still.
+                // Hysteresis keeps it from flickering at the edges of a lock.
+                // With assist off the speed is exactly the finger's.
                 const a = Math.abs(rate);
-                if (a < 0.1) rate = 0;
-                else if (Math.abs(a - 1) < (snapped.current ? 0.4 : 0.25)) { snapped.current = true; rate = rate < 0 ? -1 : 1; }
-                else snapped.current = false;
+                if (a < (live.current.assist ? 0.1 : 0.04)) { rate = 0; snapped.current = 0; }
+                else if (live.current.assist) {
+                    let best = 0, bestD = 1e9;
+                    for (const t of [0.5, 1, 2]) { const dd = Math.abs(a - t) / t; if (dd < bestD) { bestD = dd; best = t; } }
+                    const tol = snapped.current === best ? 0.3 : 0.18;
+                    if (bestD < tol) { snapped.current = best; rate = rate < 0 ? -best : best; }
+                    else snapped.current = 0;
+                }
                 const L = live.current;
                 // Never scratch into the protected zones at the ends.
                 if (rate > 0 && L.position >= L.duration - L.endGuard) rate = 0;
@@ -341,6 +351,19 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             )}
             <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: spinDeg }] }]}>
                 <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
+                    {discType === 'cd' ? (
+                        <View style={{ width: R, height: R, borderRadius: R / 2, overflow: 'hidden', backgroundColor: '#c9ccd3', alignItems: 'center', justifyContent: 'center' }}>
+                            {/* A CD: the picture is printed over the whole disc, with
+                                a clear plastic ring and the hole around the middle. */}
+                            {artwork
+                                ? <Image source={{ uri: artwork }} style={{ position: 'absolute', width: R, height: R }} resizeMode="cover" />
+                                : <Text style={{ color: '#555', fontSize: R * 0.3, textAlign: 'center' }}>♪</Text>}
+                            <View style={{ position: 'absolute', width: R * 0.97, height: R * 0.97, borderRadius: R / 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.36, height: R * 0.36, borderRadius: R * 0.18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.3, height: R * 0.3, borderRadius: R * 0.15, backgroundColor: 'rgba(232,235,242,0.82)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.09, height: R * 0.09, borderRadius: R * 0.045, backgroundColor: '#0b0b0b', borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)' }} />
+                        </View>
+                    ) : (
                     <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: '#2a2a2a' }]}>
                         {rings.map((f, i) => (
                             <View key={f} style={{
@@ -349,8 +372,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                                 borderWidth: 1, borderColor: `rgba(255,255,255,${i % 2 ? 0.05 : 0.09})`,
                             }} />
                         ))}
-                        {/* A marker on the edge so the spin is visible. */}
-                        <View style={{ position: 'absolute', top: R * 0.025, left: R / 2 - 1.5, width: 3, height: R * 0.06, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.22)' }} />
                         <View style={[s.label, { width: labelD, height: labelD, borderRadius: labelD / 2, left: (R - labelD) / 2 - 2, top: (R - labelD) / 2 - 2 }]}>
                             {artwork
                                 ? <Image source={{ uri: artwork }} style={{ width: labelD, height: labelD }} resizeMode="cover" />
@@ -358,6 +379,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                         </View>
                         <View style={{ position: 'absolute', width: R * 0.04, height: R * 0.04, borderRadius: R * 0.02, backgroundColor: '#000', left: R / 2 - R * 0.02 - 2, top: R / 2 - R * 0.02 - 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }} />
                     </View>
+                    )}
                     <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
                 </Animated.View>
             </Animated.View>

@@ -440,6 +440,27 @@ export const getAutoShowDisc = () => safe(async () => {
 export const setAutoShowDisc = (v) => safe(() => AsyncStorage.setItem('auto_show_disc', String(v)), null);
 // How fast the DJ disc turns: a real record speed ('33' is 33 1/3 rpm).
 export const DISC_RPMS = { '33': 100 / 3, '45': 45, '78': 78 };
+// Vinyl record or CD for the DJ disc.
+export const getDjDiscType = () => safe(() => AsyncStorage.getItem('dj_disc_type').then(v => (v === 'cd' ? 'cd' : 'vinyl')), 'vinyl');
+export const setDjDiscType = (v) => safe(() => AsyncStorage.setItem('dj_disc_type', v === 'cd' ? 'cd' : 'vinyl'), null);
+// Scratch speed assist: with it on, the disc clings to 0.5x, 1x and 2x.
+export const getDjDiscAssist = () => safe(() => AsyncStorage.getItem('dj_disc_assist').then(v => v !== 'false'), true);
+export const setDjDiscAssist = (v) => safe(() => AsyncStorage.setItem('dj_disc_assist', String(v)), null);
+// Which main groups on the Settings screen are hidden (also kept in the
+// Documents backup so it survives an update).
+export const getHiddenGroups = () => safe(async () => {
+    let v = await AsyncStorage.getItem('settings_hidden_groups');
+    if (v === null) {
+        const backup = await readBackup();
+        if (Array.isArray(backup?.settings_hidden_groups)) { v = JSON.stringify(backup.settings_hidden_groups); await AsyncStorage.setItem('settings_hidden_groups', v); }
+    }
+    const arr = v ? JSON.parse(v) : [];
+    return Array.isArray(arr) ? arr.filter(x => typeof x === 'string') : [];
+}, []);
+export const setHiddenGroups = (arr) => safe(async () => {
+    await AsyncStorage.setItem('settings_hidden_groups', JSON.stringify(arr));
+    await writeBackup({ settings_hidden_groups: arr });
+}, null);
 export const getDjDiscRpm = () => safe(() => AsyncStorage.getItem('dj_disc_rpm').then(v => (v && DISC_RPMS[v] ? v : '33')), '33');
 export const setDjDiscRpm = (v) => safe(() => AsyncStorage.setItem('dj_disc_rpm', v), null);
 // Card-style outline around the Player cover and disc, and around the cover
@@ -449,6 +470,29 @@ export const setPlayerOutline = (v) => safe(() => AsyncStorage.setItem('player_o
 export const getDetailOutline = () => safe(() => AsyncStorage.getItem('detail_outline').then(v => v === 'true'), false);
 export const setDetailOutline = (v) => safe(() => AsyncStorage.setItem('detail_outline', String(v)), null);
 // Shadow under the song pills (All Songs, Playlist screen and the queue).
+export const getMiniPlayerShadow = () => safe(() => AsyncStorage.getItem('mini_player_shadow').then(v => v !== 'false'), true);
+export const setMiniPlayerShadow = (v) => safe(() => AsyncStorage.setItem('mini_player_shadow', String(v)), null);
+// Performance mode: one switch for older iPhones (no shadows, lighter lists,
+// fewer background saves, no debug capture). Stored values are never changed
+// by it, so turning it off brings everything back as it was.
+export const getPerformanceMode = () => safe(() => AsyncStorage.getItem('performance_mode').then(v => v === 'true'), false);
+export const setPerformanceMode = (v) => safe(() => AsyncStorage.setItem('performance_mode', String(v)), null);
+// Use the song's own volume tag (ReplayGain) for Match Volume when it has one.
+export const getUseVolumeTags = () => safe(() => AsyncStorage.getItem('use_volume_tags').then(v => v !== 'false'), true);
+export const setUseVolumeTags = (v) => safe(() => AsyncStorage.setItem('use_volume_tags', String(v)), null);
+// Simple or Advanced Settings screen.
+export const getSettingsMode = () => safe(() => AsyncStorage.getItem('settings_mode').then(v => (v === 'advanced' ? 'advanced' : 'simple')), 'simple');
+export const setSettingsMode = (v) => safe(() => AsyncStorage.setItem('settings_mode', v === 'advanced' ? 'advanced' : 'simple'), null);
+// One saved "My Look" slot (a snapshot of the shadow/outline/shape settings).
+export const getMyLook = () => safe(async () => {
+    let v = await AsyncStorage.getItem('my_look');
+    if (v === null) { const b = await readBackup(); if (b?.my_look) { v = JSON.stringify(b.my_look); await AsyncStorage.setItem('my_look', v); } }
+    return v ? JSON.parse(v) : null;
+}, null);
+export const setMyLook = (o) => safe(async () => {
+    await AsyncStorage.setItem('my_look', JSON.stringify(o));
+    await writeBackup({ my_look: o });
+}, null);
 export const getSongPillShadow = () => safe(() => AsyncStorage.getItem('song_pill_shadow').then(v => v === 'true'), false);
 export const setSongPillShadow = (v) => safe(() => AsyncStorage.setItem('song_pill_shadow', String(v)), null);
 // Which of the Player's four top-right buttons are shown (all on by default).
@@ -527,18 +571,23 @@ export const setBackgroundImageEnabled = (v) => safe(async () => {
     await writeBackup({ bg_image_enabled: v });
 }, null);
 export const getBackgroundImageUri = () => safe(async () => {
-    const v = await AsyncStorage.getItem('bg_image_uri');
-    if (v !== null) return v;
-    const backup = await readBackup();
-    if (backup?.bg_image_uri) {
-        await AsyncStorage.setItem('bg_image_uri', backup.bg_image_uri);
-        return backup.bg_image_uri;
+    // Saved relative to Documents (like playlist covers) so it still points
+    // at the right file after an update changes the app's container path.
+    // A value saved the old way (full path) is converted when read.
+    let v = await AsyncStorage.getItem('bg_image_uri');
+    if (v === null) {
+        const backup = await readBackup();
+        if (backup?.bg_image_uri) {
+            v = backup.bg_image_uri;
+            await AsyncStorage.setItem('bg_image_uri', toStablePath(v));
+        }
     }
-    return null;
+    return v ? fromStablePath(toStablePath(v)) : null;
 }, null);
 export const setBackgroundImageUri = (v) => safe(async () => {
-    if (v) await AsyncStorage.setItem('bg_image_uri', v); else await AsyncStorage.removeItem('bg_image_uri');
-    await writeBackup({ bg_image_uri: v ?? null });
+    const stable = v ? toStablePath(v) : null;
+    if (stable) await AsyncStorage.setItem('bg_image_uri', stable); else await AsyncStorage.removeItem('bg_image_uri');
+    await writeBackup({ bg_image_uri: stable });
 }, null);
 
 // Previous button behavior. 'previous_track' — pressing it always skips to
@@ -592,6 +641,14 @@ export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics
 // to fall back to while playlist order/covers already did — which fits
 // "some of this resets and some doesn't" better than "everything's equally
 // broken." Same backup pattern as the other two, applied here too.
+const readSortMap = async () => {
+    let map = {};
+    const backup = await readBackup();
+    if (backup?.playlist_sort_orders) map = { ...stableMap(backup.playlist_sort_orders) };
+    const all = await AsyncStorage.getItem('playlist_sort_orders');
+    if (all) map = { ...map, ...stableMap(JSON.parse(all)) };
+    return map;
+};
 export const getPlaylistSort = (playlistPath) => safe(async () => {
     // Both copies are read and merged (the app's own storage wins), so a
     // sort that only made it into one of them is still found.
@@ -661,7 +718,7 @@ export const persistCoverImage = async (pickerUri, maxPx = 0) => {
 // the "same song" living in different playlists used to track separate
 // counts since they had different paths. Normalizing case/whitespace so
 // "Song.flac" and "song.flac" style differences don't split a count.
-const playCountKey = (song) => {
+export const playCountKey = (song) => {
     const t = (song?.ourTitle ?? song?.title ?? '').trim().toLowerCase();
     const a = (song?.ourArtist ?? song?.artist ?? '').trim().toLowerCase();
     return `pcn:${t}::${a}`;
@@ -708,6 +765,145 @@ export const getPlayCounts = async (songs) => {
     } catch { return {}; }
 };
 
+
+// ---- Pictures file: playlist covers + background picture --------------------
+// The settings text only carries settings. The actual pictures live in their
+// own file (SySlate-Pictures.json) that can be shared/saved and imported on
+// another device. Each picture is stored once, as base64, with a list saying
+// which playlist (path relative to Documents) uses which picture.
+const PICTURE_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
+const extOf = (u) => { const e = (String(u).split('.').pop() || 'jpg').toLowerCase().split('?')[0]; return PICTURE_EXTS.includes(e) ? e : 'jpg'; };
+const readB64 = (uri) => FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+
+export const exportPicturesFile = async () => {
+    const images = {};          // id -> { ext, data }
+    const byUri = {};           // uri -> id
+    const addImage = async (uri) => {
+        if (!uri) return null;
+        if (byUri[uri]) return byUri[uri];
+        try {
+            const info = await FileSystem.getInfoAsync(uri);
+            if (!info.exists) return null;
+            const id = 'i' + Object.keys(images).length;
+            images[id] = { ext: extOf(uri), data: await readB64(uri) };
+            byUri[uri] = id;
+            return id;
+        } catch { return null; }
+    };
+    const covers = {};
+    const map = await getPlaylistCovers();
+    for (const [path, uri] of Object.entries(map)) {
+        const id = await addImage(uri);
+        if (id) covers[toStablePath(path)] = id;
+    }
+    const bgUri = await getBackgroundImageUri();
+    const bgId = await addImage(bgUri);
+    const out = {
+        format: 'syslate-pictures', version: 1,
+        images, covers,
+        background: bgId ? { id: bgId, enabled: await getBackgroundImageEnabled() } : null,
+    };
+    if (!Object.keys(images).length) throw new Error('No cover or background pictures to export.');
+    const dest = FileSystem.cacheDirectory + 'SySlate-Pictures.json';
+    await FileSystem.writeAsStringAsync(dest, JSON.stringify(out));
+    return { uri: dest, covers: Object.keys(covers).length, background: !!bgId };
+};
+
+export const importPicturesFile = async (fileUri) => {
+    const parsed = JSON.parse(await FileSystem.readAsStringAsync(fileUri));
+    if (!parsed || parsed.format !== 'syslate-pictures' || typeof parsed.images !== 'object') throw new Error('Not a SySlate pictures file.');
+    const dir = FileSystem.documentDirectory + '.covers/';
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => { });
+    const stamp = Date.now();
+    const written = {};         // id -> new uri
+    for (const [id, img] of Object.entries(parsed.images)) {
+        if (!img || typeof img.data !== 'string' || !PICTURE_EXTS.includes(img.ext)) continue;
+        const isBg = parsed.background?.id === id;
+        const dest = dir + 'cover_' + stamp + '_' + id + (isBg ? '_screen.jpg' : '_s.jpg');
+        // Background keeps the "_screen.jpg" name the app expects (and gets
+        // its tiny "_lo" copy back); covers keep whatever format they were.
+        const realDest = isBg ? dest : dir + 'cover_' + stamp + '_' + id + '.' + img.ext;
+        await FileSystem.writeAsStringAsync(realDest, img.data, { encoding: FileSystem.EncodingType.Base64 });
+        written[id] = realDest;
+    }
+    let coverCount = 0;
+    for (const [path, id] of Object.entries(parsed.covers || {})) {
+        if (!written[id] || typeof path !== 'string') continue;
+        await setPlaylistCover(fromStablePath(path), written[id]);
+        coverCount++;
+    }
+    let bg = false;
+    const b = parsed.background;
+    if (b && written[b.id]) {
+        const old = await getBackgroundImageUri();
+        const uri = written[b.id];
+        try { await AudioEngine.makeThumbnail(uri, uri.replace(/_screen\.jpg$/, '_lo.jpg'), 240); } catch { }
+        await setBackgroundImageUri(uri);
+        await setBackgroundImageEnabled(!!b.enabled);
+        if (old && old !== uri) deleteStoredImage(old);
+        bg = true;
+    }
+    return { covers: coverCount, background: bg };
+};
+
+// ---- Auto backup: the last 3 copies of all settings, kept in Documents ------
+// (covers and the background are not in it, they live in their own files and
+// stay in Documents anyway). A copy is made about once a day when the app
+// opens, or on demand.
+const autoPath = (n) => FileSystem.documentDirectory + `.syslate_autobackup_${n}.json`;
+export const autoBackupNow = async () => {
+    const text = await exportAllSettings();
+    for (const [from, to] of [[2, 3], [1, 2]]) {
+        try {
+            const info = await FileSystem.getInfoAsync(autoPath(from));
+            if (info.exists) { await FileSystem.deleteAsync(autoPath(to), { idempotent: true }); await FileSystem.moveAsync({ from: autoPath(from), to: autoPath(to) }); }
+        } catch { }
+    }
+    await FileSystem.writeAsStringAsync(autoPath(1), text);
+    await AsyncStorage.setItem('last_auto_backup', String(Date.now()));
+};
+export const autoBackupIfDue = () => safe(async () => {
+    const last = parseInt(await AsyncStorage.getItem('last_auto_backup')) || 0;
+    if (Date.now() - last > 20 * 3600 * 1000) await autoBackupNow();
+}, null);
+export const listAutoBackups = () => safe(async () => {
+    const out = [];
+    for (const n of [1, 2, 3]) {
+        const info = await FileSystem.getInfoAsync(autoPath(n));
+        if (info.exists) out.push({ n, time: (info.modificationTime || 0) * 1000 });
+    }
+    return out;
+}, []);
+export const restoreAutoBackup = async (n) => importAllSettings(await FileSystem.readAsStringAsync(autoPath(n)));
+
+// ---- Listening stats ---------------------------------------------------------
+// Everything comes from the play counts that are already kept (one per song,
+// matched by title + artist). Time is an estimate: plays x song length.
+export const getListeningStats = async (songs) => {
+    const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:'));
+    const counts = {};
+    (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) counts[k] = n; });
+    const byKey = {};
+    for (const s of songs) { const k = playCountKey(s); if (!byKey[k]) byKey[k] = s; }
+    let totalPlays = 0, seconds = 0, played = 0;
+    const rows = [];
+    const artists = {};
+    for (const [k, n] of Object.entries(counts)) {
+        const song = byKey[k];
+        totalPlays += n;
+        const [t, a] = k.slice(4).split('::');
+        const title = song ? (song.ourTitle ?? song.title) : t;
+        const artist = song ? (song.ourArtist ?? song.artist) : a;
+        if (song) { played++; seconds += n * (song.duration || 0); }
+        rows.push({ title, artist, n });
+        const an = (artist || 'Unknown').trim() || 'Unknown';
+        artists[an] = (artists[an] || 0) + n;
+    }
+    rows.sort((x, y) => y.n - x.n);
+    const topArtists = Object.entries(artists).sort((x, y) => y[1] - x[1]).slice(0, 5).map(([name, n]) => ({ name, n }));
+    return { totalPlays, hours: seconds / 3600, played, librarySize: songs.length, topSongs: rows.slice(0, 10), topArtists };
+};
+
 export const exportAllSettings = async () => {
     // crossfade_duration_eot and crossfade_duration_skip (the split-out End
     // of Track / On Skip crossfade durations) were missing from this list —
@@ -725,10 +921,33 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'playlist_view_format', 'playlist_order', 'playlist_covers', 'show_play_count', 'show_song_covers', 'playlist_sort_orders', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'bg_image_enabled', 'bg_image_uri', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'auto_show_cover', 'auto_show_lyrics', 'auto_show_disc', 'dj_disc_rpm', 'player_outline', 'detail_outline', 'song_pill_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
+    // Layout, playlist order and every sort (each playlist's, and All Songs')
+    // are read through their getters, which also look in the Documents backup
+    // file, so the export is complete even when the app's own storage lost
+    // them. Paths are written relative to Documents, so they match on any
+    // device that has the same folders.
+    try {
+        obj.playlist_view_format = await getPlaylistViewFormat();
+        const order = (await getPlaylistOrder()).map(toStablePath);
+        if (order.length) obj.playlist_order = JSON.stringify(order);
+        const sorts = await readSortMap();
+        if (Object.keys(sorts).length) obj.playlist_sort_orders = JSON.stringify(sorts);
+    } catch { }
+    // Play counts, so "Most Played" sorting means the same thing on the other
+    // device. (Covers and the background picture are in the separate
+    // pictures file, see exportPicturesFile.)
+    try {
+        const allKeys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:'));
+        if (allKeys.length) {
+            const counts = {};
+            (await AsyncStorage.multiGet(allKeys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) counts[k] = n; });
+            if (Object.keys(counts).length) obj.play_counts = JSON.stringify(counts);
+        }
+    } catch { }
     return JSON.stringify(obj, null, 2);
 };
 
@@ -767,7 +986,7 @@ export const importAllSettings = async (jsonString) => {
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
         'top_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
-        'auto_show_cover', 'auto_show_lyrics', 'auto_show_disc', 'player_outline', 'detail_outline', 'song_pill_shadow',
+        'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'performance_mode', 'use_volume_tags',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -788,7 +1007,7 @@ export const importAllSettings = async (jsonString) => {
     };
     // Keys whose value is itself a JSON-encoded string — validated by
     // shape (array vs plain object), not by deep-inspecting every entry.
-    const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order']);
+    const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order', 'settings_hidden_groups']);
     const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders', 'eq_preset_overrides']);
     // Plain string settings (enum-like ids, URIs) — no fixed enum list
     // enforced here (a future app version could legitimately add new
@@ -799,7 +1018,7 @@ export const importAllSettings = async (jsonString) => {
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
-        'artist_display_join', 'dj_disc_rpm',
+        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.
@@ -849,6 +1068,17 @@ export const importAllSettings = async (jsonString) => {
             try {
                 const parsed = JSON.parse(value);
                 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) toWrite.push([key, value]);
+            } catch { }
+        } else if (key === 'play_counts') {
+            // Merged with this device's own counts (the higher number wins),
+            // never lowering anything.
+            try {
+                const parsed = JSON.parse(value);
+                const entries = Object.entries(parsed || {}).filter(([k, n]) => k.startsWith('pcn:') && Number.isInteger(n) && n > 0 && n < 1e7).slice(0, 20000);
+                if (entries.length) {
+                    const have = Object.fromEntries(await AsyncStorage.multiGet(entries.map(([k]) => k)));
+                    entries.forEach(([k, n]) => { if (n > (parseInt(have[k]) || 0)) toWrite.push([k, String(n)]); });
+                }
             } catch { }
         } else if (key === 'last_session') {
             // Most safety-critical one to get wrong — restoreSession reads

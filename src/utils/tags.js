@@ -33,7 +33,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // clean re-extraction; fixing the parser alone does nothing for a song
 // that was already scanned once. Bump again any time the extraction logic
 // itself changes in a way that should apply to already-scanned libraries.
-const CACHE_KEY = 'song_tags_cache_v4';
+const CACHE_KEY = 'song_tags_cache_v5';
 const FRONT_PREFIX_BYTES = 1 * 1024 * 1024; // tags live at the front for every format handled here
 
 let cacheMapPromise = null;
@@ -218,6 +218,8 @@ function parseVorbisCommentBlock(bytes, offset, end) {
         else if (key === 'ARTIST' && val) artists.push(val);
         else if (key === 'ALBUM' && !out.album) out.album = val;
         else if (key === 'TRACKNUMBER' && !out.track) out.track = val;
+        else if (key === 'REPLAYGAIN_TRACK_GAIN' && out.rgDb === undefined) { const g = parseFloat(val); if (isFinite(g)) out.rgDb = g; }
+        else if (key === 'REPLAYGAIN_TRACK_PEAK' && out.rgPeak === undefined) { const g = parseFloat(val); if (isFinite(g) && g > 0) out.rgPeak = g; }
     }
     if (artists.length === 1) out.artist = artists[0];
     else if (artists.length > 1) out.artists = artists;
@@ -388,6 +390,16 @@ function extractTagsFromId3(bytes) {
         }
         else if (id === 'TALB' && !out.album) out.album = decodeId3Text(bytes.slice(frameStart, frameStart + size));
         else if (id === 'TRCK' && !out.track) out.track = decodeId3Text(bytes.slice(frameStart, frameStart + size));
+        else if (id === 'TXXX') {
+            // User text frame: description, then value (ReplayGain lives here).
+            const vals = decodeId3TextMulti(bytes.slice(frameStart, frameStart + size));
+            if (vals.length >= 2) {
+                const key = String(vals[0]).toUpperCase();
+                const g = parseFloat(vals[1]);
+                if (key === 'REPLAYGAIN_TRACK_GAIN' && out.rgDb === undefined && isFinite(g)) out.rgDb = g;
+                else if (key === 'REPLAYGAIN_TRACK_PEAK' && out.rgPeak === undefined && isFinite(g) && g > 0) out.rgPeak = g;
+            }
+        }
         p = frameStart + size;
     }
     return Object.keys(out).length ? out : null;

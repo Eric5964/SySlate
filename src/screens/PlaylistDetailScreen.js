@@ -50,7 +50,7 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, ui } = usePreferences();
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -222,9 +222,10 @@ export default function PlaylistDetailScreen() {
                 contentContainerStyle={{ paddingBottom: 160 }}
                 // Keep more rows mounted so covers already on screen stay decoded
                 // while scrolling back, instead of reloading each time.
-                initialNumToRender={14}
-                windowSize={15}
-                maxToRenderPerBatch={10}
+                initialNumToRender={performanceMode ? 8 : 14}
+                windowSize={performanceMode ? 5 : 15}
+                maxToRenderPerBatch={performanceMode ? 4 : 10}
+                updateCellsBatchingPeriod={performanceMode ? 90 : 50}
                 ListHeaderComponent={
                     <View>
                         {ui.pd_cover !== false && (

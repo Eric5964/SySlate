@@ -1,6 +1,8 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, Dimensions, Image, AppState, Animated } from 'react-native';
+import { View, Text, Dimensions, Image, AppState, Animated, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { autoBackupIfDue, listAutoBackups, restoreAutoBackup } from './utils/storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
@@ -44,6 +46,7 @@ import PlaylistDetailScreen from './screens/PlaylistDetailScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import PlayerScreen from './screens/PlayerScreen';
 import DebugLogScreen from './screens/DebugLogScreen';
+import StatsScreen from './screens/StatsScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { PersistentBackgroundImage } from './components/ScreenBackground';
 import { preloadArtCache } from './utils/embeddedArt';
@@ -206,6 +209,30 @@ function MainLayout() {
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null, covers: {} });
     const [playerReady, setPlayerReady] = useState(false);
+    // Daily automatic copy of the settings. If the app's own storage was wiped
+    // (it has never opened before, but a backup copy exists in Documents), ask
+    // once whether to restore it.
+    useEffect(() => {
+        if (!playerReady) return;
+        (async () => {
+            try {
+                const launched = await AsyncStorage.getItem('app_launched_before');
+                await AsyncStorage.setItem('app_launched_before', '1');
+                if (!launched) {
+                    const list = await listAutoBackups();
+                    if (list.length) {
+                        const when = list[0].time ? new Date(list[0].time).toLocaleDateString() : 'earlier';
+                        Alert.alert('Restore your settings?', `Your settings look like they were reset. A backup from ${when} is available.`, [
+                            { text: 'Not now', style: 'cancel' },
+                            { text: 'Restore', onPress: async () => { try { await restoreAutoBackup(list[0].n); Alert.alert('Restored', 'Close and reopen SySlate to apply.'); } catch { Alert.alert('Could not restore', 'That backup could not be read.'); } } },
+                        ]);
+                        return;
+                    }
+                }
+                autoBackupIfDue();
+            } catch { }
+        })();
+    }, [playerReady]);
     const { ready: themeReady, base } = useTheme();
     const { showSongCovers, keepScreenAwake, backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const playbackState = usePlaybackState();
@@ -416,6 +443,7 @@ function AppInner() {
                                 navigation feel, so it deliberately doesn't get
                                 any of the custom transition tuning below. */}
                             <Root.Screen name="DebugLog" component={DebugLogScreen} />
+                            <Root.Screen name="Stats" component={StatsScreen} />
                             <Root.Screen
                                 name="Player"
                                 component={PlayerScreen}

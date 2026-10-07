@@ -58,6 +58,11 @@ async function applyTags(track, albumFromFolder, artistSeparator) {
         artist: artist !== undefined && artist !== '' ? artist : track.artist,
         ourArtist: artist !== undefined && artist !== '' ? artist : track.ourArtist,
         album: (!albumFromFolder && tags.album) || track.album,
+        // Volume tag (ReplayGain track gain), limited so the boost can never
+        // push the song's tagged peak past full scale.
+        replayGainDb: typeof tags.rgDb === 'number'
+            ? (tags.rgPeak ? Math.min(tags.rgDb, -20 * Math.log10(tags.rgPeak)) : tags.rgDb)
+            : undefined,
     };
 }
 

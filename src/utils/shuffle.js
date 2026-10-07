@@ -7,48 +7,53 @@ export function shuffleArray(arr) {
   return a;
 }
 
-// Independent random pick per slot, WITH replacement — unlike shuffleArray's
-// Fisher-Yates shuffle (which guarantees every song plays exactly once
-// before any repeats), this can repeat a song sooner or skip one entirely in
-// a given pass. That's what actually distinguishes "True Random" from "Full
-// Cycle" — previously both modes called shuffleArray and were identical.
-export function trueRandomArray(arr) {
-  if (arr.length === 0) return [];
+// Independent weighted pick per slot, WITH replacement. Unlike
+// shuffleArray's Fisher-Yates shuffle (every song exactly once per round),
+// this can repeat a song sooner or skip one entirely in a round, so Random,
+// Smart and Dumb never "cycle" through the whole playlist. The same song is
+// never picked twice in a row (when there is more than one song). With
+// every weight equal this is True Random.
+function weightedPicks(arr, weightOf) {
+  const n = arr.length;
+  if (n === 0) return [];
+  const w = arr.map(weightOf);
+  const total = w.reduce((a, b) => a + b, 0);
+  const pick = (skip) => {
+    let totalNow = total - (skip >= 0 ? w[skip] : 0);
+    let r = Math.random() * totalNow;
+    for (let i = 0; i < n; i++) {
+      if (i === skip) continue;
+      r -= w[i];
+      if (r <= 0) return i;
+    }
+    return skip === n - 1 ? n - 2 : n - 1;
+  };
   const out = [];
-  for (let i = 0; i < arr.length; i++) {
-    out.push(arr[Math.floor(Math.random() * arr.length)]);
+  let prev = -1;
+  for (let i = 0; i < n; i++) {
+    const idx = n === 1 ? 0 : pick(prev);
+    out.push(arr[idx]);
+    prev = idx;
   }
   return out;
 }
 
-// Smart shuffle: a random order that gently favors songs you've played less.
-// Each song gets a weight of 1 / (1 + plays)^0.4, so a song played 10 times
-// is still about 40% as likely to land early as a never-played one. It's a
-// nudge, not a rule. Uses weighted random sampling (Efraimidis-Spirakis):
-// sort by random^(1/weight). `counts` is { [song.id]: playCount }; without
-// it this is a plain shuffle.
-export function smartShuffle(tracks, counts = {}) {
-  const keyed = tracks.map(t => {
-    const plays = Math.max(0, counts[t.id] || 0);
-    const weight = 1 / Math.pow(1 + plays, 0.4);
-    return { t, k: Math.pow(Math.random() || 1e-9, 1 / weight) };
-  });
-  keyed.sort((a, b) => b.k - a.k);
-  return keyed.map(x => x.t);
+export function trueRandomArray(arr) {
+  return weightedPicks(arr, () => 1);
 }
 
-// "Dumb" shuffle: the mirror image of smart shuffle. Songs you have played
-// more get the bigger weight, (1 + plays)^0.4, so your most-played songs tend
-// to come up earlier. Same gentle nudge, same weighted sampling; a song with
-// zero plays can still land anywhere.
+// Smart shuffle: random picks that gently favor songs you've played less.
+// Each song's weight is 1 / (1 + plays)^0.4, so a song played 10 times is
+// still about 40% as likely as a never-played one. `counts` is
+// { [song.id]: playCount }; without it this is plain random.
+export function smartShuffle(tracks, counts = {}) {
+  return weightedPicks(tracks, t => 1 / Math.pow(1 + Math.max(0, counts[t.id] || 0), 0.4));
+}
+
+// "Dumb" shuffle: the mirror image. Songs you have played more get the
+// bigger weight, (1 + plays)^0.4, so your most-played songs come up more.
 export function dumbShuffle(tracks, counts = {}) {
-  const keyed = tracks.map(t => {
-    const plays = Math.max(0, counts[t.id] || 0);
-    const weight = Math.pow(1 + plays, 0.4);
-    return { t, k: Math.pow(Math.random() || 1e-9, 1 / weight) };
-  });
-  keyed.sort((a, b) => b.k - a.k);
-  return keyed.map(x => x.t);
+  return weightedPicks(tracks, t => Math.pow(1 + Math.max(0, counts[t.id] || 0), 0.4));
 }
 
 export function buildQueue(tracks, mode, counts) {

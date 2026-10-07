@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
@@ -1491,6 +1492,12 @@ export function PlaybackProvider({ children }) {
         await applyEQPreset(id);
     }, []);
 
+    // What was written last. The 5-second checkpoint used to rewrite the whole
+    // queue (twice) even when nothing had changed, which stalls older phones
+    // with big libraries. Now: nothing is written when the song, queue and
+    // spot are all unchanged (paused), and the per-playlist copy is only
+    // rewritten when the song/queue/shuffle changed.
+    const lastSavedRef = useRef({ sig: '', pos: -1 });
     const saveSession = useCallback(async () => {
         const pl = playlistRef.current;
         if (!pl?.path) return;
@@ -1511,13 +1518,22 @@ export function PlaybackProvider({ children }) {
             ]);
             if (index !== null) {
                 const pos = progress?.position ?? 0;
+                const sig = `${pl.path}|${index}|${queue.length}|${queue[index]?.id ?? ''}|${queue[queue.length - 1]?.id ?? ''}|${shuffleOnRef.current}|${shuffleModeRef.current}|${priorityRef.current.length}`;
+                const last = lastSavedRef.current;
+                // Performance mode only: skip the write when nothing changed and
+                // only rewrite the per-playlist copy when the song/queue changed.
+                const sameSong = perf.on && sig === last.sig;
+                if (perf.on && sameSong && Math.abs(pos - last.pos) < 0.5) return;
+                lastSavedRef.current = { sig, pos };
                 // Merge into what is already saved: this used to replace the whole
                 // entry, which erased the playlist's own shuffle on/off and mode
                 // at every track change (so a later reload fell back to the
                 // global shuffle setting, even after pressing Play in order).
-                const prevSession = await getSession(pl.path);
                 const shufOn = shuffleOnRef.current;
-                await setSession(pl.path, { ...(prevSession || {}), queue, index, shuffleOn: shufOn, shuffleMode: shuffleModeRef.current });
+                if (!sameSong) {
+                    const prevSession = await getSession(pl.path);
+                    await setSession(pl.path, { ...(prevSession || {}), queue, index, shuffleOn: shufOn, shuffleMode: shuffleModeRef.current });
+                }
                 // priorityCount is enough to reconstruct which of the
                 // tracks right after `index` were priority-queued on
                 // restore — the queue array already preserves their actual
@@ -1564,7 +1580,9 @@ export function PlaybackProvider({ children }) {
         // remains, and a tighter interval just means whatever position
         // it last captured is closer to the truth if that specific save
         // never got to run to completion.
-        const interval = setInterval(() => saveSessionRef.current?.(), 5000);
+        let tick = 0;
+        // Performance mode checkpoints every 10s instead of every 5s.
+        const interval = setInterval(() => { if (perf.on && (tick++ % 2)) return; saveSessionRef.current?.(); }, 5000);
         return () => clearInterval(interval);
     }, []);
 

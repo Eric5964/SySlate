@@ -595,9 +595,14 @@ export async function pauseWithRamp() {
     // the end of ramps as a full pause, making it difficult to play the
     // song": the very next real Play tap got queued behind this pointless
     // multi-second no-op instead of running immediately.
-    if ((await AudioEngine.getState()) !== State.Playing) return;
+    // The lock is taken BEFORE the state check below. It used to be taken
+    // after it, and that await left a window where a quick Play tap passed
+    // the lock check and started its own ramp-in while this pause was
+    // about to start a ramp-out (two ramps on one volume at once).
     rampLock = true;
+    let wasNoop = false;
     try {
+        if ((await AudioEngine.getState()) !== State.Playing) { wasNoop = true; return; }
         const useFade = await getRampOnPause();
         const ramp = await getAudioRamp();
         // Same real bug as playWithRamp's own activeFadeId === null guard
@@ -624,7 +629,7 @@ export async function pauseWithRamp() {
             try { await AudioEngine.setNowPlayingPaused(true); } catch { }
         }
     } finally {
-        await sleep(60);
+        if (!wasNoop) await sleep(60);
         rampLock = false;
         drainPending();
     }

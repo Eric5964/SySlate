@@ -30,6 +30,9 @@ struct Track {
     // listener) was always comparing `undefined === undefined`, silently
     // no-op'ing back to comparing by `id` alone regardless.
     var qid: String?
+    // ReplayGain-style track gain from the song's tags, in dB, already limited
+    // by the tag's peak on the JS side. Only sent when "Use Volume Tags" is on.
+    var replayGainDb: Double?
 
     init?(dict: NSDictionary) {
         guard let idVal = dict["id"] as? String,
@@ -45,6 +48,7 @@ struct Track {
         self.artwork = dict["artwork"] as? String
         self.duration = dict["duration"] as? Double
         self.qid = dict["_qid"] as? String
+        self.replayGainDb = dict["replayGainDb"] as? Double
     }
 
     func toDict() -> [String: Any] {
@@ -1101,6 +1105,12 @@ class AudioEngine: RCTEventEmitter {
     // consistent target across files given how it's measured.
     private let targetSampleRms: Float = 0.09
 
+    // Volume Match from the song's own tag: linear gain, kept in a safe range.
+    private func tagGain(for track: Track) -> Float? {
+        guard let db = track.replayGainDb, db.isFinite else { return nil }
+        return Float(min(2.0, max(0.25, pow(10.0, db / 20.0))))
+    }
+
     private func analyzeFile(_ file: AVAudioFile, path: String) -> FileAnalysis {
         let sizeKey = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 ?? 0) ?? 0
         if let cached = AudioEngine.analysisCache[path], cached.fileSize == sizeKey {
@@ -1315,7 +1325,7 @@ class AudioEngine: RCTEventEmitter {
                 // Volume is on, which is "the app lags and drops all
                 // inputs with audio ramping" (ramping's plain skip/advance
                 // path goes through here, not through startCrossfade).
-                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || self?.betweenTrackNormEnabled == true)
+                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || (self?.betweenTrackNormEnabled == true && track.replayGainDb == nil))
                     ? self?.analyzeFile(file, path: track.url.path) : nil
                 // Temporary diagnostic logging — tagged [RAMP-DEBUG], see
                 // the matching tag in PlaybackService.js's playWithRamp.
@@ -1374,6 +1384,7 @@ class AudioEngine: RCTEventEmitter {
                     gainCorrection = analysis.gainCorrection
                 }
             }
+            if betweenTrackNormEnabled, let tg = tagGain(for: track) { gainCorrection = tg }
             segmentStartOffsetSeconds = effectiveStartAtSeconds
             frozenPositionSeconds = nil // new segment: its origin is the truth
             currentTrailingCutSeconds = trailingCutSeconds
@@ -1494,6 +1505,7 @@ class AudioEngine: RCTEventEmitter {
     // outgoing track is still actually playing when advance() runs for a
     // skip — this gives natural completion that same real head start).
     private func scheduleCrossfadeLeadIn() {
+        leadDeferCount = 0
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
         guard crossfadeEnabled, crossfadeDurationEndOfTrackSeconds > 0.05 else { return }
@@ -1534,14 +1546,37 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer = timer
     }
 
+    private var leadDeferCount = 0
     private func fireCrossfadeLeadIn() {
         crossfadeLeadTimer = nil
         // Conditions may have changed since this was armed (paused,
         // settings toggled off, another crossfade already running from
         // some other path) — re-check everything rather than trusting the
         // state from when it was scheduled.
-        guard state == .playing, !isCrossfading, crossfadeEnabled, crossfadeDurationEndOfTrackSeconds > 0.05 else { return }
+        guard state == .playing, !isCrossfading, crossfadeEnabled, crossfadeDurationEndOfTrackSeconds > 0.05 else { leadDeferCount = 0; return }
         guard let idx = currentIndex else { return }
+        // A pause is fading out right now (JS marks the display as paused
+        // when the pause ramp starts, the real pause comes at its end). Do NOT
+        // start the crossfade into the next song then: it used to cut the
+        // pause ramp short and move on to the next song while "paused". Check
+        // again shortly. If the pause completes, state is no longer .playing
+        // and the next Play re-arms this timer; if playback resumed instead,
+        // work out the timing again from the real position.
+        if displayedAsPaused == true && leadDeferCount < 40 {
+            leadDeferCount += 1
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+                self?.fireCrossfadeLeadIn()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            crossfadeLeadTimer = timer
+            return
+        }
+        if leadDeferCount > 0 {
+            leadDeferCount = 0
+            debugLog("[XFADE] lead-in was held back during a pause fade; re-timing from the real position")
+            scheduleCrossfadeLeadIn()
+            return
+        }
         if repeatMode == .track {
             crossfadeSelfLoop = true
             startCrossfade(toIndex: idx, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds)
@@ -1801,7 +1836,7 @@ class AudioEngine: RCTEventEmitter {
                 // doing this synchronously in runCrossfade below would
                 // block the main thread on first-time PCM sampling for a
                 // file that hasn't been cached yet.
-                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || self?.betweenTrackNormEnabled == true)
+                let analysis: FileAnalysis? = (self?.silenceTrimEnabled == true || (self?.betweenTrackNormEnabled == true && track.replayGainDb == nil))
                     ? self?.analyzeFile(file, path: track.url.path) : nil
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else {
@@ -1842,7 +1877,7 @@ class AudioEngine: RCTEventEmitter {
                     // plain load already does.
                     let leadIn = self.silenceTrimEnabled ? (analysis?.leadInSeconds ?? 0) : 0
                     let trailingCut = self.silenceTrimEnabled ? (analysis?.trailingCutSeconds ?? 0) : 0
-                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, gainCorrection: analysis?.gainCorrection ?? 1.0, leadInSeconds: leadIn, trailingCutSeconds: trailingCut, duration: duration, token: token)
+                    self.runCrossfade(file: file, track: track, idx: idx, outgoingNode: outgoingNode, incomingNode: incomingNode, outgoingVolumeStart: outgoingVolumeStart, gainCorrection: (self.betweenTrackNormEnabled ? self.tagGain(for: track) : nil) ?? analysis?.gainCorrection ?? 1.0, leadInSeconds: leadIn, trailingCutSeconds: trailingCut, duration: duration, token: token)
                 }
             } catch {
                 DispatchQueue.main.async {

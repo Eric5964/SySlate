@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 
 const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
+let useVolumeTags = true;
 
 export const Event = {
     PlaybackState: 'PlaybackState',
@@ -78,7 +79,10 @@ const AudioEngine = {
     setupPlayer: (options = {}) => NativeAudioEngine.setupPlayer(options),
     updateOptions: (options = {}) => NativeAudioEngine.updateOptions(options),
 
-    add: (tracks, insertBeforeIndex = null) => NativeAudioEngine.add(Array.isArray(tracks) ? tracks : [tracks], insertBeforeIndex),
+    // "Use Volume Tags" (Settings): when off, the tag gain is not sent, so
+    // Match Volume falls back to its own estimate.
+    setUseVolumeTags: (on) => { useVolumeTags = !!on; },
+    add: (tracks, insertBeforeIndex = null) => NativeAudioEngine.add((Array.isArray(tracks) ? tracks : [tracks]).map(t => (t && t.replayGainDb !== undefined && !useVolumeTags ? { ...t, replayGainDb: undefined } : t)), insertBeforeIndex),
     // index-based (a single index, or an array of them), matching RNTP —
     // NOT ids. See AudioEngine.swift's comment on remove() for why: every
     // existing PlaybackContext.js call site already passes an index, and

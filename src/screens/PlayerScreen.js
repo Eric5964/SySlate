@@ -100,7 +100,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, autoShowCover, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -262,6 +262,7 @@ export default function PlayerScreen() {
             // instead of just skipping the seek call.
             const now = Date.now();
             if (Math.abs(targetRatio - lastNativeSeekRef.current.ratio) < 0.005 && now - lastNativeSeekRef.current.at < 800) {
+                console.log('[SEEK-DEBUG] commit skipped: same spot as the seek just made');
                 return;
             }
             lastNativeSeekRef.current = { ratio: targetRatio, at: now };
@@ -282,10 +283,12 @@ export default function PlayerScreen() {
             // no-op cleanly — see forceReleaseFade above) and restoring
             // full volume before the seek lands means there's exactly one
             // thing driving playback state through a seek, not two.
-            if (isTransitionLocked()) {
-                forceReleaseFade();
-                AudioEngine.setVolume(1).catch(() => { });
-            }
+            // A fade (play ramp-in or pause ramp-out) that is running keeps
+            // running: the seek moves the song position underneath it, the
+            // bar shows the new spot at once, and the fade finishes on its
+            // own (a pause ramp still ends in the pause). It used to cut the
+            // fade and set the volume to full, which left a pause half done.
+            if (isTransitionLocked()) console.log('[SEEK-DEBUG] seek during a fade: fade left running');
             // Was: clearDragTimer fired unconditionally 300ms after commit,
             // regardless of whether this seek had actually landed natively
             // yet. Once dragRatio cleared, the drift-correction effect
@@ -326,6 +329,7 @@ export default function PlayerScreen() {
                 }
             });
         } else {
+            console.log('[SEEK-DEBUG] commit skipped: no duration known yet');
             // No known duration to seek within — nothing was actually
             // asked of native, so there's nothing to wait on converging.
             clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
@@ -444,7 +448,7 @@ export default function PlayerScreen() {
     const [lyricsData, setLyricsData] = useState(() => (initialLyricsPeek !== undefined ? initialLyricsPeek : null));
     const [showingLyrics, setShowingLyrics] = useState(() => autoShowLyrics && !!initialLyricsPeek);
     useEffect(() => {
-        if (!currentTrack?.id) {
+        if (!currentTrack?.id || lyricsMode === 'off') {
             setLyricsData(null);
             setShowingLyrics(false);
             return;
@@ -469,7 +473,7 @@ export default function PlayerScreen() {
             setShowingLyrics(autoShowLyrics && !!data);
         });
         return () => { cancelled = true; };
-    }, [currentTrack?.id, autoShowLyrics]);
+    }, [currentTrack?.id, autoShowLyrics, lyricsMode]);
 
     // Only polls directly when useProgress doesn't yet have real data to
     // offer — either genuinely paused (position isn't moving on its own, so
@@ -579,7 +583,8 @@ export default function PlayerScreen() {
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
     useEffect(() => { if (showingLyrics && showingDisc) setShowingDisc(false); }, [showingLyrics, showingDisc]);
     const hasLyricsView = !!lyricsData;
-    const djDisc = true;   // the disc is always one tap away on the view button
+    // The disc only exists when the DJ Disc setting is on.
+    useEffect(() => { if (!djDisc) setShowingDisc(false); }, [djDisc]);
     const cycleView = () => {
         // cover -> lyrics -> disc -> cover, skipping what is unavailable.
         if (showingLyrics) { setShowingLyrics(false); if (djDisc) setShowingDisc(true); return; }
@@ -1001,6 +1006,9 @@ export default function PlayerScreen() {
                                     outline={playerOutline}
                                     outlineColor={base.surface}
                                     spinDegPerSec={discRpmValue * 6 * (playbackRate || 1)}
+                                    scratchDegPerSec={discRpmValue * 6}
+                                    discType={djDiscType}
+                                    assist={djDiscAssist}
                                     isPlaying={isPlaying}
                                     visible={showingDisc}
                                     trackKey={currentTrack?._qid ?? currentTrack?.id}

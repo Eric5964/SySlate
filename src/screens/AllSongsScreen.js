@@ -49,7 +49,7 @@ export default function AllSongsScreen() {
     const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui } = usePreferences();
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -232,9 +232,10 @@ export default function AllSongsScreen() {
                     contentContainerStyle={{ paddingBottom: 150 }}
                     // Keep more rows mounted so covers already on screen stay decoded
                     // while scrolling back, instead of reloading each time.
-                    initialNumToRender={14}
-                    windowSize={15}
-                    maxToRenderPerBatch={10}
+                    initialNumToRender={performanceMode ? 8 : 14}
+                    windowSize={performanceMode ? 5 : 15}
+                    maxToRenderPerBatch={performanceMode ? 4 : 10}
+                    updateCellsBatchingPeriod={performanceMode ? 90 : 50}
                     onScrollBeginDrag={Keyboard.dismiss}
                     renderItem={({ item }) => (
                     <SongRow
@@ -295,7 +296,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE },
+    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5 },
     searchBlock: { paddingHorizontal: 16, paddingBottom: 10 },
     // Was 'flex-end' — with paddingTop:60 identical to Playlists' own
     // header, this was the actual cause of "All Songs title sits lower

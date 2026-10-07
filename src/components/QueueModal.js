@@ -10,6 +10,7 @@ import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { listArtUri } from '../utils/embeddedArt';
+import { perf } from '../utils/perf';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
 import { getPlayCounts } from '../utils/storage';
@@ -798,10 +799,10 @@ export default function QueueModal({ visible, onClose }) {
                     // (getItemLayout would need per-type-accurate heights to
                     // be exact), enough to help FlatList size its initial
                     // window reasonably without a measurement pass.
-                    initialNumToRender={10}
-                    maxToRenderPerBatch={8}
-                    updateCellsBatchingPeriod={60}
-                    windowSize={7}
+                    initialNumToRender={perf.on ? 6 : 10}
+                    maxToRenderPerBatch={perf.on ? 4 : 8}
+                    updateCellsBatchingPeriod={perf.on ? 100 : 60}
+                    windowSize={perf.on ? 4 : 7}
                     onEndReachedThreshold={1.5}
                     onEndReached={() => setVisibleCount(c => (c < allRows.length ? Math.min(allRows.length, c + MORE_ROWS) : c))}
                 />

@@ -21,6 +21,7 @@
 // itself trying to stay low-risk to add.
 
 import { NativeEventEmitter, NativeModules } from 'react-native';
+import { perf } from './perf';
 
 const MAX_LINES = 1500;
 let lines = [];
@@ -30,6 +31,7 @@ let started = false;
 const notify = () => { for (const l of listeners) l(); };
 
 const push = (line) => {
+    if (perf.on) return;   // Performance mode: no log capture
     lines.push({ t: Date.now(), line });
     if (lines.length > MAX_LINES) lines = lines.slice(lines.length - MAX_LINES);
     notify();

@@ -16,7 +16,7 @@ export const PILL_COVER_PAD = (PILL_H - PILL_COVER) / 2;
 
 // Top bars (Playlists, All Songs, Settings, and the same row on the Playlist
 // and Player screens): the bar's solid part ends TOP_FADE above its old
-// bottom edge, then fades to see-through right at the old bottom edge. The
+// bottom edge, with a soft shadow under it. The
 // bar's contents moved up by the same amount, so nothing below shifts.
 export const TOP_FADE = 6;
 export const TOP_PAD = 56 - TOP_FADE;

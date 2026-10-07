@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listArtUri } from '../utils/embeddedArt';
 import AudioEngine, { usePlaybackState, State, useProgress } from '../native/AudioEngine';
@@ -12,16 +12,17 @@ import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
 import { formatArtists } from '../utils/artists';
+import { PILL_H, PILL_COVER, PILL_COVER_PAD } from '../utils/layout';
 
 const TAB_BAR_HEIGHT = 49;
-const ART_SIZE = 44;
+const ART_SIZE = PILL_COVER;   // same cover size as the song pills
 const SKIP_ICON_COLOR = '#bbb'; // fixed regardless of accent, including white
 
 export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack, playbackRate } = usePlayback();
     const { theme, base } = useTheme();
-    const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin } = usePreferences();
+    const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin, miniPlayerShadow } = usePreferences();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const progress = useProgress(500);
@@ -94,16 +95,6 @@ export default function MiniPlayer({ withTabBar = true }) {
         return () => { cancelled = true; };
     }, [isPlaying]);
 
-    useEffect(() => {
-        if (!isPlaying) return;
-        const id = setInterval(() => forceTick(t => t + 1), 250);
-        return () => clearInterval(id);
-    }, [isPlaying]);
-
-    const basis = basisRef.current;
-    const elapsed = isPlaying ? ((Date.now() - basis.at) / 1000) * (playbackRate || 1) : 0;
-    const livePct = basis.duration > 0 ? Math.min(1, Math.max(0, (basis.position + elapsed) / basis.duration)) : 0;
-
     if (!currentTrack) return null;
 
     const bottom = (withTabBar ? TAB_BAR_HEIGHT : 0) + insets.bottom + 6;
@@ -113,7 +104,7 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     return (
         <TouchableOpacity
-            style={[styles.shell, { bottom, backgroundColor: base.surface }]}
+            style={[styles.shell, miniPlayerShadow && styles.shellShadow, { bottom, backgroundColor: base.surface }]}
             onPress={() => navigation.navigate('Player', {})}
             activeOpacity={0.9}
         >
@@ -124,16 +115,16 @@ export default function MiniPlayer({ withTabBar = true }) {
               nothing can stop short of or poke past the outline on either
               side. */}
           <View style={[styles.container, { borderColor: theme.accentDim, backgroundColor: base.surface }]}>
-            <GradientCap color={theme.accent} height={68} style={{ opacity: 0.5 }} />
+            <GradientCap color={theme.accent} height={PILL_H} style={{ opacity: 0.5 }} />
             <View pointerEvents="none" style={styles.miniProgressTrack}>
-                <View style={[styles.miniProgressFill, { width: `${livePct * 100}%`, backgroundColor: theme.accent }]} />
+                <MiniProgressFill basis={basisRef.current} isPlaying={isPlaying} playbackRate={playbackRate} trackKey={currentTrack?._qid ?? currentTrack?.id} color={theme.accent} />
             </View>
             {/* "Show Song Covers In Lists" previously only applied to All
                 Songs/Playlist rows and the Queue sheet — the mini player
                 always showed art regardless, unlike everywhere else covers
                 appear. */}
             {showSongCovers && (
-                <View style={[styles.art, { backgroundColor: base.surface, borderColor: theme.accentDim, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
+                <View style={[styles.art, { backgroundColor: base.surface, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                     {artwork
                         ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                         : null
@@ -161,12 +152,49 @@ export default function MiniPlayer({ withTabBar = true }) {
     );
 }
 
+// The moving progress fill. Like the main progress bar it runs ONE continuous
+// animation at the song's real-time rate (on the native side, so it is
+// perfectly smooth and costs the JS thread nothing) and only restarts it when
+// the real position has drifted, the song or speed changed, or play/pause
+// flipped. It used to redraw the whole mini player four times a second.
+function MiniProgressFill({ basis, isPlaying, playbackRate, trackKey, color }) {
+    const [w, setW] = useState(0);
+    const pctVal = useRef(new Animated.Value(0)).current;
+    const run = useRef(null);   // { anim, from, at, rate, duration, trackKey }
+    useEffect(() => {
+        if (w <= 0) return;
+        const duration = basis.duration;
+        const pct = duration > 0 ? Math.min(1, Math.max(0, basis.position / duration)) : 0;
+        const rate = playbackRate || 1;
+        const r = run.current;
+        if (r && isPlaying && r.playing && r.trackKey === trackKey && r.rate === rate && r.duration === duration) {
+            const expected = r.from + ((Date.now() - r.at) / 1000) * rate / duration;
+            if (Math.abs(expected - pct) < 0.006) return;   // still on track, leave it running
+        }
+        if (r?.anim) r.anim.stop();
+        pctVal.setValue(pct);
+        if (!isPlaying || duration <= 0 || pct >= 1) { run.current = { anim: null, playing: false, trackKey, rate, duration }; return; }
+        const anim = Animated.timing(pctVal, { toValue: 1, duration: ((1 - pct) * duration * 1000) / rate, easing: Easing.linear, useNativeDriver: true });
+        run.current = { anim, playing: true, from: pct, at: Date.now(), rate, duration, trackKey };
+        anim.start();
+    }, [basis.at, basis.position, basis.duration, isPlaying, playbackRate, trackKey, w, pctVal]);
+    useEffect(() => () => { run.current?.anim?.stop(); }, []);
+    return (
+        <View style={{ height: 6, overflow: 'hidden' }} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+            {w > 0 && (
+                <Animated.View style={{ height: 6, width: w, backgroundColor: color, transform: [{ translateX: pctVal.interpolate({ inputRange: [0, 1], outputRange: [-w, 0] }) }] }} />
+            )}
+        </View>
+    );
+}
+
 const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 
 const styles = StyleSheet.create({
-    shell: { position: 'absolute', left: 10, right: 10, height: 68, borderRadius: 16, borderCurve: 'continuous', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12 },
-    container: { flex: 1, borderRadius: 16, borderCurve: 'continuous', borderWidth: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, overflow: 'hidden' },
-    art: { width: ART_SIZE, height: ART_SIZE, marginRight: 12, backgroundColor: '#0f0f0f', borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
+    shell: { position: 'absolute', left: 10, right: 10, height: PILL_H, borderRadius: 16, borderCurve: 'continuous' },
+    shellShadow: { shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 12 },
+    container: { flex: 1, borderRadius: 16, borderCurve: 'continuous', borderWidth: 1, flexDirection: 'row', alignItems: 'center', paddingLeft: PILL_COVER_PAD - 1, paddingRight: 14, overflow: 'hidden' },
+    art: { width: ART_SIZE, height: ART_SIZE, marginRight: 12, backgroundColor: '#0f0f0f', justifyContent: 'center', alignItems: 'center' },
     info: { flex: 1, marginRight: 4 },
     title: { color: '#e5e5e5', fontSize: 14, fontWeight: '600' },
     artist: { color: '#555', fontSize: 12, marginTop: 2 },
