@@ -693,7 +693,7 @@ export async function skipWithRamp(direction = 'next') {
             currentTransitionCrossfading = crossfading;
             if (crossfading) {
                 skipLockExpectedDurationMs = crossfadeDur * 1000;
-                try { await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
+                try { await AudioEngine.setSuppressNextCrossfade(false); await withTimeout(AudioEngine.skipToNext(), 5000); } catch { }
                 // Real bug found here: AudioEngine.skipToNext()'s promise
                 // resolves almost instantly (see AudioEngine.swift's
                 // skipToNext — resolve(nil) fires right after KICKING OFF
@@ -743,13 +743,36 @@ export async function skipWithRamp(direction = 'next') {
         // restartCurrent is known false. Otherwise identical shape to the
         // 'next' branch above — same skipLock hold for the actual fade
         // duration, same currentTransitionCrossfading snapshot.
+        // Restarting the song while it is playing is a crossfade too: the song
+        // fades into its own beginning, exactly like a skip. (A song that is
+        // paused or stopped just starts again from 0, below.)
+        if (direction === 'prev' && restartCurrent) {
+            const crossfadeDur = await getCrossfadeDurationSkip();
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            let restartIdx = -1;
+            let longEnough = false;
+            if (crossfading && (await AudioEngine.getState()) === State.Playing) {
+                try {
+                    restartIdx = await AudioEngine.getCurrentTrack();
+                    const { duration } = await AudioEngine.getProgress();
+                    longEnough = !(duration > 0) || duration >= crossfadeDur * 2;
+                } catch { }
+            }
+            if (crossfading && longEnough && Number.isInteger(restartIdx) && restartIdx >= 0) {
+                currentTransitionCrossfading = true;
+                skipLockExpectedDurationMs = crossfadeDur * 1000;
+                try { await AudioEngine.setSuppressNextCrossfade(false); await withTimeout(AudioEngine.crossfadeToIndex(restartIdx, crossfadeDur), 5000); } catch { }
+                await sleep(crossfadeDur * 1000);
+                return;
+            }
+        }
         if (direction === 'prev' && !restartCurrent) {
             const crossfadeDur = await getCrossfadeDurationSkip();
             const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
             currentTransitionCrossfading = crossfading;
             if (crossfading) {
                 skipLockExpectedDurationMs = crossfadeDur * 1000;
-                try { await withTimeout(AudioEngine.skipToPrevious(), 5000); } catch { }
+                try { await AudioEngine.setSuppressNextCrossfade(false); await withTimeout(AudioEngine.skipToPrevious(), 5000); } catch { }
                 await sleep(crossfadeDur * 1000);
                 return;
             }
@@ -764,7 +787,9 @@ export async function skipWithRamp(direction = 'next') {
             // neither can ever natively crossfade anyway (advance()
             // requires direction==1) — one flag, always cleared by native
             // the moment any advance() call reads it, so it can't leak.
-            await AudioEngine.setSuppressNextCrossfade(true).catch(() => { });
+            // A restart-in-place never reaches the native skip, so it must not
+            // leave the no-crossfade flag armed for the next real skip.
+            await AudioEngine.setSuppressNextCrossfade(direction === 'next' || !restartCurrent).catch(() => { });
             if (direction === 'next') return AudioEngine.skipToNext();
             if (restartCurrent) return AudioEngine.seekTo(0);
             return AudioEngine.skipToPrevious();

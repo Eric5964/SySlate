@@ -100,7 +100,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
@@ -779,8 +779,12 @@ export default function PlayerScreen() {
         // normal case, since pausing is immediate.
         if (!isPlaying) {
             stopAnim();
-            animPct.setValue(pct);
-            animPctValueRef.current = pct;
+            // A song change while paused (skip, restore, queue tap) must
+            // start the bar fresh too. `pct` is still the OLD song's value
+            // until the next poll, which left the bar parked at the old spot.
+            const startPct = trackChanged ? 0 : pct;
+            animPct.setValue(startPct);
+            animPctValueRef.current = startPct;
             // `pct` can be up to 500ms old at the instant of a pause (lock
             // screen, Control Center, headphones). Read the exact position
             // so the frozen bar sits where playback really stopped.
@@ -814,6 +818,16 @@ export default function PlayerScreen() {
             // the ordinary drift check below, same as always.
             console.log(`[BAR] track changed: bar reset to 0, last poll said ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
             startRealTimeAnim(0);
+            // The new song may already be a couple of seconds in (a
+            // crossfade flips the display halfway through). Ask for the real
+            // spot right away instead of sitting at 0 until the next poll
+            // and then jumping, so the bar starts where the sound is.
+            const trackAtChange = currentTrack?.id;
+            AudioEngine.getProgress().then(p => {
+                if (lastSyncedTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
+                if (p.position > p.duration || p.position > 40) return;   // not a fresh song's spot, don't trust
+                startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)));
+            }).catch(() => { });
             return;
         }
         // Drift is judged in SECONDS now. 2% of the song was 3-4 seconds on
@@ -1009,6 +1023,8 @@ export default function PlayerScreen() {
                                     scratchDegPerSec={discRpmValue * 6}
                                     discType={djDiscType}
                                     assist={djDiscAssist}
+                                    spinOn={djDiscSpin}
+                                    touchOn={djDiscTouch}
                                     isPlaying={isPlaying}
                                     visible={showingDisc}
                                     trackKey={currentTrack?._qid ?? currentTrack?.id}

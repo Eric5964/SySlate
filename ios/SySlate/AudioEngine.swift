@@ -475,6 +475,7 @@ class AudioEngine: RCTEventEmitter {
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleEngineConfigChange(_:)), name: .AVAudioEngineConfigurationChange, object: engine)
         // Requested: ramp out briefly (not an instant cut) specifically when
         // the app is force-quit from the app switcher — background play via
         // the "audio" background mode is untouched, this only fires on
@@ -628,12 +629,67 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // After a route change (Bluetooth connecting, a different output) or an
+    // engine configuration change, the song that was scheduled on the player
+    // node may no longer be there, so a plain play() can report "playing" and
+    // advance the position while nothing is heard until the next song is
+    // loaded (a skip or the next track). Remember the load this applies to;
+    // the next play() then loads the current song again at its position.
+    private var staleScheduleToken: UInt64? = nil
+    private func markScheduledAudioStale() { staleScheduleToken = playbackToken }
+    @objc private func handleEngineConfigChange(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in self?.markScheduledAudioStale() }
+    }
+
+    // Safety net after every play: if the sound path is not actually live a
+    // moment later, repair it instead of leaving the song silent. Only the
+    // latest play (and only while still playing, no crossfade, no scratch)
+    // is checked; a pause, stop or newer play cancels it.
+    private var silenceWatchdogToken: UInt64 = 0
+    private func scheduleSilenceWatchdog() {
+        silenceWatchdogToken &+= 1
+        let t = silenceWatchdogToken
+        for delay in [1.0, 9.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, t == self.silenceWatchdogToken,
+                      self.state == .playing, !self.isCrossfading, !self.scratchActive else { return }
+                var repaired = false
+                if !self.engine.isRunning {
+                    self.activateSession()
+                    try? self.engine.start()
+                    repaired = true
+                }
+                if self.engine.isRunning, !self.activeNode.isPlaying {
+                    self.activeNode.play()
+                    repaired = true
+                }
+                if delay > 5 {
+                    // Output mute that never lifted.
+                    if !self.coldMuteHeld, self.engine.mainMixerNode.outputVolume < 0.99 {
+                        self.engine.mainMixerNode.outputVolume = 1
+                        repaired = true
+                    }
+                    // A fade-in that never ran (volume left at 0 with no fade
+                    // under way and nothing asking for 0 for a long while).
+                    let zeroAge = self.lastZeroVolumeAt.map { Date().timeIntervalSince($0) } ?? 100
+                    if self.rampTimer == nil, self.volume < 0.02, zeroAge > 8 {
+                        self.volume = 1
+                        self.activeNode.volume = self.currentGainCorrection
+                        repaired = true
+                    }
+                }
+                if repaired { self.debugLog("[WATCHDOG] repaired a silent play (after \(delay)s)") }
+            }
+        }
+    }
+
     @objc private func handleRouteChange(_ notification: Notification) {
         guard let info = notification.userInfo,
               let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
         markOutputCold()
+        markScheduledAudioStale()
         savePlaybackSnapshot(force: true)
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
@@ -1671,12 +1727,17 @@ class AudioEngine: RCTEventEmitter {
     // moment it's read regardless of which branch runs, so it can never
     // leak into some LATER, unrelated advance() call.
     private var suppressNextCrossfade = false
+    // When that flag was set. A flag nobody consumed (e.g. a restart-in-place
+    // seek never reaches advance()) used to stay armed and silently turn the
+    // NEXT skip into a plain cut; it now only counts for a few seconds.
+    private var suppressNextCrossfadeAt: Date? = nil
 
     private func advance(direction: Int, wrap: Bool, autoPlay: Bool, isManualSkip: Bool) {
         abortScratch()
         cancelCrossfadeIfNeeded()
-        let suppressCrossfade = suppressNextCrossfade
+        let suppressCrossfade = suppressNextCrossfade && (suppressNextCrossfadeAt.map { Date().timeIntervalSince($0) < 5 } ?? false)
         suppressNextCrossfade = false
+        suppressNextCrossfadeAt = nil
         guard !queue.isEmpty else {
             debugLog("[RAMP-DEBUG] advance(): queue is empty, clearing currentIndex (was \(currentIndex.map(String.init) ?? "nil"))")
             currentIndex = nil
@@ -2209,7 +2270,8 @@ class AudioEngine: RCTEventEmitter {
 
     @discardableResult
     private func beginColdStartMuteIfNeeded() -> Bool {
-        if !outputIsCold, let last = lastAudibleAt, Date().timeIntervalSince(last) > 4 { outputIsCold = true }
+        // Still playing means the output is warm, however long ago play was pressed.
+        if !outputIsCold, state != .playing, let last = lastAudibleAt, Date().timeIntervalSince(last) > 4 { outputIsCold = true }
         guard outputIsCold else { return false }
         outputIsCold = false
         coldStartToken += 1
@@ -2236,6 +2298,18 @@ class AudioEngine: RCTEventEmitter {
             }
             return
         }
+        // The song scheduled before a route change may be gone: load it again
+        // at the same position (this also starts playback) instead of
+        // playing nothing. Cleared by any load that has happened since.
+        if state != .playing, !isCrossfading, let stale = staleScheduleToken, stale == playbackToken {
+            staleScheduleToken = nil
+            let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
+            activateSession()
+            if !engine.isRunning { try? engine.start() }
+            loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
+            scheduleSilenceWatchdog()
+            return
+        }
         let coldStart = beginColdStartMuteIfNeeded()
         activateSession()
         // frozenPositionSeconds is deliberately NOT cleared here: it keeps
@@ -2260,6 +2334,7 @@ class AudioEngine: RCTEventEmitter {
         pauseReassertToken += 1
         lastAudibleAt = Date()
         setState(.playing)
+        scheduleSilenceWatchdog()
         startActiveNodeAfterGainSettles(needsSettle: coldStart || activeNode.volume < 0.02)
         // Resume — reschedule the lead-in timer from the CURRENT position,
         // not whatever was left when it was invalidated on pause below.
@@ -2300,6 +2375,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func pauseInternal() {
+        silenceWatchdogToken &+= 1
         abortScratch()
         // Freeze the real position for display while paused — activeNode's
         // lastRenderTime/playerTime go nil/stale once paused, so
@@ -2450,6 +2526,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func stopInternal() {
+        silenceWatchdogToken &+= 1
         abortScratch()
         cancelCrossfadeIfNeeded()
         crossfadeLeadTimer?.invalidate()
@@ -2653,6 +2730,10 @@ class AudioEngine: RCTEventEmitter {
         // and stopped it dead. Bring the running fade to its current state
         // first (nothing jumps), then fade from there to the tapped song.
         if isCrossfading { settleCrossfadeToIncoming(snapToFull: false) }
+        // Same song again (Previous restarting it, or tapping the song that is
+        // already playing): the song fades into its own start. It is not a
+        // track change, so no change event is sent for it.
+        crossfadeSelfLoop = (idx == currentIndex)
         currentIndex = idx
         startCrossfade(toIndex: idx, duration: duration.doubleValue)
         resolve(nil)
@@ -2704,6 +2785,7 @@ class AudioEngine: RCTEventEmitter {
     @objc(setSuppressNextCrossfade:resolver:rejecter:)
     func setSuppressNextCrossfade(_ v: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         suppressNextCrossfade = v.boolValue
+        suppressNextCrossfadeAt = v.boolValue ? Date() : nil
         resolve(nil)
     }
 

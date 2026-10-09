@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { View, Image, Text, Animated, Easing, PanResponder, StyleSheet } from 'react-native';
 import AudioEngine from '../native/AudioEngine';
 import { subscribeTransportRamp } from '../utils/transportRamp';
@@ -26,6 +26,14 @@ import { COVER_SHADOW } from '../utils/shadow';
 const RPM_DEG_PER_SEC = 200;
 const MAX_RATE = 3;
 const TICK_MS = 20;
+// The idle spin is a native decay animation with an almost-zero decay, i.e. a
+// perfectly steady turn that never reaches an end. (It used to be a looping
+// timing animation; native restarts a loop every turn, drops the leftover
+// frame time and shows the same angle twice, which was the small pause on
+// every rotation.) `spin` and `lag` are in milliturns (1000 = one full turn)
+// so each frame's step stays far above the native decay's 0.1 stop threshold.
+const MT = 1000;
+const SPIN_K = 1e-10;
 
 // Where the disc was when the Player last closed, so reopening it shows the
 // disc at the same angle (and keeps it turning as if it never stopped).
@@ -34,7 +42,51 @@ let savedDisc = null;
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 
-export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', assist = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+// The static picture of the disc. Memoized so the several-times-a-second
+// position updates in the Player do not rebuild it.
+const rings = [0.97, 0.91, 0.85, 0.79, 0.73, 0.67, 0.61];
+const DiscFace = React.memo(function DiscFace({ R, artwork, accent, discType }) {
+    const labelD = R * 0.4;
+    return (
+        <>
+                    {discType === 'cd' ? (
+                        <View style={{ width: R, height: R, borderRadius: R / 2, overflow: 'hidden', backgroundColor: '#c9ccd3', alignItems: 'center', justifyContent: 'center' }}>
+                            {/* A CD: the picture is printed over the whole disc, with
+                                a clear plastic ring and the hole around the middle. */}
+                            {artwork
+                                ? <Image source={{ uri: artwork }} style={{ position: 'absolute', width: R, height: R }} resizeMode="cover" />
+                                : <Text style={{ color: '#555', fontSize: R * 0.3, textAlign: 'center' }}>♪</Text>}
+                            <View style={{ position: 'absolute', width: R * 0.97, height: R * 0.97, borderRadius: R / 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.36, height: R * 0.36, borderRadius: R * 0.18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.3, height: R * 0.3, borderRadius: R * 0.15, backgroundColor: 'rgba(232,235,242,0.82)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)' }} />
+                            <View style={{ position: 'absolute', width: R * 0.09, height: R * 0.09, borderRadius: R * 0.045, backgroundColor: '#0b0b0b', borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)' }} />
+                        </View>
+                    ) : (
+                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: '#2a2a2a' }]}>
+                        {rings.map((f, i) => (
+                            <View key={f} style={{
+                                position: 'absolute', width: R * f, height: R * f, borderRadius: (R * f) / 2,
+                                left: (R - R * f) / 2 - 2, top: (R - R * f) / 2 - 2,
+                                borderWidth: 1, borderColor: `rgba(255,255,255,${i % 2 ? 0.05 : 0.09})`,
+                            }} />
+                        ))}
+                        <View style={[s.label, { width: labelD, height: labelD, borderRadius: labelD / 2, left: (R - labelD) / 2 - 2, top: (R - labelD) / 2 - 2 }]}>
+                            {artwork
+                                ? <Image source={{ uri: artwork }} style={{ width: labelD, height: labelD }} resizeMode="cover" />
+                                : <Text style={{ color: accent, fontSize: labelD * 0.4, textAlign: 'center', lineHeight: labelD }}>♪</Text>}
+                        </View>
+                        <View style={{ position: 'absolute', width: R * 0.04, height: R * 0.04, borderRadius: R * 0.02, backgroundColor: '#000', left: R / 2 - R * 0.02 - 2, top: R / 2 - R * 0.02 - 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }} />
+                    </View>
+                    )}
+        </>
+    );
+});
+
+export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', assist = true, spinOn = true, touchOn = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+    // Bad numbers (NaN, Infinity, negative) from upstream must never reach the
+    // maths below: treat them as "unknown", which keeps the disc locked.
+    position = Number.isFinite(position) ? position : 0;
+    duration = Number.isFinite(duration) && duration > 0 ? duration : 0;
     // One idle turn, in ms (read at call time so a speed change applies to
     // the next animation without rebuilding the callbacks).
     const turnMsRef = useRef(360000 / 200);
@@ -43,8 +95,8 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     if (startAt.current === null) {
         let sp = 0, us = 0;
         if (savedDisc) {
-            const adv = (savedDisc.spinning && isPlaying) ? (Date.now() - savedDisc.at) / turnMsRef.current : 0;
-            sp = (savedDisc.spin + adv) % 1;
+            const adv = (savedDisc.spinning && isPlaying) ? ((Date.now() - savedDisc.at) / turnMsRef.current) * MT : 0;
+            sp = (((savedDisc.spin + adv) % MT) + MT) % MT;
             us = savedDisc.user;
         }
         startAt.current = { sp, us };
@@ -68,24 +120,42 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const smoothRate = useRef(0);
     const sentRate = useRef(0);
 
-    const allowed = visible && duration > 0 && position >= startGuard && position <= duration - endGuard;
+    // On a song change the position still holds the old song's value for a
+    // moment, so the disc is held dim from the very first frame of the new
+    // song until the position actually moves.
+    const holdDim = useRef(false);
+    const holdPos = useRef(position);
+    const lastDimKey = useRef(trackKey);
+    if (holdDim.current && position !== holdPos.current) holdDim.current = false;
+    const inWindow = !holdDim.current && visible && duration > 0 && position >= startGuard && position <= duration - endGuard;
+    // With touch off the disc ignores fingers and never dims (the dimming only
+    // says "you can't scratch right now").
+    const allowed = inWindow && touchOn;
     // Fade between enabled and disabled (near the song's ends) instead of
     // switching at once.
     const dimInit = useRef(false);
     useEffect(() => {
-        if (!dimInit.current) { dimInit.current = true; dim.setValue(allowed ? 0 : 1); return; }
-        Animated.timing(dim, { toValue: allowed ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
-    }, [allowed, dim]);
+        if (!dimInit.current) { dimInit.current = true; dim.setValue(inWindow || !touchOn ? 0 : 1); return; }
+        Animated.timing(dim, { toValue: inWindow || !touchOn ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    }, [inWindow, touchOn, dim]);
+    useLayoutEffect(() => {
+        if (lastDimKey.current === trackKey) return;
+        lastDimKey.current = trackKey;
+        holdDim.current = true;
+        holdPos.current = live.current.position;
+        dim.stopAnimation();
+        dim.setValue(touchOn ? 1 : 0);
+    }, [trackKey, touchOn, dim]);
     const live = useRef({});
-    live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist };
+    live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist, spin: spinOn, touch: touchOn };
 
     // Starting and stopping use a quadratic ease over the distance that
     // exactly matches idle speed at the join (distance = half of speed x
     // time), so the record winds up and down smoothly. The ease length is the
     // length of the audio ramp, so the disc is at full speed exactly when the
     // sound is, and stopped exactly when the fade-out ends.
-    // How it is built: `spin` turns forever at idle speed, looped by the
-    // native side itself (one turn per loop), so nothing on the JS side has
+    // How it is built: `spin` turns forever at idle speed as one native decay
+    // animation with almost no decay (no loop, so no restart per turn), so nothing on the JS side has
     // to restart it (the old version queued a 1000-turn animation, which
     // made a huge frame table and caused a hitch when winding up). Winding
     // up, slowing down and letting go of a scratch move a second value,
@@ -94,61 +164,67 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const spinToken = useRef(0);
     const spinState = useRef('stopped');
     const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); lag.stopAnimation(); }, [spin, lag]);
-    const loopFrom = useCallback((v) => {
-        Animated.loop(Animated.timing(spin, { toValue: v + 1, duration: turnMsRef.current, easing: Easing.linear, useNativeDriver: true })).start();
+    // Starts the endless idle turn from wherever `spin` is right now (native
+    // reads its own current value, so nothing has to be read back first and
+    // a running turn is replaced without a gap).
+    const runIdle = useCallback(() => {
+        Animated.decay(spin, { velocity: MT / turnMsRef.current, deceleration: 1 - SPIN_K, useNativeDriver: true }).start();
     }, [spin]);
     const startSpin = useCallback((rampMs) => {
         const token = ++spinToken.current;
         spinState.current = 'spinning';
-        spin.stopAnimation((v) => {
+        // No wind-up: just turn at full speed from the current angle, with no
+        // read-back (a read-back freezes the disc for a few frames).
+        if (rampMs <= 0) { runIdle(); return; }
+        spin.stopAnimation(() => {
             if (token !== spinToken.current) return;
             lag.stopAnimation((l) => {
                 if (token !== spinToken.current) return;
-                loopFrom(v);
+                runIdle();
                 if (rampMs > 0) {
                     // Quadratic wind-up = the full-speed turn minus a gap that
                     // closes with an out-quad ease; the gap ends at half a
                     // turn-time of the ramp.
-                    Animated.timing(lag, { toValue: l - 0.5 * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                    Animated.timing(lag, { toValue: l - 0.5 * MT * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
                 }
             });
         });
-    }, [spin, lag, loopFrom]);
+    }, [spin, lag, runIdle]);
     // Letting go: the disc keeps the speed the finger left it at and settles
     // to the idle speed over a few tens of ms (the sound does the same), so
     // it never stops dead and then winds back up.
     const releaseSpin = useCallback((rate) => {
         const token = ++spinToken.current;
         spinState.current = 'spinning';
-        spin.stopAnimation((v) => {
+        spin.stopAnimation(() => {
             if (token !== spinToken.current) return;
             lag.stopAnimation((l) => {
                 if (token !== spinToken.current) return;
-                const idle = 1000 / turnMsRef.current;                 // turns per second
-                const v0 = (rate * RPM_DEG_PER_SEC) / 360;        // turns per second
+                const idle = (MT * 1000) / turnMsRef.current;      // milliturns per second
+                const v0 = (rate * Math.max(20, live.current.scratchDegPerSec || RPM_DEG_PER_SEC) / 360) * MT;  // milliturns per second
                 const T = 0.08;
-                loopFrom(v);
+                runIdle();
                 const A = (v0 - idle) * T / 2;
                 if (Math.abs(A) > 1e-5) {
                     Animated.timing(lag, { toValue: l + A, duration: T * 1000, easing: (u) => 2 * u - u * u, useNativeDriver: true }).start();
                 }
             });
         });
-    }, [spin, lag, loopFrom]);
+    }, [spin, lag, runIdle]);
     // Speed changed (rpm setting or the Player's speed button) while the disc
     // is turning: carry on from the same angle at the new speed.
     useEffect(() => {
         if (spinState.current !== 'spinning') return;
-        const token = ++spinToken.current;
-        spin.stopAnimation((v) => { if (token === spinToken.current) loopFrom(v); });
-    }, [spinDegPerSec, spin, loopFrom]);
+        ++spinToken.current;
+        runIdle();
+    }, [spinDegPerSec, runIdle]);
     const slowSpin = useCallback((rampMs) => {
         if (rampMs <= 0) { stopSpin(); return; }
         const token = ++spinToken.current;
         spinState.current = 'stopped';
         spin.stopAnimation((v) => {
             if (token !== spinToken.current) return;
-            Animated.timing(spin, { toValue: v + 0.5 * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+            Animated.timing(spin, { toValue: v + 0.5 * MT * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
         });
     }, [spin, stopSpin]);
 
@@ -161,7 +237,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; }
         const justActivated = active && !prevActive.current;
         prevActive.current = !!active;
-        if (!active) { stopSpin(); return; }
+        if (!active || !spinOn) { stopSpin(); return; }
         if (draggingRef.current) return;
         if (isPlaying) {
             if (justActivated) startSpin(0); // looks like it never stopped
@@ -174,10 +250,14 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                 startTimer.current = setTimeout(() => { if (spinState.current !== 'spinning') startSpin(0); }, 160);
             }
         } else if (spinState.current === 'spinning') {
-            slowSpin(500);
+            // A real pause announces itself through the transport ramp below
+            // (and has already slowed the disc by now). This only catches a
+            // state change with no announcement, and waits a moment so a
+            // brief state flicker during a song change never slows the disc.
+            startTimer.current = setTimeout(() => { if (spinState.current === 'spinning') slowSpin(500); }, 600);
         }
         return () => { if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; } };
-    }, [active, isPlaying, startSpin, slowSpin, stopSpin]);
+    }, [active, spinOn, isPlaying, startSpin, slowSpin, stopSpin]);
     useEffect(() => () => {
         const wasSpinning = spinState.current === 'spinning';
         spin.stopAnimation((v) => { lag.stopAnimation((l) => { savedDisc = { spin: v + l, user: userRotVal.current, at: Date.now(), spinning: wasSpinning }; }); });
@@ -186,7 +266,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
 
     // Play / pause ramps announce themselves, so the disc follows them.
     useEffect(() => subscribeTransportRamp(({ type, seconds }) => {
-        if (!live.current.active || draggingRef.current) return;
+        if (!live.current.active || !live.current.spin || draggingRef.current) return;
         if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; }
         if (type === 'play') startSpin(Math.max(250, seconds * 1000));
         else slowSpin(seconds * 1000);
@@ -213,6 +293,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const finishScratch = useCallback(() => {
         if (tickTimer.current) { clearInterval(tickTimer.current); tickTimer.current = null; }
         const wasScratching = scratchingRef.current;
+        const wasDragging = draggingRef.current;
         scratchingRef.current = false;
         draggingRef.current = false;
         lastAngle.current = null;
@@ -222,7 +303,12 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         const rel = sentRate.current;
         sentRate.current = 0;
         if (live.current.active && live.current.isPlaying) {
-            if (wasScratching) releaseSpin(rel); else startSpin(450);
+            if (!live.current.spin) { /* spinning is off: nothing to restart */ }
+            else if (wasScratching) releaseSpin(rel);
+            // Only a finger that was actually holding the disc needs the
+            // wind-up. (Leaving the disc view used to restart the spin from
+            // a standstill here, which looked like the disc slowing down.)
+            else if (wasDragging) startSpin(450);
         }
     }, [startSpin, releaseSpin]);
 
@@ -244,7 +330,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     }, [visible, finishScratch]);
 
     const pan = useRef(PanResponder.create({
-        onStartShouldSetPanResponder: (e) => live.current.allowed && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY),
+        onStartShouldSetPanResponder: (e) => live.current.touch && live.current.allowed && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY),
         onMoveShouldSetPanResponder: () => false,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
@@ -325,9 +411,10 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
 
     const R = size;
     const labelD = R * 0.4;
-    const spinDeg = Animated.add(spin, lag).interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-    const userDeg = userRot.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] });
-    const rings = [0.97, 0.91, 0.85, 0.79, 0.73, 0.67, 0.61];
+    // Built once: re-creating these on every render (the position changes
+    // several times a second) rebuilt the native animation graph each time.
+    const spinDeg = useMemo(() => Animated.add(spin, lag).interpolate({ inputRange: [0, MT], outputRange: ['0deg', '360deg'] }), [spin, lag]);
+    const userDeg = useMemo(() => userRot.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] }), [userRot]);
 
     return (
         <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R }} {...pan.panHandlers}
@@ -350,39 +437,12 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                 <View pointerEvents="none" style={[{ position: 'absolute', width: R, height: R, borderRadius: R / 2, backgroundColor: '#0a0a0a' }, COVER_SHADOW]} />
             )}
             <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: spinDeg }] }]}>
-                <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
-                    {discType === 'cd' ? (
-                        <View style={{ width: R, height: R, borderRadius: R / 2, overflow: 'hidden', backgroundColor: '#c9ccd3', alignItems: 'center', justifyContent: 'center' }}>
-                            {/* A CD: the picture is printed over the whole disc, with
-                                a clear plastic ring and the hole around the middle. */}
-                            {artwork
-                                ? <Image source={{ uri: artwork }} style={{ position: 'absolute', width: R, height: R }} resizeMode="cover" />
-                                : <Text style={{ color: '#555', fontSize: R * 0.3, textAlign: 'center' }}>♪</Text>}
-                            <View style={{ position: 'absolute', width: R * 0.97, height: R * 0.97, borderRadius: R / 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)' }} />
-                            <View style={{ position: 'absolute', width: R * 0.36, height: R * 0.36, borderRadius: R * 0.18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' }} />
-                            <View style={{ position: 'absolute', width: R * 0.3, height: R * 0.3, borderRadius: R * 0.15, backgroundColor: 'rgba(232,235,242,0.82)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)' }} />
-                            <View style={{ position: 'absolute', width: R * 0.09, height: R * 0.09, borderRadius: R * 0.045, backgroundColor: '#0b0b0b', borderWidth: 1, borderColor: 'rgba(255,255,255,0.5)' }} />
-                        </View>
-                    ) : (
-                    <View style={[s.vinyl, { width: R, height: R, borderRadius: R / 2, borderColor: '#2a2a2a' }]}>
-                        {rings.map((f, i) => (
-                            <View key={f} style={{
-                                position: 'absolute', width: R * f, height: R * f, borderRadius: (R * f) / 2,
-                                left: (R - R * f) / 2 - 2, top: (R - R * f) / 2 - 2,
-                                borderWidth: 1, borderColor: `rgba(255,255,255,${i % 2 ? 0.05 : 0.09})`,
-                            }} />
-                        ))}
-                        <View style={[s.label, { width: labelD, height: labelD, borderRadius: labelD / 2, left: (R - labelD) / 2 - 2, top: (R - labelD) / 2 - 2 }]}>
-                            {artwork
-                                ? <Image source={{ uri: artwork }} style={{ width: labelD, height: labelD }} resizeMode="cover" />
-                                : <Text style={{ color: accent, fontSize: labelD * 0.4, textAlign: 'center', lineHeight: labelD }}>♪</Text>}
-                        </View>
-                        <View style={{ position: 'absolute', width: R * 0.04, height: R * 0.04, borderRadius: R * 0.02, backgroundColor: '#000', left: R / 2 - R * 0.02 - 2, top: R / 2 - R * 0.02 - 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }} />
-                    </View>
-                    )}
-                    <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
+                <Animated.View shouldRasterizeIOS renderToHardwareTextureAndroid style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
+                    <DiscFace R={R} artwork={artwork} accent={accent} discType={discType} />
                 </Animated.View>
             </Animated.View>
+            {/* Dim ring: a sibling, not part of the turning (rasterized) layers. */}
+            <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
             </Animated.View>
         </View>
     );

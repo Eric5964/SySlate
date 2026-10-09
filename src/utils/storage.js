@@ -415,6 +415,23 @@ export const setArtistSeparator = (arr) => safe(() => AsyncStorage.setItem('arti
 // requiring a tap each time.
 export const getLyricsMode = () => safe(() => AsyncStorage.getItem('lyrics_mode').then(v => v ?? 'manual'), 'manual');
 export const setLyricsMode = (v) => safe(() => AsyncStorage.setItem('lyrics_mode', v), null);
+// What the Player opens on for each song: 'cover', 'lyrics' or 'disc'.
+// First read upgrades the older Show Lyrics / Auto Disc settings.
+export const getAutoShow = () => safe(async () => {
+    const v = await AsyncStorage.getItem('auto_show');
+    if (v === 'cover' || v === 'lyrics' || v === 'disc') return v;
+    const [lm, disc, auto] = await Promise.all([AsyncStorage.getItem('lyrics_mode'), AsyncStorage.getItem('dj_disc'), AsyncStorage.getItem('dj_disc_auto')]);
+    const mig = lm === 'auto' ? 'lyrics' : (disc === '1' && auto === '1' ? 'disc' : 'cover');
+    await AsyncStorage.setItem('auto_show', mig);
+    return mig;
+}, 'cover');
+export const setAutoShow = (v) => safe(() => AsyncStorage.setItem('auto_show', v), null);
+// Disc spinning (idle turning) and disc touch (moving / scratching it with a
+// finger) are separate switches. Both default on.
+export const getDjDiscSpin = () => safe(() => AsyncStorage.getItem('dj_disc_spin').then(v => v !== 'false'), true);
+export const setDjDiscSpin = (v) => safe(() => AsyncStorage.setItem('dj_disc_spin', String(v)), null);
+export const getDjDiscTouch = () => safe(() => AsyncStorage.getItem('dj_disc_touch').then(v => v !== 'false'), true);
+export const setDjDiscTouch = (v) => safe(() => AsyncStorage.setItem('dj_disc_touch', String(v)), null);
 export const getDjDisc = () => safe(() => AsyncStorage.getItem('dj_disc').then(v => v === '1'), false);
 export const setDjDisc = (v) => safe(() => AsyncStorage.setItem('dj_disc', v ? '1' : '0'), null);
 export const getDjDiscAuto = () => safe(() => AsyncStorage.getItem('dj_disc_auto').then(v => v === '1'), false);
@@ -921,7 +938,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -986,7 +1003,7 @@ export const importAllSettings = async (jsonString) => {
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
         'top_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
-        'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'performance_mode', 'use_volume_tags',
+        'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'performance_mode', 'use_volume_tags',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /
@@ -997,8 +1014,8 @@ export const importAllSettings = async (jsonString) => {
     // what actually matters for anything downstream reading the number.
     const NUMERIC_RANGES = {
         crossfade: [0, 6], crossfade_duration_eot: [0, 6],
-        skip_crossfade: [0, 3], crossfade_duration: [0, 3], crossfade_duration_skip: [0, 3],
-        audio_ramp: [0, 3],
+        skip_crossfade: [0, 6], crossfade_duration: [0, 6], crossfade_duration_skip: [0, 6],
+        audio_ramp: [0, 6],
         lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
         restart_threshold_sec: [0, 24],
         restart_threshold_pct: [0, 50],
@@ -1018,7 +1035,7 @@ export const importAllSettings = async (jsonString) => {
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
-        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type',
+        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.

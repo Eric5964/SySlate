@@ -4,7 +4,7 @@ import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
-import { buildQueue, shuffleArray } from '../utils/shuffle';
+import { buildQueue, shuffleArray, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { getPlayCounts } from '../utils/storage';
@@ -25,7 +25,7 @@ const Ctx = createContext(null);
 // Smart shuffle needs each song's play count to weight the order, and that
 // lives in async storage, so every queue build goes through this.
 const buildQueueAsync = async (tracks, mode) => {
-    if (mode === 'smart' || mode === 'dumb') {
+    if (modeNeedsCounts(mode)) {
         const counts = await getPlayCounts(tracks).catch(() => ({}));
         return buildQueue(tracks, mode, counts);
     }

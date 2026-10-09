@@ -8,7 +8,9 @@ import {
     getArtistSeparator, setArtistSeparator as persistArtistSeparator,
     getLyricsMode, setLyricsMode as persistLyricsMode,
     getDjDisc, setDjDisc as persistDjDisc,
-    getDjDiscAuto, setDjDiscAuto as persistDjDiscAuto,
+    getAutoShow, setAutoShow as persistAutoShow,
+    getDjDiscSpin, setDjDiscSpin as persistDjDiscSpin,
+    getDjDiscTouch, setDjDiscTouch as persistDjDiscTouch,
     getMiniPlayerShadow, setMiniPlayerShadow as persistMiniPlayerShadow,
     getPerformanceMode, setPerformanceMode as persistPerformanceMode,
     getUseVolumeTags, setUseVolumeTags as persistUseVolumeTags,
@@ -57,9 +59,11 @@ const Ctx = createContext({
     showPlayCount: true, setShowPlayCount: () => { },
     showSongCovers: false, setShowSongCovers: () => { },
     artistSeparator: [';'], setArtistSeparator: () => { },
-    lyricsMode: 'manual', setLyricsMode: () => { },
+    lyricsMode: 'manual', lyricsOn: true, setLyricsOn: () => { },
     djDisc: false, setDjDisc: () => { },
-    djDiscAuto: false, setDjDiscAuto: () => { },
+    autoShow: 'cover', setAutoShow: () => { },
+    djDiscSpin: true, setDjDiscSpin: () => { },
+    djDiscTouch: true, setDjDiscTouch: () => { },
     autoShowLyrics: false, autoShowDisc: false,
     miniPlayerShadow: true, setMiniPlayerShadow: () => { },
     performanceMode: false, setPerformanceMode: () => { },
@@ -110,15 +114,20 @@ export function PreferencesProvider({ children }) {
     const [showPlayCount, setShowPlayCountState] = useState(true);
     const [showSongCovers, setShowSongCoversState] = useState(true);
     const [artistSeparator, setArtistSeparatorState] = useState([';']);
-    const [lyricsMode, setLyricsModeState] = useState('manual');
+    const [lyricsOn, setLyricsOnState] = useState(true);
+    const [autoShow, setAutoShowState] = useState('cover');
+    const [djDiscSpin, setDjDiscSpinState] = useState(true);
+    const [djDiscTouch, setDjDiscTouchState] = useState(true);
     const [djDisc, setDjDiscState] = useState(false);
-    const [djDiscAuto, setDjDiscAutoState] = useState(false);
     const [miniPlayerShadow, setMiniPlayerShadowState] = useState(true);
     const [performanceMode, setPerformanceModeState] = useState(false);
     const [useVolumeTags, setUseVolumeTagsState] = useState(true);
     // Auto-show lyrics and Auto Disc can never both be on.
-    const autoShowLyrics = lyricsMode === 'auto';
-    const autoShowDisc = djDisc && djDiscAuto && !autoShowLyrics;
+    // The Player opens on ONE thing (autoShow); a view that is switched off
+    // can't be it. lyricsMode is kept for the Player's own checks.
+    const autoShowLyrics = lyricsOn && autoShow === 'lyrics';
+    const autoShowDisc = djDisc && autoShow === 'disc';
+    const lyricsMode = lyricsOn ? (autoShowLyrics ? 'auto' : 'manual') : 'off';
     const [djDiscRpm, setDjDiscRpmState] = useState('33');
     const [djDiscType, setDjDiscTypeState] = useState('vinyl');
     const [djDiscAssist, setDjDiscAssistState] = useState(true);
@@ -173,9 +182,11 @@ export function PreferencesProvider({ children }) {
         getShowPlayCount().then(setShowPlayCountState);
         getShowSongCovers().then(setShowSongCoversState);
         getArtistSeparator().then(setArtistSeparatorState);
-        getLyricsMode().then(setLyricsModeState);
+        getLyricsMode().then(m => setLyricsOnState(m !== 'off'));
+        getAutoShow().then(setAutoShowState);
+        getDjDiscSpin().then(setDjDiscSpinState);
+        getDjDiscTouch().then(setDjDiscTouchState);
         getDjDisc().then(setDjDiscState);
-        getDjDiscAuto().then(setDjDiscAutoState);
         getMiniPlayerShadow().then(setMiniPlayerShadowState);
         getPerformanceMode().then(v => { setPerf(v); setPerformanceModeState(v); });
         getUseVolumeTags().then(v => { AudioEngine.setUseVolumeTags(v); setUseVolumeTagsState(v); });
@@ -268,24 +279,26 @@ export function PreferencesProvider({ children }) {
         setArtistSeparatorState(v);
         persistArtistSeparator(v);
     }, []);
-    // Show Lyrics (off / auto / manual), DJ Disc and Auto Disc. Auto-show
-    // lyrics and Auto Disc exclude each other: turning one on turns the other
-    // off. Auto Disc needs the DJ Disc on; turning the disc off turns it off.
-    const setLyricsMode = useCallback((m) => {
-        setLyricsModeState(m); persistLyricsMode(m);
-        if (m === 'auto') { setDjDiscAutoState(false); persistDjDiscAuto(false); }
+    // Auto Show picks what the Player opens on (cover, lyrics or disc). The
+    // three views can each be switched on or off. Picking a view that is off
+    // switches it on; switching off the picked view falls back to the cover.
+    const autoShowRef = useRef('cover');
+    useEffect(() => { autoShowRef.current = autoShow; }, [autoShow]);
+    const setAutoShow = useCallback((v) => {
+        setAutoShowState(v); persistAutoShow(v);
+        if (v === 'lyrics') { setLyricsOnState(true); persistLyricsMode('manual'); }
+        if (v === 'disc') { setDjDiscState(true); persistDjDisc(true); }
+    }, []);
+    const setLyricsOn = useCallback((v) => {
+        setLyricsOnState(v); persistLyricsMode(v ? 'manual' : 'off');
+        if (!v && autoShowRef.current === 'lyrics') { setAutoShowState('cover'); persistAutoShow('cover'); }
     }, []);
     const setDjDisc = useCallback((v) => {
         setDjDiscState(v); persistDjDisc(v);
-        if (!v) { setDjDiscAutoState(false); persistDjDiscAuto(false); }
+        if (!v && autoShowRef.current === 'disc') { setAutoShowState('cover'); persistAutoShow('cover'); }
     }, []);
-    const setDjDiscAuto = useCallback((v) => {
-        setDjDiscAutoState(v); persistDjDiscAuto(v);
-        if (v) {
-            setDjDiscState(true); persistDjDisc(true);
-            setLyricsModeState(m => { if (m === 'auto') { persistLyricsMode('manual'); return 'manual'; } return m; });
-        }
-    }, []);
+    const setDjDiscSpin = useCallback((v) => { setDjDiscSpinState(v); persistDjDiscSpin(v); }, []);
+    const setDjDiscTouch = useCallback((v) => { setDjDiscTouchState(v); persistDjDiscTouch(v); }, []);
     const setDjDiscType = useCallback((v) => { setDjDiscTypeState(v); persistDjDiscType(v); }, []);
     const setDjDiscAssist = useCallback((v) => { setDjDiscAssistState(v); persistDjDiscAssist(v); }, []);
     const setPerformanceMode = useCallback((v) => { setPerf(v); setPerformanceModeState(v); persistPerformanceMode(v); }, []);
@@ -396,7 +409,7 @@ export function PreferencesProvider({ children }) {
         showPlayCount, setShowPlayCount,
         showSongCovers, setShowSongCovers,
         artistSeparator, setArtistSeparator,
-        lyricsMode, setLyricsMode, djDisc, setDjDisc, djDiscAuto, setDjDiscAuto, autoShowLyrics, autoShowDisc,
+        lyricsMode, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, autoShowLyrics, autoShowDisc,
         miniPlayerShadow: performanceMode ? false : miniPlayerShadow, setMiniPlayerShadow,
         performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags,
         shadowsRaw: { coverShadow, playlistCoverShadow, songPillShadow, miniPlayerShadow },
@@ -430,7 +443,7 @@ export function PreferencesProvider({ children }) {
         playlistArrow, setPlaylistArrow,
         ui, setUiShown,
     }), [
-        showPlayCount, showSongCovers, artistSeparator, lyricsMode, djDisc, djDiscAuto, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
+        showPlayCount, showSongCovers, artistSeparator, lyricsMode, lyricsOn, djDisc, autoShow, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,

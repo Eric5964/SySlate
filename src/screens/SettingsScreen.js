@@ -13,6 +13,7 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme, THEMES, BASE_COLORS } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
+import { MODE_PARTS, modeId } from '../utils/shuffle';
 import PureSlider from '../components/PureSlider';
 import ScreenBackground from '../components/ScreenBackground';
 import TopBarBack from '../components/TopBarFade';
@@ -130,7 +131,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsMode, setLyricsMode, djDisc, setDjDisc, djDiscAuto, setDjDiscAuto, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -149,6 +150,7 @@ export default function SettingsScreen() {
     useEffect(() => { getSettingsMode().then(setModeState); }, []);
     const changeMode = (m) => { setModeState(m); setSettingsMode(m); };
     const [query, setQuery] = useState('');
+    const [fineTune, setFineTune] = useState(false);
     const q = query.trim().toLowerCase();
     const [myLook, setMyLookState] = useState(null);
     useEffect(() => { getMyLook().then(setMyLookState); }, []);
@@ -513,7 +515,7 @@ export default function SettingsScreen() {
         playerButtons: () => ['sleep', 'speed', 'eq', 'queue', 'back', 'label'].forEach(n => setPlayerBtnShown(n, true)),
         playerCover: () => {
             setShowPlayerCover(true); setCoverShadow(true); setPlayerOutline(false);
-            setLyricsMode('manual'); setDjDisc(false); setDjDiscAuto(false); setDjDiscRpm('33'); setDjDiscType('vinyl'); setDjDiscAssist(true);
+            setAutoShow('cover'); setLyricsOn(true); setDjDisc(false); setDjDiscSpin(true); setDjDiscTouch(true); setDjDiscRpm('33'); setDjDiscType('vinyl'); setDjDiscAssist(true);
             setLyricsResyncLocal(2); setLyricsResyncSec(2);
             setLyricsOffsetLocal(0); setLyricsOffsetSec(0);
             setLyricsScrollLocked(false);
@@ -566,13 +568,12 @@ export default function SettingsScreen() {
     // One crossfade length in Simple sets every related Advanced setting:
     // the end-of-song crossfade, the skip crossfade (the slider stops at 3s),
     // and the fade when you play or pause.
-    const SIMPLE_XF = [0, 1, 2, 3, 4];
+    const SIMPLE_XF = [0, 1, 2, 3, 4, 5, 6];
     const simpleXfSelected = !crossfadeEnabled ? 0 : (SIMPLE_XF.includes(Math.round(crossfadeDurationEndOfTrack)) ? Math.round(crossfadeDurationEndOfTrack) : -1);
     const applySimpleCrossfade = (sec) => {
         if (sec === 0) { setCrossfadeEnabled(false); return; }
         setCrossfadeEnabled(true);
-        const skip = Math.min(sec, 3);
-        setCrossfadeDuration(skip); setCrossfadeDurationLocal(skip);
+        setCrossfadeDuration(sec); setCrossfadeDurationLocal(sec);
         setCrossfadeDurationEndOfTrack(sec);
         setRamp(sec); setAudioRamp(sec);
         setRampPause(true); setRampOnPause(true);
@@ -589,7 +590,6 @@ export default function SettingsScreen() {
     // Looks: shadows, outlines and cover shape in one snapshot.
     const LOOKS = {
         minimal: { cs: false, pcs: false, sps: false, mps: false, po: false, dout: false, shape: 'rounded' },
-        classic: { cs: true, pcs: true, sps: false, mps: true, po: true, dout: true, shape: 'rounded' },
         bold: { cs: true, pcs: true, sps: true, mps: true, po: true, dout: true, shape: 'rounded' },
         sharp: { cs: false, pcs: false, sps: false, mps: false, po: true, dout: true, shape: 'square' },
     };
@@ -599,7 +599,7 @@ export default function SettingsScreen() {
         setCoverShadow(L.cs); setPlaylistCoverShadow(L.pcs); setSongPillShadow(L.sps); setMiniPlayerShadow(L.mps);
         setPlayerOutline(L.po); setDetailOutline(L.dout); setCoverShape(L.shape); setPlaylistCoverShape(L.shape);
     };
-    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'classic', label: 'Classic' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }, ...(myLook ? [{ id: 'mine', label: 'My Look' }] : [])];
+    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }, ...(myLook ? [{ id: 'mine', label: 'My Look' }] : [])];
     const lookOn = (id) => sameLook(currentLook(), id === 'mine' ? myLook : LOOKS[id]);
     const looksUi = (
         <>
@@ -623,6 +623,22 @@ export default function SettingsScreen() {
             { text: 'Cancel', style: 'cancel' },
         ]);
     };
+    // Shuffle = how songs are weighted (Normal / Smart / Dumb) and how they
+    // are ordered (Shuffle = each song once per round, Random = any song any
+    // time, repeats possible). Saved as one id, see utils/shuffle.js.
+    const shuffleParts = MODE_PARTS[shuffleTypePref] || MODE_PARTS.full_cycle;
+    const pickShuffle = (weight, order) => { const id = modeId(weight, order); setShuffleTypePref(id); changeShuffleMode(id); };
+    const WEIGHTS = [{ id: 'normal', label: 'Normal', sub: 'Every song equally likely' }, { id: 'smart', label: 'Smart', sub: 'Leans toward songs you have played less' }, { id: 'dumb', label: 'Dumb', sub: 'Leans toward songs you have played more' }];
+    const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Every song once per round' }, { id: 'random', label: 'Random', sub: 'Any song any time, repeats possible, no rounds' }];
+    const shuffleUi = (
+        <>
+            {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order))}
+            {chipRow(ORDERS, (id) => shuffleParts.order === id, (id) => pickShuffle(shuffleParts.weight, id))}
+            <Text style={[s.toggleSub, { paddingHorizontal: 24, paddingBottom: 16 }]}>
+                {WEIGHTS.find(w => w.id === shuffleParts.weight)?.sub}. {ORDERS.find(o => o.id === shuffleParts.order)?.sub}.
+            </Text>
+        </>
+    );
     const noMatch = !!q && !SECTION_TITLES.some(t => sectionMatches(t, q));
 
     return (
@@ -667,23 +683,22 @@ export default function SettingsScreen() {
                 <Section title="Sound" only="simple">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Crossfade & Fades</Text>
-                        <Text style={s.toggleSub}>One length for song-to-song crossfade, skipping, and the fade when you play or pause</Text>
+                        <Text style={s.toggleSub}>One length (0 to 6s) for the end-of-song crossfade, skipping, and the fade when you play or pause</Text>
                     </View>
                     {chipRow(SIMPLE_XF.map(v => ({ id: v, label: v === 0 ? 'Off' : `${v}s` })), (id) => simpleXfSelected === id, applySimpleCrossfade)}
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>Shuffle</Text>
                         <Text style={s.toggleSub}>How songs are picked when shuffle is on</Text>
                     </View>
-                    {chipRow(MODES.map(m => ({ id: m.id, label: m.label })), (id) => shuffleTypePref === id, (id) => { setShuffleTypePref(id); changeShuffleMode(id); })}
+                    {shuffleUi}
                     {toggle('Match Volume', 'Keeps songs at a similar loudness', betweenTrackNorm, setBetweenTrackNorm)}
                 </Section>
                 <Section title="Player" only="simple">
                     <View style={s.settingHeader}>
-                        <Text style={s.toggleLabel}>Lyrics</Text>
-                        <Text style={s.toggleSub}>Off hides them, Manual shows them on a button, Auto opens on them</Text>
+                        <Text style={s.toggleLabel}>Opens On</Text>
+                        <Text style={s.toggleSub}>What the Player shows first for each song</Text>
                     </View>
-                    {chipRow([{ id: 'off', label: 'Off' }, { id: 'auto', label: 'Auto-show' }, { id: 'manual', label: 'Manual' }], (id) => lyricsMode === id, setLyricsMode)}
-                    {toggle('DJ Disc', 'A spinning record you can scratch, shown with the button under the cover', djDisc, setDjDisc)}
+                    {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
                 </Section>
                 <Section title="Looks" only="simple">
                     <View style={s.settingHeader}>
@@ -793,15 +808,7 @@ export default function SettingsScreen() {
 
                 {/* 3. Shuffle */}
                 <Section title="Shuffle Mode">
-                    {MODES.map(m => (
-                        <TouchableOpacity key={m.id} style={s.modeRow} onPress={() => { setShuffleTypePref(m.id); changeShuffleMode(m.id); }}>
-                            <View style={{ flex: 1 }}>
-                                <Text style={s.modeLabel}>{m.label}</Text>
-                                <Text style={s.modeSub}>{m.sub}</Text>
-                            </View>
-                            <View style={[s.radio, shuffleTypePref === m.id && { borderColor: theme.accent, backgroundColor: theme.accent }]} />
-                        </TouchableOpacity>
-                    ))}
+                    {shuffleUi}
                 </Section>
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
@@ -824,6 +831,16 @@ export default function SettingsScreen() {
                         <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <Text style={s.toggleLabel}>All Fades</Text>
+                        <Text style={s.toggleSub}>One length for every crossfade and fade below. Same as the Simple setting</Text>
+                    </View>
+                    {chipRow(SIMPLE_XF.map(v => ({ id: v, label: v === 0 ? 'Off' : `${v}s` })), (id) => simpleXfSelected === id, applySimpleCrossfade)}
+                    <TouchableOpacity style={[s.row, { borderTopWidth: 1, borderTopColor: base.border }]} onPress={() => setFineTune(v => !v)} activeOpacity={0.6}>
+                        <Text style={s.rowLabel}>Fine-tune each fade</Text>
+                        <Text style={s.rowSub}>{fineTune ? 'Tap to hide the individual sliders' : 'Set the length of each fade separately'}</Text>
+                    </TouchableOpacity>
+                    {fineTune && (<>
                     {crossfadeEnabled ? (
                         <>
                             {/* Split from one shared "Crossfade Duration" slider
@@ -865,11 +882,11 @@ export default function SettingsScreen() {
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
                             {/* Max lowered 10→3, matching Ramp's On Skip cap.
                                 minimumValue same fix as above — 0 instead of 1. */}
-                            <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={crossfadeDurationLocal}
+                            <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={crossfadeDurationLocal}
                                 onValueChange={setCrossfadeDurationLocal}
                                 onSlidingComplete={v => { setCrossfadeDurationLocal(v); setCrossfadeDuration(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
                         </>
                     ) : (
                         <>
@@ -884,20 +901,21 @@ export default function SettingsScreen() {
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Skip</Text>
                             <Text style={s.sliderNote}>Softens skips</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
-                            <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={skipRamp}
+                            <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={skipRamp}
                                 onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>3s</Text></View>
+                            <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
                         </>
                     )}
 
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Play</Text>
                     <Text style={s.sliderNote}>Fade in when playback starts</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
-                    <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={3} step={0.5} value={ramp}
+                    <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={ramp}
                         onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>3s</Text></View>
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>6s</Text></View>
+                    </>)}
 
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -1113,25 +1131,16 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                <Section title="Cover, Lyrics & Disc">
-                    {toggle('Show Player Cover', 'Album art on the Player', showPlayerCover, setShowPlayerCover, true)}
-                    <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <Text style={s.toggleLabel}>Show Lyrics</Text>
-                        <Text style={s.toggleSub}>Off hides lyrics. Manual shows them with the button under the cover. Auto-show opens on them when the song has them</Text>
+                <Section title="Player Views">
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Opens On</Text>
+                        <Text style={s.toggleSub}>What the Player shows first for each song. The button under the cover cycles through the views that are on</Text>
                     </View>
-                    <View style={s.sortRow}>
-                        {[{ id: 'off', label: 'Off' }, { id: 'auto', label: 'Auto-show' }, { id: 'manual', label: 'Manual' }].map(opt => (
-                            <TouchableOpacity
-                                key={opt.id}
-                                style={[s.sortChip, lyricsMode === opt.id && { backgroundColor: theme.accent }]}
-                                onPress={() => setLyricsMode(opt.id)}
-                            >
-                                <Text style={[s.sortChipText, lyricsMode === opt.id && { color: theme.onAccent }]}>{opt.label}</Text>
-                            </TouchableOpacity>
-                        ))}
-                    </View>
-                    {toggle('DJ Disc', 'A spinning record you can scratch. Shows with the button under the cover', djDisc, setDjDisc)}
-                    {djDisc && toggle('Auto Disc', 'Every new song opens on the disc. Turns Auto-show lyrics off', djDiscAuto, setDjDiscAuto)}
+                    {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
+                    {toggle('Cover', 'Album art on the Player', showPlayerCover, setShowPlayerCover)}
+                    {toggle('Lyrics', 'A lyrics view, for songs that have lyrics', lyricsOn, setLyricsOn)}
+                    {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc)}
+                    {djDisc && (<>
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>DJ Disc Speed</Text>
                         <Text style={s.toggleSub}>How fast the disc turns at normal playback speed. It follows the speed button in the Player</Text>
@@ -1165,6 +1174,10 @@ export default function SettingsScreen() {
                         ))}
                     </View>
                     {toggle('Scratch Speed Assist', 'While scratching, the speed clings to 0.5x, 1x and 2x when your finger is close. Off = exactly your finger speed. Your finger plays at 1x when it turns the disc as fast as it idles at the speed above', djDiscAssist, setDjDiscAssist)}
+                    {toggle('Disc Spins', 'The disc keeps turning while a song plays', djDiscSpin, setDjDiscSpin)}
+                    {toggle('Touch & Scratch', 'Move or scratch the disc with a finger. Off also stops the dimming near the ends of songs', djDiscTouch, setDjDiscTouch)}
+                    </>)}
+                    {lyricsOn && (<>
                     <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
                     <Text style={s.sliderNote}>
                         How long lyrics stay where you scrolled before following the song again
@@ -1188,6 +1201,7 @@ export default function SettingsScreen() {
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
                     {toggle('Unscrollable Lyrics', 'Swiping lyrics closes the player instead of scrolling', lyricsScrollLocked, setLyricsScrollLocked)}
+                    </>)}
                 </Section>
 
                 <Section title="Screen">
@@ -1665,7 +1679,7 @@ const SECTION_KW = {
     'All Songs Screen': 'all songs search sort buttons',
     'Playlist Screen': 'playlist screen header buttons',
     'Player Buttons': 'player buttons speed sleep timer eq queue shuffle loop',
-    'Cover, Lyrics & Disc': 'cover lyrics disc vinyl cd dj scratch rpm speed auto show',
+    'Player Views': 'player cover lyrics disc vinyl cd dj scratch rpm speed auto show opens spin touch scratch',
     'Screen': 'screen awake top bar color',
     'Shadows & Outlines': 'shadow outline border looks style cover pill mini player shape rounded square minimal classic bold sharp',
     'Accent Color': 'accent color theme',

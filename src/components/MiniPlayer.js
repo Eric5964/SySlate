@@ -68,6 +68,16 @@ export default function MiniPlayer({ withTabBar = true }) {
             // Force 0 and let the very next real poll (this same effect,
             // trackChanged now false) bring in the correct pair.
             basisRef.current = { position: 0, duration: 0, at: Date.now() };
+            // Same as the Player's bar: ask for the real spot now (a crossfade
+            // flips the display halfway, so the new song is already a couple
+            // of seconds in) instead of waiting for the next poll.
+            const trackAtChange = currentTrack?.id;
+            AudioEngine.getProgress().then(p => {
+                if (lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
+                if (p.position > p.duration || p.position > 40) return;
+                basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
+                forceTick(t => t + 1);
+            }).catch(() => { });
         } else {
             basisRef.current = { position: progress.position, duration: progress.duration, at: Date.now() };
         }

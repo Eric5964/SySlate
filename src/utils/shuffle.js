@@ -56,12 +56,40 @@ export function dumbShuffle(tracks, counts = {}) {
   return weightedPicks(tracks, t => Math.pow(1 + Math.max(0, counts[t.id] || 0), 0.4));
 }
 
-export function buildQueue(tracks, mode, counts) {
-  switch (mode) {
-    case 'true_random': return trueRandomArray(tracks);
-    case 'smart':       return smartShuffle(tracks, counts);
-    case 'dumb':        return dumbShuffle(tracks, counts);
-    case 'off':         return [...tracks];
-    default:            return shuffleArray(tracks); // full_cycle
-  }
+// Weighted order WITHOUT replacement: every song exactly once per round, but
+// heavier songs tend to come earlier (Efraimidis-Spirakis keys).
+function weightedOrder(arr, weightOf) {
+  return arr
+    .map(t => ({ t, k: Math.pow(Math.random(), 1 / Math.max(1e-6, weightOf(t))) }))
+    .sort((a, b) => b.k - a.k)
+    .map(x => x.t);
+}
+
+// A shuffle mode is a weighting (normal / smart / dumb) and an order:
+//   cycle  = every song once per round ("shuffle")
+//   random = each pick is independent, repeats possible, no cycle
+// The saved ids are the older ones so nothing stored breaks:
+//   full_cycle  normal + cycle     true_random  normal + random
+//   smart_cycle smart  + cycle     smart        smart  + random
+//   dumb_cycle  dumb   + cycle     dumb         dumb   + random
+export const MODE_PARTS = {
+  full_cycle: { weight: 'normal', order: 'cycle' },
+  true_random: { weight: 'normal', order: 'random' },
+  smart_cycle: { weight: 'smart', order: 'cycle' },
+  smart: { weight: 'smart', order: 'random' },
+  dumb_cycle: { weight: 'dumb', order: 'cycle' },
+  dumb: { weight: 'dumb', order: 'random' },
+};
+export const modeId = (weight, order) => Object.keys(MODE_PARTS).find(k => MODE_PARTS[k].weight === weight && MODE_PARTS[k].order === order) || 'full_cycle';
+export const modeNeedsCounts = (mode) => (MODE_PARTS[mode]?.weight ?? 'normal') !== 'normal';
+
+export function buildQueue(tracks, mode, counts = {}) {
+  if (mode === 'off') return [...tracks];
+  const m = MODE_PARTS[mode] || MODE_PARTS.full_cycle;
+  const c = (t) => Math.max(0, counts[t.id] || 0);
+  const weightOf = m.weight === 'smart' ? (t => 1 / Math.pow(1 + c(t), 0.4))
+    : m.weight === 'dumb' ? (t => Math.pow(1 + c(t), 0.4))
+    : (() => 1);
+  if (m.order === 'random') return weightedPicks(tracks, weightOf);
+  return m.weight === 'normal' ? shuffleArray(tracks) : weightedOrder(tracks, weightOf);
 }
