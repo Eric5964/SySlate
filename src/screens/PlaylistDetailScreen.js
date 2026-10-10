@@ -13,10 +13,11 @@ import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, 
 import { squircle, cardRadius } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
+import SwipeQueueButton from '../components/SwipeQueueButton';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
-import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance } from '../utils/layout';
 import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
 import { useListArt } from '../hooks/useListArt';
@@ -33,7 +34,7 @@ export default function PlaylistDetailScreen() {
     const route = useRoute();
     const { playlist, initialCover } = route.params;
     const {
-        playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue,
+        playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext,
     } = usePlayback();
     const { theme, base } = useTheme();
 
@@ -139,6 +140,23 @@ export default function PlaylistDetailScreen() {
         // already covers "toggle shuffle on what's currently playing
         // without restarting it," so this doesn't need to duplicate that.
         await playPlaylistShuffled(playlist);
+    };
+
+    // Swiping a button right queues this playlist to take over after the
+    // current song (Play = in order, Shuffle = shuffled); with nothing playing
+    // there is nothing to wait for, so it just starts.
+    const [queuedNote, setQueuedNote] = useState(null);
+    const queuedTimer = useRef(null);
+    useEffect(() => () => clearTimeout(queuedTimer.current), []);
+    const flashQueued = (text) => {
+        setQueuedNote(text);
+        clearTimeout(queuedTimer.current);
+        queuedTimer.current = setTimeout(() => setQueuedNote(null), 1400);
+    };
+    const swipeQueue = async (shuffled) => {
+        const r = await queuePlaylistNext(playlist, shuffled, shuffled ? undefined : sorted);
+        if (r.ok) flashQueued(shuffled ? 'Shuffled playlist queued next' : 'Playlist queued next');
+        else if (r.reason === 'nothing-playing') { if (shuffled) handleShuffle(); else handlePlay(); }
     };
 
     const changeCover = async () => {
@@ -250,17 +268,22 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
+                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH}>
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
                             </TouchableOpacity>
+                            </SwipeQueueButton>
                             )}
                             {ui.pd_shuffle !== false && (
+                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} edgeExclude={EDGE_SWIPE_WIDTH}>
                             <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
                                 <ShuffleIcon size={16} color={theme.accent} />
                                 <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
                             </TouchableOpacity>
+                            </SwipeQueueButton>
                             )}
+                            {queuedNote && <Text pointerEvents="none" style={[s.queuedNote, { color: base.textDim }]}>{queuedNote}</Text>}
                         </View>
 
                         <View style={s.titleRow}>
@@ -335,7 +358,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                         }
                     </View>
                 )}
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>
                     <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
                     <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}</Text>
                 </View>
@@ -360,6 +383,7 @@ const s = StyleSheet.create({
     cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
+    queuedNote: { position: 'absolute', left: 0, right: 0, bottom: -18, textAlign: 'center', fontSize: 11, fontWeight: '600' },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
     playBtnText: { fontSize: 15, fontWeight: '700' },
     shuffleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 24, borderWidth: 1.5 },

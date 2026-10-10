@@ -177,13 +177,47 @@ const AudioEngine = {
 
 export default AudioEngine;
 
+// What the engine last said, kept at module level so a screen that mounts
+// later (the Player opening) starts from the real state at once instead of
+// from "nothing yet" for the first few frames. That empty start was why the
+// DJ disc and the progress bar were late to start when the Player opened.
+let lastPlaybackState = State.None;
+let lastProgress = null;   // { position, duration, buffered, id, qid, at }
+try {
+    emitter.addListener(Event.PlaybackState, ({ state }) => { lastPlaybackState = state; });
+    emitter.addListener(Event.PlaybackProgressUpdated, (p) => { if (p) lastProgress = { ...p, at: Date.now() }; });
+    NativeAudioEngine.getState().then(state => { if (lastPlaybackState === State.None) lastPlaybackState = state; }).catch(() => { });
+} catch { }
+
+// A reading only counts for the song it describes. A reading that was taken
+// just before a skip can arrive just after it; native tags every reading with
+// the song it belongs to, and this drops one that is not the song being shown
+// (it used to make the progress bar jump to the old song's spot and back).
+// `expectQid` is the shown song's _qid; readings or songs without one pass.
+export function matchProgress(p, expectQid, fallbackDuration = 0) {
+    if (!p) return { position: 0, duration: fallbackDuration || 0, buffered: 0 };
+    if (expectQid && p.qid && p.qid !== expectQid) {
+        return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
+    }
+    return p;
+}
+
 // Matches RNTP's real useProgress(updateInterval): plain JS polling of
 // getProgress() on the given interval (ms), independent of any native
 // event — same behavior the app was already built around (see
 // PlayerScreen.js's own note about "useProgress hasn't ticked yet since
 // mount/track-change" — that's this polling, not push-based).
 export function useProgress(updateInterval = 1000) {
-    const [progress, setProgress] = useState({ position: 0, duration: 0, buffered: 0 });
+    const [progress, setProgress] = useState(() => {
+        // Start from the last reading (moved on by the time since, if it was
+        // playing) rather than from 0:00.
+        const lp = lastProgress;
+        if (lp && Date.now() - lp.at < 3000 && lp.duration > 0) {
+            const adv = lastPlaybackState === State.Playing ? (Date.now() - lp.at) / 1000 : 0;
+            return { position: Math.min(lp.duration, lp.position + adv), duration: lp.duration, buffered: lp.duration, id: lp.id, qid: lp.qid };
+        }
+        return { position: 0, duration: 0, buffered: 0 };
+    });
     useEffect(() => {
         let cancelled = false;
         const tick = () => {
@@ -211,7 +245,7 @@ export function useProgress(updateInterval = 1000) {
 // state string; the event body is already { state } (see AudioEngine.swift's
 // setState), so both paths are normalized to the same { state } shape here.
 export function usePlaybackState() {
-    const [playbackState, setPlaybackState] = useState({ state: State.None });
+    const [playbackState, setPlaybackState] = useState(() => ({ state: lastPlaybackState }));
     useEffect(() => {
         let cancelled = false;
         NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });

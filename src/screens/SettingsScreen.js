@@ -150,7 +150,6 @@ export default function SettingsScreen() {
     useEffect(() => { getSettingsMode().then(setModeState); }, []);
     const changeMode = (m) => { setModeState(m); setSettingsMode(m); };
     const [query, setQuery] = useState('');
-    const [fineTune, setFineTune] = useState(false);
     const q = query.trim().toLowerCase();
     const [myLook, setMyLookState] = useState(null);
     useEffect(() => { getMyLook().then(setMyLookState); }, []);
@@ -566,8 +565,9 @@ export default function SettingsScreen() {
 
     // ---- Simple settings helpers -------------------------------------------
     // One crossfade length in Simple sets every related Advanced setting:
-    // the end-of-song crossfade, the skip crossfade (the slider stops at 3s),
-    // and the fade when you play or pause.
+    // the end-of-song crossfade, the skip crossfade, and the fade when you
+    // play or pause. Every one of them has the same 0 to 6 s range here and in
+    // Advanced.
     const SIMPLE_XF = [0, 1, 2, 3, 4, 5, 6];
     const simpleXfSelected = !crossfadeEnabled ? 0 : (SIMPLE_XF.includes(Math.round(crossfadeDurationEndOfTrack)) ? Math.round(crossfadeDurationEndOfTrack) : -1);
     const applySimpleCrossfade = (sec) => {
@@ -578,8 +578,8 @@ export default function SettingsScreen() {
         setRamp(sec); setAudioRamp(sec);
         setRampPause(true); setRampOnPause(true);
     };
-    const chipRow = (items, isOn, onPick) => (
-        <View style={s.sortRow}>
+    const chipRow = (items, isOn, onPick, extraStyle) => (
+        <View style={[s.sortRow, extraStyle]}>
             {items.map(it => (
                 <TouchableOpacity key={String(it.id)} style={[s.sortChip, isOn(it.id) && { backgroundColor: theme.accent }]} onPress={() => onPick(it.id)}>
                     <Text style={[s.sortChipText, isOn(it.id) && { color: theme.onAccent }]}>{it.label}</Text>
@@ -632,8 +632,8 @@ export default function SettingsScreen() {
     const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Every song once per round' }, { id: 'random', label: 'Random', sub: 'Any song any time, repeats possible, no rounds' }];
     const shuffleUi = (
         <>
-            {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order))}
-            {chipRow(ORDERS, (id) => shuffleParts.order === id, (id) => pickShuffle(shuffleParts.weight, id))}
+            {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order), { paddingBottom: 8 })}
+            {chipRow(ORDERS, (id) => shuffleParts.order === id, (id) => pickShuffle(shuffleParts.weight, id), { paddingBottom: 12 })}
             <Text style={[s.toggleSub, { paddingHorizontal: 24, paddingBottom: 16 }]}>
                 {WEIGHTS.find(w => w.id === shuffleParts.weight)?.sub}. {ORDERS.find(o => o.id === shuffleParts.order)?.sub}.
             </Text>
@@ -661,8 +661,10 @@ export default function SettingsScreen() {
                 // The list runs up under the bar's fade (so rows fade out
                 // instead of being cut off) and starts lower by the same
                 // amount, so nothing sits higher than before.
-                style={topBarColor ? { marginTop: -TOP_FADE } : null}
-                contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : 0, paddingBottom: 160 }}
+                // Same position with or without the color: the transparent bar is
+                // the colored bar minus the color and the shadow.
+                style={{ marginTop: -TOP_FADE }}
+                contentContainerStyle={{ paddingTop: TOP_FADE, paddingBottom: 160 }}
             >
                 <SettingsViewCtx.Provider value={{ mode, q }}>
                 <View style={s.modeBar}>
@@ -808,7 +810,7 @@ export default function SettingsScreen() {
 
                 {/* 3. Shuffle */}
                 <Section title="Shuffle Mode">
-                    {shuffleUi}
+                    <View style={{ paddingTop: 14 }}>{shuffleUi}</View>
                 </Section>
 
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
@@ -831,16 +833,6 @@ export default function SettingsScreen() {
                         <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <Text style={s.toggleLabel}>All Fades</Text>
-                        <Text style={s.toggleSub}>One length for every crossfade and fade below. Same as the Simple setting</Text>
-                    </View>
-                    {chipRow(SIMPLE_XF.map(v => ({ id: v, label: v === 0 ? 'Off' : `${v}s` })), (id) => simpleXfSelected === id, applySimpleCrossfade)}
-                    <TouchableOpacity style={[s.row, { borderTopWidth: 1, borderTopColor: base.border }]} onPress={() => setFineTune(v => !v)} activeOpacity={0.6}>
-                        <Text style={s.rowLabel}>Fine-tune each fade</Text>
-                        <Text style={s.rowSub}>{fineTune ? 'Tap to hide the individual sliders' : 'Set the length of each fade separately'}</Text>
-                    </TouchableOpacity>
-                    {fineTune && (<>
                     {crossfadeEnabled ? (
                         <>
                             {/* Split from one shared "Crossfade Duration" slider
@@ -915,7 +907,6 @@ export default function SettingsScreen() {
                         onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>Off</Text><Text style={s.sliderEnd}>6s</Text></View>
-                    </>)}
 
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -1224,7 +1215,6 @@ export default function SettingsScreen() {
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Shadows & Outlines">
-                    {performanceMode && <Text style={[s.toggleSub, { paddingHorizontal: 16, paddingTop: 12 }]}>Shadows are hidden while Performance Mode is on. Your choices below are kept.</Text>}
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Looks</Text>
                         <Text style={s.toggleSub}>Quick styles for everything below, plus the cover shape</Text>

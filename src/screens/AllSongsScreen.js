@@ -17,7 +17,7 @@ import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storag
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
-import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import ScreenBackground from '../components/ScreenBackground';
 
@@ -282,7 +282,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                         }
                     </View>
                 )}
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>
                     <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.title}</Text>
                     <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.artist, artistSeparator, artistDisplayJoin)}</Text>
                 </View>

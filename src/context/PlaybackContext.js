@@ -9,6 +9,7 @@ import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { getPlayCounts } from '../utils/storage';
 import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
+import { emitSkipPress } from '../utils/transportRamp';
 import { withTimeout } from '../utils/withTimeout';
 import {
     getShuffleMode, setShuffleMode, getShuffleOn as getShuffleOnStorage, setShuffleOn as setShuffleOnStorage,
@@ -148,6 +149,12 @@ export function PlaybackProvider({ children }) {
     useEffect(() => { shuffleModeRef.current = shuffleMode; }, [shuffleMode]);
     const priorityRef = useRef([]);
     useEffect(() => { priorityRef.current = priorityQueue; }, [priorityQueue]);
+    // A playlist queued to take over after the current song (swipe right on a
+    // playlist's Play / Shuffle button): { playlist, queue, shuffled, mode,
+    // qids }. The upcoming queue is already replaced by its songs; the
+    // "current playlist" itself (title, shuffle state, saved session) switches
+    // when the first of its songs starts. See queuePlaylistNext.
+    const pendingNextPlaylistRef = useRef(null);
 
     const currentTrackRef = useRef(null);
     useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
@@ -443,6 +450,12 @@ export function PlaybackProvider({ children }) {
                     : track.id === currentTrackRef.current?.id;
                 if (sameSlot) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
                 setCurrentTrack(track);
+                // The first song of a queued playlist just started: that
+                // playlist is now the current one.
+                {
+                    const pend = pendingNextPlaylistRef.current;
+                    if (pend && track._qid && pend.qids.has(track._qid)) finalizeNextPlaylist();
+                }
                 // Priority items are always inserted at the tail of the
                 // contiguous priority block (currentIndex+1+length), so the
                 // tracked array's order matches the priority zone's actual
@@ -687,6 +700,7 @@ export function PlaybackProvider({ children }) {
         // user clicking into the end of a song where it's supposed to be
         // ramping already." Now consistent with the rest of this file.
         if (isTransitionLocked()) { queueAction(() => jumpToQueueIndex(realIndex)); return; }
+        emitSkipPress();   // the DJ disc dims right away, before the song changes
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
@@ -869,6 +883,8 @@ export function PlaybackProvider({ children }) {
     // playWithRamp) itself — a crossfade owns its own fade-in natively, a
     // plain reset+ramp fresh-start doesn't.
     const primeQueueForTransition = async (fullQueue, rampDuration, anchorIndex = 0) => {
+        emitSkipPress();   // a new song is about to start: the DJ disc dims right away
+        pendingNextPlaylistRef.current = null;   // a fresh start replaces the whole queue
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
         const skipCrossfadeDuration = await getCrossfadeDurationSkip();
         const crossfadeReady = wasPlaying
@@ -1008,10 +1024,11 @@ export function PlaybackProvider({ children }) {
                 // exactly what it was throughout, unaffected by this, since
                 // logicalQueueRef only ever gets appended to here, never
                 // rewritten from the start.
-                const pl = playlistRef.current;
+                const pend = pendingNextPlaylistRef.current;   // a queued playlist has not taken over yet: it is the one to repeat
+                const pl = pend ? pend.playlist : playlistRef.current;
                 if (!pl?.songs?.length) return;
-                const passMode = shuffleOnRef.current ? shuffleModeRef.current : 'off';
-                console.log(`[LOOP] playlist finished a round: next round is ${shuffleOnRef.current ? 'shuffled (' + passMode + ')' : 'in order'}`);
+                const passMode = pend ? (pend.shuffled ? pend.mode : 'off') : (shuffleOnRef.current ? shuffleModeRef.current : 'off');
+                console.log(`[LOOP] playlist finished a round: next round is ${passMode !== 'off' ? 'shuffled (' + passMode + ')' : 'in order'}`);
                 const nextPass = await buildQueueAsync(pl.songs, passMode);
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
@@ -1067,6 +1084,63 @@ export function PlaybackProvider({ children }) {
             setPriorityQueue([]);
         }
     };
+
+    // Makes a queued playlist (see queuePlaylistNext) the current one: title,
+    // shuffle state, EQ and saved session follow it from here on, and it keeps
+    // repeating until something else is played.
+    const finalizeNextPlaylist = async () => {
+        const pend = pendingNextPlaylistRef.current;
+        if (!pend) return null;
+        pendingNextPlaylistRef.current = null;
+        const pl = { ...pend.playlist, queue: pend.queue };
+        // Refs first, so a top-up or a save that runs right now already sees it.
+        playlistRef.current = pl;
+        shuffleOnRef.current = pend.shuffled;
+        if (pend.shuffled) shuffleModeRef.current = pend.mode;
+        setCurrentPlaylist(pl);
+        setShuffleOn(pend.shuffled);
+        if (pend.shuffled) setShuffleModeState(pend.mode);
+        setSingleLoop(false);
+        try {
+            const eq = await getEQPreset(pl.path);
+            applyEQPreset(eq);
+            setEqPresetId(eq);
+            await setShuffleOnStorage(pend.shuffled);
+            if (pend.shuffled) await setShuffleMode(pend.mode);
+        } catch { }
+        return pl;
+    };
+
+    // Queues a whole playlist to follow the current song: everything upcoming
+    // except the priority songs is replaced by this playlist's songs (in order
+    // for Play, shuffled for Shuffle), and once its first song starts it is the
+    // current playlist and keeps going until something else is played.
+    // `orderedSongs` is the order Play would use (the playlist's sort).
+    // Resolves { ok, reason }.
+    const queuePlaylistNext = useCallback(async (playlist, shuffled, orderedSongs) => {
+        try {
+            if (!playlist?.songs?.length) return { ok: false, reason: 'empty' };
+            const currentIndex = await AudioEngine.getCurrentTrack();
+            if (currentIndex === null || currentIndex === undefined) return { ok: false, reason: 'nothing-playing' };
+            const mode = await getShuffleMode();
+            const rest = shuffled
+                ? await buildQueueAsync(playlist.songs, mode)
+                : [...(orderedSongs?.length ? orderedSongs : playlist.songs)];
+            const queue = await AudioEngine.getQueue();
+            const keepEnd = currentIndex + 1 + priorityRef.current.length;
+            const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
+            // Same bulk replace as a shuffle change (reshuffleUpcoming).
+            await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
+            if (priorityTracks.length) await withTimeout(AudioEngine.add(priorityTracks), 4000);
+            const batch = stampQids(rest.slice(0, QUEUE_WINDOW_SIZE));
+            if (batch.length) await withTimeout(AudioEngine.add(batch), 6000);
+            const newLogical = [...queue.slice(0, keepEnd), ...rest];
+            logicalQueueRef.current = newLogical;
+            loadedThroughRef.current = keepEnd + batch.length;
+            pendingNextPlaylistRef.current = { playlist, queue: newLogical, shuffled: !!shuffled, mode, qids: new Set(batch.map(t => t._qid)) };
+            return { ok: true };
+        } catch (e) { console.error('queuePlaylistNext:', e); return { ok: false, reason: 'error' }; }
+    }, []);
 
     const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
         // Previously just silently dropped the whole action if a transition
@@ -1394,6 +1468,8 @@ export function PlaybackProvider({ children }) {
     // playlist you loaded — the queue you were already listening to just
     // kept its original order, which read as "shuffle doesn't do anything."
     const reshuffleUpcoming = useCallback(async (mode) => {
+        // A queued playlist takes over now (a shuffle change applies to it).
+        if (pendingNextPlaylistRef.current) await finalizeNextPlaylist();
         const pl = playlistRef.current;
         if (!pl?.songs?.length) return;
         try {
@@ -1501,6 +1577,9 @@ export function PlaybackProvider({ children }) {
     const saveSession = useCallback(async () => {
         const pl = playlistRef.current;
         if (!pl?.path) return;
+        // A queued playlist is already in the native queue but has not taken
+        // over yet: saving now would file its songs under the old playlist.
+        if (pendingNextPlaylistRef.current) return;
         try {
             // Was 3 sequential awaits (getCurrentTrack, then getQueue, then
             // getProgress) before ever writing anything — on a genuine
@@ -1598,13 +1677,13 @@ export function PlaybackProvider({ children }) {
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

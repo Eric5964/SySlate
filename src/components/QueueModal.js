@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, TouchableWithoutFeedback, Image, FlatList, StyleSheet, Animated, Easing, PanResponder } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder } from 'react-native';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
-import { pillPad, PILL_COVER } from '../utils/layout';
+import { pillPad, PILL_COVER, addedClearance } from '../utils/layout';
 import SwipeableRow from './SwipeableRow';
 import BottomSheet from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
@@ -46,8 +46,8 @@ function Cell({ children, style, index, onLayout, ...props }) {
         </View>
     );
 }
-const EDGE = 90;          // auto-scroll zone at the top and bottom of the list
-const MAX_SCROLL = 14;    // px per frame at the very edge
+const EDGE = 64;          // auto-scroll zone at the top and bottom of the list
+const MAX_SCROLL_PX_S = 330;   // px per second at the very edge (eases in from 0 at the zone's inner border)
 const DRAG_SLOP = 6;
 // Rows built shortly after the open animation, then more as the list is scrolled.
 const MORE_ROWS = 80;
@@ -131,8 +131,9 @@ function ShrinkOutRow({ removing, children }) {
     const t = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // The gap closes WHILE the row slides off to the left, so the row
-        // squishes away and the rows below glide up with it.
+        // The gap closes WHILE the row slides off to the left, and the row
+        // itself (its outline included) squishes flat as it goes, so the
+        // rows below glide up with it.
         Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [removing]);
@@ -140,9 +141,50 @@ function ShrinkOutRow({ removing, children }) {
     // removed (only their styles change). Swapping to a different wrapper
     // when removal began used to remount the whole swipeable row, which
     // threw away its slide-off and made the row jump back mid-removal.
+    // The inner view keeps the full row height and is squashed with scaleY
+    // (moved up so it stays centered in the shrinking outer box), instead of
+    // the row being cut off by the shrinking box.
     return (
         <Animated.View style={removing ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' } : null}>
-            <View style={removing ? { height: ROW_HEIGHT } : null}>{children}</View>
+            <Animated.View style={removing ? {
+                height: ROW_HEIGHT,
+                opacity: t.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0.85, 1] }),
+                transform: [
+                    { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-ROW_HEIGHT / 2, 0] }) },
+                    { scaleY: t },
+                ],
+            } : null}>{children}</Animated.View>
+        </Animated.View>
+    );
+}
+
+// A "Priority" / "Up Next" label (or the line between them) that closes up
+// smoothly when the last row under it is being removed: the box shrinks to
+// nothing while its content shrinks and fades, in step with the row's own
+// removal, instead of vanishing at the end.
+function CollapseBlock({ collapsing, children }) {
+    const t = useRef(new Animated.Value(1)).current;
+    const natural = useRef(0);   // measured height while not collapsing
+    useEffect(() => {
+        if (!collapsing) return;
+        Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [collapsing]);
+    const h = natural.current;
+    const on = collapsing && h > 0;
+    return (
+        <Animated.View style={on ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, h] }), overflow: 'hidden' } : null}>
+            <Animated.View
+                onLayout={(e) => { if (!collapsing) natural.current = e.nativeEvent.layout.height; }}
+                style={on ? {
+                    opacity: t,
+                    transform: [
+                        { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-h / 2, 0] }) },
+                        { scale: t },
+                    ],
+                    transformOrigin: 'left center',
+                } : null}
+            >{children}</Animated.View>
         </Animated.View>
     );
 }
@@ -175,10 +217,9 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                 <Animated.View style={[{ transform: [{ translateY: dragging ? dragY : shiftAnim }, { scale: dragging ? 1.03 : 1 }] }, dragging && s.dragged]}>
                 <SwipeableRow
                     onSwipeLeft={editing ? undefined : () => actions.remove(realIndex, stableKey)}
-                    // Only meaningful for Up Next rows: promoting a row that is
-                    // already Priority does nothing useful (see promoteToQueue's
-                    // guard for the duplicate-entry bug this used to cause).
-                    onSwipeRight={isPriority || editing ? undefined : () => actions.promote(realIndex)}
+                    // Up Next row: promote it to Priority (a copy plays sooner).
+                    // Priority row: add another copy of it to the end of Priority.
+                    onSwipeRight={editing ? undefined : () => (isPriority ? actions.addCopy(song) : actions.promote(realIndex))}
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
@@ -191,7 +232,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                                 }
                             </View>
                         )}
-                        <View style={{ flex: 1 }}>
+                        <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? playCount : 0) }}>
                             <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{song.ourTitle ?? song.title}</Text>
                             <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(song.ourArtist ?? song.artist, artistSeparator, artistDisplayJoin)}</Text>
                         </View>
@@ -239,6 +280,11 @@ export default function QueueModal({ visible, onClose }) {
     // that first loading window too, which read as the queue being empty
     // rather than just not loaded yet.
     const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+    // Keeping the visible rows anchored when content is added above them is
+    // only wanted once the list is scrolled down. At the very top it made the
+    // list jump to the newly added row instead of staying at the top.
+    const [anchorOn, setAnchorOn] = useState(false);
+    const anchorRef = useRef(false);
 
     // remove()/promote() already call refresh() explicitly, right after
     // their own native change, with the correct priorityOverride for that
@@ -430,7 +476,7 @@ export default function QueueModal({ visible, onClose }) {
         getPlayCounts(toFetch).then(setPlayCounts);
     }, [songsForArt, showPlayCount, currentTrack]);
 
-    // ---- Moving rows (hold to pick up, drag, Done) -----------------------
+    // ---- Moving rows (hold to pick up, drag, let go) ---------------------
     // Works like moving playlists: same hold times, the list scrolls by
     // itself when the finger nears the top or bottom edge, and the held row
     // follows the finger while the list scrolls under it.
@@ -524,8 +570,12 @@ export default function QueueModal({ visible, onClose }) {
     }, [arm]);
     const pressOut = useCallback(() => {
         clearTimeout(holdTimer.current);
-        // Held and let go without dragging: the row is just put back down.
-        if (armedKey.current && !dragging.current) { armedKey.current = null; setDragKey(null); setDragTo(null); }
+        // Held and let go without dragging: the row is just put back down
+        // (no separate "editing" state is left behind).
+        if (armedKey.current && !dragging.current) {
+            armedKey.current = null; editRef.current = false; draggedListIndex = -1;
+            setDragKey(null); setDragTo(null); setEditMode(false);
+        }
     }, []);
 
     const finishDrag = useCallback(async () => {
@@ -545,6 +595,10 @@ export default function QueueModal({ visible, onClose }) {
         draggedListIndex = -1;
         setDragKey(null); setDragTo(null);
         dragY.setValue(0);
+        // Moving a row is not a mode: once it is dropped everything is back to
+        // normal (swiping and tapping work again, no Done button).
+        editRef.current = false;
+        setEditMode(false);
     }, [dragY, moveInQueue, refresh]);
     finishRef.current = finishDrag;
 
@@ -559,18 +613,26 @@ export default function QueueModal({ visible, onClose }) {
             if (idx >= 0) { startIdx.current = idx; toIdx.current = idx; }
             drag.current = { dy: 0, scroll0: scrollY.current, fingerY: e.nativeEvent.pageY };
             clearInterval(scrollTimer.current);
+            let lastT = Date.now();
             scrollTimer.current = setInterval(() => {
+                const now = Date.now();
+                const dt = Math.min(64, now - lastT);   // ms since the last step
+                lastT = now;
                 if (!dragging.current) return;
+                // Only the very edge of the list scrolls it, and gently:
+                // speed grows with how far into the zone the finger is.
+                const zone = Math.min(EDGE, viewH.current * 0.2);
                 const fy = drag.current.fingerY - listTop.current;
                 let v = 0;
-                if (fy < EDGE) v = -((EDGE - fy) / EDGE) * MAX_SCROLL;
-                else if (fy > viewH.current - EDGE) v = ((fy - (viewH.current - EDGE)) / EDGE) * MAX_SCROLL;
+                if (fy < zone) { const k = (zone - fy) / zone; v = -k * k * MAX_SCROLL_PX_S; }
+                else if (fy > viewH.current - zone) { const k = (fy - (viewH.current - zone)) / zone; v = k * k * MAX_SCROLL_PX_S; }
                 if (!v) return;
+                const step = (v * dt) / 1000;
                 const maxY = Math.max(0, contentH.current - viewH.current);
-                if (v > 0 && scrollY.current > maxY - viewH.current * 1.5 && visibleRef.current < totalRowsRef.current) {
+                if (step > 0 && scrollY.current > maxY - viewH.current * 1.5 && visibleRef.current < totalRowsRef.current) {
                     setVisibleCount(c => (c < totalRowsRef.current ? Math.min(totalRowsRef.current, c + MORE_ROWS) : c));
                 }
-                const ny = Math.max(0, Math.min(maxY, scrollY.current + v));
+                const ny = Math.max(0, Math.min(maxY, scrollY.current + step));
                 if (ny === scrollY.current) return;
                 scrollY.current = ny;
                 if (listRef.current) listRef.current.scrollToOffset({ offset: ny, animated: false });
@@ -604,6 +666,12 @@ export default function QueueModal({ visible, onClose }) {
         const { priority, insertedAt } = await promoteToQueue(realIndex);
         await refresh(priority, insertedAt);
     };
+    // Swipe right on a Priority row: another copy goes to the end of Priority.
+    const addCopy = async (song) => {
+        const priority = await addToQueue(song);
+        const cur = await AudioEngine.getCurrentTrack();
+        await refresh(priority, cur !== null && cur !== undefined ? cur + priority.length : undefined);
+    };
 
     // Real cause of "queue screen laggy/choppy, inconsistent animations"
     // found here: this whole sheet was a plain ScrollView + .map over every
@@ -630,18 +698,22 @@ export default function QueueModal({ visible, onClose }) {
     const listData = useMemo(() => {
         const items = [];
         if (currentTrack) items.push({ type: 'nowplaying', key: 'now-playing' });
+        // The last row of a section is being removed: its label (and the line
+        // between the sections) close up together with it.
+        const priGone = priorityRows.length > 0 && priorityRows.every(r => removingKeys.has(r.stableKey));
+        const upGone = upNextRows.length > 0 && upNextRows.every(r => removingKeys.has(r.stableKey));
         if (priorityRows.length > 0) {
-            items.push({ type: 'pill', key: 'pill-priority', label: 'Priority', isNew: newKeys.has(priorityRows[0].stableKey) });
+            items.push({ type: 'pill', key: 'pill-priority', label: 'Priority', isNew: newKeys.has(priorityRows[0].stableKey), collapsing: priGone });
             for (const r of priorityRows) items.push({ type: 'row', key: r.stableKey, row: r });
         }
-        if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider' });
+        if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider', collapsing: priGone || upGone });
         if (upNextRows.length > 0) {
-            items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next', isNew: newKeys.has(upNextRows[0].stableKey) });
+            items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next', isNew: newKeys.has(upNextRows[0].stableKey), collapsing: upGone });
             for (const r of upNextRows) items.push({ type: 'row', key: r.stableKey, row: r });
         }
         return items;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rows, currentTrack, newKeys]);
+    }, [rows, currentTrack, newKeys, removingKeys]);
     draggedListIndex = dragKey == null ? -1 : listData.findIndex(it => it.key === dragKey);
     {
         const byKey = new Map();
@@ -652,12 +724,13 @@ export default function QueueModal({ visible, onClose }) {
     // Stable handlers so memoized rows are not re-rendered just because the
     // parent re-rendered (every closure above is new on each render).
     const actionsRef = useRef({});
-    actionsRef.current = { remove, promote, jump, pressIn, pressOut };
+    actionsRef.current = { remove, promote, addCopy, jump, pressIn, pressOut };
     const rowActions = useRef({
         pressIn: (k) => actionsRef.current.pressIn(k),
         pressOut: () => actionsRef.current.pressOut(),
         remove: (i, k) => actionsRef.current.remove(i, k),
         promote: (i) => actionsRef.current.promote(i),
+        addCopy: (song) => actionsRef.current.addCopy(song),
         jump: (i) => actionsRef.current.jump(i),
     }).current;
 
@@ -706,7 +779,20 @@ export default function QueueModal({ visible, onClose }) {
             return (
                 <>
                     <View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>Now Playing</Text></View>
-                    <SwipeableRow onSwipeRight={() => addToQueue(currentTrack).then(() => refresh())} rightColor={theme.accent}>
+                    <SwipeableRow onSwipeRight={() => {
+                        // Adding the playing song puts a row right under it;
+                        // from the top, the list stays at the top.
+                        const atTop = scrollY.current < 8;
+                        (async () => {
+                            const priority = await addToQueue(currentTrack);
+                            const cur = await AudioEngine.getCurrentTrack();
+                            await refresh(priority, cur !== null && cur !== undefined ? cur + priority.length : undefined);
+                            if (atTop) {
+                                listRef.current?.scrollToOffset({ offset: 0, animated: false });
+                                setTimeout(() => listRef.current?.scrollToOffset({ offset: 0, animated: false }), 80);
+                            }
+                        })();
+                    }} rightColor={theme.accent}>
                         <View style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]}>
                             {showSongCovers && (
                                 <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
@@ -716,7 +802,7 @@ export default function QueueModal({ visible, onClose }) {
                                     }
                                 </View>
                             )}
-                            <View style={{ flex: 1 }}>
+                            <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? playCounts[currentTrack.id] : 0) }}>
                                 <Text style={[s.qTitle, { color: base.text }]} numberOfLines={1}>{currentTrack.ourTitle ?? currentTrack.title}</Text>
                                 <Text style={[s.qArtist, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(currentTrack.ourArtist ?? currentTrack.artist, artistSeparator, artistDisplayJoin)}</Text>
                             </View>
@@ -729,29 +815,19 @@ export default function QueueModal({ visible, onClose }) {
             );
         }
         if (item.type === 'pill') {
-            return <FadePill isNew={item.isNew}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></FadePill>;
+            return <CollapseBlock collapsing={!!item.collapsing}><FadePill isNew={item.isNew}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></FadePill></CollapseBlock>;
         }
         if (item.type === 'divider') {
-            return <View style={[s.divider, { backgroundColor: base.border }]} />;
+            return <CollapseBlock collapsing={!!item.collapsing}><View style={[s.divider, { backgroundColor: base.border }]} /></CollapseBlock>;
         }
         return renderRow(item.row);
     };
 
     return (
         <BottomSheet visible={visible} onClose={onClose} header={
-            // Title on the left, Done (while moving) on the right at the same
-            // distance from the edge. Tapping the top while moving finishes
-            // the move without closing the queue.
-            <TouchableWithoutFeedback onPress={editMode ? exitEdit : undefined}>
-                <View style={s.headerRow}>
-                    <Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>
-                    {editMode && (
-                        <TouchableOpacity onPress={exitEdit} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                            <Text style={[s.doneText, { color: theme.accent }]}>Done</Text>
-                        </TouchableOpacity>
-                    )}
-                </View>
-            </TouchableWithoutFeedback>
+            <View style={s.headerRow}>
+                <Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>
+            </View>
         }>
             {rows.length === 0 && hasLoadedOnce ? (
                 <View style={{ flex: 1, justifyContent: 'center' }}>
@@ -769,7 +845,12 @@ export default function QueueModal({ visible, onClose }) {
                 <FlatList
                     ref={listRef}
                     scrollEventThrottle={16}
-                    onScroll={(e) => { scrollY.current = e.nativeEvent.contentOffset.y; }}
+                    onScroll={(e) => {
+                        const y = e.nativeEvent.contentOffset.y;
+                        scrollY.current = y;
+                        const on = y > 8;
+                        if (on !== anchorRef.current) { anchorRef.current = on; setAnchorOn(on); }
+                    }}
                     onContentSizeChange={(w, h) => { contentH.current = h; }}
                     data={listData}
                     scrollEnabled={dragKey == null}
@@ -782,7 +863,7 @@ export default function QueueModal({ visible, onClose }) {
                     // keeps whatever's currently on screen anchored in place
                     // when a promote/remove changes content above it,
                     // instead of the view visually jumping.
-                    maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+                    maintainVisibleContentPosition={anchorOn ? { minIndexForVisible: 0 } : undefined}
                     // renderItem above is a fresh closure every render (it
                     // closes over artMap/playCounts/newKeys/removingKeys,
                     // all of which live outside `listData`) — extraData
@@ -817,8 +898,7 @@ const s = StyleSheet.create({
     // the reference Eric pointed at (bigger/brighter, not the small dim
     // uppercase "eyebrow" style this used before).
     sheetTitle: { color: '#e5e5e5', fontSize: 16, fontWeight: '700', marginBottom: 4 },
-    headerRow: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 24 },
-    doneText: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
+    headerRow: { width: '100%', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24 },
     dragged: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.42, shadowRadius: 3, elevation: 6 },
     groupPill: { marginHorizontal: 24, marginTop: 14, marginBottom: 6, alignSelf: 'flex-start', backgroundColor: '#1a1a1a', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
     groupLabel: { color: '#999', fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },

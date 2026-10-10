@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
-import AudioEngine, { useProgress, usePlaybackState, State } from '../native/AudioEngine';
+import AudioEngine, { useProgress, usePlaybackState, matchProgress, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { usePreferences } from '../context/PreferencesContext';
@@ -64,7 +64,13 @@ export default function PlayerScreen() {
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
 
-    const progress = useProgress(500);
+    const rawProgress = useProgress(500);
+    // Only readings that belong to the song being shown count (a late reading
+    // from before a skip used to drag the bar to the old song's spot).
+    const progress = useMemo(
+        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration),
+        [rawProgress, currentTrack?._qid, currentTrack?.duration]
+    );
     // Only true right after the CURRENTLY-PLAYING track actually changes —
     // not on every mount. Before, this effect fired on mount regardless of
     // whether currentTrack.id had genuinely changed (that's just how effects
@@ -111,6 +117,7 @@ export default function PlayerScreen() {
     const controlsRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
     const [dragRatio, setDragRatio] = useState(null);
+    const [barW, setBarW] = useState(width - 56);
     const seekChainRef = useRef(Promise.resolve());
     const latestSeekRatioRef = useRef(null);
     const clearDragTimer = useRef(null);
@@ -168,22 +175,34 @@ export default function PlayerScreen() {
         progress.duration > 0 ? progress.position / progress.duration : 0
     )).current;
     const animRunRef = useRef(null);
-    const animPctValueRef = useRef(progress.duration > 0 ? progress.position / progress.duration : 0); // tracks the animation's own last-set value, since Animated.Value has no public getter
-    useEffect(() => {
-        const id = animPct.addListener(({ value }) => { animPctValueRef.current = value; });
-        return () => animPct.removeListener(id);
-    }, []);
+    const animPctValueRef = useRef(progress.duration > 0 ? progress.position / progress.duration : 0); // the bar's value when it is not running
+    // The bar runs as a native animation (it keeps moving smoothly even when
+    // the JS thread is busy, e.g. right after Play or a skip), so its current
+    // value is worked out from when it started instead of read back.
+    const barRun = useRef(null);          // { from, at, rate } while it runs
+    const barGraceUntil = useRef(0);      // right after a start the audio position is still settling
+    const barPctNow = () => {
+        const r = barRun.current;
+        if (!r) return animPctValueRef.current;
+        return Math.min(1, r.from + ((Date.now() - r.at) / 1000) * r.rate);
+    };
 
-    const stopAnim = () => { animRunRef.current?.stop(); animRunRef.current = null; };
+    const stopAnim = () => {
+        if (barRun.current) { animPctValueRef.current = barPctNow(); barRun.current = null; }
+        animRunRef.current?.stop();
+        animRunRef.current = null;
+    };
 
-    const startRealTimeAnim = (fromPct) => {
+    const startRealTimeAnim = (fromPct, grace = false) => {
         stopAnim();
         animPct.setValue(fromPct);
         animPctValueRef.current = fromPct;
+        if (grace) barGraceUntil.current = Date.now() + 2500;
         if (!isPlaying || progress.duration <= 0 || fromPct >= 1) return;
         // Real time to the end = remaining song time / playback speed.
         const remainingMs = Math.max(0, ((1 - fromPct) * progress.duration * 1000) / (playbackRate || 1));
-        const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: false });
+        barRun.current = { from: fromPct, at: Date.now(), rate: (playbackRate || 1) / progress.duration };
+        const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: true });
         animRunRef.current = anim;
         anim.start();
     };
@@ -782,7 +801,7 @@ export default function PlayerScreen() {
             // A song change while paused (skip, restore, queue tap) must
             // start the bar fresh too. `pct` is still the OLD song's value
             // until the next poll, which left the bar parked at the old spot.
-            const startPct = trackChanged ? 0 : pct;
+            const startPct = trackChanged ? 0 : animPctValueRef.current;
             animPct.setValue(startPct);
             animPctValueRef.current = startPct;
             // `pct` can be up to 500ms old at the instant of a pause (lock
@@ -817,27 +836,36 @@ export default function PlayerScreen() {
             // intermediate value; the very next real poll corrects it via
             // the ordinary drift check below, same as always.
             console.log(`[BAR] track changed: bar reset to 0, last poll said ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
-            startRealTimeAnim(0);
+            startRealTimeAnim(0, true);
             // The new song may already be a couple of seconds in (a
             // crossfade flips the display halfway through). Ask for the real
             // spot right away instead of sitting at 0 until the next poll
             // and then jumping, so the bar starts where the sound is.
             const trackAtChange = currentTrack?.id;
+            const qidAtChange = currentTrack?._qid;
             AudioEngine.getProgress().then(p => {
                 if (lastSyncedTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
+                if (qidAtChange && p.qid && p.qid !== qidAtChange) return;   // a reading for the other song
                 if (p.position > p.duration || p.position > 40) return;   // not a fresh song's spot, don't trust
-                startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)));
+                startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
             }).catch(() => { });
             return;
         }
         // Drift is judged in SECONDS now. 2% of the song was 3-4 seconds on
         // a normal track, which is what let the bar sit visibly wrong
         // after a skip, resume or outside pause before it corrected.
-        const driftSeconds = Math.abs(animPctValueRef.current - pct) * (progress.duration || 0);
+        // + = the bar is ahead of the sound. Right after a start (play, song
+        // change) the audio position is still settling, so a bigger gap is
+        // tolerated; later a bar that is ahead is left alone until it is
+        // clearly off (a backward jump is the visible kind of glitch).
+        const aheadSec = (barPctNow() - pct) * (progress.duration || 0);
+        const inGrace = Date.now() < barGraceUntil.current;
+        const tooFarAhead = aheadSec > (inGrace ? 1.5 : 1.2);
+        const tooFarBehind = -aheadSec > (inGrace ? 1.5 : 0.4);
         // (the bar's running speed already follows playbackRate: see startRealTimeAnim)
-        if (!animRunRef.current || driftSeconds > 0.35) {
-            if (animRunRef.current) console.log(`[BAR] resync: bar was ${driftSeconds.toFixed(1)}s off, poll says ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
-            startRealTimeAnim(pct);
+        if (!animRunRef.current || tooFarAhead || tooFarBehind) {
+            if (animRunRef.current) console.log(`[BAR] resync: bar was ${aheadSec.toFixed(1)}s ahead, poll says ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
+            startRealTimeAnim(pct, !animRunRef.current);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [progress.position, isPlaying, currentTrack?.id, playbackRate]);
@@ -861,8 +889,9 @@ export default function PlayerScreen() {
         return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); };
     }, []);
 
-    const animWidth = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
-    const animLeft = animPct.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+    // Both move with transforms so they can run on the native side.
+    const fillX = useMemo(() => animPct.interpolate({ inputRange: [0, 1], outputRange: [-barW, 0] }), [animPct, barW]);
+    const thumbX = useMemo(() => animPct.interpolate({ inputRange: [0, 1], outputRange: [0, barW] }), [animPct, barW]);
     const skipIconColor = base.textDim; // fixed regardless of ACCENT (not base) — still needs to adapt light/dark
 
     // Shuffle/loop previously swapped color INSTANTLY on state change while
@@ -1022,6 +1051,7 @@ export default function PlayerScreen() {
                                     spinDegPerSec={discRpmValue * 6 * (playbackRate || 1)}
                                     scratchDegPerSec={discRpmValue * 6}
                                     discType={djDiscType}
+                                    placeholderColor={base.surface}
                                     assist={djDiscAssist}
                                     spinOn={djDiscSpin}
                                     touchOn={djDiscTouch}
@@ -1181,12 +1211,12 @@ export default function PlayerScreen() {
                                 <View
                                     ref={progressRef}
                                     style={s.progressTouch}
-                                    onLayout={measureProgress}
+                                    onLayout={(e) => { const w = e.nativeEvent.layout.width; if (w > 0 && Math.abs(w - barW) > 0.5) setBarW(w); measureProgress(); }}
                                 >
-                                    <View style={[s.progressTrack, { backgroundColor: base.border }]}>
-                                        <Animated.View style={[s.progressFill, { width: animWidth, backgroundColor: theme.accent }]} />
+                                    <View style={[s.progressTrack, { backgroundColor: base.border, overflow: 'hidden' }]}>
+                                        <Animated.View style={[s.progressFill, { width: barW, backgroundColor: theme.accent, transform: [{ translateX: fillX }] }]} />
                                     </View>
-                                    <Animated.View style={[s.progressThumb, { left: animLeft, marginLeft: -10, backgroundColor: theme.accent }]} />
+                                    <Animated.View style={[s.progressThumb, { left: 0, marginLeft: -10, backgroundColor: theme.accent, transform: [{ translateX: thumbX }] }]} />
                                 </View>
                             </PanGestureHandler>
                         </TapGestureHandler>

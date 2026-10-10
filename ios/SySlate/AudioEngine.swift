@@ -125,6 +125,12 @@ class AudioEngine: RCTEventEmitter {
     private var normalizerNode: AVAudioUnitEffect!
     private var currentFile: AVAudioFile?
     private var currentFileSampleRate: Double = 44100
+    // The song whose audio the active player node is playing right now. During
+    // a crossfade this stays the OUTGOING song until the halfway point, while
+    // currentIndex already points at the incoming one. The lock screen /
+    // Bluetooth display and the progress readings follow this, so they switch
+    // at the same moment as the in-app display (halfway through the fade).
+    private var activeNodeTrack: Track? = nil
 
     // MARK: - Queue state
     private var queue: [Track] = []
@@ -636,6 +642,10 @@ class AudioEngine: RCTEventEmitter {
     // loaded (a skip or the next track). Remember the load this applies to;
     // the next play() then loads the current song again at its position.
     private var staleScheduleToken: UInt64? = nil
+    // When an output device (Bluetooth, car, headphones) last connected. A Play
+    // command arriving right after is the device resuming on its own, not the
+    // user, and is ignored (see handleRemotePlayPause).
+    private var lastDeviceConnectAt: Date? = nil
     private func markScheduledAudioStale() { staleScheduleToken = playbackToken }
     @objc private func handleEngineConfigChange(_ notification: Notification) {
         DispatchQueue.main.async { [weak self] in self?.markScheduledAudioStale() }
@@ -691,6 +701,7 @@ class AudioEngine: RCTEventEmitter {
         markOutputCold()
         markScheduledAudioStale()
         savePlaybackSnapshot(force: true)
+        if reason == .newDeviceAvailable { lastDeviceConnectAt = Date() }
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
                 self?.pauseInternal()
@@ -877,6 +888,20 @@ class AudioEngine: RCTEventEmitter {
     // with it until the real state change lands.
     private func handleRemotePlayPause(wantsPlay: Bool) {
         debugLog("[NP] remote \(wantsPlay ? "PLAY" : "PAUSE") command received (engine state=\(state))")
+        // A Bluetooth device / car that connects often sends "play" by itself
+        // if the song was playing when it last disconnected. That used to start
+        // playback silently (no volume). Nothing starts on connect now: a Play
+        // that arrives within a few seconds of a device connecting while paused
+        // is ignored, and the system keeps showing paused. Press Play again.
+        if wantsPlay, state != .playing, let at = lastDeviceConnectAt, Date().timeIntervalSince(at) < 6.0 {
+            debugLog("[NP] ignored remote PLAY right after a device connected (no auto play on connect)")
+            displayedAsPaused = nil
+            displayedAsPausedAt = nil
+            updateNowPlayingInfo()
+            MPNowPlayingInfoCenter.default().playbackState = .paused
+            reassertPausedToSystem()
+            return
+        }
         displayedAsPaused = !wantsPlay
         displayedAsPausedAt = Date()
         optimisticallySetPlaybackRate(wantsPlay ? 1.0 : 0.0)
@@ -989,7 +1014,7 @@ class AudioEngine: RCTEventEmitter {
     // the crossfade finished, so iOS showed the new song with the old song's
     // position until then.
     private func nowPlayingElapsedSeconds() -> Double {
-        if isCrossfading, let node = crossfadeIncomingNode, crossfadeIncomingSampleRate > 0 {
+        if isCrossfading, crossfadeAnnouncedIncoming, let node = crossfadeIncomingNode, crossfadeIncomingSampleRate > 0 {
             if let nt = node.lastRenderTime, let pt = node.playerTime(forNodeTime: nt) {
                 return max(0, crossfadeIncomingLeadInSeconds + Double(pt.sampleTime) / crossfadeIncomingSampleRate)
             }
@@ -1006,7 +1031,13 @@ class AudioEngine: RCTEventEmitter {
             cachedArtwork = nil
             return
         }
-        let track = queue[idx]
+        var track = queue[idx]
+        // During a crossfade currentIndex already points at the incoming song,
+        // but the display (lock screen, Bluetooth, car) keeps showing the
+        // outgoing song until the halfway point, like the in-app display.
+        if isCrossfading, !crossfadeAnnouncedIncoming, let outgoing = activeNodeTrack {
+            track = queue.first(where: { $0.id == outgoing.id && $0.qid == outgoing.qid }) ?? outgoing
+        }
         // A held display state that never got confirmed by a real state
         // change (fade interrupted, action dropped) must not stick forever.
         if let held = displayedAsPaused, let at = displayedAsPausedAt {
@@ -1412,6 +1443,7 @@ class AudioEngine: RCTEventEmitter {
     private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64, precomputedAnalysis: FileAnalysis?) {
         do {
             currentFile = file
+            activeNodeTrack = track
             currentFileSampleRate = file.processingFormat.sampleRate
 
             // Analysis (silence trim points + loudness gain) only runs when
@@ -2070,6 +2102,9 @@ class AudioEngine: RCTEventEmitter {
                     self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": self.liveIndex(for: track, hint: idx)])
                 }
                 self.crossfadeAnnouncedIncoming = true
+                // The lock screen / Bluetooth display switches to the new
+                // song now too (same moment as the in-app display).
+                self.updateNowPlayingInfo()
             }
 
             if currentStep >= steps {
@@ -2081,6 +2116,7 @@ class AudioEngine: RCTEventEmitter {
                 self.activeNode = incomingNode
                 self.isCrossfading = false
                 self.currentFile = file
+                self.activeNodeTrack = track
                 self.currentFileSampleRate = sampleRate
                 self.crossfadeAnnouncedIncoming = false
                 // Same fix as setVolume()/finishLoadingTrack — keeps the
@@ -2166,10 +2202,13 @@ class AudioEngine: RCTEventEmitter {
             // includes the crossfade-mid-announcement branch too, see its
             // comment.
             let duration = self.currentDurationSeconds()
+            let who = self.progressTrackIdentity()
             self.sendEvent(withName: "PlaybackProgressUpdated", body: [
                 "position": position,
                 "duration": duration,
                 "buffered": duration, // local files: fully "buffered" once loaded, no network buffering to report
+                "id": who.id,
+                "qid": who.qid,
             ])
             self.savePlaybackSnapshot()
             tickCount += 1
@@ -2504,6 +2543,7 @@ class AudioEngine: RCTEventEmitter {
         currentTrailingCutSeconds = crossfadeIncomingTrailingCutSeconds
 
         if let incomingTrack = crossfadeIncomingTrack {
+            activeNodeTrack = incomingTrack
             // Same fix as loadAndScheduleCurrentTrack's equivalent —
             // always trust the just-measured real duration over whatever
             // JS/tag value was there, not just when nil.
@@ -2829,6 +2869,7 @@ class AudioEngine: RCTEventEmitter {
         stopInternal()
         queue.removeAll()
         currentIndex = nil
+        activeNodeTrack = nil
         sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": NSNull()])
         resolve(nil)
     }
@@ -3590,7 +3631,17 @@ class AudioEngine: RCTEventEmitter {
         // runCrossfade's handoff), deriving duration from it instead keeps
         // position and duration always describing the same track.
         let duration = currentDurationSeconds()
-        resolve(["position": position, "duration": duration, "buffered": duration])
+        let who = progressTrackIdentity()
+        resolve(["position": position, "duration": duration, "buffered": duration, "id": who.id, "qid": who.qid])
+    }
+
+    // Which song a position/duration reading describes: the outgoing song
+    // until the crossfade's halfway point, then the incoming one. JS drops a
+    // reading that does not belong to the song it is showing (a late reading
+    // from before a skip used to make the progress bar jump).
+    private func progressTrackIdentity() -> (id: String, qid: String) {
+        let t: Track? = (isCrossfading && crossfadeAnnouncedIncoming) ? crossfadeIncomingTrack : activeNodeTrack
+        return (t?.id ?? "", t?.qid ?? "")
     }
 
     @objc(getState:rejecter:)

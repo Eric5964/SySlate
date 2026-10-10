@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { View, Image, Text, Animated, Easing, PanResponder, StyleSheet } from 'react-native';
 import AudioEngine from '../native/AudioEngine';
-import { subscribeTransportRamp } from '../utils/transportRamp';
+import { subscribeTransportRamp, subscribeSkipPress } from '../utils/transportRamp';
 import { COVER_SHADOW } from '../utils/shadow';
 
 // A vinyl record with the song's cover as its label. It spins while the song
@@ -45,17 +45,17 @@ const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
 // The static picture of the disc. Memoized so the several-times-a-second
 // position updates in the Player do not rebuild it.
 const rings = [0.97, 0.91, 0.85, 0.79, 0.73, 0.67, 0.61];
-const DiscFace = React.memo(function DiscFace({ R, artwork, accent, discType }) {
+const DiscFace = React.memo(function DiscFace({ R, artwork, discType, placeholderColor }) {
     const labelD = R * 0.4;
     return (
         <>
                     {discType === 'cd' ? (
-                        <View style={{ width: R, height: R, borderRadius: R / 2, overflow: 'hidden', backgroundColor: '#c9ccd3', alignItems: 'center', justifyContent: 'center' }}>
+                        <View style={{ width: R, height: R, borderRadius: R / 2, overflow: 'hidden', backgroundColor: artwork ? '#c9ccd3' : placeholderColor, alignItems: 'center', justifyContent: 'center' }}>
                             {/* A CD: the picture is printed over the whole disc, with
                                 a clear plastic ring and the hole around the middle. */}
                             {artwork
                                 ? <Image source={{ uri: artwork }} style={{ position: 'absolute', width: R, height: R }} resizeMode="cover" />
-                                : <Text style={{ color: '#555', fontSize: R * 0.3, textAlign: 'center' }}>♪</Text>}
+                                : null}
                             <View style={{ position: 'absolute', width: R * 0.97, height: R * 0.97, borderRadius: R / 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.35)' }} />
                             <View style={{ position: 'absolute', width: R * 0.36, height: R * 0.36, borderRadius: R * 0.18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' }} />
                             <View style={{ position: 'absolute', width: R * 0.3, height: R * 0.3, borderRadius: R * 0.15, backgroundColor: 'rgba(232,235,242,0.82)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.6)' }} />
@@ -70,10 +70,10 @@ const DiscFace = React.memo(function DiscFace({ R, artwork, accent, discType }) 
                                 borderWidth: 1, borderColor: `rgba(255,255,255,${i % 2 ? 0.05 : 0.09})`,
                             }} />
                         ))}
-                        <View style={[s.label, { width: labelD, height: labelD, borderRadius: labelD / 2, left: (R - labelD) / 2 - 2, top: (R - labelD) / 2 - 2 }]}>
+                        <View style={[s.label, { width: labelD, height: labelD, borderRadius: labelD / 2, left: (R - labelD) / 2 - 2, top: (R - labelD) / 2 - 2 }, !artwork && { backgroundColor: placeholderColor }]}>
                             {artwork
                                 ? <Image source={{ uri: artwork }} style={{ width: labelD, height: labelD }} resizeMode="cover" />
-                                : <Text style={{ color: accent, fontSize: labelD * 0.4, textAlign: 'center', lineHeight: labelD }}>♪</Text>}
+                                : null}
                         </View>
                         <View style={{ position: 'absolute', width: R * 0.04, height: R * 0.04, borderRadius: R * 0.02, backgroundColor: '#000', left: R / 2 - R * 0.02 - 2, top: R / 2 - R * 0.02 - 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)' }} />
                     </View>
@@ -82,7 +82,7 @@ const DiscFace = React.memo(function DiscFace({ R, artwork, accent, discType }) 
     );
 });
 
-export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', assist = true, spinOn = true, touchOn = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', placeholderColor = '#161616', assist = true, spinOn = true, touchOn = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
     // Bad numbers (NaN, Infinity, negative) from upstream must never reach the
     // maths below: treat them as "unknown", which keeps the disc locked.
     position = Number.isFinite(position) ? position : 0;
@@ -127,7 +127,14 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const holdPos = useRef(position);
     const lastDimKey = useRef(trackKey);
     if (holdDim.current && position !== holdPos.current) holdDim.current = false;
-    const inWindow = !holdDim.current && visible && duration > 0 && position >= startGuard && position <= duration - endGuard;
+    // A skip was pressed and the new song has not arrived yet: dimmed and
+    // locked from the moment of the press (cleared when the song changes, or
+    // when the position jumps back = the same song restarted, or after 12 s).
+    const skipHold = useRef(null);
+    const skipTimer = useRef(null);
+    if (skipHold.current && position < skipHold.current.pos - 1.5) skipHold.current = null;
+    const windowOk = !holdDim.current && visible && duration > 0 && position >= startGuard && position <= duration - endGuard;
+    const inWindow = windowOk && !skipHold.current;
     // With touch off the disc ignores fingers and never dims (the dimming only
     // says "you can't scratch right now").
     const allowed = inWindow && touchOn;
@@ -143,11 +150,13 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         lastDimKey.current = trackKey;
         holdDim.current = true;
         holdPos.current = live.current.position;
+        skipHold.current = null;
+        if (skipTimer.current) { clearTimeout(skipTimer.current); skipTimer.current = null; }
         dim.stopAnimation();
         dim.setValue(touchOn ? 1 : 0);
     }, [trackKey, touchOn, dim]);
     const live = useRef({});
-    live.current = { allowed, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist, spin: spinOn, touch: touchOn };
+    live.current = { allowed, windowOk, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist, spin: spinOn, touch: touchOn };
 
     // Starting and stopping use a quadratic ease over the distance that
     // exactly matches idle speed at the join (distance = half of speed x
@@ -233,6 +242,15 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     // still playing in the background. Only then does it actually stop.
     const startTimer = useRef(null);
     const prevActive = useRef(false);
+    // If the disc is already showing while music plays when it mounts (the
+    // Player opening), it turns from the very first frame, not a moment after
+    // the open animation.
+    useLayoutEffect(() => {
+        if (!active || !spinOn || !isPlaying) return;
+        prevActive.current = true;
+        startSpin(0);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useEffect(() => {
         if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; }
         const justActivated = active && !prevActive.current;
@@ -323,6 +341,21 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         if (draggingRef.current || scratchingRef.current) { finishScratch(); draggingRef.current = false; }
     }, [trackKey, finishScratch]);
 
+    // A skip pressed anywhere: dim the disc and stop taking touches right now
+    // (a scratch in progress ends), without waiting for the new song.
+    useEffect(() => subscribeSkipPress(() => {
+        if (!live.current.touch) return;   // touch off: the disc never dims
+        skipHold.current = { pos: live.current.position };
+        if (skipTimer.current) clearTimeout(skipTimer.current);
+        skipTimer.current = setTimeout(() => { skipHold.current = null; skipTimer.current = null; }, 12000);
+        if (draggingRef.current || scratchingRef.current) { finishScratch(); draggingRef.current = false; }
+        dim.stopAnimation();
+        // The same fade as the disc coming back to life with a new song
+        // (see the inWindow effect below), run the other way.
+        Animated.timing(dim, { toValue: 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    }), [finishScratch, dim]);
+    useEffect(() => () => { if (skipTimer.current) clearTimeout(skipTimer.current); }, []);
+
     // Leaving the disc view (or the song changing) mid-scratch ends it.
     useEffect(() => {
         if (!visible) finishScratch();
@@ -330,7 +363,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     }, [visible, finishScratch]);
 
     const pan = useRef(PanResponder.create({
-        onStartShouldSetPanResponder: (e) => live.current.touch && live.current.allowed && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY),
+        onStartShouldSetPanResponder: (e) => live.current.touch && live.current.allowed && !skipHold.current && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY),
         onMoveShouldSetPanResponder: () => false,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
@@ -421,7 +454,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             // Turns the Player's swipe-down-to-close off the moment a finger
             // lands ON the disc (only when the disc will take the touch), so
             // swiping anywhere else on the screen still closes the Player.
-            onTouchStart={(e) => { if (live.current.allowed && onTouching && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY)) onTouching(true); }}
+            onTouchStart={(e) => { if (live.current.allowed && !skipHold.current && onTouching && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY)) onTouching(true); }}
             onTouchEnd={() => { if (!draggingRef.current && onTouching) onTouching(false); }}
             onTouchCancel={() => { if (!draggingRef.current && onTouching) onTouching(false); }}>
             <Animated.View style={{ width: R, height: R, opacity: dim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.55] }) }}>
@@ -438,7 +471,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             )}
             <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ rotate: spinDeg }] }]}>
                 <Animated.View shouldRasterizeIOS renderToHardwareTextureAndroid style={[StyleSheet.absoluteFill, { transform: [{ rotate: userDeg }] }]}>
-                    <DiscFace R={R} artwork={artwork} accent={accent} discType={discType} />
+                    <DiscFace R={R} artwork={artwork} discType={discType} placeholderColor={placeholderColor} />
                 </Animated.View>
             </Animated.View>
             {/* Dim ring: a sibling, not part of the turning (rasterized) layers. */}

@@ -1,4 +1,4 @@
-import { emitTransportRamp } from '../utils/transportRamp';
+import { emitTransportRamp, emitSkipPress } from '../utils/transportRamp';
 import AudioEngine, { Event, State } from '../native/AudioEngine';
 import { getEndOfTrackRamp, getSkipRamp, getAudioRamp, getRampOnPause, getPrevButtonMode, getRestartThresholdSec, getRestartThresholdUnit, getRestartThresholdPct, getCrossfadeEnabled, getCrossfadeDurationSkip, getCrossfadeDurationEndOfTrack } from '../utils/storage';
 import { withTimeout } from '../utils/withTimeout';
@@ -477,6 +477,20 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
             // strip once this is diagnosed — or leave in, it's cheap.
             const rampDebugT0 = Date.now();
             console.log(`[RAMP-DEBUG] t+0ms: starting ramp-in, configured duration=${ramp}s`);
+            // The DJ disc starts winding up now, at the moment of the tap, not
+            // only once the sound is confirmed playing (that was a stand-still
+            // of about half a second after pressing Play, then a late start).
+            // The length covers the start-up time, the settle margin and the
+            // fade, so the disc is at full speed about when the sound is.
+            // Nothing is announced if it is already playing (it would slow a
+            // turning disc down for nothing).
+            let announcedEarly = false;
+            try {
+                if ((await AudioEngine.getState()) !== State.Playing) {
+                    announcedEarly = true;
+                    emitTransportRamp('play', ramp + 0.32 + 0.35);
+                }
+            } catch { }
             try {
                 try { await AudioEngine.setVolume(0); } catch { }
                 console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: setVolume(0) done, calling startAction`);
@@ -503,7 +517,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                 // a genuine failure, but not a jarring cut either).
                 if (!reallyPlaying) {
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: took the !reallyPlaying branch (timed out) — quick catch-up fade only, not the full configured ramp`);
-                    emitTransportRamp('play', Math.min(0.4, ramp));
+                    if (!announcedEarly) emitTransportRamp('play', Math.min(0.4, ramp));
                     await fadeVol(0, 1, Math.min(0.4, ramp), id);
                     try { await AudioEngine.setVolume(1); } catch { }
                     releaseFade(id);
@@ -522,7 +536,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                     // means the ramp can start, and sometimes nearly
                     // finish, before there's anything audible for it to
                     // apply to — sounding exactly like no ramp happened.
-                    emitTransportRamp('play', ramp + 0.32);
+                    if (!announcedEarly) emitTransportRamp('play', ramp + 0.32);
                     await sleep(320);
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: 320ms settle done, calling fadeVol(0,1,${ramp})`);
                     await fadeVol(0, 1, ramp, id);
@@ -680,6 +694,9 @@ export async function skipWithRamp(direction = 'next') {
     skipLock = true;
     skipLockStartedAt = Date.now();
     skipLockExpectedDurationMs = 0; // set below once the actual duration for this specific transition is known
+    // The skip is really going ahead: tell the DJ disc now so it dims and
+    // stops taking touches at once, before the sound or the song changes.
+    emitSkipPress();
     try {
         if (direction === 'next') {
             // Manual skip — this one specifically needs the On Skip

@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listArtUri } from '../utils/embeddedArt';
-import AudioEngine, { usePlaybackState, State, useProgress } from '../native/AudioEngine';
+import AudioEngine, { usePlaybackState, State, useProgress, matchProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -25,7 +25,13 @@ export default function MiniPlayer({ withTabBar = true }) {
     const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin, miniPlayerShadow } = usePreferences();
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
-    const progress = useProgress(500);
+    const rawProgress = useProgress(500);
+    // Only readings that belong to the song being shown count (a late reading
+    // from before a skip used to make the bar jump to the old song's spot).
+    const progress = useMemo(
+        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration),
+        [rawProgress, currentTrack?._qid, currentTrack?.duration]
+    );
     const insets = useSafeAreaInsets();
 
     // Replaces the old Animated.timing-based smoothing, which only
@@ -72,8 +78,10 @@ export default function MiniPlayer({ withTabBar = true }) {
             // flips the display halfway, so the new song is already a couple
             // of seconds in) instead of waiting for the next poll.
             const trackAtChange = currentTrack?.id;
+            const qidAtChange = currentTrack?._qid;
             AudioEngine.getProgress().then(p => {
                 if (lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
+                if (qidAtChange && p.qid && p.qid !== qidAtChange) return;   // a reading for the other song
                 if (p.position > p.duration || p.position > 40) return;
                 basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
                 forceTick(t => t + 1);
@@ -97,8 +105,10 @@ export default function MiniPlayer({ withTabBar = true }) {
     useEffect(() => {
         let cancelled = false;
         const trackAtStart = lastTrackIdRef.current;
+        const qidAtStart = currentTrack?._qid;
         AudioEngine.getProgress().then(p => {
             if (cancelled || lastTrackIdRef.current !== trackAtStart || !(p?.duration > 0)) return;
+            if (qidAtStart && p.qid && p.qid !== qidAtStart) return;
             basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
             forceTick(t => t + 1);
         }).catch(() => { });
@@ -179,13 +189,20 @@ function MiniProgressFill({ basis, isPlaying, playbackRate, trackKey, color }) {
         const r = run.current;
         if (r && isPlaying && r.playing && r.trackKey === trackKey && r.rate === rate && r.duration === duration) {
             const expected = r.from + ((Date.now() - r.at) / 1000) * rate / duration;
-            if (Math.abs(expected - pct) < 0.006) return;   // still on track, leave it running
+            // + = the bar is ahead of the sound. Right after a start the audio
+            // position is still settling, and a bar that is a little ahead is
+            // left alone (a backward jump is the visible glitch).
+            const aheadSec = (expected - pct) * duration;
+            const settling = Date.now() - (r.startedAt || 0) < 2500;
+            const tol = settling ? 1.5 : (aheadSec > 0 ? 1.2 : 0.5);
+            if (Math.abs(aheadSec) < tol) return;   // still on track, leave it running
         }
+        const fresh = !(r && r.playing && r.trackKey === trackKey);
         if (r?.anim) r.anim.stop();
         pctVal.setValue(pct);
         if (!isPlaying || duration <= 0 || pct >= 1) { run.current = { anim: null, playing: false, trackKey, rate, duration }; return; }
         const anim = Animated.timing(pctVal, { toValue: 1, duration: ((1 - pct) * duration * 1000) / rate, easing: Easing.linear, useNativeDriver: true });
-        run.current = { anim, playing: true, from: pct, at: Date.now(), rate, duration, trackKey };
+        run.current = { anim, playing: true, from: pct, at: Date.now(), rate, duration, trackKey, startedAt: fresh ? Date.now() : (r.startedAt || Date.now()) };
         anim.start();
     }, [basis.at, basis.position, basis.duration, isPlaying, playbackRate, trackKey, w, pctVal]);
     useEffect(() => () => { run.current?.anim?.stop(); }, []);

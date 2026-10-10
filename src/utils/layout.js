@@ -30,3 +30,12 @@ export const pillPad = (hasCover) => ({
     paddingLeft: hasCover ? PILL_COVER_PAD : 16,
     paddingRight: 16,
 });
+
+// Song rows that can be swiped right show an "Added" badge about 80 from the
+// row's right edge (about 55 wide). The title block gets this much extra
+// room on its right so a long title is cut off before it could run under the
+// badge. `count` is the play count shown at the right end (0 if none).
+export const addedClearance = (count) => {
+    const countW = count > 0 ? (String(count).length + 1) * 7 + 8 : 0;
+    return Math.max(0, 113 - countW);
+};

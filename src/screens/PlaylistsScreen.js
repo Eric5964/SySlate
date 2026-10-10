@@ -136,6 +136,9 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
     const wrapStyle = [
         { transform: [...anim.getTranslateTransform(), { scale: isActive ? lift : 1 }, { rotate: jigDeg }] },
         isDragging && isActive && s.lifted,
+        // The picked-up playlist draws above every other one, including the
+        // ones in its own row (the row itself is raised in RowCell).
+        isActive && { zIndex: 100 },
     ];
     const handlers = {
         onPressIn: () => onPressIn(item, index),
@@ -624,7 +627,7 @@ export default function PlaylistsScreen() {
                     <Text style={[s.emptyText, { color: base.textFaint }]}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
                 </View>
             ) : (
-                <Animated.View style={{ flex: 1, opacity: listOpacity, marginTop: topBarColor ? -TOP_FADE : 0 }}>
+                <Animated.View style={{ flex: 1, opacity: listOpacity, marginTop: -TOP_FADE }}>
                     <View
                         ref={listBoxRef}
                         style={{ flex: 1 }}
@@ -680,7 +683,7 @@ export default function PlaylistsScreen() {
                         // was double-spacing, showing up as a noticeably
                         // fatter gap above the grid than above the list rows
                         // (which only rely on their own marginVertical).
-                        contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : 0, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
+                        contentContainerStyle={{ paddingTop: TOP_FADE, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
                         renderItem={({ item, index }) => (
                             <PlaylistRow
                                 item={item}
