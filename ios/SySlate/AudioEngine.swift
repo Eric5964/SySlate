@@ -646,9 +646,75 @@ class AudioEngine: RCTEventEmitter {
     // command arriving right after is the device resuming on its own, not the
     // user, and is ignored (see handleRemotePlayPause).
     private var lastDeviceConnectAt: Date? = nil
+
+    // MARK: - Click guards around route and engine changes
+    // A device disconnecting used to cut the sound off in one step (a click on
+    // whatever it moved to), and an engine restart after a route change started
+    // the output again at full level (a pop). Both are now softened: the sound
+    // fades out over about 70 ms before the pause, and the main mixer is held
+    // at 0 across a restart and eased back up.
+    private var deviceLossFadeToken: UInt64 = 0
+    private var softMuteToken: UInt64 = 0
+
+    // The level the node had before a device-loss fade started. Kept so a second
+    // route event during the 70 ms fade (common when Bluetooth drops) does not
+    // take the already-lowered level as the "original" and leave it there.
+    private var deviceLossBaseVol: Float? = nil
+
+    private func fadeOutThenPause() {
+        guard state == .playing, !isCrossfading, !scratchActive else {
+            deviceLossFadeToken &+= 1   // cancel any steps of an earlier fade still waiting
+            pauseInternal()
+            if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }
+            return
+        }
+        deviceLossFadeToken &+= 1
+        let t = deviceLossFadeToken
+        let startVol = deviceLossBaseVol ?? activeNode.volume
+        deviceLossBaseVol = startVol
+        let steps = 6
+        debugLog("[POP] output device gone: fading out over \(steps * 12) ms before pausing (nodeVol=\(startVol))")
+        for i in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012 * Double(i)) { [weak self] in
+                guard let self = self, t == self.deviceLossFadeToken else { return }
+                self.activeNode.volume = startVol * Float(steps - i) / Float(steps)
+                if i == steps {
+                    self.pauseInternal()
+                    // Paused and silent: put the level back as it was before, so
+                    // whatever plays next starts from the same level as ever.
+                    self.activeNode.volume = startVol
+                    self.deviceLossBaseVol = nil
+                }
+            }
+        }
+    }
+
+    // Mutes the main mixer now and eases it back up after `hold` seconds.
+    // (A cold-start mute in progress is left alone: it has its own release.)
+    private func softMute(holdFor hold: TimeInterval) {
+        guard !coldMuteHeld else { return }
+        softMuteToken &+= 1
+        let t = softMuteToken
+        engine.mainMixerNode.outputVolume = 0
+        debugLog("[POP] soft mute for \(hold)s (state=\(state), engineRunning=\(engine.isRunning))")
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
+            guard let self = self, t == self.softMuteToken else { return }
+            let steps = 8
+            for i in 1...steps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01 * Double(i)) { [weak self] in
+                    guard let self = self, t == self.softMuteToken, !self.coldMuteHeld else { return }
+                    self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
+                }
+            }
+        }
+    }
     private func markScheduledAudioStale() { staleScheduleToken = playbackToken }
     @objc private func handleEngineConfigChange(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in self?.markScheduledAudioStale() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.debugLog("[POP] engine configuration change: state=\(self.state) engineRunning=\(self.engine.isRunning)")
+            self.markScheduledAudioStale()
+        }
     }
 
     // Safety net after every play: if the sound path is not actually live a
@@ -665,6 +731,7 @@ class AudioEngine: RCTEventEmitter {
                       self.state == .playing, !self.isCrossfading, !self.scratchActive else { return }
                 var repaired = false
                 if !self.engine.isRunning {
+                    self.softMute(holdFor: 0.12)
                     self.activateSession()
                     try? self.engine.start()
                     repaired = true
@@ -701,10 +768,19 @@ class AudioEngine: RCTEventEmitter {
         markOutputCold()
         markScheduledAudioStale()
         savePlaybackSnapshot(force: true)
-        if reason == .newDeviceAvailable { lastDeviceConnectAt = Date() }
+        debugLog("[POP] route change: reason=\(reasonValue) state=\(state) engineRunning=\(engine.isRunning) mixerVol=\(engine.mainMixerNode.outputVolume)")
+        if reason == .newDeviceAvailable {
+            lastDeviceConnectAt = Date()
+            // The output hardware is switching while sound is playing: keep the
+            // mixer quiet through the switch and the engine reconfiguring.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.state == .playing else { return }
+                self.softMute(holdFor: 0.3)
+            }
+        }
         if reason == .oldDeviceUnavailable {
             DispatchQueue.main.async { [weak self] in
-                self?.pauseInternal()
+                self?.fadeOutThenPause()
             }
             return
         }
@@ -737,6 +813,7 @@ class AudioEngine: RCTEventEmitter {
         if reason == .routeConfigurationChange || reason == .categoryChange {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.state == .playing else { return }
+                self.softMute(holdFor: 0.2)
                 self.engine.pause()
                 do {
                     try self.engine.start()
@@ -2231,6 +2308,9 @@ class AudioEngine: RCTEventEmitter {
             // meant for.
             self.updateNowPlayingInfo()
         }
+        // Also run while a list is being dragged (the default run loop mode pauses during touch scrolling,
+        // which froze progress readings and the saved position). The fade and ramp timers already do this.
+        if let t = progressTimer { RunLoop.main.add(t, forMode: .common) }
     }
 
     // MARK: - Cold-start pop guard
@@ -2330,6 +2410,8 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func playInternal() {
+        deviceLossFadeToken &+= 1   // a play cancels a device-loss fade-out that is still under way
+        if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }   // and puts the level back
         guard currentIndex != nil else {
             if !queue.isEmpty {
                 currentIndex = 0
@@ -3013,7 +3095,11 @@ class AudioEngine: RCTEventEmitter {
             var cur = core.cur
             var g = core.gain
             let tgt = core.target
+            let loAbs = core.limitLo
             let gTgt = core.gainTarget
+            let hiAbs = core.limitHi
+            let fr = max(1, core.fileRate)
+            let ws = core.windowStart
             let level = core.level
             let step = core.step
             let maxPos = Double(core.frames - 2)
@@ -3022,7 +3108,16 @@ class AudioEngine: RCTEventEmitter {
                 // (about 10ms) so a finger's jitter does not crackle.
                 cur += (tgt - cur) * 0.0018
                 g += (gTgt - g) * 0.0035
-                pos += Double(cur) * step
+                var spd = cur
+                let absNow = ws + pos / fr
+                if spd > 0 {
+                    let room = hiAbs - absNow
+                    if room <= 0 { spd = 0 } else if room < 0.15 { spd *= Float(room / 0.15) }
+                } else if spd < 0 {
+                    let room = absNow - loAbs
+                    if room <= 0 { spd = 0 } else if room < 0.15 { spd *= Float(room / 0.15) }
+                }
+                pos += Double(spd) * step
                 if pos < 0 { pos = 0 }
                 if pos > maxPos { pos = maxPos }
                 let i0 = Int(pos)
@@ -3104,6 +3199,9 @@ class AudioEngine: RCTEventEmitter {
                     core.left = l; core.right = r; core.frames = framesOut
                     core.step = fileRate / fmt.sampleRate
                     core.windowStart = windowStart
+                    core.fileRate = fileRate
+                    core.limitHi = totalSec - 4.0   // same backstop as above; the app's own limits are stricter
+                    core.limitLo = 1.0
                     core.pos = startPos
                     core.target = 0
                     // Like a hand on a turntable: the sound stops the moment the
@@ -3158,6 +3256,7 @@ class AudioEngine: RCTEventEmitter {
     private func startScratchRefillTimer() {
         scratchRefillTimer?.invalidate()
         scratchRefillTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.checkScratchWindow() }
+        if let t = scratchRefillTimer { RunLoop.main.add(t, forMode: .common) }
     }
     private func stopScratchRefillTimer() {
         scratchRefillTimer?.invalidate()
@@ -3696,6 +3795,9 @@ class AudioEngine: RCTEventEmitter {
     // describes. Ducking preMixNode (shared downstream of both player
     // nodes) briefly around the toggle means the discontinuity happens
     // while the signal is silent instead of live.
+    private var normToggleToken: UInt64 = 0
+    private var normToggleBaseVol: Float? = nil
+
     private func toggleNormalizerBypass(_ bypassed: Bool) {
         // Widened from 15ms/40ms — the pop was specifically reported on the
         // OFF direction (normalizer active → bypassed), which makes sense:
@@ -3709,21 +3811,30 @@ class AudioEngine: RCTEventEmitter {
         // device audio to inspect.
         let duckMs = 40.0
         let settleMs = 80.0
-        let startVol = preMixNode.outputVolume
+        // A second toggle while the first is still ducking must not take the lowered level as
+        // the original one; the newest toggle owns the steps and the first one's are dropped.
+        normToggleToken &+= 1
+        let token = normToggleToken
+        let startVol = normToggleBaseVol ?? preMixNode.outputVolume
+        normToggleBaseVol = startVol
         let steps = 8
         for i in 0...steps {
             let delay = duckMs * Double(i) / Double(steps) / 1000.0
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.preMixNode.outputVolume = startVol * Float(1 - Double(i) / Double(steps))
+                guard let self = self, token == self.normToggleToken else { return }
+                self.preMixNode.outputVolume = startVol * Float(1 - Double(i) / Double(steps))
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + duckMs / 1000.0) { [weak self] in
-            self?.normalizerNode.bypass = bypassed
+            guard let self = self, token == self.normToggleToken else { return }
+            self.normalizerNode.bypass = bypassed
         }
         for i in 0...steps {
             let delay = (duckMs + settleMs) / 1000.0 + (duckMs * Double(i) / Double(steps) / 1000.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.preMixNode.outputVolume = startVol * Float(Double(i) / Double(steps))
+                guard let self = self, token == self.normToggleToken else { return }
+                self.preMixNode.outputVolume = startVol * Float(Double(i) / Double(steps))
+                if i == steps { self.normToggleBaseVol = nil }
             }
         }
     }
@@ -3792,6 +3903,12 @@ final class ScratchCore {
     var level: Float = 1
     // Absolute song time (seconds) of the first frame in `left`/`right`.
     var windowStart: Double = 0
+    // The disc cannot go below limitLo or past limitHi (song time, seconds):
+    // the audio slows to a stop just before, instead of running into the end
+    // of what is loaded. (The app's own limits are stricter: these are a backstop.)
+    var limitHi: Double = .greatestFiniteMagnitude
+    var limitLo: Double = 0
+    var fileRate: Double = 44100
     // A replacement window prepared off the audio thread. The audio thread
     // swaps it in at the start of its next render, shifting `pos` by
     // `pendShift` frames so the sound carries on without a gap.

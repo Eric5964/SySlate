@@ -697,6 +697,11 @@ export const setPlaylistSort = async (playlistPath, sortId) => {
 export const deleteStoredImage = async (uri) => {
     try {
         if (!uri || typeof uri !== 'string' || !uri.includes('/.covers/')) return;
+        // A path like ".covers/../../x" passes the check above but points elsewhere
+        // (imported settings can carry any string), so only plain paths under our own folder are deleted.
+        let plain = uri;
+        try { plain = decodeURIComponent(uri); } catch { return; }
+        if (plain.includes('..') || !uri.startsWith(FileSystem.documentDirectory + '.covers/')) return;
         await FileSystem.deleteAsync(uri, { idempotent: true });
         if (/_screen\.jpg$/.test(uri)) {
             await FileSystem.deleteAsync(uri.replace(/_screen\.jpg$/, '_lo.jpg'), { idempotent: true });
@@ -834,6 +839,8 @@ export const importPicturesFile = async (fileUri) => {
     const stamp = Date.now();
     const written = {};         // id -> new uri
     for (const [id, img] of Object.entries(parsed.images)) {
+        // The id ends up in a file name, so anything but plain letters/digits (e.g. "../") is refused.
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) continue;
         if (!img || typeof img.data !== 'string' || !PICTURE_EXTS.includes(img.ext)) continue;
         const isBg = parsed.background?.id === id;
         const dest = dir + 'cover_' + stamp + '_' + id + (isBg ? '_screen.jpg' : '_s.jpg');
@@ -938,7 +945,7 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1025,7 +1032,9 @@ export const importAllSettings = async (jsonString) => {
     // Keys whose value is itself a JSON-encoded string — validated by
     // shape (array vs plain object), not by deep-inspecting every entry.
     const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order', 'settings_hidden_groups']);
-    const JSON_OBJECT_KEYS = new Set(['playlist_covers', 'playlist_sort_orders', 'eq_preset_overrides']);
+    // (playlist_covers and bg_image_uri are NOT accepted here: a settings file could point them at any
+    // file or web address. Pictures only come in through importPicturesFile, which writes its own copies.)
+    const JSON_OBJECT_KEYS = new Set(['playlist_sort_orders', 'eq_preset_overrides', 'my_look']);
     // Plain string settings (enum-like ids, URIs) — no fixed enum list
     // enforced here (a future app version could legitimately add new
     // theme/cover-shape ids that this exact import code doesn't know about
@@ -1034,8 +1043,8 @@ export const importAllSettings = async (jsonString) => {
     const STRING_KEYS = new Set([
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
-        'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape', 'bg_image_uri',
-        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show',
+        'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape',
+        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show', 'settings_mode',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.
@@ -1061,7 +1070,7 @@ export const importAllSettings = async (jsonString) => {
             // Saved as 1 / 0 (not true / false). dj_disc and dj_disc_auto were
             // missing here, so restoring a backup silently dropped them.
             if (value === '1' || value === '0') toWrite.push([key, value]);
-        } else if (key in NUMERIC_RANGES) {
+        } else if (Object.prototype.hasOwnProperty.call(NUMERIC_RANGES, key)) {
             const [min, max] = NUMERIC_RANGES[key];
             const n = parseFloat(value);
             if (Number.isFinite(n) && n >= min && n <= max) toWrite.push([key, String(n)]);

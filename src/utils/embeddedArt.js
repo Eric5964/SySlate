@@ -167,12 +167,22 @@ export function peekCachedArtBulk(songs) {
     }
     return out;
 }
+// Writing the whole cache after every single song made the first pass over a big library
+// re-save (and re-serialize) the entire map thousands of times. Now one save per ~1.5 s.
+let persistTimer = null;
+function schedulePersist(getMap) {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+        persistTimer = null;
+        try { AsyncStorage.setItem(CACHE_KEY, JSON.stringify(getMap())).catch(() => { }); } catch { }
+    }, 1500);
+}
 async function saveCacheEntry(songId, value) {
     const map = await loadCacheMap();
     map[songId] = value;
     cacheMapSync = map;
     cacheMapPromise = Promise.resolve(map);
-    AsyncStorage.setItem(CACHE_KEY, JSON.stringify(map)).catch(() => { });
+    schedulePersist(() => map);
 }
 
 // Stat-only (no file content read) — cheap enough to use on every cache
@@ -270,6 +280,7 @@ function extractPictureFromFlac(bytes) {
             if (blockStart + blockLen > bytes.length) return null; // truncated by our prefix read
             let p = blockStart + 4; // skip picture type
             const mimeLen = readU32BE(bytes, p); p += 4;
+            if (mimeLen > 64) return null; // not a real mime type: damaged block
             const mime = String.fromCharCode(...bytes.slice(p, p + mimeLen)); p += mimeLen;
             const descLen = readU32BE(bytes, p); p += 4 + descLen;
             p += 16; // width, height, depth, colors-used (4 bytes each)

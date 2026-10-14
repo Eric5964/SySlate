@@ -1,7 +1,8 @@
+import * as FileSystem from 'expo-file-system';
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
-import AudioEngine, { Event, State } from '../native/AudioEngine';
+import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, shuffleArray, modeNeedsCounts } from '../utils/shuffle';
@@ -35,7 +36,9 @@ const buildQueueAsync = async (tracks, mode) => {
 
 
 const setQueueLoop = async () => {
-    try { const { RepeatMode } = require('react-native-track-player'); await AudioEngine.setRepeatMode(RepeatMode.Queue); } catch { }
+    // Used to require() react-native-track-player for the constant. That package was removed in 108, so the
+    // require failed silently and the queue never looped (and the single-song loop button did nothing).
+    try { await AudioEngine.setRepeatMode(RepeatMode.Queue); } catch { }
 };
 
 // Every track that ever gets added to the native queue gets a unique _qid
@@ -341,9 +344,12 @@ export function PlaybackProvider({ children }) {
     // forth across it.
     const playCreditedRef = useRef({ trackId: null, credited: false });
     useEffect(() => {
-        const sub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration }) => {
+        const sub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration, id }) => {
             const track = currentTrackRef.current;
             if (!track?.id || !duration) return;
+            // A reading that describes another song (e.g. the outgoing one right after a
+            // skip, or during a crossfade) must not be credited to the current song.
+            if (id && id !== track.id) return;
             if (playCreditedRef.current.trackId !== track.id) {
                 playCreditedRef.current = { trackId: track.id, credited: false };
             }
@@ -529,6 +535,15 @@ export function PlaybackProvider({ children }) {
     // to fully complete (including writing back to priorityRef) before the
     // next one starts reading.
     const addQueueLockRef = useRef(Promise.resolve());
+    // Runs a queue change after every earlier one has finished. Add, promote, remove and
+    // move all read the priority list and then write it back; two of them overlapping
+    // (e.g. a swipe-to-remove during an add) used to work from a stale count and put
+    // songs in the wrong slot.
+    const serialQueue = (fn) => {
+        const next = addQueueLockRef.current.then(fn, fn);
+        addQueueLockRef.current = next;
+        return next;
+    };
     const addToQueue = useCallback((song, sourceName) => {
         if (sourceName && song?.id) queueSourceRef.current[song.id] = sourceName;
         const run = async () => {
@@ -579,7 +594,7 @@ export function PlaybackProvider({ children }) {
     // belonged there in the first place. Looked exactly like "the song got
     // removed instead of added." Taking realIndex directly removes the
     // ambiguity entirely — there's no lookup to get wrong.
-    const promoteToQueue = useCallback(async (realIndex) => {
+    const promoteToQueue = useCallback((realIndex, qid) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return { priority: priorityRef.current, insertedAt: null };
@@ -602,8 +617,10 @@ export function PlaybackProvider({ children }) {
             const priorityEnd = currentIndex + 1 + priorityRef.current.length;
             if (realIndex < priorityEnd) return { priority: priorityRef.current, insertedAt: null };
             const queue = await AudioEngine.getQueue();
-            const track = queue[realIndex];
-            if (!track) return { priority: priorityRef.current, insertedAt: null };
+            // The row may have moved since it was swiped: find it again by its slot id.
+            if (qid && queue[realIndex]?._qid !== qid) realIndex = queue.findIndex(t => t._qid === qid);
+            const track = realIndex >= 0 ? queue[realIndex] : null;
+            if (!track || realIndex < currentIndex + 1 + priorityRef.current.length) return { priority: priorityRef.current, insertedAt: null };
             const insertAt = currentIndex + 1 + priorityRef.current.length;
             await AudioEngine.add(stampQid(track), insertAt);
             const next = [...priorityRef.current, track.id];
@@ -616,12 +633,20 @@ export function PlaybackProvider({ children }) {
             // times" bug actually was.
             return { priority: next, insertedAt: insertAt };
         } catch (e) { console.error('promoteToQueue:', e); return { priority: priorityRef.current, insertedAt: null }; }
-    }, []);
+    }), []);
 
-    const removeFromQueue = useCallback(async (realIndex) => {
+    const removeFromQueue = useCallback((realIndex, qid) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
+            // The removal runs a moment after the swipe (after its animation): the queue may
+            // have moved on, so find the row again by its slot id instead of trusting the old
+            // number. Gone already, or now playing / played: nothing to remove.
+            if (qid) {
+                const q = await AudioEngine.getQueue();
+                if (q[realIndex]?._qid !== qid) realIndex = q.findIndex(t => t._qid === qid);
+            }
+            if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return priorityRef.current;
             await AudioEngine.remove(realIndex);
             const priorityCount = priorityRef.current.length;
             const priorityEnd = currentIndex + 1 + priorityCount;
@@ -656,13 +681,13 @@ export function PlaybackProvider({ children }) {
             topUpQueueIfNeeded();
             return next;
         } catch (e) { console.error('removeFromQueue:', e); return priorityRef.current; }
-    }, []);
+    }), []);
 
     // Moves one upcoming song to a new slot (drag to reorder in the Queue).
     // `toReal` is the slot it should end up in. Which zone (Priority or Up
     // Next) it lands in follows from where it is dropped: inside the
     // priority rows it becomes priority, after them it becomes Up Next.
-    const moveInQueue = useCallback(async (fromReal, toReal) => {
+    const moveInQueue = useCallback((fromReal, toReal) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
@@ -685,7 +710,7 @@ export function PlaybackProvider({ children }) {
             setPriorityQueue(next);
             return next;
         } catch (e) { console.error('moveInQueue:', e); return priorityRef.current; }
-    }, []);
+    }), []);
 
     const jumpToQueueIndex = useCallback(async (realIndex) => {
         // Real gap found here: tapping a song while something else was
@@ -1120,13 +1145,23 @@ export function PlaybackProvider({ children }) {
     const queuePlaylistNext = useCallback(async (playlist, shuffled, orderedSongs) => {
         try {
             if (!playlist?.songs?.length) return { ok: false, reason: 'empty' };
-            const currentIndex = await AudioEngine.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return { ok: false, reason: 'nothing-playing' };
             const mode = await getShuffleMode();
             const rest = shuffled
                 ? await buildQueueAsync(playlist.songs, mode)
                 : [...(orderedSongs?.length ? orderedSongs : playlist.songs)];
-            const queue = await AudioEngine.getQueue();
+            // The song can end (or a transition can run) while we read the queue, which
+            // would make the index and the priority slice wrong. Read, then confirm
+            // nothing moved just before replacing; wait out a running transition; retry.
+            let currentIndex = null, queue = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                if (isTransitionLocked()) { await new Promise(r => setTimeout(r, 250)); continue; }
+                const idx = await AudioEngine.getCurrentTrack();
+                if (idx === null || idx === undefined) return { ok: false, reason: 'nothing-playing' };
+                const q = await AudioEngine.getQueue();
+                const idx2 = await AudioEngine.getCurrentTrack();
+                if (idx2 === idx && !isTransitionLocked()) { currentIndex = idx; queue = q; break; }
+            }
+            if (currentIndex === null) return { ok: false, reason: 'busy' };
             const keepEnd = currentIndex + 1 + priorityRef.current.length;
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             // Same bulk replace as a shuffle change (reshuffleUpcoming).
@@ -1350,6 +1385,17 @@ export function PlaybackProvider({ children }) {
         try {
             const queue = last?.playlist?.queue;
             if (!queue?.length || last.index === undefined) return;
+            // A saved index outside the saved queue (a damaged or imported session) would
+            // load nothing and leave the player stuck: start from the first song instead.
+            if (!Number.isInteger(last.index) || last.index < 0 || last.index >= queue.length) last = { ...last, index: 0, position: 0 };
+            // After a reinstall or refresh (SideStore / LiveContainer) the app's folder can have a
+            // new path, so every saved song path points at nothing. Loading that would leave the
+            // player stuck on a song that cannot play: start empty instead.
+            try {
+                const cur = queue[last.index];
+                const probe = cur?.url || cur?.id;
+                if (probe && !(await FileSystem.getInfoAsync(probe)).exists) return;
+            } catch { }
             // The native side writes its own snapshot of "which song, how far
             // in" every ~1.5s and on pause, interruption, route change and
             // backgrounding. It is newer and more reliable than the JS save
@@ -1557,7 +1603,6 @@ export function PlaybackProvider({ children }) {
         const next = !singleLoop;
         setSingleLoop(next);
         try {
-            const { RepeatMode } = require('react-native-track-player');
             await AudioEngine.setRepeatMode(next ? RepeatMode.Track : RepeatMode.Queue);
         } catch { }
     }, [singleLoop]);
@@ -1646,6 +1691,26 @@ export function PlaybackProvider({ children }) {
     useEffect(() => {
         const sub = AppState.addEventListener('change', (state) => {
             if (state === 'background' || state === 'inactive') saveSessionRef.current?.();
+        });
+        return () => sub.remove();
+    }, []);
+    // Coming back to the app: if the song changed natively while the app was
+    // away (a car or headphone button, an auto-advance whose event never made
+    // it across), the app was left showing the old song. Ask native which song
+    // is current and follow it.
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', async (state) => {
+            if (state !== 'active') return;
+            try {
+                const idx = await AudioEngine.getCurrentTrack();
+                if (idx === null || idx === undefined) return;
+                const q = await AudioEngine.getQueue();
+                const t = q[idx];
+                const cur = currentTrackRef.current;
+                if (!t || !cur) return;
+                const same = t._qid != null ? t._qid === cur._qid : t.id === cur.id;
+                if (!same) setCurrentTrack(t);
+            } catch { }
         });
         return () => sub.remove();
     }, []);

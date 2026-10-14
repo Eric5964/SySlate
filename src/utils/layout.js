@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import { Dimensions } from 'react-native';
 
 // Shared between App.js (the PlaylistDetail back-gesture's
@@ -39,3 +40,18 @@ export const addedClearance = (count) => {
     const countW = count > 0 ? (String(count).length + 1) * 7 + 8 : 0;
     return Math.max(0, 113 - countW);
 };
+
+// Transparent top bar: the header floats over the screen (so a list can scroll
+// behind it) and the list starts lower by the header's own height, so at the
+// top of the list everything sits exactly where it does with a colored bar.
+// useMeasuredHeight gives that height (an estimate until the header has been
+// laid out) and the onLayout to put on the header.
+export const OVERLAY_HEADER = { position: 'absolute', top: 0, left: 0, right: 0 };
+export function useMeasuredHeight(estimate) {
+    const [h, setH] = useState(estimate);
+    const onLayout = useCallback((e) => {
+        const v = Math.round(e.nativeEvent.layout.height);
+        if (v > 0) setH((p) => (Math.abs(p - v) > 0.5 ? v : p));
+    }, []);
+    return [h, onLayout];
+}

@@ -22,17 +22,15 @@ const BURST_PAUSE_MS = 4000;
 const YIELD_EVERY = 20;
 
 export function useBackgroundLibraryLoader(songs, { art = false, tags = false } = {}) {
-    const runningRef = useRef(false);
+    const chainRef = useRef(Promise.resolve());   // runs go one after another; a cancelled one ends quickly
 
     useEffect(() => {
         if ((!art && !tags) || !songs?.length) return;
-        if (runningRef.current) return;
         let cancelled = false;
         let appActive = AppState.currentState === 'active';
         const sub = AppState.addEventListener('change', (state) => { appActive = state === 'active'; });
 
         const run = async () => {
-            runningRef.current = true;
             try {
                 let idx = 0;
                 let checkedSinceYield = 0;
@@ -70,12 +68,15 @@ export function useBackgroundLibraryLoader(songs, { art = false, tags = false } 
                     if (cancelled) break;
                     if (doneInBurst > 0) await new Promise(r => setTimeout(r, BURST_PAUSE_MS));
                 }
-            } finally {
-                runningRef.current = false;
-            }
+            } catch { }
         };
 
-        const task = InteractionManager.runAfterInteractions(() => { if (!cancelled) run(); });
+        const task = InteractionManager.runAfterInteractions(() => {
+            if (cancelled) return;
+            // Before: a new list (rescan, Import Songs) or a settings change that arrived while a pass
+            // was still running was dropped, so the new songs never got tags or covers until restart.
+            chainRef.current = chainRef.current.then(() => (cancelled ? undefined : run()));
+        });
         return () => { cancelled = true; sub.remove(); task.cancel(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [art, tags, songs]);

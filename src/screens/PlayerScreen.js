@@ -68,8 +68,8 @@ export default function PlayerScreen() {
     // Only readings that belong to the song being shown count (a late reading
     // from before a skip used to drag the bar to the old song's spot).
     const progress = useMemo(
-        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration),
-        [rawProgress, currentTrack?._qid, currentTrack?.duration]
+        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id),
+        [rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
     );
     // Only true right after the CURRENTLY-PLAYING track actually changes —
     // not on every mount. Before, this effect fired on mount regardless of
@@ -108,10 +108,19 @@ export default function PlayerScreen() {
     // preference was on.
     const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
+    // The count is credited once a song passes half way, so the shown count is read again
+    // at that moment (it used to stay stale until the next song). The `cancelled` flag stops a
+    // slow read for the previous song from landing on the new one after a quick skip.
+    const pastHalf = progress.duration > 0 && progress.position / progress.duration >= 0.5;
     useEffect(() => {
         if (!currentTrack?.id) { setPlayCount(0); return; }
-        getPlayCounts([currentTrack]).then(counts => setPlayCount(counts[currentTrack.id] ?? 0));
-    }, [currentTrack?.id]);
+        let cancelled = false;
+        const id = currentTrack.id;
+        const t = setTimeout(() => {
+            getPlayCounts([currentTrack]).then(counts => { if (!cancelled) setPlayCount(counts[id] ?? 0); });
+        }, pastHalf ? 400 : 0);
+        return () => { cancelled = true; clearTimeout(t); };
+    }, [currentTrack?.id, pastHalf]);
 
     const progressRef = useRef(null);
     const controlsRef = useRef(null);
@@ -596,7 +605,11 @@ export default function PlayerScreen() {
     // The Player's swipe-down-to-close works from anywhere above the controls,
     // which would close it whenever the disc is dragged downward. It is turned
     // off only while a finger is on the disc itself (see DJDisc's onTouching).
+    const [discHeld, setDiscHeld] = useState(false);
+    const discHeldRef = useRef(false);
     const setDiscTouching = useCallback((touching) => {
+        discHeldRef.current = !!touching;
+        setDiscHeld(!!touching);
         navigation.setOptions({ gestureEnabled: !touching });
     }, [navigation]);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
@@ -616,6 +629,9 @@ export default function PlayerScreen() {
         : hasLyricsView ? 'Show lyrics' : 'Show disc';
     // Protected zones for scratching: start of the song, and the end where a
     // crossfade or fade-out runs, plus a safety margin.
+    // The start of a song that came in by crossfade overlaps the end of the
+    // one before it for the crossfade's length, so the disc keeps out of that too.
+    const scratchStartGuard = Math.max(crossfadeEnabled ? Math.max(crossfadeDuration || 0, crossfadeDurationEndOfTrack || 0) : 0, 2) + 1;
     const scratchEndGuard = Math.max(crossfadeEnabled ? Math.max(crossfadeDuration || 0, crossfadeDurationEndOfTrack || 0) : 0, 2) + 8;
     // Cover / lyrics / disc share one slot. Each has ONE opacity (no nested
     // fades, no scaling: stacked fades on the shadowed cover were what made
@@ -788,9 +804,51 @@ export default function PlayerScreen() {
     // else, the animation just keeps running uninterrupted at real-time speed
     // — no restart, no stutter.
     const lastSyncedTrackIdRef = useRef(currentTrack?.id);
+    const discResyncTimer = useRef(null);
+    // While a finger is on the disc the song's speed is the finger's, so the
+    // bar's own timer would be wrong: it follows the real position instead
+    // (quick readings), and takes over again a moment after the finger lifts.
+    const syncPausedUntil = useRef(0);
+    useEffect(() => {
+        if (!discHeld) return;
+        stopAnim();
+        syncPausedUntil.current = Number.MAX_SAFE_INTEGER;
+        let cancelled = false;
+        const songId = currentTrack?.id;
+        const follow = () => AudioEngine.getProgress().then((p) => {
+            if (cancelled || !(p?.duration > 0)) return;
+            if (songId && p.id && p.id !== songId) return;   // a reading for the other song
+            const r = Math.max(0, Math.min(1, p.position / p.duration));
+            animPctValueRef.current = r;
+            animPct.setValue(r);
+        }).catch(() => { });
+        follow();
+        const id = setInterval(follow, 90);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+            // Let the scratch finish ending, then restart the bar from the exact spot.
+            syncPausedUntil.current = Date.now() + 300;
+            clearTimeout(discResyncTimer.current);
+            discResyncTimer.current = setTimeout(() => {
+                if (discHeldRef.current) return;
+                AudioEngine.getProgress().then((p) => {
+                    if (discHeldRef.current || !(p?.duration > 0)) return;
+                    if (songId && p.id && p.id !== songId) return;   // a reading for the other song
+                    syncPausedUntil.current = 0;
+                    startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
+                }).catch(() => { syncPausedUntil.current = 0; });
+            }, 300);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [discHeld]);
     useEffect(() => {
         if (dragRatio !== null) return; // scrubbing owns the value right now
+        if (discHeld || Date.now() < syncPausedUntil.current) return; // the disc is being scratched (or just let go)
         const trackChanged = lastSyncedTrackIdRef.current !== currentTrack?.id;
+        // A reading for the other song (around a crossfade's song change) says
+        // nothing about this one: leave the bar alone until a real one comes.
+        if (progress.stale && !trackChanged) return;
         lastSyncedTrackIdRef.current = currentTrack?.id;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
         // since a drift-gated check skips the stop() call whenever drift
@@ -801,7 +859,11 @@ export default function PlayerScreen() {
             // A song change while paused (skip, restore, queue tap) must
             // start the bar fresh too. `pct` is still the OLD song's value
             // until the next poll, which left the bar parked at the old spot.
-            const startPct = trackChanged ? 0 : animPctValueRef.current;
+            // Parked where the bar is, unless the real position is clearly
+            // somewhere else (the app was away and the song moved, e.g. after
+            // a Bluetooth connection): then it goes there.
+            const farOff = Math.abs(pct - animPctValueRef.current) * (progress.duration || 0) > 1;
+            const startPct = trackChanged ? 0 : (farOff ? pct : animPctValueRef.current);
             animPct.setValue(startPct);
             animPctValueRef.current = startPct;
             // `pct` can be up to 500ms old at the instant of a pause (lock
@@ -842,10 +904,10 @@ export default function PlayerScreen() {
             // spot right away instead of sitting at 0 until the next poll
             // and then jumping, so the bar starts where the sound is.
             const trackAtChange = currentTrack?.id;
-            const qidAtChange = currentTrack?._qid;
+            const idAtChange = currentTrack?.id;
             AudioEngine.getProgress().then(p => {
                 if (lastSyncedTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
-                if (qidAtChange && p.qid && p.qid !== qidAtChange) return;   // a reading for the other song
+                if (idAtChange && p.id && p.id !== idAtChange) return;   // a reading for the other song
                 if (p.position > p.duration || p.position > 40) return;   // not a fresh song's spot, don't trust
                 startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
             }).catch(() => { });
@@ -868,7 +930,7 @@ export default function PlayerScreen() {
             startRealTimeAnim(pct, !animRunRef.current);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [progress.position, isPlaying, currentTrack?.id, playbackRate]);
+    }, [progress.position, isPlaying, currentTrack?.id, playbackRate, discHeld]);
 
     // Clears the post-seek drag overlay once the polled position actually
     // agrees with where we told native to seek to — see the commit branch
@@ -886,7 +948,7 @@ export default function PlayerScreen() {
     }, [Math.round(pct * 200)]);
 
     useEffect(() => {
-        return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); };
+        return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); clearTimeout(discResyncTimer.current); };
     }, []);
 
     // Both move with transforms so they can run on the native side.
@@ -1062,6 +1124,7 @@ export default function PlayerScreen() {
                                     position={progress.position}
                                     duration={progress.duration}
                                     endGuard={scratchEndGuard}
+                                    startGuard={scratchStartGuard}
                                     onTouching={setDiscTouching}
                                 />
                             )}

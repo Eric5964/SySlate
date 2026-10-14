@@ -85,6 +85,12 @@ export default function SwipeableRow({
         }
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         if (hasFiredRef.current) return;
+        // Only a finished swipe counts. A cancelled or failed one (a call, an alert, the system taking
+        // the touch) past the distance used to fire the action too; now it just springs back.
+        if (e.nativeEvent.state !== State.END) {
+            Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
+            return;
+        }
         const dx = e.nativeEvent.translationX;
         if (dx > COMMIT_DISTANCE && onSwipeRightRef.current) {
             hasFiredRef.current = true;

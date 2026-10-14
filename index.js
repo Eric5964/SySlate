@@ -1,9 +1,11 @@
 import 'react-native-gesture-handler';
 import './polyfill';
 import { registerRootComponent } from 'expo';
-import TrackPlayer from 'react-native-track-player';
 import App from './src/App';
 import { PlaybackService } from './src/services/PlaybackService';
 
 registerRootComponent(App);
-TrackPlayer.registerPlaybackService(() => PlaybackService);
+// Starts the playback service (remote-control / lock-screen listeners) once, right after launch.
+// This is what react-native-track-player's registerPlaybackService used to do on iOS
+// (it simply ran the service on the next tick); that package is no longer used.
+setImmediate(() => { Promise.resolve(PlaybackService()).catch(() => { }); });

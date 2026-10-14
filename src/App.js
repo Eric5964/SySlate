@@ -317,7 +317,9 @@ function AppInner() {
         return () => sub.remove();
     }, [backgroundImageEnabled, backgroundImageUri, prefetchPlaylistCovers]);
 
+    const reloadSeq = useRef(0);
     const reload = useCallback(async () => {
+        const seq = ++reloadSeq.current;
         try {
             const lib = await scanLibrary();
             // Actually WAIT for these instead of firing-and-forgetting —
@@ -325,6 +327,7 @@ function AppInner() {
             // already in RN's cache, otherwise this preload step does
             // nothing to prevent the first-render flash it's meant to fix.
             const covers = await prefetchPlaylistCovers();
+            if (seq !== reloadSeq.current) return;   // a newer scan was started: its result wins
             setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null, covers: covers ?? {} });
         } catch (e) { console.error('reload:', e); }
     }, [prefetchPlaylistCovers]);

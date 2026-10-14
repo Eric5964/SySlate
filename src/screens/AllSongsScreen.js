@@ -3,7 +3,7 @@ import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
-import { useNavigation, useScrollToTop } from '@react-navigation/native';
+import { useNavigation, useScrollToTop, useFocusEffect } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -17,9 +17,10 @@ import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storag
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
-import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance } from '../utils/layout';
+import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import ScreenBackground from '../components/ScreenBackground';
+import { titleKey, compareKeys } from '../utils/sortKey';
 
 // Reuses the exact same 4 sorts as the playlist screen, for the same reason
 // they're offered there — this list is functionally "the All Songs
@@ -50,6 +51,7 @@ export default function AllSongsScreen() {
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui } = usePreferences();
+    const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE + 52);
 
     const listRef = useRef(null);
     useScrollToTop(listRef); // tapping the All Songs tab again while already on it scrolls to top
@@ -82,7 +84,13 @@ export default function AllSongsScreen() {
         return out;
     }, [allSongs]);
 
-    useEffect(() => { getPlayCounts(dedupedSongs).then(setPlayCounts); }, [dedupedSongs]);
+    // Read again every time the tab is shown: this screen stays mounted, so counts (and the
+    // Most Played order) used to stay as they were when the library last loaded.
+    useFocusEffect(useCallback(() => {
+        let cancelled = false;
+        getPlayCounts(dedupedSongs).then(c => { if (!cancelled) setPlayCounts(c); });
+        return () => { cancelled = true; };
+    }, [dedupedSongs]));
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
 
     // Precomputed once per song instead of inside the sort comparator —
@@ -96,23 +104,17 @@ export default function AllSongsScreen() {
     // thousands of comparisons is exactly what "sorting is slow" was.
     const titleKeyMap = useMemo(() => {
         const m = new Map();
-        for (const s of dedupedSongs) m.set(s.id, (s.title || '').toLowerCase());
+        for (const s of dedupedSongs) m.set(s.id, titleKey(s.title || ''));
         return m;
     }, [dedupedSongs]);
 
     const sorted = useMemo(() => {
         let songs = [...dedupedSongs];
         switch (sortId) {
-            case 'alpha': songs.sort((a, b) => {
-                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
-                return ta < tb ? -1 : ta > tb ? 1 : 0;
-            }); break;
-            case 'alpha_r': songs.sort((a, b) => {
-                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
-                return ta > tb ? -1 : ta < tb ? 1 : 0;
-            }); break;
-            case 'plays': songs.sort((a, b) => (playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)); break;
-            case 'plays_r': songs.sort((a, b) => (playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)); break;
+            case 'alpha': songs.sort((a, b) => compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
+            case 'alpha_r': songs.sort((a, b) => compareKeys(titleKeyMap.get(b.id), titleKeyMap.get(a.id))); break;
+            case 'plays': songs.sort((a, b) => ((playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)) || compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
+            case 'plays_r': songs.sort((a, b) => ((playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)) || compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
         }
         return songs;
     }, [dedupedSongs, sortId, playCounts, titleKeyMap]);
@@ -121,7 +123,7 @@ export default function AllSongsScreen() {
         if (!search.trim()) return sorted;
         const q = search.toLowerCase();
         return sorted.filter(s =>
-            s.title.toLowerCase().includes(q) || artistMatches(s.artist, artistSeparator, q)
+            (s.title || '').toLowerCase().includes(q) || artistMatches(s.artist, artistSeparator, q)
         );
     }, [sorted, search, artistSeparator]);
 
@@ -152,6 +154,9 @@ export default function AllSongsScreen() {
             {/* Same top row as the playlist screen and the player: EQ and
                 queue sit in the exact same top-right spot on every screen.
                 Title on the left where the back arrow would be. */}
+            {/* Title row + search/sort together: with a transparent top bar this
+                whole block floats over the list (which scrolls behind it). */}
+            <View style={[{ zIndex: 5 }, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
             <View style={s.topRow}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.as_title !== false
@@ -218,18 +223,20 @@ export default function AllSongsScreen() {
                 )}
             </View>
             )}
+            </View>
 
             {allSongs.length === 0 ? (
                 <View style={s.empty}>
                     <Text style={[s.emptyTitle, { color: base.text }]}>No songs found</Text>
-                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add music folders or files to{'\n'}Files → On My iPhone → SySlate</Text>
+                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add music folders or files to your music folder{'\n'}(Settings → Music & Library shows where),{'\n'}or use Import Songs</Text>
                 </View>
             ) : (
                 <FlatList
                     ref={listRef}
                     data={filtered}
                     keyExtractor={item => item.id}
-                    contentContainerStyle={{ paddingBottom: 150 }}
+                    contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 150 }}
+                    scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
                     // Keep more rows mounted so covers already on screen stay decoded
                     // while scrolling back, instead of reloading each time.
                     initialNumToRender={performanceMode ? 8 : 14}

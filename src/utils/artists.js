@@ -10,7 +10,8 @@
 // values saved before multi-select existed.
 export function splitArtists(artistStr, separators) {
     const s = artistStr || '';
-    const seps = (typeof separators === 'string' ? [separators] : (separators || [])).filter(sep => sep && sep !== 'none');
+    // The backslash option was saved as two backslashes (a typing slip in the settings list); real tags use one.
+    const seps = (typeof separators === 'string' ? [separators] : (separators || [])).filter(sep => sep && sep !== 'none').map(sep => sep === '\\\\' ? '\\' : sep);
     if (!s || seps.length === 0) return s ? [s] : [];
     // Escape each separator for use inside a regex, then split on any of
     // them at once — so "A; B / C" with both ';' and '/' configured splits

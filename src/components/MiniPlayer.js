@@ -29,8 +29,8 @@ export default function MiniPlayer({ withTabBar = true }) {
     // Only readings that belong to the song being shown count (a late reading
     // from before a skip used to make the bar jump to the old song's spot).
     const progress = useMemo(
-        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration),
-        [rawProgress, currentTrack?._qid, currentTrack?.duration]
+        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id),
+        [rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
     );
     const insets = useSafeAreaInsets();
 
@@ -63,6 +63,7 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     useEffect(() => {
         const trackChanged = lastTrackIdRef.current !== currentTrack?.id;
+        if (progress.stale && !trackChanged) return;   // a reading for the other song: ignore it
         lastTrackIdRef.current = currentTrack?.id;
         if (trackChanged) {
             // Same fix as PlayerScreen's own progress bar for this — see
@@ -78,10 +79,10 @@ export default function MiniPlayer({ withTabBar = true }) {
             // flips the display halfway, so the new song is already a couple
             // of seconds in) instead of waiting for the next poll.
             const trackAtChange = currentTrack?.id;
-            const qidAtChange = currentTrack?._qid;
+            const idAtChange = currentTrack?.id;
             AudioEngine.getProgress().then(p => {
                 if (lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
-                if (qidAtChange && p.qid && p.qid !== qidAtChange) return;   // a reading for the other song
+                if (idAtChange && p.id && p.id !== idAtChange) return;   // a reading for the other song
                 if (p.position > p.duration || p.position > 40) return;
                 basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
                 forceTick(t => t + 1);
@@ -105,10 +106,10 @@ export default function MiniPlayer({ withTabBar = true }) {
     useEffect(() => {
         let cancelled = false;
         const trackAtStart = lastTrackIdRef.current;
-        const qidAtStart = currentTrack?._qid;
+        const idAtStart = currentTrack?.id;
         AudioEngine.getProgress().then(p => {
             if (cancelled || lastTrackIdRef.current !== trackAtStart || !(p?.duration > 0)) return;
-            if (qidAtStart && p.qid && p.qid !== qidAtStart) return;
+            if (idAtStart && p.id && p.id !== idAtStart) return;
             basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
             forceTick(t => t + 1);
         }).catch(() => { });

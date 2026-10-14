@@ -8,7 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle, cardRadius } from '../utils/squircle';
-import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE } from '../utils/layout';
+import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import {
     getPlaylistViewFormat, setPlaylistViewFormat,
@@ -182,7 +182,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                         {minus}
                     </View>
                     {showTitle !== false && <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>}
-                    {showCount !== false && <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
+                    {showCount !== false && <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} {item.songs.length === 1 ? 'track' : 'tracks'}</Text>}
                 </Pressable>
             </Animated.View>
         );
@@ -200,7 +200,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                 )}
                 <View style={{ flex: 1 }}>
                     {showTitle !== false && <Text style={[s.rowName, { color: base.text }]}>{item.name}</Text>}
-                    {showCount !== false && <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} tracks</Text>}
+                    {showCount !== false && <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} {item.songs.length === 1 ? 'track' : 'tracks'}</Text>}
                 </View>
                 {format === 'list_art' && minus ? <View style={{ marginLeft: 8 }}>{minus}</View> : (arrowOn && <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>)}
             </Pressable>
@@ -220,6 +220,7 @@ export default function PlaylistsScreen() {
     const { playlists, covers: initialCovers, reload, reorderPlaylists } = useContext(LibraryContext);
     const { theme, base } = useTheme();
     const { playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, topBarColor, ui, showPlaylistTrackCount, showPlaylistTitles } = usePreferences();
+    const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
     const navigation = useNavigation();
     const [format, setFormat] = useState('list');
     // Real gap found here: this always started at {} and waited on its own
@@ -597,7 +598,7 @@ export default function PlaylistsScreen() {
             {/* Same top row as All Songs and the Player: title where the back
                 arrow sits, buttons in the exact same top-right spots as EQ
                 and queue (same sizes, same gap, same top padding). */}
-            <View style={s.header}>
+            <View style={[s.header, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pl_title !== false
                     ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
@@ -624,10 +625,10 @@ export default function PlaylistsScreen() {
             {playlists.length === 0 ? (
                 <View style={s.empty}>
                     <Text style={[s.emptyTitle, { color: base.text }]}>No playlists yet</Text>
-                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add folders to{'\n'}Files → On My iPhone → SySlate</Text>
+                    <Text style={[s.emptyText, { color: base.textFaint }]}>Add folders to your music folder{'\n'}(Settings → Music & Library shows where),{'\n'}or use Import Songs</Text>
                 </View>
             ) : (
-                <Animated.View style={{ flex: 1, opacity: listOpacity, marginTop: -TOP_FADE }}>
+                <Animated.View style={{ flex: 1, opacity: listOpacity, marginTop: topBarColor ? -TOP_FADE : 0 }}>
                     <View
                         ref={listBoxRef}
                         style={{ flex: 1 }}
@@ -683,7 +684,7 @@ export default function PlaylistsScreen() {
                         // was double-spacing, showing up as a noticeably
                         // fatter gap above the grid than above the list rows
                         // (which only rely on their own marginVertical).
-                        contentContainerStyle={{ paddingTop: TOP_FADE, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
+                        contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
                         renderItem={({ item, index }) => (
                             <PlaylistRow
                                 item={item}

@@ -17,10 +17,11 @@ import SwipeQueueButton from '../components/SwipeQueueButton';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
-import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance } from '../utils/layout';
+import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
 import { useListArt } from '../hooks/useListArt';
+import { titleKey, compareKeys } from '../utils/sortKey';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -51,7 +52,8 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, topBarColor, ui } = usePreferences();
+    const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     useEffect(() => {
         getPlayCounts(playlist.songs).then(setPlayCounts);
@@ -80,21 +82,15 @@ export default function PlaylistDetailScreen() {
     // fast and one not, between the two screens.
     const titleKeyMap = useMemo(() => {
         const m = new Map();
-        for (const s of playlist.songs) m.set(s.id, (s.ourTitle ?? s.title ?? '').toLowerCase());
+        for (const s of playlist.songs) m.set(s.id, titleKey(s.ourTitle ?? s.title ?? ''));
         return m;
     }, [playlist.songs]);
 
     const sorted = useMemo(() => {
         let songs = [...playlist.songs];
         switch (sortId) {
-            case 'alpha': songs.sort((a, b) => {
-                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
-                return ta < tb ? -1 : ta > tb ? 1 : 0;
-            }); break;
-            case 'alpha_r': songs.sort((a, b) => {
-                const ta = titleKeyMap.get(a.id), tb = titleKeyMap.get(b.id);
-                return ta > tb ? -1 : ta < tb ? 1 : 0;
-            }); break;
+            case 'alpha': songs.sort((a, b) => compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
+            case 'alpha_r': songs.sort((a, b) => compareKeys(titleKeyMap.get(b.id), titleKeyMap.get(a.id))); break;
             case 'plays': songs.sort((a, b) => (playCounts[b.id] ?? 0) - (playCounts[a.id] ?? 0)); break;
             case 'plays_r': songs.sort((a, b) => (playCounts[a.id] ?? 0) - (playCounts[b.id] ?? 0)); break;
         }
@@ -143,20 +139,12 @@ export default function PlaylistDetailScreen() {
     };
 
     // Swiping a button right queues this playlist to take over after the
-    // current song (Play = in order, Shuffle = shuffled); with nothing playing
-    // there is nothing to wait for, so it just starts.
-    const [queuedNote, setQueuedNote] = useState(null);
-    const queuedTimer = useRef(null);
-    useEffect(() => () => clearTimeout(queuedTimer.current), []);
-    const flashQueued = (text) => {
-        setQueuedNote(text);
-        clearTimeout(queuedTimer.current);
-        queuedTimer.current = setTimeout(() => setQueuedNote(null), 1400);
-    };
+    // current song (Play = in order, Shuffle = shuffled); the button shows a
+    // quick "Added". With nothing playing there is nothing to wait for, so it
+    // just starts.
     const swipeQueue = async (shuffled) => {
         const r = await queuePlaylistNext(playlist, shuffled, shuffled ? undefined : sorted);
-        if (r.ok) flashQueued(shuffled ? 'Shuffled playlist queued next' : 'Playlist queued next');
-        else if (r.reason === 'nothing-playing') { if (shuffled) handleShuffle(); else handlePlay(); }
+        if (!r.ok && r.reason === 'nothing-playing') { if (shuffled) handleShuffle(); else handlePlay(); }
     };
 
     const changeCover = async () => {
@@ -193,7 +181,8 @@ export default function PlaylistDetailScreen() {
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
-            <View style={s.topBar}>
+            <View style={[s.topBar, topBarColor ? { zIndex: 5 } : OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
+                {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pd_back !== false ? (
                     <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.backIcon, { color: theme.accent }]}>←</Text>
@@ -237,7 +226,8 @@ export default function PlaylistDetailScreen() {
             <FlatList
                 data={filtered}
                 keyExtractor={item => item.id}
-                contentContainerStyle={{ paddingBottom: 160 }}
+                contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 160 }}
+                scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
                 // Keep more rows mounted so covers already on screen stay decoded
                 // while scrolling back, instead of reloading each time.
                 initialNumToRender={performanceMode ? 8 : 14}
@@ -268,7 +258,7 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
@@ -276,20 +266,19 @@ export default function PlaylistDetailScreen() {
                             </SwipeQueueButton>
                             )}
                             {ui.pd_shuffle !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} edgeExclude={EDGE_SWIPE_WIDTH}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
                             <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
                                 <ShuffleIcon size={16} color={theme.accent} />
                                 <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
                             </TouchableOpacity>
                             </SwipeQueueButton>
                             )}
-                            {queuedNote && <Text pointerEvents="none" style={[s.queuedNote, { color: base.textDim }]}>{queuedNote}</Text>}
                         </View>
 
                         <View style={s.titleRow}>
                             <View style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: base.text }]} numberOfLines={1}>{playlist.name}</Text>
-                                {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} tracks</Text>}
+                                {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} {playlist.songs.length === 1 ? 'track' : 'tracks'}</Text>}
                             </View>
                             {ui.pd_sort !== false && (
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
@@ -383,7 +372,6 @@ const s = StyleSheet.create({
     cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
-    queuedNote: { position: 'absolute', left: 0, right: 0, bottom: -18, textAlign: 'center', fontSize: 11, fontWeight: '600' },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
     playBtnText: { fontSize: 15, fontWeight: '700' },
     shuffleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 24, borderWidth: 1.5 },

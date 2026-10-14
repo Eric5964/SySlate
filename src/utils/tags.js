@@ -33,7 +33,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // clean re-extraction; fixing the parser alone does nothing for a song
 // that was already scanned once. Bump again any time the extraction logic
 // itself changes in a way that should apply to already-scanned libraries.
-const CACHE_KEY = 'song_tags_cache_v5';
+// v6: M4A files whose tag box ('moov') sits at the END of the file (normal for
+// files not made "fast start", e.g. many downloads/conversions) used to come
+// back with no tags at all, because only the first 1 MB was ever read; the
+// song then showed the artist/title guessed from its file name. They are read
+// properly now, and this bump makes already-scanned libraries redo it.
+const CACHE_KEY = 'song_tags_cache_v6';
 const FRONT_PREFIX_BYTES = 1 * 1024 * 1024; // tags live at the front for every format handled here
 
 let cacheMapPromise = null;
@@ -43,11 +48,21 @@ async function loadCacheMap() {
     }
     return cacheMapPromise;
 }
+// Writing the whole cache after every single song made the first pass over a big library
+// re-save (and re-serialize) the entire map thousands of times. Now one save per ~1.5 s.
+let persistTimer = null;
+function schedulePersist(getMap) {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+        persistTimer = null;
+        try { AsyncStorage.setItem(CACHE_KEY, JSON.stringify(getMap())).catch(() => { }); } catch { }
+    }, 1500);
+}
 async function saveCacheEntry(songId, value) {
     const map = await loadCacheMap();
     map[songId] = value;
     cacheMapPromise = Promise.resolve(map);
-    AsyncStorage.setItem(CACHE_KEY, JSON.stringify(map)).catch(() => { });
+    schedulePersist(() => map);
 }
 
 async function getFingerprint(uri) {
@@ -405,19 +420,123 @@ function extractTagsFromId3(bytes) {
     return Object.keys(out).length ? out : null;
 }
 
+// Finds the 'moov' box of an MP4/M4A anywhere in the file by hopping from
+// box to box (each hop reads only a 16-byte header), then reads that box.
+// Returns the bytes starting at the moov header, or null.
+async function readMp4MoovBytes(url) {
+    let pos = 0;
+    for (let i = 0; i < 40; i++) {
+        const head = await readBytes(url, { position: pos, length: 16 });
+        if (!head || head.length < 8) return null;
+        let size = ((head[0] << 24) | (head[1] << 16) | (head[2] << 8) | head[3]) >>> 0;
+        const type = String.fromCharCode(head[4], head[5], head[6], head[7]);
+        let hdr = 8;
+        if (size === 1) {
+            if (head.length < 16) return null;
+            const hi = ((head[8] << 24) | (head[9] << 16) | (head[10] << 8) | head[11]) >>> 0;
+            const lo = ((head[12] << 24) | (head[13] << 16) | (head[14] << 8) | head[15]) >>> 0;
+            size = hi * 4294967296 + lo;
+            hdr = 16;
+        }
+        if (type === 'moov') {
+            const len = size === 0 ? 8 * 1024 * 1024 : Math.min(size, 8 * 1024 * 1024);
+            return await readBytes(url, { position: pos, length: len });
+        }
+        if (size < hdr) return null;   // a box that runs to the end of the file, or a broken size
+        pos += size;
+    }
+    return null;
+}
+
+// A big cover picture stored BEFORE the text tags pushes them past the first 1 MB, so the quick read
+// finds nothing. These two walk the file header by header with small reads, skip the big blocks,
+// and read only the few text frames that matter.
+async function readFlacTagsBySeeking(url) {
+    let pos = 0;
+    const id3 = await readBytes(url, { position: 0, length: 10 });
+    if (id3.length >= 10 && id3[0] === 0x49 && id3[1] === 0x44 && id3[2] === 0x33) pos = 10 + readSynchsafe32(id3, 6);
+    const magic = await readBytes(url, { position: pos, length: 4 });
+    if (magic.length < 4 || magic[0] !== 0x66 || magic[1] !== 0x4C || magic[2] !== 0x61 || magic[3] !== 0x43) return null;
+    pos += 4;
+    for (let i = 0; i < 64; i++) {
+        const h = await readBytes(url, { position: pos, length: 4 });
+        if (h.length < 4) return null;
+        const isLast = (h[0] & 0x80) !== 0;
+        const type = h[0] & 0x7f;
+        const len = readU24BE(h, 1);
+        if (type === 4) {
+            if (len > 4 * 1024 * 1024) return null;
+            const body = await readBytes(url, { position: pos + 4, length: len });
+            return parseVorbisCommentBlock(body, 0, body.length);
+        }
+        if (isLast) return null;
+        pos += 4 + len;
+    }
+    return null;
+}
+async function readId3TagsBySeeking(url) {
+    const head = await readBytes(url, { position: 0, length: 10 });
+    if (head.length < 10 || head[0] !== 0x49 || head[1] !== 0x44 || head[2] !== 0x33) return null;
+    const major = head[3];
+    const tagEnd = 10 + readSynchsafe32(head, 6);
+    let pos = 10;
+    if (head[5] & 0x40) {   // extended header: skip it
+        const ext = await readBytes(url, { position: pos, length: 4 });
+        if (ext.length < 4) return null;
+        const extSize = major >= 4 ? readSynchsafe32(ext, 0) : readU32BE(ext, 0);
+        pos += extSize > 0 ? extSize : 4;
+    }
+    const wanted = new Set(['TIT2', 'TPE1', 'TALB', 'TRCK', 'TXXX']);
+    const parts = [];
+    let total = 0;
+    for (let i = 0; i < 300 && pos + 10 <= tagEnd; i++) {
+        const h = await readBytes(url, { position: pos, length: 10 });
+        if (h.length < 10) break;
+        const id = String.fromCharCode(h[0], h[1], h[2], h[3]);
+        if (id === '\0\0\0\0') break;
+        const size = major >= 4 ? readSynchsafe32(h, 4) : readU32BE(h, 4);
+        if (size <= 0 || pos + 10 + size > tagEnd) break;
+        if (wanted.has(id) && size <= 65536) {
+            const body = await readBytes(url, { position: pos + 10, length: size });
+            parts.push(h, body);
+            total += 10 + size;
+        }
+        pos += 10 + size;
+    }
+    if (!parts.length) return null;
+    const out = new Uint8Array(10 + total);
+    out.set([0x49, 0x44, 0x33, major, 0, 0, (total >> 21) & 0x7f, (total >> 14) & 0x7f, (total >> 7) & 0x7f, total & 0x7f], 0);
+    let o = 10;
+    for (const part of parts) { out.set(part, o); o += part.length; }
+    return extractTagsFromId3(out);
+}
 async function extractTagsUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {
         const ext = (song.filename || song.id || '').split('.').pop().toLowerCase();
         const bytes = await readBytes(song.url, { position: 0, length: FRONT_PREFIX_BYTES });
-        if (ext === 'flac') return extractTagsFromFlac(bytes);
-        if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') return extractTagsFromMp4(bytes);
-        if (ext === 'mp3') return extractTagsFromId3(bytes);
+        if (ext === 'flac') return extractTagsFromFlac(bytes) || await readFlacTagsBySeeking(song.url);
+        if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') {
+            const front = extractTagsFromMp4(bytes);
+            if (front) return front;
+            // Not in the first 1 MB: the tag box may be at the end of the file.
+            const moov = await readMp4MoovBytes(song.url);
+            return moov ? extractTagsFromMp4(moov) : null;
+        }
+        if (ext === 'mp3') {
+            const quick = extractTagsFromId3(bytes);
+            if (quick?.title) return quick;
+            const hasId3 = bytes.length >= 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33;
+            if (!hasId3 || 10 + readSynchsafe32(bytes, 6) <= bytes.length) return quick;   // the whole tag was already in view
+            return (await readId3TagsBySeeking(song.url)) || quick;
+        }
         if (ext === 'opus' || ext === 'ogg') return extractTagsFromOgg(bytes);
         return null; // wav / aiff / aac / wma / ape — not handled yet, see file header
     } catch (e) {
+        // Not swallowed here: a file that could not be READ must not be cached as
+        // "has no tags" (extractTags below skips the cache write on a throw).
         console.error('extractTags:', song?.filename, e);
-        return null;
+        throw e;
     }
 }
 
@@ -469,7 +588,7 @@ export async function extractTags(song) {
     try {
         const fp = await getFingerprint(song.url);
         const tags = await extractTagsUncached(song);
-        await saveCacheEntry(song.id, { tags, fp });
+        if (fp) await saveCacheEntry(song.id, { tags, fp });   // no fingerprint = file unreadable right now: try again next scan
         return tags;
     } catch (e) {
         console.error('extractTags:', song?.filename, e);

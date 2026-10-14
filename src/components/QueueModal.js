@@ -162,21 +162,30 @@ function ShrinkOutRow({ removing, children }) {
 // smoothly when the last row under it is being removed: the box shrinks to
 // nothing while its content shrinks and fades, in step with the row's own
 // removal, instead of vanishing at the end.
-function CollapseBlock({ collapsing, children }) {
-    const t = useRef(new Animated.Value(1)).current;
-    const natural = useRef(0);   // measured height while not collapsing
+function CollapseBlock({ collapsing, growing, estH = 0, children }) {
+    // `growing`: the block is new (the first row of a section was just added).
+    // It opens up the same way it closes: the box grows from nothing while its
+    // content grows and fades in, instead of popping in.
+    const t = useRef(new Animated.Value(growing ? 0 : 1)).current;
+    const natural = useRef(estH);   // measured height while not collapsing (estimate until then)
+    const [grown, setGrown] = useState(!growing);
+    useEffect(() => {
+        if (!growing) return;
+        Animated.timing(t, { toValue: 1, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start(() => setGrown(true));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useEffect(() => {
         if (!collapsing) return;
         Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [collapsing]);
     const h = natural.current;
-    const on = collapsing && h > 0;
+    const animating = h > 0 && (collapsing || !grown);
     return (
-        <Animated.View style={on ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, h] }), overflow: 'hidden' } : null}>
+        <Animated.View style={animating ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, h] }), overflow: 'hidden' } : null}>
             <Animated.View
-                onLayout={(e) => { if (!collapsing) natural.current = e.nativeEvent.layout.height; }}
-                style={on ? {
+                onLayout={(e) => { if (!collapsing && grown) natural.current = e.nativeEvent.layout.height; }}
+                style={animating ? {
                     opacity: t,
                     transform: [
                         { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-h / 2, 0] }) },
@@ -216,10 +225,10 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
             <ShrinkOutRow removing={removing}>
                 <Animated.View style={[{ transform: [{ translateY: dragging ? dragY : shiftAnim }, { scale: dragging ? 1.03 : 1 }] }, dragging && s.dragged]}>
                 <SwipeableRow
-                    onSwipeLeft={editing ? undefined : () => actions.remove(realIndex, stableKey)}
+                    onSwipeLeft={editing ? undefined : () => actions.remove(realIndex, stableKey, song._qid)}
                     // Up Next row: promote it to Priority (a copy plays sooner).
                     // Priority row: add another copy of it to the end of Priority.
-                    onSwipeRight={editing ? undefined : () => (isPriority ? actions.addCopy(song) : actions.promote(realIndex))}
+                    onSwipeRight={editing ? undefined : () => (isPriority ? actions.addCopy(song) : actions.promote(realIndex, song._qid))}
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
@@ -622,10 +631,13 @@ export default function QueueModal({ visible, onClose }) {
                 // Only the very edge of the list scrolls it, and gently:
                 // speed grows with how far into the zone the finger is.
                 const zone = Math.min(EDGE, viewH.current * 0.2);
+                if (!(listTop.current > 0) || !(viewH.current > 0)) return;   // not measured yet: no scrolling on a guess
                 const fy = drag.current.fingerY - listTop.current;
                 let v = 0;
-                if (fy < zone) { const k = (zone - fy) / zone; v = -k * k * MAX_SCROLL_PX_S; }
-                else if (fy > viewH.current - zone) { const k = (fy - (viewH.current - zone)) / zone; v = k * k * MAX_SCROLL_PX_S; }
+                // k is 0 at the inner border of the zone and 1 (never more) at the edge
+                // or beyond it, so the speed can never exceed MAX_SCROLL_PX_S.
+                if (fy < zone) { const k = Math.min(1, Math.max(0, (zone - fy) / zone)); v = -k * k * MAX_SCROLL_PX_S; }
+                else if (fy > viewH.current - zone) { const k = Math.min(1, Math.max(0, (fy - (viewH.current - zone)) / zone)); v = k * k * MAX_SCROLL_PX_S; }
                 if (!v) return;
                 const step = (v * dt) / 1000;
                 const maxY = Math.max(0, contentH.current - viewH.current);
@@ -653,17 +665,17 @@ export default function QueueModal({ visible, onClose }) {
         if (suppressPress.current || editRef.current) return;
         await jumpToQueueIndex(realIndex); await refresh();
     };
-    const remove = async (realIndex, stableKey) => {
+    const remove = async (realIndex, stableKey, qid) => {
         // Let the shrink play out first, then do the real removal + refresh
         // — see ShrinkOutRow above for why.
         setRemovingKeys(prev => new Set(prev).add(stableKey));
         await new Promise(r => setTimeout(r, REMOVE_ANIM_MS));
-        const next = await removeFromQueue(realIndex);
+        const next = await removeFromQueue(realIndex, qid);
         await refresh(next);
         setRemovingKeys(prev => { const n = new Set(prev); n.delete(stableKey); return n; });
     };
-    const promote = async (realIndex) => {
-        const { priority, insertedAt } = await promoteToQueue(realIndex);
+    const promote = async (realIndex, qid) => {
+        const { priority, insertedAt } = await promoteToQueue(realIndex, qid);
         await refresh(priority, insertedAt);
     };
     // Swipe right on a Priority row: another copy goes to the end of Priority.
@@ -706,7 +718,7 @@ export default function QueueModal({ visible, onClose }) {
             items.push({ type: 'pill', key: 'pill-priority', label: 'Priority', isNew: newKeys.has(priorityRows[0].stableKey), collapsing: priGone });
             for (const r of priorityRows) items.push({ type: 'row', key: r.stableKey, row: r });
         }
-        if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider', collapsing: priGone || upGone });
+        if (priorityRows.length > 0 && upNextRows.length > 0) items.push({ type: 'divider', key: 'divider', collapsing: priGone || upGone, isNew: newKeys.has(priorityRows[0].stableKey) });
         if (upNextRows.length > 0) {
             items.push({ type: 'pill', key: 'pill-upnext', label: 'Up Next', isNew: newKeys.has(upNextRows[0].stableKey), collapsing: upGone });
             for (const r of upNextRows) items.push({ type: 'row', key: r.stableKey, row: r });
@@ -728,8 +740,8 @@ export default function QueueModal({ visible, onClose }) {
     const rowActions = useRef({
         pressIn: (k) => actionsRef.current.pressIn(k),
         pressOut: () => actionsRef.current.pressOut(),
-        remove: (i, k) => actionsRef.current.remove(i, k),
-        promote: (i) => actionsRef.current.promote(i),
+        remove: (i, k, q) => actionsRef.current.remove(i, k, q),
+        promote: (i, q) => actionsRef.current.promote(i, q),
         addCopy: (song) => actionsRef.current.addCopy(song),
         jump: (i) => actionsRef.current.jump(i),
     }).current;
@@ -815,10 +827,10 @@ export default function QueueModal({ visible, onClose }) {
             );
         }
         if (item.type === 'pill') {
-            return <CollapseBlock collapsing={!!item.collapsing}><FadePill isNew={item.isNew}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></FadePill></CollapseBlock>;
+            return <CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={41}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></CollapseBlock>;
         }
         if (item.type === 'divider') {
-            return <CollapseBlock collapsing={!!item.collapsing}><View style={[s.divider, { backgroundColor: base.border }]} /></CollapseBlock>;
+            return <CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={9}><View style={[s.divider, { backgroundColor: base.border }]} /></CollapseBlock>;
         }
         return renderRow(item.row);
     };

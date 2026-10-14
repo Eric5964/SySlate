@@ -113,6 +113,13 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const draggingRef = useRef(false);
     const scratchingRef = useRef(false);
     const lastAngle = useRef(null);
+    // Where in the song the scratch is (seconds), worked out from the speeds
+    // sent to native, so the disc can be stopped at the end limit without
+    // waiting for the 500ms position updates.
+    const scratchEst = useRef(0);
+    const scratchEstT = useRef(0);
+    const atHi = useRef(false);   // at the end limit (the crossfade area at the end)
+    const atLo = useRef(false);   // at the start limit (the crossfade area at the start)
     const pendingDeg = useRef(0);
     const lastTick = useRef(0);
     const tickTimer = useRef(null);
@@ -373,7 +380,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             lastTouch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
             lastAngle.current = null;
             viewRef.current?.measureInWindow((x, y, w, h) => {
-                center.current = { x: x + w / 2, y: y + h / 2 };
+                center.current = { x: x + w / 2, y: y + h / 2, valid: w > 0 };
                 if (draggingRef.current) lastAngle.current = angleOf(lastTouch.current.x, lastTouch.current.y, center.current);
             });
             // Grabbing the disc again within ~130ms of letting go is refused by
@@ -383,6 +390,13 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                 if (!draggingRef.current) { if (ok) AudioEngine.scratchEnd().catch(() => { }); return; }
                 if (!ok && n < 4) { setTimeout(() => { if (draggingRef.current && !scratchingRef.current) tryBegin(n + 1); }, 70); return; }
                 scratchingRef.current = !!ok;
+                if (ok) {
+                    scratchEst.current = live.current.position;
+                    scratchEstT.current = Date.now();
+                    atHi.current = false; atLo.current = false;
+                    // The exact spot (the position prop can be half a second old).
+                    AudioEngine.getProgress().then((p) => { if (p && p.position >= 0 && scratchingRef.current) scratchEst.current = p.position; }).catch(() => { });
+                }
             }).catch(() => { });
             tryBegin(0);
             lastTick.current = Date.now();
@@ -421,9 +435,22 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                     else snapped.current = 0;
                 }
                 const L = live.current;
-                // Never scratch into the protected zones at the ends.
-                if (rate > 0 && L.position >= L.duration - L.endGuard) rate = 0;
-                if (rate < 0 && L.position <= L.startGuard) rate = 0;
+                // The disc can turn either way, but it cannot be turned into the
+                // crossfade areas at the two ends of the song (the first
+                // startGuard seconds and the last endGuard seconds): there it
+                // stops, and slows smoothly over the last half second before.
+                const dtS = scratchEstT.current ? (now - scratchEstT.current) / 1000 : 0;
+                scratchEstT.current = now;
+                scratchEst.current += sentRate.current * dtS;
+                if (L.duration > 0) {
+                    const hiLimit = L.duration - L.endGuard;
+                    const loLimit = L.startGuard;
+                    const est = scratchEst.current;
+                    atHi.current = est >= hiLimit;
+                    atLo.current = est <= loLimit;
+                    if (rate > 0) rate = Math.min(rate, Math.max(0, (hiLimit - est) / 0.5));
+                    else if (rate < 0) rate = Math.max(rate, -Math.max(0, (est - loLimit) / 0.5));
+                }
                 sentRate.current = rate;
                 AudioEngine.scratchSetRate(rate);
             }, TICK_MS);
@@ -434,6 +461,10 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             const a = angleOf(e.nativeEvent.pageX, e.nativeEvent.pageY, center.current);
             const d = wrap(a - lastAngle.current);
             lastAngle.current = a;
+            // Physically blocked at the limits: once the disc is at a crossfade
+            // area it will not turn further that way (the finger can keep moving,
+            // the disc stays put; turning the other way works again at once).
+            if ((d > 0 && atHi.current) || (d < 0 && atLo.current)) return;
             pendingDeg.current += d;
             userRotVal.current += d;
             userRot.setValue(userRotVal.current);

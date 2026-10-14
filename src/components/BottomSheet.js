@@ -45,7 +45,9 @@ export default function BottomSheet({ visible, onClose, header, children, height
             Animated.parallel([
                 Animated.timing(backdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
                 Animated.timing(translateY, { toValue: height, duration: 200, useNativeDriver: true }),
-            ]).start(() => setMounted(false));
+            // `finished` matters: closing then reopening quickly interrupts this animation, and its
+            // callback used to unmount the sheet that was just being shown again.
+            ]).start(({ finished }) => { if (finished) setMounted(false); });
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible]);

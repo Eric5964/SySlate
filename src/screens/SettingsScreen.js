@@ -18,7 +18,7 @@ import PureSlider from '../components/PureSlider';
 import ScreenBackground from '../components/ScreenBackground';
 import TopBarBack from '../components/TopBarFade';
 import { noteScroll } from '../utils/scrollGuard';
-import { TOP_PAD, TOP_FADE } from '../utils/layout';
+import { TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay, EQ_MIN, EQ_MAX } from '../utils/eq';
 import { applyEQPreset } from '../context/PlaybackContext';
 
@@ -31,7 +31,7 @@ const ARTIST_SEPARATORS = [
     // Two literal backslashes, not one — that's what Mp3tag and MusicBee
     // actually write for multi-artist tags ("Artist A\\Artist B"), a
     // single '\' isn't a real-world convention either of those uses.
-    { id: '\\\\', label: '\\\\' },
+    { id: '\\\\', label: '\\' },
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
@@ -73,6 +73,7 @@ import {
     deleteStoredImage,
     resetPlaylistScreen,
 } from '../utils/storage';
+import { importSongs } from '../utils/importMusic';
 import * as ImagePicker from 'expo-image-picker';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -132,6 +133,7 @@ export default function SettingsScreen() {
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
     // Separate from `shuffleMode` (from usePlayback) on purpose — that one
@@ -375,6 +377,21 @@ export default function SettingsScreen() {
     ];
 
     // Best-effort detection of which sideload tool is running this build.
+    // Copies songs picked in the Files app into the app's own Documents folder (see utils/importMusic.js).
+    const importSongsFlow = () => {
+        const run = async (folder) => {
+            try {
+                const r = await importSongs(folder);
+                if (!r) return;
+                await reload();
+                Alert.alert('Import finished', `${r.copied} song(s) added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
+            } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
+        };
+        Alert.prompt('Import Songs', 'Playlist folder to put them in. Leave empty to add them to All Songs only.', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Choose Files', onPress: (name) => run((name || '').trim()) },
+        ], 'plain-text', 'Imported');
+    };
     const pathLower = (scanPath ?? '').toLowerCase();
     const isLiveContainer = pathLower.includes('livecontainer');
     const isSideStore = !isLiveContainer && !!scanPath;
@@ -527,14 +544,14 @@ export default function SettingsScreen() {
     // Reset buttons are per group (Playback, Screens, ...), not per section.
     const groupResetters = {
         playback: () => ['volume', 'shuffle', 'crossfade', 'queue', 'prev'].forEach(k => resetters[k]()),
-        screens: () => ['lists', 'playlistsScreen', 'allSongsScreen', 'playlistScreen', 'playerButtons', 'playerCover', 'screen'].forEach(k => resetters[k]()),
-        appearance: () => resetters.covers(),
+        screens: () => ['lists', 'playlistsScreen', 'allSongsScreen', 'playlistScreen', 'playerButtons', 'playerCover'].forEach(k => resetters[k]()),
+        appearance: () => ['covers', 'screen'].forEach(k => resetters[k]()),
         library: () => ['artists', 'album'].forEach(k => resetters[k]()),
     };
     const GROUP_RESET_NOTE = {
         playback: 'Volume levelling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults. EQ presets are not touched.',
         screens: 'Every switch and option for the Playlists, All Songs, Playlist and Player screens goes back to its default.',
-        appearance: 'Cover shapes and shadows go back to their defaults. Accent color, base color and the custom background are not touched.',
+        appearance: 'Cover shapes, shadows, colored top bars and keep-screen-awake go back to their defaults. Accent color, base color and the custom background are not touched.',
         library: 'Multiple Artists and Album From Folder Name go back to their defaults. Your music and its location are not touched.',
     };
     const askGroupReset = (key, title) => Alert.alert(
@@ -546,7 +563,7 @@ export default function SettingsScreen() {
     const resetEverything = () => {
         Alert.alert(
             'Reset all settings?',
-            'Every setting in Playback, Screens, Appearance (covers only) and Library & Data goes back to its default.',
+            'Every setting in Playback, Screens, Appearance (look only) and Library & Data goes back to its default.',
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -594,7 +611,7 @@ export default function SettingsScreen() {
         sharp: { cs: false, pcs: false, sps: false, mps: false, po: true, dout: true, shape: 'square' },
     };
     const currentLook = () => ({ cs: shadowsRaw.coverShadow, pcs: shadowsRaw.playlistCoverShadow, sps: shadowsRaw.songPillShadow, mps: shadowsRaw.miniPlayerShadow, po: playerOutline, dout: detailOutline, shape: coverShape });
-    const sameLook = (a, b) => !!a && !!b && Object.keys(a).every(k => !!a[k] === !!b[k] || a[k] === b[k]);
+    const sameLook = (a, b) => !!a && !!b && Object.keys(a).every(k => k === 'shape' ? a[k] === b[k] : !!a[k] === !!b[k]);
     const applyLook = (L) => {
         setCoverShadow(L.cs); setPlaylistCoverShadow(L.pcs); setSongPillShadow(L.sps); setMiniPlayerShadow(L.mps);
         setPlayerOutline(L.po); setDetailOutline(L.dout); setCoverShape(L.shape); setPlaylistCoverShape(L.shape);
@@ -646,7 +663,7 @@ export default function SettingsScreen() {
             <StatusBar barStyle="light-content" />
             {/* Same bar as Playlists and All Songs: same height, same title
                 spot, and the same soft fade at the bottom. */}
-            <View style={s.header}>
+            <View style={[s.header, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 <View style={s.titleBox}><Text style={s.title}>Settings</Text></View>
             </View>
@@ -661,10 +678,13 @@ export default function SettingsScreen() {
                 // The list runs up under the bar's fade (so rows fade out
                 // instead of being cut off) and starts lower by the same
                 // amount, so nothing sits higher than before.
-                // Same position with or without the color: the transparent bar is
-                // the colored bar minus the color and the shadow.
-                style={{ marginTop: -TOP_FADE }}
-                contentContainerStyle={{ paddingTop: TOP_FADE, paddingBottom: 160 }}
+                // Colored bar: the list runs up under the bar's fade. Transparent
+                // bar: the list fills the whole screen and passes behind the
+                // floating bar, starting the bar's height lower so that at the
+                // top it sits exactly where it does with the colored bar.
+                style={topBarColor ? { marginTop: -TOP_FADE } : null}
+                contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 160 }}
+                scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
             >
                 <SettingsViewCtx.Provider value={{ mode, q }}>
                 <View style={s.modeBar}>
@@ -809,10 +829,6 @@ export default function SettingsScreen() {
                 </Section>
 
                 {/* 3. Shuffle */}
-                <Section title="Shuffle Mode">
-                    <View style={{ paddingTop: 14 }}>{shuffleUi}</View>
-                </Section>
-
                 {/* 2. Audio — fade/ramp settings, crossfade, and normalization,
                      all together under one heading. */}
                 <Section title="Crossfade & Fades">
@@ -926,7 +942,10 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                <Section title="Queue">
+                <Section title="Playback">
+                    <SubHead title="Shuffle" first />
+                    <View style={{ paddingTop: 14 }}>{shuffleUi}</View>
+                    <SubHead title="Queue" />
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
@@ -935,14 +954,7 @@ export default function SettingsScreen() {
                         <Switch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                </Section>
-
-                {/* Explains itself precisely rather than leaning on "unskip" /
-                     "rewind" — the button's real behavior is either "always go
-                     to the previous track" or "restart this one, except right
-                     near its start" — describing it in those terms up front
-                     avoids needing the label to also do the explaining. */}
-                <Section title="Previous Button">
+                    <SubHead title="Previous button" />
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
@@ -1004,12 +1016,18 @@ export default function SettingsScreen() {
                     )}
                 </Section>
 
+                {/* Explains itself precisely rather than leaning on "unskip" /
+                     "rewind" — the button's real behavior is either "always go
+                     to the previous track" or "restart this one, except right
+                     near its start" — describing it in those terms up front
+                     avoids needing the label to also do the explaining. */}
                 </>)}
 
                 <GroupHeader title="Screens" onReset={() => askGroupReset('screens', 'Screens')} hidden={isHidden('screens')} onToggleHidden={() => toggleGroupHidden('screens')} />
                 {!isHidden('screens') && (<>
 
-                <Section title="All Songs & Playlists">
+                <Section title="Lists">
+                    <SubHead title="Songs & playlists" first />
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Song Covers</Text>
@@ -1044,23 +1062,17 @@ export default function SettingsScreen() {
                     </View>
                     {toggle('Playlist Cards', 'A card behind every playlist, in all layouts', playlistCards, setPlaylistCards)}
                     {toggle('Show Arrow', 'The arrow on the list layouts', playlistArrow, setPlaylistArrow)}
-                </Section>
-
-                <Section title="Playlists Screen">
+                    <SubHead title="Playlists screen" />
                     {uiRow('pl_title', 'Title', 'The Playlists heading', true)}
                     {uiRow('pl_layout', 'Layout Button', 'Switches between the layouts')}
                     {uiRow('pl_reload', 'Reload Button', 'Rescans the playlists')}
-                </Section>
-
-                <Section title="All Songs Screen">
+                    <SubHead title="All Songs screen" />
                     {uiRow('as_title', 'Title', 'The All Songs heading', true)}
                     {uiRow('as_search', 'Search Bar', 'Search songs and artists')}
                     {uiRow('as_sort', 'Sort Button', 'Sort choices next to the search')}
                     {uiRow('as_eq', 'EQ', 'EQ button at the top')}
                     {uiRow('as_queue', 'Queue', 'Queue button at the top')}
-                </Section>
-
-                <Section title="Playlist Screen">
+                    <SubHead title="Playlist screen" />
                     {uiRow('pd_back', 'Back Arrow', 'Swipe from the edge still goes back', true)}
                     {uiRow('pd_search', 'Search Bar', 'Search this playlist')}
                     {uiRow('pd_eq', 'EQ', 'EQ button at the top')}
@@ -1071,7 +1083,8 @@ export default function SettingsScreen() {
                     {uiRow('pd_sort', 'Sort Button', 'Sort choices for the songs')}
                 </Section>
 
-                <Section title="Player Buttons">
+                <Section title="Player">
+                    <SubHead title="Buttons" first />
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Sleep Timer</Text>
@@ -1120,9 +1133,7 @@ export default function SettingsScreen() {
                         <Switch value={playerBtns.label} onValueChange={(v) => setPlayerBtnShown('label', v)}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                </Section>
-
-                <Section title="Player Views">
+                    <SubHead title="Views" />
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Opens On</Text>
                         <Text style={s.toggleSub}>What the Player shows first for each song. The button under the cover cycles through the views that are on</Text>
@@ -1195,18 +1206,6 @@ export default function SettingsScreen() {
                     </>)}
                 </Section>
 
-                <Section title="Screen">
-                    {toggle('Colored Top Bars', 'Playlists, All Songs and Settings top bars use the base color', topBarColor, setTopBarColor, true)}
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Keep Screen Awake</Text>
-                            <Text style={s.toggleSub}>Only while a song plays</Text>
-                        </View>
-                        <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                </Section>
-
                 </>)}
 
                 <GroupHeader title="Appearance" onReset={() => askGroupReset('appearance', 'Appearance')} hidden={isHidden('appearance')} onToggleHidden={() => toggleGroupHidden('appearance')} />
@@ -1214,7 +1213,8 @@ export default function SettingsScreen() {
 
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
-                <Section title="Shadows & Outlines">
+                <Section title="Look">
+                    <SubHead title="Shadows & outlines" first />
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Looks</Text>
                         <Text style={s.toggleSub}>Quick styles for everything below, plus the cover shape</Text>
@@ -1228,6 +1228,19 @@ export default function SettingsScreen() {
                     {toggle('All Outlines', 'Switch every cover outline on or off at once', playerOutline && detailOutline, setAllOutlines)}
                     {toggle('Player Cover Outline', 'A card-style border around the Player cover and the DJ disc', playerOutline, setPlayerOutline)}
                     {toggle('Playlist Screen Cover Outline', 'A card-style border around the cover on the Playlist screen', detailOutline, setDetailOutline)}
+                    <SubHead title="Covers" />
+                    {toggle('Rounded Song Covers', 'Song covers in lists, the queue and the Player', coverShape === 'rounded', v => setCoverShape(v ? 'rounded' : 'square'), true)}
+                    {toggle('Rounded Playlist Covers', 'Playlist covers and their cards', playlistCoverShape === 'rounded', v => setPlaylistCoverShape(v ? 'rounded' : 'square'))}
+                    <SubHead title="Top bars & screen" />
+                    {toggle('Colored Top Bars', 'Playlists, All Songs, Settings and playlist top bars use the base color. Off: transparent, and lists scroll behind them', topBarColor, setTopBarColor, true)}
+                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Keep Screen Awake</Text>
+                            <Text style={s.toggleSub}>Only while a song plays</Text>
+                        </View>
+                        <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
                 </Section>
 
                 <Section title="Accent Color" simple>
@@ -1293,11 +1306,6 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                <Section title="Covers">
-                    {toggle('Rounded Song Covers', 'Song covers in lists, the queue and the Player', coverShape === 'rounded', v => setCoverShape(v ? 'rounded' : 'square'), true)}
-                    {toggle('Rounded Playlist Covers', 'Playlist covers and their cards', playlistCoverShape === 'rounded', v => setPlaylistCoverShape(v ? 'rounded' : 'square'))}
-                </Section>
-
                 </>)}
 
                 <GroupHeader title="Library & Data" onReset={() => askGroupReset('library', 'Library & Data')} hidden={isHidden('library')} onToggleHidden={() => toggleGroupHidden('library')} />
@@ -1312,7 +1320,8 @@ export default function SettingsScreen() {
                      comment for why that's the safe default) — songs with no
                      separator character in their tag are never affected by
                      this setting either way. */}
-                <Section title="Multiple Artists">
+                <Section title="Artists & Albums">
+                    <SubHead title="Multiple artists" first />
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
                         <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
@@ -1387,16 +1396,7 @@ export default function SettingsScreen() {
                             </TouchableOpacity>
                         ))}
                     </View>
-                </Section>
-
-                {/* Off by default: a real ALBUM tag (when tags.js finds one)
-                     is normally more accurate than a folder name, so it wins
-                     by default now that tags are actually read. Flip this on
-                     to go back to how it worked before — folder name always
-                     wins, real tag ignored for this field specifically —
-                     for anyone whose library is organized by folder more
-                     meaningfully than its actual tags are filled in. */}
-                <Section title="Album From Folder Name">
+                    <SubHead title="Album from folder name" />
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
@@ -1407,8 +1407,37 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
+                {/* Off by default: a real ALBUM tag (when tags.js finds one)
+                     is normally more accurate than a folder name, so it wins
+                     by default now that tags are actually read. Flip this on
+                     to go back to how it worked before — folder name always
+                     wins, real tag ignored for this field specifically —
+                     for anyone whose library is organized by folder more
+                     meaningfully than its actual tags are filled in. */}
                 {/* 5. Music location */}
-                <Section title="Music Location">
+                {/* 6. Rescan */}
+                <Section title="Music & Library">
+                    <SubHead title="Library" first />
+                    <TouchableOpacity style={s.row} onPress={importSongsFlow}>
+                        <Text style={s.rowLabel}>Import Songs</Text>
+                        <Text style={s.rowSub}>Pick audio files from the Files app (use this if the Documents folder cannot be reached)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={reload}>
+                        <Text style={s.rowLabel}>Rescan Music</Text>
+                        <Text style={s.rowSub}>Re-reads all folders</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={() => Alert.alert(
+                        'Reset Playlist Screen?',
+                        'This removes every playlist cover picture, puts the playlists back in alphabetical order and resets the layout to the default list. Your music is not touched.',
+                        [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Reset', style: 'destructive', onPress: async () => { await resetPlaylistScreen(); reload(); } },
+                        ],
+                    )}>
+                        <Text style={s.rowLabel}>Reset Playlist Screen</Text>
+                        <Text style={s.rowSub}>Remove covers, sort A to Z, default layout</Text>
+                    </TouchableOpacity>
+                    <SubHead title="Music location" />
                     {(showBoth || isLiveContainer) && (
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using LiveContainer</Text>
@@ -1428,6 +1457,7 @@ export default function SettingsScreen() {
                                 even though the path above is correct — a sandboxing limitation on SideStore's side, not
                                 something adding files elsewhere (like a manually made top-level "SySlate" folder) works
                                 around, since that folder isn't actually connected to the app's real storage.
+                                Use Library → Import Songs to add music without needing that folder.
                             </Text>
                         </View>
                     )}
@@ -1443,32 +1473,11 @@ export default function SettingsScreen() {
                             </Text>
                         )}
                     </View>
-                </Section>
-
-                {/* 6. Rescan */}
-                <Section title="Library">
-                    <TouchableOpacity style={s.row} onPress={reload}>
-                        <Text style={s.rowLabel}>Rescan Music</Text>
-                        <Text style={s.rowSub}>Re-reads all folders</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={s.row} onPress={() => Alert.alert(
-                        'Reset Playlist Screen?',
-                        'This removes every playlist cover picture, puts the playlists back in alphabetical order and resets the layout to the default list. Your music is not touched.',
-                        [
-                            { text: 'Cancel', style: 'cancel' },
-                            { text: 'Reset', style: 'destructive', onPress: async () => { await resetPlaylistScreen(); reload(); } },
-                        ],
-                    )}>
-                        <Text style={s.rowLabel}>Reset Playlist Screen</Text>
-                        <Text style={s.rowSub}>Remove covers, sort A to Z, default layout</Text>
-                    </TouchableOpacity>
-                </Section>
-
-                {/* 7. Export/Import */}
-                <Section title="Performance">
+                    <SubHead title="Performance" />
                     {performanceToggle}
                 </Section>
 
+                {/* 7. Export/Import */}
                 <Section title="Listening Stats" simple>
                     <TouchableOpacity style={s.row} onPress={() => navigation.navigate('Stats')}>
                         <Text style={s.rowLabel}>Listening Stats</Text>
@@ -1660,27 +1669,16 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
-    'Shuffle Mode': 'shuffle random smart dumb cycle order',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
-    'Queue': 'queue up next priority',
-    'Previous Button': 'previous back restart track',
-    'All Songs & Playlists': 'sort play count songs covers list artists',
-    'Playlists Screen': 'playlists layout grid cards refresh title count',
-    'All Songs Screen': 'all songs search sort buttons',
-    'Playlist Screen': 'playlist screen header buttons',
-    'Player Buttons': 'player buttons speed sleep timer eq queue shuffle loop',
-    'Player Views': 'player cover lyrics disc vinyl cd dj scratch rpm speed auto show opens spin touch scratch',
-    'Screen': 'screen awake top bar color',
-    'Shadows & Outlines': 'shadow outline border looks style cover pill mini player shape rounded square minimal classic bold sharp',
+    'Playback': 'shuffle random smart dumb cycle order queue up next priority previous back restart track',
+    'Lists': 'sort play count songs covers list artists playlists layout grid cards refresh title all search buttons playlist screen header',
+    'Player': 'player buttons speed sleep timer eq queue shuffle loop cover lyrics disc vinyl cd dj scratch rpm auto show opens spin touch',
+    'Look': 'shadow outline border looks style cover pill mini player shape rounded square minimal classic bold sharp covers artwork pictures screen awake top bar color',
     'Accent Color': 'accent color theme',
     'Base Color': 'base color dark light theme',
     'Custom Background': 'background image picture wallpaper',
-    'Covers': 'covers rounded square shape artwork pictures',
-    'Multiple Artists': 'artists separator split join format',
-    'Album From Folder Name': 'album folder name',
-    'Music Location': 'music location folder path files',
-    'Library': 'library rescan refresh scan',
-    'Performance': 'performance older iphone slow lag fast battery',
+    'Artists & Albums': 'artists separator split join format album folder name',
+    'Music & Library': 'music location folder path files library rescan refresh scan performance older iphone slow lag fast battery',
     'Listening Stats': 'stats listening plays most played hours top',
     'Backup & Sync': 'backup restore export import settings covers pictures auto transfer device',
     'Reset': 'reset defaults all',
@@ -1692,6 +1690,16 @@ const sectionMatches = (title, q) => {
     return q.split(/\s+/).filter(Boolean).every(w => hay.includes(w));
 };
 const SettingsViewCtx = React.createContext({ mode: 'advanced', q: '' });
+
+// Small label that separates the parts of a merged section.
+function SubHead({ title, first }) {
+    const { base } = useTheme();
+    return (
+        <View style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 6, borderTopWidth: first ? 0 : 1, borderTopColor: base.border }}>
+            <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>{title}</Text>
+        </View>
+    );
+}
 
 // `simple`: also shown in the Simple view. `only="simple"`: shown only there.
 function Section({ title, children, simple, only }) {

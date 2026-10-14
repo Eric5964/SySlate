@@ -190,15 +190,33 @@ try {
 } catch { }
 
 // A reading only counts for the song it describes. A reading that was taken
-// just before a skip can arrive just after it; native tags every reading with
-// the song it belongs to, and this drops one that is not the song being shown
-// (it used to make the progress bar jump to the old song's spot and back).
-// `expectQid` is the shown song's _qid; readings or songs without one pass.
-export function matchProgress(p, expectQid, fallbackDuration = 0) {
+// just before a skip can arrive just after it (or just before the app has
+// heard about a crossfade's halfway song change); native tags every reading
+// with the song it belongs to. A reading for another song comes back flagged
+// `stale: true` (position 0), and the progress bars IGNORE it instead of
+// following it: following it made the bar drop to zero and back around every
+// crossfade.
+// Songs are compared by `id` (the file); the per-play `_qid` is only used when
+// an id is missing. And "another song" has to be a passing thing: if native
+// keeps naming the same other song for 2.5 s running, it is the app's idea of
+// the current song that is out of date (e.g. after the app was restored), so
+// the readings are accepted. (Before, a restored app could ignore every reading
+// for good: the time stayed at 0:00 and the bar did not move.)
+let otherSong = { key: '', since: 0 };
+export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
     if (!p) return { position: 0, duration: fallbackDuration || 0, buffered: 0 };
-    if (expectQid && p.qid && p.qid !== expectQid) {
-        return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
+    let stale = false;
+    if (p.id && expectId) stale = p.id !== expectId;
+    else if (expectQid && p.qid) stale = p.qid !== expectQid;
+    if (stale) {
+        const key = `${p.id || ''}|${p.qid || ''}`;
+        const now = Date.now();
+        if (otherSong.key !== key) otherSong = { key, since: now };
+        else if (now - otherSong.since > 2500) stale = false;
+    } else {
+        otherSong.key = '';
     }
+    if (stale) return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
     return p;
 }
 
@@ -232,10 +250,19 @@ export function useProgress(updateInterval = 1000) {
         // (e.g. a Bluetooth disconnect), this gets the real position back
         // in front of the user as soon as the app is looked at again rather
         // than leaving a stale reading on screen for up to a second.
+        // Asked again a moment later too: right after the app wakes, native can
+        // still be settling (a Bluetooth connection or route change that
+        // happened while the app was away), and the first answer can be the
+        // pre-change one.
+        let wakeTimers = [];
         const appSub = AppState.addEventListener('change', (state) => {
-            if (state === 'active') tick();
+            if (state === 'active') {
+                tick();
+                wakeTimers.forEach(clearTimeout);
+                wakeTimers = [setTimeout(tick, 350), setTimeout(tick, 1200)];
+            }
         });
-        return () => { cancelled = true; clearInterval(id); appSub.remove(); };
+        return () => { cancelled = true; clearInterval(id); appSub.remove(); wakeTimers.forEach(clearTimeout); };
     }, [updateInterval]);
     return progress;
 }
@@ -266,7 +293,9 @@ export function usePlaybackState() {
         // self-correcting regardless of whether the event made it through.
         const appSub = AppState.addEventListener('change', (nextState) => {
             if (nextState === 'active') {
-                NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });
+                const resync = () => NativeAudioEngine.getState().then(state => { if (!cancelled) setPlaybackState({ state }); }).catch(() => { });
+                resync();
+                setTimeout(resync, 350);   // native may still be settling right after waking
             }
         });
         return () => { cancelled = true; sub.remove(); appSub.remove(); };
