@@ -750,8 +750,9 @@ export const incrementPlayCount = async (song) => {
     if (!song) return;
     try {
         const k = playCountKey(song);
-        const v = await AsyncStorage.getItem(k);
-        await AsyncStorage.setItem(k, String(v ? parseInt(v) + 1 : 1));
+        let base = parseInt(await AsyncStorage.getItem(k)) || 0;
+        if (!base) base = parseInt(await AsyncStorage.getItem(`pc:${song.id}`)) || 0;   // carry an older per-file count over instead of restarting at 1
+        await AsyncStorage.setItem(k, String(base + 1));
     } catch { }
 };
 

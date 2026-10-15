@@ -353,6 +353,7 @@ export function PlaybackProvider({ children }) {
             if (playCreditedRef.current.trackId !== track.id) {
                 playCreditedRef.current = { trackId: track.id, credited: false };
             }
+            if (playCreditedRef.current.credited && position < 3) playCreditedRef.current.credited = false;
             if (!playCreditedRef.current.credited && position / duration >= 0.5) {
                 playCreditedRef.current.credited = true;
                 incrementPlayCount(track);
@@ -1618,8 +1619,8 @@ export function PlaybackProvider({ children }) {
     // with big libraries. Now: nothing is written when the song, queue and
     // spot are all unchanged (paused), and the per-playlist copy is only
     // rewritten when the song/queue/shuffle changed.
-    const lastSavedRef = useRef({ sig: '', pos: -1 });
-    const saveSession = useCallback(async () => {
+    const lastSavedRef = useRef({ sig: '', pos: -1, at: 0 });
+    const saveSession = useCallback(async (force = false) => {
         const pl = playlistRef.current;
         if (!pl?.path) return;
         // A queued playlist is already in the native queue but has not taken
@@ -1644,11 +1645,11 @@ export function PlaybackProvider({ children }) {
                 const pos = progress?.position ?? 0;
                 const sig = `${pl.path}|${index}|${queue.length}|${queue[index]?.id ?? ''}|${queue[queue.length - 1]?.id ?? ''}|${shuffleOnRef.current}|${shuffleModeRef.current}|${priorityRef.current.length}`;
                 const last = lastSavedRef.current;
-                // Performance mode only: skip the write when nothing changed and
+                // Skip the heavy write when nothing changed (full rewrite at most once a minute) and
                 // only rewrite the per-playlist copy when the song/queue changed.
-                const sameSong = perf.on && sig === last.sig;
-                if (perf.on && sameSong && Math.abs(pos - last.pos) < 0.5) return;
-                lastSavedRef.current = { sig, pos };
+                const sameSong = sig === last.sig;
+                if (!force && sameSong && (Date.now() - last.at < 60000 || Math.abs(pos - last.pos) < 0.5)) return;
+                lastSavedRef.current = { sig, pos, at: Date.now() };
                 // Merge into what is already saved: this used to replace the whole
                 // entry, which erased the playlist's own shuffle on/off and mode
                 // at every track change (so a later reload fell back to the
@@ -1680,7 +1681,7 @@ export function PlaybackProvider({ children }) {
     // saved right as the interruption starts instead of waiting for the
     // 5-second checkpoint.
     useEffect(() => {
-        const sub = AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => saveSessionRef.current?.());
+        const sub = AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => saveSessionRef.current?.(true));
         return () => sub?.remove?.();
     }, []);
 
@@ -1690,7 +1691,7 @@ export function PlaybackProvider({ children }) {
     // from wherever the current song had last started instead.
     useEffect(() => {
         const sub = AppState.addEventListener('change', (state) => {
-            if (state === 'background' || state === 'inactive') saveSessionRef.current?.();
+            if (state === 'background' || state === 'inactive') saveSessionRef.current?.(true);
         });
         return () => sub.remove();
     }, []);

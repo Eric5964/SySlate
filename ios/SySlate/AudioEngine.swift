@@ -61,6 +61,7 @@ struct Track {
             "artwork": artwork as Any,
             "duration": duration as Any,
             "_qid": qid as Any,
+            "replayGainDb": replayGainDb as Any,
         ]
     }
 }
@@ -550,11 +551,11 @@ class AudioEngine: RCTEventEmitter {
         }
         let startA = nodeA.volume
         let startB = nodeB.volume
-        let duration = 0.5
+        let duration = 0.4
         let steps = 40
         for i in 1...steps {
             let t = Double(i) / Double(steps)
-            let gain = Float(cos(t * Double.pi / 2))      // smooth, gentle tail
+            let gain = Float((1 - t) * (1 - t))      // drops right away, so even a cut-short fade is heard as a fade
             nodeA.volume = startA * gain
             nodeB.volume = startB * gain
             Thread.sleep(forTimeInterval: duration / Double(steps))
@@ -714,7 +715,22 @@ class AudioEngine: RCTEventEmitter {
             guard let self = self else { return }
             self.debugLog("[POP] engine configuration change: state=\(self.state) engineRunning=\(self.engine.isRunning)")
             self.markScheduledAudioStale()
+            self.repairPlaybackAfterEngineStop("engine config change")
         }
+    }
+
+    // If iOS stopped the engine while a song was playing (output hardware
+    // switch), the scheduled audio is gone and a plain engine restart would
+    // play silence. Only acts when the engine is really stopped.
+    private func repairPlaybackAfterEngineStop(_ why: String) {
+        guard state == .playing, !isCrossfading, !scratchActive, !engine.isRunning, currentIndex != nil else { return }
+        debugLog("[REPAIR] engine was stopped while playing (\(why)): restarting the song at its current position")
+        staleScheduleToken = nil
+        let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
+        activateSession()
+        try? engine.start()
+        loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
+        scheduleSilenceWatchdog()
     }
 
     // Safety net after every play: if the sound path is not actually live a
@@ -776,6 +792,9 @@ class AudioEngine: RCTEventEmitter {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.state == .playing else { return }
                 self.softMute(holdFor: 0.3)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                self?.repairPlaybackAfterEngineStop("new output device")
             }
         }
         if reason == .oldDeviceUnavailable {
@@ -1240,7 +1259,10 @@ class AudioEngine: RCTEventEmitter {
         let leadInSeconds: Double
         let trailingCutSeconds: Double
         let gainCorrection: Float
+        let hasTrim: Bool
+        let hasNorm: Bool
     }
+    private static let analysisLock = NSLock()
     private static var analysisCache: [String: FileAnalysis] = {
         // V2 — bumped so every device abandons whatever it cached under the
         // old key instead of trusting stale results computed before the
@@ -1249,7 +1271,7 @@ class AudioEngine: RCTEventEmitter {
         // whichever files hit that bug) trailingCutSeconds — file size
         // alone as a cache key can't tell the two apart, so the only safe
         // option is to stop reading the old entries at all.
-        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCacheV2"),
+        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCacheV3"),
               let decoded = try? JSONDecoder().decode([String: FileAnalysis].self, from: data) else { return [:] }
         return decoded
     }()
@@ -1258,10 +1280,12 @@ class AudioEngine: RCTEventEmitter {
         // caller (analyzeFile, on the load path) only needs the freshly
         // computed result back, not confirmation this persisted. Encoding
         // and writing the whole growing dictionary happens off to the side.
+        AudioEngine.analysisLock.lock()
         let snapshot = AudioEngine.analysisCache
+        AudioEngine.analysisLock.unlock()
         DispatchQueue.global(qos: .utility).async {
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCacheV2")
+            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCacheV3")
         }
     }
     // Rough reference level the gain-correction estimate below aims for —
@@ -1277,8 +1301,14 @@ class AudioEngine: RCTEventEmitter {
 
     private func analyzeFile(_ file: AVAudioFile, path: String) -> FileAnalysis {
         let sizeKey = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 ?? 0) ?? 0
-        if let cached = AudioEngine.analysisCache[path], cached.fileSize == sizeKey {
-            return cached
+        AudioEngine.analysisLock.lock()
+        let cachedEntry = AudioEngine.analysisCache[path]
+        AudioEngine.analysisLock.unlock()
+        let cached = (cachedEntry?.fileSize == sizeKey) ? cachedEntry : nil
+        let wantTrim = silenceTrimEnabled
+        let wantNorm = betweenTrackNormEnabled
+        if let c = cached, (!wantTrim || c.hasTrim), (!wantNorm || c.hasNorm) {
+            return c
         }
         let format = file.processingFormat
         let sampleRate = format.sampleRate
@@ -1367,7 +1397,11 @@ class AudioEngine: RCTEventEmitter {
             }
         }
 
-        var gain: Float = 1.0
+        if !wantTrim, let c = cached, c.hasTrim {
+            leadInFrames = AVAudioFramePosition(c.leadInSeconds * sampleRate)
+            trailingCutFrames = AVAudioFramePosition(c.trailingCutSeconds * sampleRate)
+        }
+        var gain: Float = (!wantNorm ? cached?.gainCorrection : nil) ?? 1.0
         if betweenTrackNormEnabled, totalFrames > 0 {
             // Was 12 samples of a 4096-frame chunk each — ~93ms per sample,
             // ~1.1s of actual audio measured out of a whole song. That's
@@ -1398,9 +1432,13 @@ class AudioEngine: RCTEventEmitter {
             fileSize: sizeKey,
             leadInSeconds: Double(leadInFrames) / sampleRate,
             trailingCutSeconds: Double(trailingCutFrames) / sampleRate,
-            gainCorrection: gain
+            gainCorrection: gain,
+            hasTrim: wantTrim || (cached?.hasTrim ?? false),
+            hasNorm: wantNorm || (cached?.hasNorm ?? false)
         )
+        AudioEngine.analysisLock.lock()
         AudioEngine.analysisCache[path] = result
+        AudioEngine.analysisLock.unlock()
         saveAnalysisCache()
         return result
     }
@@ -1620,7 +1658,7 @@ class AudioEngine: RCTEventEmitter {
             // click never reaches the speaker.
             let coldStart = autoPlay ? beginColdStartMuteIfNeeded() : false
             let engineWasRunning = engine.isRunning
-            if !engine.isRunning {
+            if autoPlay, !engine.isRunning {   // a song loaded paused no longer wakes the output hardware just to pause it again
                 try engine.start()
             }
             activateSession()
@@ -1687,7 +1725,7 @@ class AudioEngine: RCTEventEmitter {
         // down to the file's full length, so the crossfade started after the
         // audible end: the old song had already finished and the next one
         // simply started (or faded in out of a gap).
-        let audibleEnd = duration - max(0, currentTrailingCutSeconds)
+        let audibleEnd = currentFile.map { Double($0.length) / currentFileSampleRate - max(0, currentTrailingCutSeconds) } ?? duration
         let remaining = audibleEnd - currentPositionSeconds()
         // At a playback speed other than 1x the song's remaining time passes
         // faster or slower in real time, and a crossfade of N real seconds
@@ -2766,7 +2804,7 @@ class AudioEngine: RCTEventEmitter {
 
     @objc(removeUpcomingTracks:rejecter:)
     func removeUpcomingTracks(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        if let idx = currentIndex {
+        if let idx = currentIndex, idx >= 0, idx + 1 <= queue.count {
             queue.removeSubrange((idx + 1)...)
             if queue.count == idx { /* nothing after current, no-op */ }
         }
