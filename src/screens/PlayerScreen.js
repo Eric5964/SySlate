@@ -20,7 +20,7 @@ import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle, cardRadius } from '../utils/squircle';
-import { getPlayCounts } from '../utils/storage';
+import { getPlayCounts, peekPlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -95,7 +95,7 @@ export default function PlayerScreen() {
     const [showSleepTimer, setShowSleepTimer] = useState(false);
     const [showSpeed, setShowSpeed] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
-    const [playCount, setPlayCount] = useState(0);
+    const [pc, setPc] = useState({ id: null, n: 0 });
     // This used to be its own local `useState(true)`, loaded once on mount
     // via getShowPlayCount() and never touched again — every OTHER screen
     // (All Songs, Playlist Detail, Queue) reads this from the shared
@@ -113,15 +113,16 @@ export default function PlayerScreen() {
     // slow read for the previous song from landing on the new one after a quick skip.
     const pastHalf = progress.duration > 0 && progress.position / progress.duration >= 0.5;
     useEffect(() => {
-        if (!currentTrack?.id) { setPlayCount(0); return; }
+        if (!currentTrack?.id) { setPc({ id: null, n: 0 }); return; }
         let cancelled = false;
         const id = currentTrack.id;
         const t = setTimeout(() => {
-            getPlayCounts([currentTrack]).then(counts => { if (!cancelled) setPlayCount(counts[id] ?? 0); });
+            getPlayCounts([currentTrack]).then(counts => { if (!cancelled) setPc({ id, n: counts[id] ?? 0 }); });
         }, pastHalf ? 400 : 0);
         return () => { cancelled = true; clearTimeout(t); };
     }, [currentTrack?.id, pastHalf]);
 
+    const shownCount = pc.id === currentTrack?.id ? pc.n : (peekPlayCount(currentTrack?.id) ?? 0);
     const progressRef = useRef(null);
     const controlsRef = useRef(null);
     const progressLayout = useRef({ pageX: 28, width: width - 56 });
@@ -253,7 +254,7 @@ export default function PlayerScreen() {
         // fires once per gesture: without this guard, a real release
         // landing right after the safety backstop already fired would
         // seek twice to (almost) the same spot.
-        if (committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); return; }
+        if (committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
         committedRef.current = true;
         clearTimeout(stuckSafetyTimer.current);
 
@@ -291,6 +292,7 @@ export default function PlayerScreen() {
             const now = Date.now();
             if (Math.abs(targetRatio - lastNativeSeekRef.current.ratio) < 0.005 && now - lastNativeSeekRef.current.at < 800) {
                 console.log('[SEEK-DEBUG] commit skipped: same spot as the seek just made');
+                if (pendingSeekRatioRef.current === null) setDragRatio(null);   // otherwise the time text stayed frozen at this spot
                 return;
             }
             lastNativeSeekRef.current = { ratio: targetRatio, at: now };
@@ -932,6 +934,27 @@ export default function PlayerScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [progress.position, isPlaying, currentTrack?.id, playbackRate, discHeld]);
 
+    // Safety net: a seek preview that nothing has cleared for 4 s is dropped,
+    // so the time text and the bar can never stay frozen at a spot.
+    useEffect(() => {
+        if (dragRatio === null) return;
+        const t = setTimeout(() => { pendingSeekRatioRef.current = null; setDragRatio(null); }, 4000);
+        return () => clearTimeout(t);
+    }, [dragRatio]);
+
+    // A different song means any seek or drag overlay belonged to the old one.
+    // Without this a seek to the very end that crossfades into the next song
+    // left the bar parked at that spot (e.g. 1:39 of 1:40) on the new song.
+    const overlayTrackRef = useRef(currentTrack?.id);
+    useEffect(() => {
+        if (overlayTrackRef.current === currentTrack?.id) return;
+        overlayTrackRef.current = currentTrack?.id;
+        pendingSeekRatioRef.current = null;
+        clearTimeout(clearDragTimer.current);
+        clearTimeout(stuckSafetyTimer.current);
+        setDragRatio(null);
+    }, [currentTrack?.id]);
+
     // Clears the post-seek drag overlay once the polled position actually
     // agrees with where we told native to seek to — see the commit branch
     // in onScrub above for why this replaced a fixed timer. Independent of
@@ -1256,8 +1279,8 @@ export default function PlayerScreen() {
                             <Text style={[s.trackTitle, { color: base.text }]} numberOfLines={2}>{displayTitle}</Text>
                             <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
                         </View>
-                        {showPlayCount && playCount > 0 && (
-                            <Text style={[s.playCount, { color: base.textFaint }]}>{playCount}×</Text>
+                        {showPlayCount && (
+                            <Text style={[s.playCount, { color: base.textFaint, opacity: shownCount > 0 ? 1 : 0 }]}>{shownCount}×</Text>
                         )}
                     </View>
 
@@ -1365,7 +1388,7 @@ const s = StyleSheet.create({
     // misaligned crossing between screens even after the paddingHorizontal
     // fix below (see topBar comment).
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-    eqTag: { fontSize: 14, fontWeight: '700' },
+    eqTag: { fontSize: 16, fontWeight: "700" },
     topIcon: { fontSize: 26 },
     topLabel: { fontSize: 15, fontWeight: '500', flex: 1, textAlign: 'center' },
     middle: { flex: 1, justifyContent: 'space-evenly' },

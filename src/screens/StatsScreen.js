@@ -5,13 +5,15 @@ import { useTheme } from '../context/ThemeContext';
 import { LibraryContext } from '../context/LibraryContext';
 import ScreenBackground from '../components/ScreenBackground';
 import { getListeningStats } from '../utils/storage';
+import { usePreferences } from '../context/PreferencesContext';
 
 export default function StatsScreen({ navigation }) {
     const { base, theme } = useTheme();
     const insets = useSafeAreaInsets();
     const { allSongs } = useContext(LibraryContext);
+    const { artistSeparator, artistDisplayJoin } = usePreferences();
     const [stats, setStats] = useState(null);
-    useEffect(() => { getListeningStats(allSongs || []).then(setStats).catch(() => setStats({ totalPlays: 0, hours: 0, played: 0, librarySize: 0, topSongs: [], topArtists: [] })); }, [allSongs]);
+    useEffect(() => { getListeningStats(allSongs || [], artistSeparator, artistDisplayJoin).then(setStats).catch(() => setStats({ totalPlays: 0, hours: 0, played: 0, librarySize: 0, topSongs: [], topArtists: [] })); }, [allSongs, artistSeparator, artistDisplayJoin]);
     const s = styles(base, theme);
     const Row = ({ i, left, sub, right }) => (
         <View style={s.row}>

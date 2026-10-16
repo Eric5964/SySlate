@@ -52,7 +52,7 @@ export default function PlaylistDetailScreen() {
     // prefetch, no gap at all — rather than just no longer flashing blank
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, topBarColor, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, showPlaylistTitles, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, topBarColor, ui } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     useEffect(() => {
@@ -258,7 +258,7 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={base.surface} badgeTextColor={theme.accent}>
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
@@ -277,17 +277,15 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.titleRow}>
                             <View style={{ flex: 1 }}>
-                                <Text style={[s.title, { color: base.text }]} numberOfLines={1}>{playlist.name}</Text>
+                                <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
                                 {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} {playlist.songs.length === 1 ? 'track' : 'tracks'}</Text>}
                             </View>
-                            {ui.pd_sort !== false && (
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
                             </TouchableOpacity>
-                            )}
                         </View>
 
-                        {showSort && ui.pd_sort !== false && (
+                        {showSort && (
                             <View style={s.sortRow}>
                                 {SORTS.map(opt => (
                                     <TouchableOpacity
@@ -364,7 +362,7 @@ const s = StyleSheet.create({
     topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE },
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     backIcon: { fontSize: 24 },
-    eqTag: { fontSize: 14, fontWeight: '700' },
+    eqTag: { fontSize: 16, fontWeight: "700" },
     searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, paddingRight: 28, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 6, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },

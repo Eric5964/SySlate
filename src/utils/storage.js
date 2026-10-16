@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { splitArtists, formatArtists } from './artists';
 import * as FileSystem from 'expo-file-system';
 import { EQ_MIN, EQ_MAX } from './eq';
 import AudioEngine from '../native/AudioEngine';
@@ -753,6 +754,7 @@ export const incrementPlayCount = async (song) => {
         let base = parseInt(await AsyncStorage.getItem(k)) || 0;
         if (!base) base = parseInt(await AsyncStorage.getItem(`pc:${song.id}`)) || 0;   // carry an older per-file count over instead of restarting at 1
         await AsyncStorage.setItem(k, String(base + 1));
+        playCountCache.clear();
     } catch { }
 };
 
@@ -762,6 +764,11 @@ export const incrementPlayCount = async (song) => {
 // combined key has no count yet, falls back to summing the old per-file
 // ('pc:<path>') counts for every song sharing it, so history from before
 // this change isn't lost.
+// Remembers the last counts read, so a screen can show a count the moment it opens
+// instead of waiting for storage (the Player's title used to re-wrap when it arrived).
+const playCountCache = new Map();
+export const peekPlayCount = (id) => playCountCache.get(id);
+
 export const getPlayCounts = async (songs) => {
     try {
         const byKey = {};
@@ -783,7 +790,7 @@ export const getPlayCounts = async (songs) => {
             });
         }
         const out = {};
-        songs.forEach(s => { out[s.id] = keyCounts[playCountKey(s)] ?? 0; });
+        songs.forEach(s => { out[s.id] = keyCounts[playCountKey(s)] ?? 0; playCountCache.set(s.id, out[s.id]); });
         return out;
     } catch { return {}; }
 };
@@ -904,7 +911,7 @@ export const restoreAutoBackup = async (n) => importAllSettings(await FileSystem
 // ---- Listening stats ---------------------------------------------------------
 // Everything comes from the play counts that are already kept (one per song,
 // matched by title + artist). Time is an estimate: plays x song length.
-export const getListeningStats = async (songs) => {
+export const getListeningStats = async (songs, separators, joinId) => {
     const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:'));
     const counts = {};
     (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) counts[k] = n; });
@@ -920,12 +927,17 @@ export const getListeningStats = async (songs) => {
         const title = song ? (song.ourTitle ?? song.title) : t;
         const artist = song ? (song.ourArtist ?? song.artist) : a;
         if (song) { played++; seconds += n * (song.duration || 0); }
-        rows.push({ title, artist, n });
-        const an = (artist || 'Unknown').trim() || 'Unknown';
-        artists[an] = (artists[an] || 0) + n;
+        rows.push({ title, artist: formatArtists(artist, separators, joinId), n });
+        // A song with several artists counts for each of them.
+        const parts = splitArtists(artist, separators);
+        for (const part of (parts.length ? parts : ['Unknown'])) {
+            const id = part.toLowerCase();
+            if (!artists[id]) artists[id] = { name: part, n: 0 };
+            artists[id].n += n;
+        }
     }
     rows.sort((x, y) => y.n - x.n);
-    const topArtists = Object.entries(artists).sort((x, y) => y[1] - x[1]).slice(0, 5).map(([name, n]) => ({ name, n }));
+    const topArtists = Object.values(artists).sort((x, y) => y.n - x.n).slice(0, 5);
     return { totalPlays, hours: seconds / 3600, played, librarySize: songs.length, topSongs: rows.slice(0, 10), topArtists };
 };
 

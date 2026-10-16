@@ -5,7 +5,7 @@ import { PanGestureHandler, State } from 'react-native-gesture-handler';
 // Same swipe feel as SwipeableRow (the song rows): the same activation and
 // give-up thresholds, the same small dead zone before anything moves, the
 // same commit distance, and the same quick "Added" fade.
-const COMMIT_DISTANCE = 72;
+const COMMIT_DISTANCE = 52;
 const REVEAL_DEADZONE = 10;
 
 // Wraps a button so that swiping it to the right (instead of tapping it) calls
@@ -39,10 +39,10 @@ export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor 
         ]).start();
     };
     const onStateChange = useRef((e) => {
-        const { state, oldState, translationX } = e.nativeEvent;
+        const { state, oldState, translationX, velocityX } = e.nativeEvent;
         if (state === State.BEGAN) { fired.current = false; return; }
         if (oldState !== State.ACTIVE) return;
-        if (!fired.current && state === State.END && translationX > COMMIT_DISTANCE) {   // a cancelled gesture must not count as a swipe
+        if (!fired.current && state === State.END && (translationX > COMMIT_DISTANCE || (translationX > 28 && velocityX > 500))) {   // a cancelled gesture must not count as a swipe
             fired.current = true;
             swipeRef.current && swipeRef.current();
             showAdded();
@@ -53,8 +53,8 @@ export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor 
         <PanGestureHandler
             onGestureEvent={onGestureEvent}
             onHandlerStateChange={onStateChange}
-            activeOffsetX={[-10, 10]}
-            failOffsetY={[-15, 15]}
+            activeOffsetX={[-6, 6]}
+            failOffsetY={[-32, 32]}
             hitSlop={edgeExclude ? { left: -edgeExclude } : undefined}
         >
             <Animated.View style={{ transform: [{ translateX: shift }] }}>

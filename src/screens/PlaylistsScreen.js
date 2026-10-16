@@ -101,6 +101,7 @@ function RowCell({ index, onLayout, style, children, ...rest }) {
 const WIGGLE_MS = 300;       // one full back-and-forth
 const WIGGLE_STEPS = 16;
 const CARD_INSET = 3;        // how far a grid card reaches past its playlist
+const CARD_BOTTOM_EXTRA = 3; // the card is this much taller at the bottom, for the track count
 const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, cover, base, shape, showTitle, showCount, cardOn, arrowOn, shadowOn, isActive, isDragging, editing, anim, lift, onItemLayout, onPressIn, onPressOut, onPress, onRemoveCover }) {
     // Edit mode: every playlist wiggles, like the iOS home screen. The sway
     // is a pure sine (same distance each way, smooth at both ends, no
@@ -172,7 +173,9 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                             pointerEvents="none"
                             style={[
                                 s.card,
-                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -CARD_INSET, backgroundColor: base.surface, borderRadius: cardRadius(size, CARD_INSET, shape) },
+                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -(CARD_INSET + CARD_BOTTOM_EXTRA), backgroundColor: base.surface,
+                                  borderTopLeftRadius: cardRadius(size, CARD_INSET, shape), borderTopRightRadius: cardRadius(size, CARD_INSET, shape),
+                                  borderBottomLeftRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.45), borderBottomRightRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.45) },
                                 shadowOn && COVER_SHADOW,
                             ]}
                         />
@@ -600,9 +603,7 @@ export default function PlaylistsScreen() {
                 and queue (same sizes, same gap, same top padding). */}
             <View style={[s.header, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
-                {ui.pl_title !== false
-                    ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
-                    : <View style={{ flex: 1, height: 40 }} />}
+                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
                 {editMode ? (
                     <TouchableOpacity onPress={exitEdit} style={s.doneBtn} hitSlop={HIT}>
                         <Text style={[s.doneText, { color: theme.accent }]}>Done</Text>

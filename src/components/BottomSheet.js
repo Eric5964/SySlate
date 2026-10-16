@@ -27,6 +27,11 @@ export default function BottomSheet({ visible, onClose, header, children, height
     const { base } = useTheme();
     const backdropOpacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(height)).current;
+    // How far the finger has pulled the sheet down. Pulling up does nothing (the
+    // sheet used to lift off its bottom edge when dragged upward).
+    const dragY = useRef(new Animated.Value(0)).current;
+    const dragDown = dragY.interpolate({ inputRange: [0, 1000], outputRange: [0, 1000], extrapolate: 'clamp' });
+    const sheetY = useRef(Animated.add(translateY, dragDown)).current;
     const [mounted, setMounted] = useState(visible);
     const backdropStart = useRef({ x: 0, y: 0 });
     const onCloseRef = useRef(onClose);
@@ -36,6 +41,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
         if (visible) {
             setMounted(true);
             translateY.setValue(height);
+            dragY.setValue(0);
             backdropOpacity.setValue(0);
             Animated.parallel([
                 Animated.timing(backdropOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
@@ -54,7 +60,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
 
     const onHandleGestureEvent = useRef(
         Animated.event(
-            [{ nativeEvent: { translationY: translateY } }],
+            [{ nativeEvent: { translationY: dragY } }],
             { useNativeDriver: true }
         )
     ).current;
@@ -74,7 +80,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
             ]).start(() => { setMounted(false); onCloseRef.current?.(); });
             return;
         }
-        Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
+        Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
     }).current;
 
     if (!mounted) return null;
@@ -91,7 +97,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                     if (dx < 10 && dy < 10) onClose();
                 }}
             />
-            <Animated.View style={[s.sheet, { height, backgroundColor: base.surface, transform: [{ translateY }] }]}>
+            <Animated.View style={[s.sheet, { height, backgroundColor: base.surface, transform: [{ translateY: sheetY }] }]}>
                 <PanGestureHandler
                     onGestureEvent={onHandleGestureEvent}
                     onHandlerStateChange={onHandleStateChange}

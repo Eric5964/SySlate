@@ -704,7 +704,7 @@ export async function skipWithRamp(direction = 'next') {
             // one above — was reading the now-stale combined
             // getCrossfadeDuration() here too).
             const crossfadeDur = await getCrossfadeDurationSkip();
-            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05 && (await AudioEngine.getState()) === State.Playing;   // nothing to crossfade while paused: that skip starts with the normal fade-in instead
             // Same snapshot as checkRampWindow — see
             // currentTransitionCrossfading's comment up top.
             currentTransitionCrossfading = crossfading;
@@ -765,7 +765,7 @@ export async function skipWithRamp(direction = 'next') {
         // paused or stopped just starts again from 0, below.)
         if (direction === 'prev' && restartCurrent) {
             const crossfadeDur = await getCrossfadeDurationSkip();
-            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05 && (await AudioEngine.getState()) === State.Playing;   // nothing to crossfade while paused: that skip starts with the normal fade-in instead
             let restartIdx = -1;
             let longEnough = false;
             if (crossfading && (await AudioEngine.getState()) === State.Playing) {
@@ -785,7 +785,7 @@ export async function skipWithRamp(direction = 'next') {
         }
         if (direction === 'prev' && !restartCurrent) {
             const crossfadeDur = await getCrossfadeDurationSkip();
-            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05;
+            const crossfading = (await getCrossfadeEnabled()) && crossfadeDur > 0.05 && (await AudioEngine.getState()) === State.Playing;   // nothing to crossfade while paused: that skip starts with the normal fade-in instead
             currentTransitionCrossfading = crossfading;
             if (crossfading) {
                 skipLockExpectedDurationMs = crossfadeDur * 1000;

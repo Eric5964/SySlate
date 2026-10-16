@@ -57,6 +57,7 @@ export default function DraggableRow({ dragKey, disabled, onDragStart, onDragMov
                     ref={panRef}
                     enabled={!disabled}
                     simultaneousHandlers={longPressRef}
+                    maxPointers={1}
                     onGestureEvent={onPanEvent}
                     onHandlerStateChange={onPanStateChange}
                 >

@@ -126,6 +126,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const lastTouch = useRef({ x: 0, y: 0 });
     const smoothRate = useRef(0);
     const sentRate = useRef(0);
+    const recoverUntil = useRef(0);   // after the disc was held back at a limit, speed comes back gradually until this time
 
     // On a song change the position still holds the old song's value for a
     // moment, so the disc is held dim from the very first frame of the new
@@ -448,8 +449,15 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                     const est = scratchEst.current;
                     atHi.current = est >= hiLimit;
                     atLo.current = est <= loLimit;
+                    const before = rate;
                     if (rate > 0) rate = Math.min(rate, Math.max(0, (hiLimit - est) / 0.5));
                     else if (rate < 0) rate = Math.max(rate, -Math.max(0, (est - loLimit) / 0.5));
+                    if (rate !== before || atHi.current || atLo.current) recoverUntil.current = now + 900;
+                }
+                // Coming back from a limit (or after being slowed into it) the
+                // speed builds up gently instead of snapping to the finger's.
+                if (now < recoverUntil.current && Math.abs(rate - sentRate.current) > 0.03) {
+                    rate = sentRate.current + Math.sign(rate - sentRate.current) * 0.03;
                 }
                 sentRate.current = rate;
                 AudioEngine.scratchSetRate(rate);

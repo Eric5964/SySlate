@@ -68,7 +68,7 @@ import {
     getAlbumFromFolder, setAlbumFromFolder,
     exportAllSettings, importAllSettings,
     exportPicturesFile, importPicturesFile, getHiddenGroups, setHiddenGroups,
-    getSettingsMode, setSettingsMode, getMyLook, setMyLook, autoBackupNow, listAutoBackups, restoreAutoBackup, getBackgroundImageUri, getBackgroundImageEnabled,
+    getSettingsMode, setSettingsMode, autoBackupNow, listAutoBackups, restoreAutoBackup, getBackgroundImageUri, getBackgroundImageEnabled,
     persistCoverImage,
     deleteStoredImage,
     resetPlaylistScreen,
@@ -153,8 +153,6 @@ export default function SettingsScreen() {
     const changeMode = (m) => { setModeState(m); setSettingsMode(m); };
     const [query, setQuery] = useState('');
     const q = query.trim().toLowerCase();
-    const [myLook, setMyLookState] = useState(null);
-    useEffect(() => { getMyLook().then(setMyLookState); }, []);
     // Main groups the user has hidden (kept saved).
     const [hiddenGroups, setHiddenGroupsState] = useState([]);
     useEffect(() => { getHiddenGroups().then(setHiddenGroupsState); }, []);
@@ -504,6 +502,8 @@ export default function SettingsScreen() {
                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
         </View>
     );
+    const uiOn = (id) => ui[id] !== false;
+    const uiPick = (id) => setUiShown(id, ui[id] === false);
     const uiRow = (name, label, sub, first) => toggle(label, sub, ui[name] !== false, (v) => setUiShown(name, v), first);
 
     // ---- Reset to default (per section, and everything) -------------------
@@ -525,9 +525,9 @@ export default function SettingsScreen() {
         queue: () => { setKeepPriority(true); setKeepPriorityOnPlaylistSwitch(true); },
         prev: () => { setPrevButtonModeState('previous_track'); setPrevButtonMode('previous_track'); setRestartThresholdState(3); setRestartThresholdSec(3); setRestartUnitState('sec'); setRestartThresholdUnit('sec'); setRestartPctState(5); setRestartThresholdPct(5); },
         lists: () => { setShowSongCovers(true); setShowPlayCount(true); setShowPlaylistTrackCount(true); setShowPlaylistTitles(true); setPlaylistCards(true); setPlaylistArrow(true); setSongPillShadow(false); setMiniPlayerShadow(true); },
-        playlistsScreen: () => ['pl_title', 'pl_layout', 'pl_reload'].forEach(n => setUiShown(n, true)),
-        allSongsScreen: () => ['as_title', 'as_search', 'as_sort', 'as_eq', 'as_queue'].forEach(n => setUiShown(n, true)),
-        playlistScreen: () => { ['pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_sort'].forEach(n => setUiShown(n, true)); setDetailOutline(false); },
+        playlistsScreen: () => ['pl_layout', 'pl_reload'].forEach(n => setUiShown(n, true)),
+        allSongsScreen: () => ['as_eq', 'as_queue'].forEach(n => setUiShown(n, true)),
+        playlistScreen: () => { ['pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle'].forEach(n => setUiShown(n, true)); setDetailOutline(false); },
         playerButtons: () => ['sleep', 'speed', 'eq', 'queue', 'back', 'label'].forEach(n => setPlayerBtnShown(n, true)),
         playerCover: () => {
             setShowPlayerCover(true); setCoverShadow(true); setPlayerOutline(false);
@@ -604,32 +604,32 @@ export default function SettingsScreen() {
             ))}
         </View>
     );
-    // Looks: shadows, outlines and cover shape in one snapshot.
+    // Looks: shadows and outlines in one pick. Cover shape is its own toggle.
     const LOOKS = {
-        minimal: { cs: false, pcs: false, sps: false, mps: false, po: false, dout: false, shape: 'rounded' },
-        bold: { cs: true, pcs: true, sps: true, mps: true, po: true, dout: true, shape: 'rounded' },
+        minimal: { cs: false, pcs: false, sps: false, mps: false, po: false, dout: false },
+        soft: { cs: true, pcs: true, sps: true, mps: true, po: false, dout: false },
+        bold: { cs: true, pcs: true, sps: true, mps: true, po: true, dout: true },
         sharp: { cs: false, pcs: false, sps: false, mps: false, po: true, dout: true, shape: 'square' },
     };
-    const currentLook = () => ({ cs: shadowsRaw.coverShadow, pcs: shadowsRaw.playlistCoverShadow, sps: shadowsRaw.songPillShadow, mps: shadowsRaw.miniPlayerShadow, po: playerOutline, dout: detailOutline, shape: coverShape });
-    const sameLook = (a, b) => !!a && !!b && Object.keys(a).every(k => k === 'shape' ? a[k] === b[k] : !!a[k] === !!b[k]);
+    const currentLook = () => ({ cs: shadowsRaw.coverShadow, pcs: shadowsRaw.playlistCoverShadow, sps: shadowsRaw.songPillShadow, mps: shadowsRaw.miniPlayerShadow, po: playerOutline, dout: detailOutline });
+    const sameLook = (a, b) => !!a && !!b && ['cs', 'pcs', 'sps', 'mps', 'po', 'dout'].every(k => !!a[k] === !!b[k]);
+    const setRoundedCovers = (v) => { setCoverShape(v ? 'rounded' : 'square'); setPlaylistCoverShape(v ? 'rounded' : 'square'); };
     const applyLook = (L) => {
         setCoverShadow(L.cs); setPlaylistCoverShadow(L.pcs); setSongPillShadow(L.sps); setMiniPlayerShadow(L.mps);
-        setPlayerOutline(L.po); setDetailOutline(L.dout); setCoverShape(L.shape); setPlaylistCoverShape(L.shape);
+        setPlayerOutline(L.po); setDetailOutline(L.dout);
+        if (L.shape) setRoundedCovers(false);
     };
-    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }, ...(myLook ? [{ id: 'mine', label: 'My Look' }] : [])];
-    const lookOn = (id) => sameLook(currentLook(), id === 'mine' ? myLook : LOOKS[id]);
+    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'soft', label: 'Soft' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }];
+    const lookOn = (id) => sameLook(currentLook(), LOOKS[id]);
     const looksUi = (
         <>
-            {chipRow(LOOK_CHIPS, lookOn, (id) => applyLook(id === 'mine' ? myLook : LOOKS[id]))}
-            <TouchableOpacity style={[s.row, { borderTopWidth: 1, borderTopColor: base.border }]} onPress={() => { const L = currentLook(); setMyLook(L); setMyLookState(L); Alert.alert('Saved', 'Your current shadows, outlines and cover shape are saved as My Look.'); }}>
-                <Text style={s.rowLabel}>Save current as My Look</Text>
-                <Text style={s.rowSub}>Keep this look to switch back to later</Text>
-            </TouchableOpacity>
+            {chipRow(LOOK_CHIPS, lookOn, (id) => applyLook(LOOKS[id]))}
+            <View style={s.settingHeader}>
+                <Text style={s.toggleSub}>Minimal: flat, no shadows or outlines.{'\n'}Soft: shadows only.{'\n'}Bold: shadows and outlines.{'\n'}Sharp: outlines only, and square covers.</Text>
+            </View>
+            {toggle('Rounded Covers', 'Round the corners of song and playlist covers', coverShape === 'rounded', setRoundedCovers)}
         </>
     );
-    const allShadowsOn = shadowsRaw.coverShadow && shadowsRaw.playlistCoverShadow && shadowsRaw.songPillShadow && shadowsRaw.miniPlayerShadow;
-    const setAllShadows = (v) => { setCoverShadow(v); setPlaylistCoverShadow(v); setSongPillShadow(v); setMiniPlayerShadow(v); };
-    const setAllOutlines = (v) => { setPlayerOutline(v); setDetailOutline(v); };
     const performanceToggle = toggle('Performance Mode', 'For older iPhones. Turns off shadows, loads lists lighter, saves less in the background and stops the debug log. Your own shadow settings come back when it is off', performanceMode, setPerformanceMode, true);
     const volumeTagToggle = toggle('Use Volume Tags', 'When Match Volume is on, use the volume value stored in the song file (ReplayGain) if it has one. Songs without one still use the estimate', useVolumeTags, setUseVolumeTags);
     const askRestoreBackup = async () => {
@@ -725,7 +725,7 @@ export default function SettingsScreen() {
                 <Section title="Looks" only="simple">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Style</Text>
-                        <Text style={s.toggleSub}>Sets shadows, outlines and cover shape together</Text>
+                        <Text style={s.toggleSub}>Shadows and outlines</Text>
                     </View>
                     {looksUi}
                 </Section>
@@ -943,9 +943,10 @@ export default function SettingsScreen() {
                 </Section>
 
                 <Section title="Playback">
-                    <SubHead title="Shuffle" first />
+                    <SubGroup title="Shuffle" first>
                     <View style={{ paddingTop: 14 }}>{shuffleUi}</View>
-                    <SubHead title="Queue" />
+                    </SubGroup>
+                    <SubGroup title="Queue">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
@@ -954,7 +955,8 @@ export default function SettingsScreen() {
                         <Switch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <SubHead title="Previous button" />
+                    </SubGroup>
+                    <SubGroup title="Previous button">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
@@ -1014,6 +1016,7 @@ export default function SettingsScreen() {
                             )}
                         </>
                     )}
+                    </SubGroup>
                 </Section>
 
                 {/* Explains itself precisely rather than leaning on "unskip" /
@@ -1027,7 +1030,7 @@ export default function SettingsScreen() {
                 {!isHidden('screens') && (<>
 
                 <Section title="Lists">
-                    <SubHead title="Songs & playlists" first />
+                    <SubGroup title="Songs & playlists" first>
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Song Covers</Text>
@@ -1055,93 +1058,69 @@ export default function SettingsScreen() {
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Show Playlist Titles</Text>
-                            <Text style={s.toggleSub}>Playlist names under their covers</Text>
+                            <Text style={s.toggleSub}>Playlist names under their covers and above the songs inside a playlist</Text>
                         </View>
                         <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     {toggle('Playlist Cards', 'A card behind every playlist, in all layouts', playlistCards, setPlaylistCards)}
                     {toggle('Show Arrow', 'The arrow on the list layouts', playlistArrow, setPlaylistArrow)}
-                    <SubHead title="Playlists screen" />
-                    {uiRow('pl_title', 'Title', 'The Playlists heading', true)}
-                    {uiRow('pl_layout', 'Layout Button', 'Switches between the layouts')}
-                    {uiRow('pl_reload', 'Reload Button', 'Rescans the playlists')}
-                    <SubHead title="All Songs screen" />
-                    {uiRow('as_title', 'Title', 'The All Songs heading', true)}
-                    {uiRow('as_search', 'Search Bar', 'Search songs and artists')}
-                    {uiRow('as_sort', 'Sort Button', 'Sort choices next to the search')}
-                    {uiRow('as_eq', 'EQ', 'EQ button at the top')}
-                    {uiRow('as_queue', 'Queue', 'Queue button at the top')}
-                    <SubHead title="Playlist screen" />
-                    {uiRow('pd_back', 'Back Arrow', 'Swipe from the edge still goes back', true)}
-                    {uiRow('pd_search', 'Search Bar', 'Search this playlist')}
-                    {uiRow('pd_eq', 'EQ', 'EQ button at the top')}
-                    {uiRow('pd_queue', 'Queue', 'Queue button at the top')}
-                    {uiRow('pd_cover', 'Cover', 'The big cover above the buttons')}
-                    {uiRow('pd_play', 'Play Button', 'Plays the playlist in order')}
-                    {uiRow('pd_shuffle', 'Shuffle Button', 'Plays the playlist shuffled')}
-                    {uiRow('pd_sort', 'Sort Button', 'Sort choices for the songs')}
+                    </SubGroup>
+                    <SubGroup title="Playlists screen">
+                    {chipRow([{ id: 'pl_layout', label: 'Layout' }, { id: 'pl_reload', label: 'Reload' }], uiOn, uiPick)}
+                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
+                    </SubGroup>
+                    <SubGroup title="All Songs screen">
+                    {chipRow([{ id: 'as_eq', label: 'EQ' }, { id: 'as_queue', label: 'Queue' }], uiOn, uiPick)}
+                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
+                    </SubGroup>
+                    <SubGroup title="Playlist screen">
+                    {chipRow([{ id: 'pd_back', label: 'Back' }, { id: 'pd_search', label: 'Search' }, { id: 'pd_eq', label: 'EQ' }, { id: 'pd_queue', label: 'Queue' }, { id: 'pd_cover', label: 'Cover' }, { id: 'pd_play', label: 'Play' }, { id: 'pd_shuffle', label: 'Shuffle' }], uiOn, uiPick)}
+                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
+                    </SubGroup>
                 </Section>
 
                 <Section title="Player">
-                    <SubHead title="Buttons" first />
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Sleep Timer</Text>
-                            <Text style={s.toggleSub}>Moon button in the Player</Text>
-                        </View>
-                        <Switch value={playerBtns.sleep} onValueChange={(v) => setPlayerBtnShown('sleep', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Playback Speed</Text>
-                            <Text style={s.toggleSub}>Speed button in the Player</Text>
-                        </View>
-                        <Switch value={playerBtns.speed} onValueChange={(v) => setPlayerBtnShown('speed', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>EQ</Text>
-                            <Text style={s.toggleSub}>EQ button in the Player (EQ stays in Settings)</Text>
-                        </View>
-                        <Switch value={playerBtns.eq} onValueChange={(v) => setPlayerBtnShown('eq', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Queue</Text>
-                            <Text style={s.toggleSub}>Queue button in the Player (the mini player still opens it)</Text>
-                        </View>
-                        <Switch value={playerBtns.queue} onValueChange={(v) => setPlayerBtnShown('queue', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Down Arrow</Text>
-                            <Text style={s.toggleSub}>Closes the Player (you can still swipe down)</Text>
-                        </View>
-                        <Switch value={playerBtns.back} onValueChange={(v) => setPlayerBtnShown('back', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Playlist Name</Text>
-                            <Text style={s.toggleSub}>Title at the top of the Player</Text>
-                        </View>
-                        <Switch value={playerBtns.label} onValueChange={(v) => setPlayerBtnShown('label', v)}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <SubHead title="Views" />
+                    <SubGroup title="Buttons" first>
+                    {chipRow([{ id: 'sleep', label: 'Sleep' }, { id: 'speed', label: 'Speed' }, { id: 'eq', label: 'EQ' }, { id: 'queue', label: 'Queue' }, { id: 'back', label: 'Down arrow' }, { id: 'label', label: 'Playlist name' }], (id) => !!playerBtns[id], (id) => setPlayerBtnShown(id, !playerBtns[id]))}
+                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
+                    </SubGroup>
+                    <SubGroup title="Views">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Opens On</Text>
                         <Text style={s.toggleSub}>What the Player shows first for each song. The button under the cover cycles through the views that are on</Text>
                     </View>
                     {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
-                    {toggle('Cover', 'Album art on the Player', showPlayerCover, setShowPlayerCover)}
-                    {toggle('Lyrics', 'A lyrics view, for songs that have lyrics', lyricsOn, setLyricsOn)}
-                    {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc)}
+                    {toggle('Cover', 'Album art on the Player', showPlayerCover, setShowPlayerCover, true)}
+                    <View style={{ height: 22 }} />
+                    {toggle('Lyrics', 'A lyrics view, for songs that have lyrics', lyricsOn, setLyricsOn, true)}
+                    {lyricsOn && (<>
+                    <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
+                    <Text style={s.sliderNote}>
+                        How long lyrics stay where you scrolled before following the song again
+                    </Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(1)}s</Text>
+                    <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={lyricsResyncLocal}
+                        onValueChange={setLyricsResyncLocal}
+                        onSlidingComplete={v => { setLyricsResyncLocal(v); setLyricsResyncSec(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
+                    <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
+                    <Text style={s.sliderNote}>
+                        Fixes lyrics that run early or late. Positive shows lines sooner
+                    </Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>
+                        {lyricsOffsetLocal > 0 ? '+' : ''}{lyricsOffsetLocal.toFixed(1)}s
+                    </Text>
+                    <PureSlider guardScroll style={s.slider} minimumValue={-3} maximumValue={3} step={0.5} value={lyricsOffsetLocal}
+                        onValueChange={setLyricsOffsetLocal}
+                        onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
+                    {toggle('Unscrollable Lyrics', 'Swiping lyrics closes the player instead of scrolling', lyricsScrollLocked, setLyricsScrollLocked)}
+                    </>)}
+                    <View style={{ height: 22 }} />
+                    {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc, true)}
                     {djDisc && (<>
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>DJ Disc Speed</Text>
@@ -1179,31 +1158,7 @@ export default function SettingsScreen() {
                     {toggle('Disc Spins', 'The disc keeps turning while a song plays', djDiscSpin, setDjDiscSpin)}
                     {toggle('Touch & Scratch', 'Move or scratch the disc with a finger. Off also stops the dimming near the ends of songs', djDiscTouch, setDjDiscTouch)}
                     </>)}
-                    {lyricsOn && (<>
-                    <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
-                    <Text style={s.sliderNote}>
-                        How long lyrics stay where you scrolled before following the song again
-                    </Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{lyricsResyncLocal.toFixed(1)}s</Text>
-                    <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={lyricsResyncLocal}
-                        onValueChange={setLyricsResyncLocal}
-                        onSlidingComplete={v => { setLyricsResyncLocal(v); setLyricsResyncSec(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
-                    <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
-                    <Text style={s.sliderNote}>
-                        Fixes lyrics that run early or late. Positive shows lines sooner
-                    </Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>
-                        {lyricsOffsetLocal > 0 ? '+' : ''}{lyricsOffsetLocal.toFixed(1)}s
-                    </Text>
-                    <PureSlider guardScroll style={s.slider} minimumValue={-3} maximumValue={3} step={0.5} value={lyricsOffsetLocal}
-                        onValueChange={setLyricsOffsetLocal}
-                        onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
-                    {toggle('Unscrollable Lyrics', 'Swiping lyrics closes the player instead of scrolling', lyricsScrollLocked, setLyricsScrollLocked)}
-                    </>)}
+                    </SubGroup>
                 </Section>
 
                 </>)}
@@ -1214,24 +1169,10 @@ export default function SettingsScreen() {
                 {/* 4. Color — explicit 2 rows of 5, not flex-wrapped (a shrunk swatch
                      size let 6 fit per row instead of 5, leaving an uneven second row) */}
                 <Section title="Look">
-                    <SubHead title="Shadows & outlines" first />
-                    <View style={s.settingHeader}>
-                        <Text style={s.toggleLabel}>Looks</Text>
-                        <Text style={s.toggleSub}>Quick styles for everything below, plus the cover shape</Text>
-                    </View>
+                    <SubGroup title="Style" first>
                     {looksUi}
-                    {toggle('All Shadows', 'Switch every shadow on or off at once', allShadowsOn, setAllShadows)}
-                    {toggle('Player Cover Shadow', 'Behind the Player cover and the DJ disc', shadowsRaw.coverShadow, setCoverShadow)}
-                    {toggle('Playlist Cover Shadow', 'Under playlist covers and cards', shadowsRaw.playlistCoverShadow, setPlaylistCoverShadow)}
-                    {toggle('Song Shadow', 'Under each song in All Songs, the Playlist screen and the queue', shadowsRaw.songPillShadow, setSongPillShadow)}
-                    {toggle('Mini Player Shadow', 'Under the mini player at the bottom', shadowsRaw.miniPlayerShadow, setMiniPlayerShadow)}
-                    {toggle('All Outlines', 'Switch every cover outline on or off at once', playerOutline && detailOutline, setAllOutlines)}
-                    {toggle('Player Cover Outline', 'A card-style border around the Player cover and the DJ disc', playerOutline, setPlayerOutline)}
-                    {toggle('Playlist Screen Cover Outline', 'A card-style border around the cover on the Playlist screen', detailOutline, setDetailOutline)}
-                    <SubHead title="Covers" />
-                    {toggle('Rounded Song Covers', 'Song covers in lists, the queue and the Player', coverShape === 'rounded', v => setCoverShape(v ? 'rounded' : 'square'), true)}
-                    {toggle('Rounded Playlist Covers', 'Playlist covers and their cards', playlistCoverShape === 'rounded', v => setPlaylistCoverShape(v ? 'rounded' : 'square'))}
-                    <SubHead title="Top bars & screen" />
+                    </SubGroup>
+                    <SubGroup title="Top bars & screen">
                     {toggle('Colored Top Bars', 'Playlists, All Songs, Settings and playlist top bars use the base color. Off: transparent, and lists scroll behind them', topBarColor, setTopBarColor, true)}
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
@@ -1241,6 +1182,7 @@ export default function SettingsScreen() {
                         <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    </SubGroup>
                 </Section>
 
                 <Section title="Accent Color" simple>
@@ -1321,7 +1263,7 @@ export default function SettingsScreen() {
                      separator character in their tag are never affected by
                      this setting either way. */}
                 <Section title="Artists & Albums">
-                    <SubHead title="Multiple artists" first />
+                    <SubGroup title="Multiple artists" first>
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
                         <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
@@ -1396,7 +1338,8 @@ export default function SettingsScreen() {
                             </TouchableOpacity>
                         ))}
                     </View>
-                    <SubHead title="Album from folder name" />
+                    </SubGroup>
+                    <SubGroup title="Album from folder name">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
@@ -1405,6 +1348,7 @@ export default function SettingsScreen() {
                         <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    </SubGroup>
                 </Section>
 
                 {/* Off by default: a real ALBUM tag (when tags.js finds one)
@@ -1417,7 +1361,7 @@ export default function SettingsScreen() {
                 {/* 5. Music location */}
                 {/* 6. Rescan */}
                 <Section title="Music & Library">
-                    <SubHead title="Library" first />
+                    <SubGroup title="Library" first>
                     <TouchableOpacity style={s.row} onPress={importSongsFlow}>
                         <Text style={s.rowLabel}>Import Songs</Text>
                         <Text style={s.rowSub}>Pick audio files from the Files app (use this if the Documents folder cannot be reached)</Text>
@@ -1437,7 +1381,8 @@ export default function SettingsScreen() {
                         <Text style={s.rowLabel}>Reset Playlist Screen</Text>
                         <Text style={s.rowSub}>Remove covers, sort A to Z, default layout</Text>
                     </TouchableOpacity>
-                    <SubHead title="Music location" />
+                    </SubGroup>
+                    <SubGroup title="Music location">
                     {(showBoth || isLiveContainer) && (
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using LiveContainer</Text>
@@ -1473,8 +1418,10 @@ export default function SettingsScreen() {
                             </Text>
                         )}
                     </View>
-                    <SubHead title="Performance" />
+                    </SubGroup>
+                    <SubGroup title="Performance">
                     {performanceToggle}
+                    </SubGroup>
                 </Section>
 
                 {/* 7. Export/Import */}
@@ -1485,7 +1432,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                 </Section>
 
-                <Section title="Backup & Sync" simple>
+                <Section title="Backup & Sync">
                     <TouchableOpacity style={s.row} onPress={async () => { try { await autoBackupNow(); Alert.alert('Done', 'Settings backed up. The last 3 copies are kept.'); } catch (e) { Alert.alert('Backup failed', String(e?.message)); } }}>
                         <Text style={s.rowLabel}>Back Up Now</Text>
                         <Text style={s.rowSub}>A copy is also made about once a day</Text>
@@ -1692,12 +1639,21 @@ const sectionMatches = (title, q) => {
 const SettingsViewCtx = React.createContext({ mode: 'advanced', q: '' });
 
 // Small label that separates the parts of a merged section.
-function SubHead({ title, first }) {
+const subGroupOpen = {};   // remembers which groups are open while the app runs
+function SubGroup({ title, first, children }) {
     const { base } = useTheme();
+    const { q } = useContext(SettingsViewCtx);
+    const [, force] = useState(0);
+    const open = !!q || !!subGroupOpen[title];
     return (
-        <View style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 6, borderTopWidth: first ? 0 : 1, borderTopColor: base.border }}>
-            <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>{title}</Text>
-        </View>
+        <>
+            <TouchableOpacity activeOpacity={0.6} onPress={() => { subGroupOpen[title] = !open; force(n => n + 1); }}
+                style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 10, borderTopWidth: first ? 0 : 1, borderTopColor: base.border, flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', flex: 1 }}>{title}</Text>
+                <Text style={{ color: base.textDim, fontSize: 18, fontWeight: '600', transform: [{ rotate: open ? '90deg' : '0deg' }] }}>›</Text>
+            </TouchableOpacity>
+            {open ? children : null}
+        </>
     );
 }
 

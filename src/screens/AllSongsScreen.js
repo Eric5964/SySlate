@@ -159,9 +159,7 @@ export default function AllSongsScreen() {
             <View style={[{ zIndex: 5 }, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
             <View style={s.topRow}>
                 {topBarColor && <TopBarBack color={base.surface} />}
-                {ui.as_title !== false
-                    ? <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
-                    : <View style={{ flex: 1, height: 40 }} />}
+                <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>All Songs</Text>
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     {ui.as_eq !== false && (
                         <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
@@ -178,10 +176,10 @@ export default function AllSongsScreen() {
 
             {/* Search with Sort right beside it; the sort choices open
                 underneath the search bar. */}
-            {(ui.as_search !== false || ui.as_sort !== false) && (
+            {true && (
             <View style={s.searchBlock}>
                 <View style={s.searchRow}>
-                    {ui.as_search !== false ? (
+                    {true ? (
                     <View style={{ flex: 1, justifyContent: 'center' }}>
                         <TextInput
                             style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
@@ -196,17 +194,11 @@ export default function AllSongsScreen() {
                         )}
                     </View>
                     ) : <View style={{ flex: 1 }} />}
-                    {ui.as_sort !== false && (
-                    <TouchableOpacity
-                        style={[s.sortBtn, { backgroundColor: showSort ? theme.accent : base.surface }]}
-                        onPress={() => setShowSort(v => !v)}
-                        hitSlop={HIT}
-                    >
-                        <Text style={[s.sortBtnText, { color: showSort ? theme.onAccent : theme.accent }]} numberOfLines={1}>{sortLabel}</Text>
+                    <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)} hitSlop={HIT}>
+                        <Text style={[s.sortBtnText, { color: theme.accent }]} numberOfLines={1}>{sortLabel}</Text>
                     </TouchableOpacity>
-                    )}
                 </View>
-                {showSort && ui.as_sort !== false && (
+                {showSort && (
                     <View style={s.sortRow}>
                         {SORTS.map(opt => (
                             <TouchableOpacity
@@ -311,7 +303,7 @@ const s = StyleSheet.create({
     // sortBtn next to it instead of top-aligning it like Playlists' header
     // (flex-start) does.
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
-    sortBtn: { paddingHorizontal: 14, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+    sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },
     sortBtnText: { fontSize: 13, fontWeight: '600' },
     sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingTop: 10, gap: 8 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1a1a1a' },
@@ -321,7 +313,7 @@ const s = StyleSheet.create({
     clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-    eqTag: { fontSize: 14, fontWeight: '700' },
+    eqTag: { fontSize: 16, fontWeight: "700" },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },
     emptyText: { color: '#555', fontSize: 14, textAlign: 'center', lineHeight: 22 },

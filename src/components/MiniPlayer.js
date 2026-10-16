@@ -135,7 +135,7 @@ export default function MiniPlayer({ withTabBar = true }) {
               progress fill and content, to the exact same rounded shape, so
               nothing can stop short of or poke past the outline on either
               side. */}
-          <View style={[styles.container, { borderColor: theme.accentDim, backgroundColor: base.surface }]}>
+          <View style={[styles.container, { borderColor: theme.accentDim, backgroundColor: base.surface }, !showSongCovers && { paddingLeft: 18 }]}>
             <GradientCap color={theme.accent} height={PILL_H} style={{ opacity: 0.5 }} />
             <View pointerEvents="none" style={styles.miniProgressTrack}>
                 <MiniProgressFill basis={basisRef.current} isPlaying={isPlaying} playbackRate={playbackRate} trackKey={currentTrack?._qid ?? currentTrack?.id} color={theme.accent} />

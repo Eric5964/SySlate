@@ -223,7 +223,7 @@ export function PlaybackProvider({ children }) {
                     let idx = currentTrack._qid != null ? queue.findIndex(t => t._qid === currentTrack._qid) : -1;
                     if (idx === -1) idx = queue.findIndex(t => t.id === currentTrack.id);
                     if (idx === -1) continue;
-                    const meta = { artist: shownArtist };
+                    const meta = { artist: shownArtist, id: currentTrack.id, _qid: currentTrack._qid != null ? String(currentTrack._qid) : undefined };
                     if (art) meta.artwork = art;
                     await AudioEngine.updateMetadataForTrack(idx, meta);
                     // Also hand the next few songs their formatted artist
@@ -234,7 +234,7 @@ export function PlaybackProvider({ children }) {
                         const nt = queue[k];
                         const fa = formatArtists(nt?.artist ?? '', prefArtistSep, prefArtistJoin);
                         if (fa && fa !== nt.artist) {
-                            await AudioEngine.updateMetadataForTrack(k, { artist: fa }).catch(() => { });
+                            await AudioEngine.updateMetadataForTrack(k, { artist: fa, id: nt.id, _qid: nt._qid != null ? String(nt._qid) : undefined }).catch(() => { });
                         }
                     }
                     if (!cancelled) pushedArtRef.current = key;
@@ -263,7 +263,7 @@ export function PlaybackProvider({ children }) {
                 // the same song (or a queue that just shifted) cannot receive
                 // another slot's cover.
                 const idx = queue.findIndex(t => (currentTrack._qid != null ? t._qid === currentTrack._qid : t.id === currentTrack.id));
-                if (idx !== -1) await AudioEngine.updateMetadataForTrack(idx, { artwork: uri });
+                if (idx !== -1) await AudioEngine.updateMetadataForTrack(idx, { artwork: uri, id: currentTrack.id, _qid: currentTrack._qid != null ? String(currentTrack._qid) : undefined });
                 // Warm the cache for what's coming up next. Sequential with a
                 // small stagger (not fired concurrently) — this used to be a
                 // fire-and-forget loop that kicked off both reads at once,

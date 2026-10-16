@@ -662,11 +662,12 @@ class AudioEngine: RCTEventEmitter {
     // take the already-lowered level as the "original" and leave it there.
     private var deviceLossBaseVol: Float? = nil
 
-    private func fadeOutThenPause() {
+    private func fadeOutThenPause(completion: (() -> Void)? = nil) {
         guard state == .playing, !isCrossfading, !scratchActive else {
             deviceLossFadeToken &+= 1   // cancel any steps of an earlier fade still waiting
             pauseInternal()
             if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }
+            completion?()
             return
         }
         deviceLossFadeToken &+= 1
@@ -685,6 +686,7 @@ class AudioEngine: RCTEventEmitter {
                     // whatever plays next starts from the same level as ever.
                     self.activeNode.volume = startVol
                     self.deviceLossBaseVol = nil
+                    completion?()
                 }
             }
         }
@@ -2381,11 +2383,14 @@ class AudioEngine: RCTEventEmitter {
     private func startActiveNodeAfterGainSettles(needsSettle: Bool) {
         pendingPlayToken += 1
         if !needsSettle {
-            activeNode.play()
+            playNodeWithMicroFade()
             return
         }
         let token = pendingPlayToken
-        DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay) { [weak self] in
+        // A Bluetooth link takes a few hundred ms to wake; starting the song only
+        // after that keeps the first notes from being swallowed.
+        let btExtra: TimeInterval = (coldMuteHeld && isBluetoothOutput()) ? 0.4 : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay + btExtra) { [weak self] in
             guard let self = self, token == self.pendingPlayToken, self.state == .playing else { return }
             // Belt and braces: a fade-in must start from true silence. If JS
             // asked for volume 0, write it again right before the node
@@ -2394,7 +2399,24 @@ class AudioEngine: RCTEventEmitter {
                 self.activeNode.volume = 0
             }
             self.debugLog(String(format: "[POP] node starts: nodeVol=%.3f mixerVol=%.3f muteHeld=%@", self.activeNode.volume, self.engine.mainMixerNode.outputVolume, self.coldMuteHeld ? "true" : "false"))
-            self.activeNode.play()
+            self.playNodeWithMicroFade()
+        }
+    }
+
+    // Starting a song (or resuming) at full level in the middle of a wave is
+    // itself a click. Without a fade-in of its own, the node starts from
+    // silence and reaches its level over about 30 ms. A fade-in from JS
+    // (volume near 0) is left alone.
+    private func playNodeWithMicroFade() {
+        let wanted = volume * currentGainCorrection
+        guard !isCrossfading, volume >= 0.02, wanted > 0.02 else { activeNode.play(); return }
+        activeNode.volume = 0
+        activeNode.play()
+        for i in 1...8 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
+                guard let self = self, self.state == .playing, !self.isCrossfading, !self.scratchActive, self.volume >= 0.02 else { return }
+                self.activeNode.volume = self.volume * self.currentGainCorrection * Float(i) / 8
+            }
         }
     }
 
@@ -2425,6 +2447,10 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    private func isBluetoothOutput() -> Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE || $0.portType == .bluetoothHFP }
+    }
+
     @discardableResult
     private func beginColdStartMuteIfNeeded() -> Bool {
         // Still playing means the output is warm, however long ago play was pressed.
@@ -2439,7 +2465,7 @@ class AudioEngine: RCTEventEmitter {
         // A fade-in is coming if JS just set the volume to 0: wait for it
         // (it releases the mute itself). Otherwise keep the old short hold.
         let rampExpected = lastZeroVolumeAt.map { Date().timeIntervalSince($0) < 3 } ?? false
-        let fallback: TimeInterval = rampExpected ? 1.5 : 0.15
+        let fallback: TimeInterval = rampExpected ? 1.5 : (isBluetoothOutput() ? 0.75 : 0.15)
         DispatchQueue.main.asyncAfter(deadline: .now() + fallback) { [weak self] in
             guard let self = self, token == self.coldStartToken else { return }
             self.releaseColdStartMute(after: 0)
@@ -3007,6 +3033,11 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         var track = queue[idx]
+        // The caller names the song it means. If the queue has shifted since it
+        // looked, the slot now holds a different song: change nothing, so one
+        // song never gets another's artist or cover.
+        if let wantQid = metadata["_qid"] as? String, !wantQid.isEmpty, let haveQid = track.qid, haveQid != wantQid { resolve(nil); return }
+        if let wantId = metadata["id"] as? String, !wantId.isEmpty, track.id != wantId { resolve(nil); return }
         if let title = metadata["title"] as? String { track.title = title }
         if let artist = metadata["artist"] as? String {
             track.artist = artist
@@ -3074,9 +3105,16 @@ class AudioEngine: RCTEventEmitter {
     }
 
     @objc(pause:rejecter:)
-    func pause(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        pauseInternal()
-        resolve(nil)
+    func pause(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // With the pause ramp off the sound used to be cut mid-wave (a click).
+        // A very short fade (about 70 ms) hides it; when the ramp already took
+        // the volume to zero this goes straight to the pause.
+        if state == .playing, !isCrossfading, !scratchActive, activeNode.volume > 0.05 {
+            fadeOutThenPause(completion: { resolve(nil) })
+        } else {
+            pauseInternal()
+            resolve(nil)
+        }
     }
 
     @objc(stop:rejecter:)
@@ -3388,7 +3426,8 @@ class AudioEngine: RCTEventEmitter {
             // up, not a cut), then the normal player takes over from that
             // exact spot with a short overlap. Paused before: just fade out.
             core.target = wasPlaying ? 1 : 0
-            let glide: TimeInterval = wasPlaying ? 0.12 : 0.0
+            // Let go while held back (near a limit or nearly still): the song eases back to normal speed.
+            let glide: TimeInterval = wasPlaying ? (abs(core.cur) < 0.6 ? 0.45 : 0.12) : 0.0
             DispatchQueue.main.asyncAfter(deadline: .now() + glide) { [weak self] in
                 guard let self = self, self.scratchActive else { resolve(nil); return }
                 let finalSec = max(0, core.windowStart + core.pos / self.scratchFileRate)
@@ -3847,20 +3886,22 @@ class AudioEngine: RCTEventEmitter {
         // case. This is a width increase, not a fix for a specific
         // diagnosed cause — couldn't confirm the exact mechanism without
         // device audio to inspect.
-        let duckMs = 40.0
-        let settleMs = 80.0
-        // A second toggle while the first is still ducking must not take the lowered level as
-        // the original one; the newest toggle owns the steps and the first one's are dropped.
+        // A gentle dip: ease down, switch while quiet, ease back up. Short
+        // linear ramps were themselves audible as a click-like "reverse pop".
+        let duckMs = 110.0
+        let settleMs = 40.0
+        let riseMs = 160.0
         normToggleToken &+= 1
         let token = normToggleToken
         let startVol = normToggleBaseVol ?? preMixNode.outputVolume
         normToggleBaseVol = startVol
-        let steps = 8
+        let steps = 16
         for i in 0...steps {
             let delay = duckMs * Double(i) / Double(steps) / 1000.0
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self, token == self.normToggleToken else { return }
-                self.preMixNode.outputVolume = startVol * Float(1 - Double(i) / Double(steps))
+                let t = Double(i) / Double(steps)
+                self.preMixNode.outputVolume = startVol * Float(0.5 * (1 + cos(t * Double.pi)))
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + duckMs / 1000.0) { [weak self] in
@@ -3868,10 +3909,11 @@ class AudioEngine: RCTEventEmitter {
             self.normalizerNode.bypass = bypassed
         }
         for i in 0...steps {
-            let delay = (duckMs + settleMs) / 1000.0 + (duckMs * Double(i) / Double(steps) / 1000.0)
+            let delay = (duckMs + settleMs) / 1000.0 + (riseMs * Double(i) / Double(steps) / 1000.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self, token == self.normToggleToken else { return }
-                self.preMixNode.outputVolume = startVol * Float(Double(i) / Double(steps))
+                let t = Double(i) / Double(steps)
+                self.preMixNode.outputVolume = startVol * Float(0.5 * (1 - cos(t * Double.pi)))
                 if i == steps { self.normToggleBaseVol = nil }
             }
         }
