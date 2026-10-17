@@ -123,12 +123,16 @@ function PlaylistsStackScreen() {
 
 function Tabs() {
     const { theme, base } = useTheme();
+    const { bottomBarColor } = usePreferences();
     return (
         <Tab.Navigator
             initialRouteName="Playlists"
             screenOptions={{
                 headerShown: false,
-                tabBarStyle: { backgroundColor: base.surface, borderTopColor: base.border, borderTopWidth: 1 },
+                // Colored: the bar uses the base color. Off: transparent like the top bars, with lists passing behind it.
+                tabBarStyle: bottomBarColor
+                    ? { backgroundColor: base.surface, borderTopColor: base.border, borderTopWidth: 1 }
+                    : { position: 'absolute', backgroundColor: 'transparent', borderTopWidth: 0, elevation: 0, shadowOpacity: 0 },
                 tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: '#444',
                 tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 2 },

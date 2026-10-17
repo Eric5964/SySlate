@@ -134,6 +134,7 @@ const AudioEngine = {
     setPlaybackRate: (rate) => NativeAudioEngine.setPlaybackRate(rate),
     scratchBegin: () => NativeAudioEngine.scratchBegin(),
     scratchSetRate: (rate) => NativeAudioEngine.scratchSetRate(rate),
+    scratchResumePlay: () => { try { NativeAudioEngine.scratchResumePlay(); } catch (e) { } },
     scratchEnd: () => NativeAudioEngine.scratchEnd(),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),
     // Updates only the lock screen/Control Center's displayed play/pause

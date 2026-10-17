@@ -126,7 +126,15 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const lastTouch = useRef({ x: 0, y: 0 });
     const smoothRate = useRef(0);
     const sentRate = useRef(0);
-    const recoverUntil = useRef(0);   // after the disc was held back at a limit, speed comes back gradually until this time
+    // How the song and disc are brought back to normal speed after the finger
+    // lets go ('release') or the disc reaches the crossfade area at either
+    // end of the song ('edge'). While it runs the song and disc move on their
+    // own; after an 'edge' the finger is ignored until it is lifted.
+    const autoRef = useRef(null);
+    const ignoreTouch = useRef(false);
+    const maxAbsRate = useRef(0);
+    const lagVal = useRef(0);
+    const api = useRef({});
 
     // On a song change the position still holds the old song's value for a
     // moment, so the disc is held dim from the very first frame of the new
@@ -151,6 +159,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const dimInit = useRef(false);
     useEffect(() => {
         if (!dimInit.current) { dimInit.current = true; dim.setValue(inWindow || !touchOn ? 0 : 1); return; }
+        if (autoRef.current && autoRef.current.kind === 'edge') return;   // stays faded until the ease is done
         Animated.timing(dim, { toValue: inWindow || !touchOn ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
     }, [inWindow, touchOn, dim]);
     useLayoutEffect(() => {
@@ -180,7 +189,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     // handed over between animations and there is no stutter.
     const spinToken = useRef(0);
     const spinState = useRef('stopped');
-    const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); lag.stopAnimation(); }, [spin, lag]);
+    const stopSpin = useCallback(() => { spinToken.current++; spinState.current = 'stopped'; spin.stopAnimation(); lag.stopAnimation((v) => { lagVal.current = v; }); }, [spin, lag]);
     // Starts the endless idle turn from wherever `spin` is right now (native
     // reads its own current value, so nothing has to be read back first and
     // a running turn is replaced without a gap).
@@ -211,23 +220,19 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     // to the idle speed over a few tens of ms (the sound does the same), so
     // it never stops dead and then winds back up.
     const releaseSpin = useCallback((rate) => {
-        const token = ++spinToken.current;
+        ++spinToken.current;
         spinState.current = 'spinning';
-        spin.stopAnimation(() => {
-            if (token !== spinToken.current) return;
-            lag.stopAnimation((l) => {
-                if (token !== spinToken.current) return;
-                const idle = (MT * 1000) / turnMsRef.current;      // milliturns per second
-                const v0 = (rate * Math.max(20, live.current.scratchDegPerSec || RPM_DEG_PER_SEC) / 360) * MT;  // milliturns per second
-                const T = 0.08;
-                runIdle();
-                const A = (v0 - idle) * T / 2;
-                if (Math.abs(A) > 1e-5) {
-                    Animated.timing(lag, { toValue: l + A, duration: T * 1000, easing: (u) => 2 * u - u * u, useNativeDriver: true }).start();
-                }
-            });
-        });
-    }, [spin, lag, runIdle]);
+        const l = lagVal.current;                          // known from when the disc was grabbed
+        const idle = (MT * 1000) / turnMsRef.current;      // milliturns per second
+        const v0 = (rate * Math.max(20, live.current.scratchDegPerSec || RPM_DEG_PER_SEC) / 360) * MT;
+        const T = 0.08;
+        runIdle();                                         // starts at once, from where the disc is
+        const A = (v0 - idle) * T / 2;
+        if (Math.abs(A) > 1e-5) {
+            lagVal.current = l + A;
+            Animated.timing(lag, { toValue: l + A, duration: T * 1000, easing: (u) => 2 * u - u * u, useNativeDriver: true }).start();
+        }
+    }, [lag, runIdle]);
     // Speed changed (rpm setting or the Player's speed button) while the disc
     // is turning: carry on from the same angle at the new speed.
     useEffect(() => {
@@ -316,27 +321,33 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         return () => clearTimeout(t);
     }, [visible, refreshCenter]);
 
-    const finishScratch = useCallback(() => {
-        if (tickTimer.current) { clearInterval(tickTimer.current); tickTimer.current = null; }
-        const wasScratching = scratchingRef.current;
+    // The finger lifted (or, with `force`, something ended the scratch: leaving
+    // the view, a skip, a song change). A normal lift does not stop anything
+    // dead: the song and disc ease back to normal speed (startAuto).
+    const finishScratch = useCallback((force) => {
         const wasDragging = draggingRef.current;
-        scratchingRef.current = false;
         draggingRef.current = false;
         lastAngle.current = null;
         pendingDeg.current = 0;
-        if (onTouching) onTouching(false);
-        if (wasScratching) AudioEngine.scratchEnd().catch(() => { });
-        const rel = sentRate.current;
-        sentRate.current = 0;
-        if (live.current.active && live.current.isPlaying) {
-            if (!live.current.spin) { /* spinning is off: nothing to restart */ }
-            else if (wasScratching) releaseSpin(rel);
-            // Only a finger that was actually holding the disc needs the
-            // wind-up. (Leaving the disc view used to restart the spin from
-            // a standstill here, which looked like the disc slowing down.)
-            else if (wasDragging) startSpin(450);
+        if (wasDragging && onTouching) onTouching(false);
+        if (!force) {
+            if (autoRef.current) return;                          // already easing back: lifting changes nothing
+            if (ignoreTouch.current) { ignoreTouch.current = false; return; }
+            if (scratchingRef.current) { api.current.startAuto('release'); return; }
+            api.current.stopTick();
+            if (wasDragging && live.current.active && live.current.isPlaying && live.current.spin) startSpin(450);
+            return;
         }
-    }, [startSpin, releaseSpin]);
+        ignoreTouch.current = false;
+        autoRef.current = null;
+        api.current.stopTick();
+        const wasScratching = scratchingRef.current;
+        scratchingRef.current = false;
+        sentRate.current = 0;
+        if (wasScratching) AudioEngine.scratchEnd().catch(() => { });
+        if (wasDragging && live.current.active && live.current.isPlaying && live.current.spin) startSpin(0);
+    }, [startSpin]);
+
 
     // The song changing mid-scratch ends the scratch right away. The finger
     // may still be on the disc, but it does nothing until it is lifted and
@@ -346,7 +357,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     useEffect(() => {
         if (lastTrackKey.current === trackKey) return;
         lastTrackKey.current = trackKey;
-        if (draggingRef.current || scratchingRef.current) { finishScratch(); draggingRef.current = false; }
+        if (draggingRef.current || scratchingRef.current || autoRef.current) { finishScratch(true); draggingRef.current = false; }
     }, [trackKey, finishScratch]);
 
     // A skip pressed anywhere: dim the disc and stop taking touches right now
@@ -356,7 +367,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         skipHold.current = { pos: live.current.position };
         if (skipTimer.current) clearTimeout(skipTimer.current);
         skipTimer.current = setTimeout(() => { skipHold.current = null; skipTimer.current = null; }, 12000);
-        if (draggingRef.current || scratchingRef.current) { finishScratch(); draggingRef.current = false; }
+        if (draggingRef.current || scratchingRef.current || autoRef.current) { finishScratch(true); draggingRef.current = false; }
         dim.stopAnimation();
         // The same fade as the disc coming back to life with a new song
         // (see the inWindow effect below), run the other way.
@@ -366,102 +377,174 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
 
     // Leaving the disc view (or the song changing) mid-scratch ends it.
     useEffect(() => {
-        if (!visible) finishScratch();
+        if (!visible) finishScratch(true);
         return () => { if (scratchingRef.current) AudioEngine.scratchEnd().catch(() => { }); if (tickTimer.current) clearInterval(tickTimer.current); };
     }, [visible, finishScratch]);
 
+    // The scratch loop and the two "ease back to normal" ramps. Kept in a ref
+    // and re-assigned every render, so the touch handlers (created once) and
+    // the timer always call the latest version.
+    const stopTick = () => { if (tickTimer.current) { clearInterval(tickTimer.current); tickTimer.current = null; } };
+    api.current.stopTick = stopTick;
+    api.current.ensureTick = () => { if (!tickTimer.current) tickTimer.current = setInterval(() => api.current.tick(), TICK_MS); };
+    api.current.refreshDim = () => {
+        const L = live.current;
+        const ok = (L.windowOk && !skipHold.current) || !L.touch;
+        dim.stopAnimation();
+        Animated.timing(dim, { toValue: ok ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+    };
+    api.current.startAuto = (kind) => {
+        const L = live.current;
+        // A paused disc that was only touched goes back to silence; one that
+        // was really turned (or reached an end) carries on playing.
+        const to = (kind === 'release' && !L.isPlaying && maxAbsRate.current < 0.3) ? 0 : 1;
+        const from = sentRate.current;
+        const ms = kind === 'edge' ? 700 : (Math.abs(to - from) < 0.15 ? 120 : 320);
+        autoRef.current = { kind, t0: Date.now(), from, to, ms };
+        lastTick.current = Date.now();
+        if (kind === 'edge') {
+            // Fades like the end-of-song lock, so it is clear the disc is no
+            // longer yours until it is done (and your finger is lifted).
+            ignoreTouch.current = draggingRef.current;
+            dim.stopAnimation();
+            Animated.timing(dim, { toValue: 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
+        }
+        api.current.ensureTick();
+    };
+    api.current.finishAuto = () => {
+        const au = autoRef.current;
+        autoRef.current = null;
+        stopTick();
+        const was = scratchingRef.current;
+        scratchingRef.current = false;
+        sentRate.current = 0;
+        const L = live.current;
+        const carryOn = !au || au.to === 1;
+        if (was) {
+            if (carryOn && !L.isPlaying) AudioEngine.scratchResumePlay();
+            AudioEngine.scratchEnd().catch(() => { });
+        }
+        // The idle turn takes over from the same angle at the same speed.
+        if (carryOn && L.active && L.spin) releaseSpin(1);
+        if (au && au.kind === 'edge') api.current.refreshDim();
+        if (!draggingRef.current && onTouching) onTouching(false);
+    };
+    api.current.tick = () => {
+        const now = Date.now();
+        const L = live.current;
+        const dtS = Math.max(0, Math.min(0.1, (now - (lastTick.current || now)) / 1000));
+        lastTick.current = now;
+        pendingDeg.current = 0;
+        const au = autoRef.current;
+        if (au) {
+            const u = Math.min(1, (now - au.t0) / au.ms);
+            const e = u * u * (3 - 2 * u);
+            const rate = au.from + (au.to - au.from) * e;
+            sentRate.current = rate;
+            if (scratchingRef.current) AudioEngine.scratchSetRate(rate);
+            // The disc keeps turning with the song while it is not yours.
+            if (L.spin) { userRotVal.current += rate * Math.max(20, L.scratchDegPerSec) * dtS; userRot.setValue(userRotVal.current); }
+            if (u >= 1) api.current.finishAuto();
+            return;
+        }
+        if (!draggingRef.current) { stopTick(); return; }
+        // Speed = how far the disc turned over the last ~110ms (a sliding
+        // window, not just the last tick), so a steady hand gives a steady
+        // number. This runs from the moment of the touch, even before the
+        // audio is ready, so the first movement is not lost.
+        const arr = samples.current;
+        arr.push([now, userRotVal.current]);
+        while (arr.length > 2 && now - arr[0][0] > 110) arr.shift();
+        const span = (now - arr[0][0]) / 1000;
+        const vel = span >= 0.04 ? (userRotVal.current - arr[0][1]) / span : 0;
+        let rate = Math.max(-MAX_RATE, Math.min(MAX_RATE, vel / Math.max(20, L.scratchDegPerSec)));
+        rate = smoothRate.current * 0.5 + rate * 0.5;
+        smoothRate.current = rate;
+        // Speed assist (Settings): the rate clings to 0.5x, 1x and 2x (forward
+        // or backward) when the finger is close, and a nearly still finger
+        // holds the record dead still. With assist off the speed is exactly
+        // the finger's.
+        const a = Math.abs(rate);
+        if (a < (L.assist ? 0.1 : 0.04)) { rate = 0; snapped.current = 0; }
+        else if (L.assist) {
+            let best = 0, bestD = 1e9;
+            for (const t of [0.5, 1, 2]) { const dd = Math.abs(a - t) / t; if (dd < bestD) { bestD = dd; best = t; } }
+            const tol = snapped.current === best ? 0.3 : 0.18;
+            if (bestD < tol) { snapped.current = best; rate = rate < 0 ? -best : best; }
+            else snapped.current = 0;
+        }
+        if (!scratchingRef.current) return;      // audio not ready yet
+        if (Math.abs(rate) > maxAbsRate.current) maxAbsRate.current = Math.abs(rate);
+        const dtEst = scratchEstT.current ? (now - scratchEstT.current) / 1000 : 0;
+        scratchEstT.current = now;
+        scratchEst.current += sentRate.current * dtEst;
+        // Reaching the crossfade area at either end of the song: the song and
+        // disc ease to normal speed (backwards turns round into forwards, on
+        // into the next song at the end) and the finger is ignored until lifted.
+        if (L.duration > 0) {
+            const hiLimit = L.duration - L.endGuard;
+            const loLimit = L.startGuard;
+            const est = scratchEst.current;
+            if ((rate > 0.05 && est >= hiLimit - 0.35) || (rate < -0.05 && est <= loLimit + 0.35)) {
+                sentRate.current = rate;
+                AudioEngine.scratchSetRate(rate);
+                api.current.startAuto('edge');
+                return;
+            }
+        }
+        sentRate.current = rate;
+        AudioEngine.scratchSetRate(rate);
+    };
+
     const pan = useRef(PanResponder.create({
-        onStartShouldSetPanResponder: (e) => live.current.touch && live.current.allowed && !skipHold.current && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY),
+        onStartShouldSetPanResponder: (e) => {
+            const au = autoRef.current;
+            return live.current.touch && live.current.allowed && !skipHold.current && !ignoreTouch.current
+                && !(au && au.kind === 'edge') && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY);
+        },
         onMoveShouldSetPanResponder: () => false,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
+            const au = autoRef.current;
             draggingRef.current = true;
             if (onTouching) onTouching(true);
-            stopSpin();
             lastTouch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
             lastAngle.current = null;
             viewRef.current?.measureInWindow((x, y, w, h) => {
                 center.current = { x: x + w / 2, y: y + h / 2, valid: w > 0 };
                 if (draggingRef.current) lastAngle.current = angleOf(lastTouch.current.x, lastTouch.current.y, center.current);
             });
+            samples.current = [];
+            snapped.current = 0;
+            lastTick.current = Date.now();
+            // Caught the disc again while it was still easing back after a
+            // lift: carry on scratching from the speed it had.
+            if (au && au.kind === 'release' && scratchingRef.current) {
+                autoRef.current = null;
+                smoothRate.current = sentRate.current;
+                api.current.ensureTick();
+                return;
+            }
+            stopSpin();
+            smoothRate.current = 0;
+            sentRate.current = 0;
+            maxAbsRate.current = 0;
             // Grabbing the disc again within ~130ms of letting go is refused by
-            // native (the last scratch is still finishing), which used to leave
-            // the finger moving a silent disc. Retry a few times instead.
+            // native (the last scratch is still finishing). Retry a few times.
             const tryBegin = (n) => AudioEngine.scratchBegin().then((ok) => {
                 if (!draggingRef.current) { if (ok) AudioEngine.scratchEnd().catch(() => { }); return; }
-                if (!ok && n < 4) { setTimeout(() => { if (draggingRef.current && !scratchingRef.current) tryBegin(n + 1); }, 70); return; }
+                if (!ok && n < 6) { setTimeout(() => { if (draggingRef.current && !scratchingRef.current) tryBegin(n + 1); }, 70); return; }
+                if (!ok) console.log('[DISC] could not start scratching after retries');
                 scratchingRef.current = !!ok;
                 if (ok) {
                     scratchEst.current = live.current.position;
                     scratchEstT.current = Date.now();
-                    atHi.current = false; atLo.current = false;
                     // The exact spot (the position prop can be half a second old).
                     AudioEngine.getProgress().then((p) => { if (p && p.position >= 0 && scratchingRef.current) scratchEst.current = p.position; }).catch(() => { });
                 }
             }).catch(() => { });
             tryBegin(0);
-            lastTick.current = Date.now();
-            smoothRate.current = 0;
-            sentRate.current = 0;
-            samples.current = [];
-            snapped.current = 0;
-            tickTimer.current = setInterval(() => {
-                const now = Date.now();
-                lastTick.current = now;
-                pendingDeg.current = 0;
-                if (!scratchingRef.current) return;
-                // Speed = how far the disc turned over the last ~110ms (a
-                // sliding window, not just the last 20ms tick), so a steady
-                // hand gives a steady number instead of a jittery one.
-                const arr = samples.current;
-                arr.push([now, userRotVal.current]);
-                while (arr.length > 2 && now - arr[0][0] > 110) arr.shift();
-                const span = (now - arr[0][0]) / 1000;
-                const vel = span >= 0.04 ? (userRotVal.current - arr[0][1]) / span : 0;
-                let rate = Math.max(-MAX_RATE, Math.min(MAX_RATE, vel / Math.max(20, live.current.scratchDegPerSec)));
-                rate = smoothRate.current * 0.5 + rate * 0.5;
-                smoothRate.current = rate;
-                // Speed assist (Settings): the rate clings to 0.5x, 1x and 2x
-                // (forward or backward) when the finger is close to one of
-                // them, and a nearly still finger holds the record dead still.
-                // Hysteresis keeps it from flickering at the edges of a lock.
-                // With assist off the speed is exactly the finger's.
-                const a = Math.abs(rate);
-                if (a < (live.current.assist ? 0.1 : 0.04)) { rate = 0; snapped.current = 0; }
-                else if (live.current.assist) {
-                    let best = 0, bestD = 1e9;
-                    for (const t of [0.5, 1, 2]) { const dd = Math.abs(a - t) / t; if (dd < bestD) { bestD = dd; best = t; } }
-                    const tol = snapped.current === best ? 0.3 : 0.18;
-                    if (bestD < tol) { snapped.current = best; rate = rate < 0 ? -best : best; }
-                    else snapped.current = 0;
-                }
-                const L = live.current;
-                // The disc can turn either way, but it cannot be turned into the
-                // crossfade areas at the two ends of the song (the first
-                // startGuard seconds and the last endGuard seconds): there it
-                // stops, and slows smoothly over the last half second before.
-                const dtS = scratchEstT.current ? (now - scratchEstT.current) / 1000 : 0;
-                scratchEstT.current = now;
-                scratchEst.current += sentRate.current * dtS;
-                if (L.duration > 0) {
-                    const hiLimit = L.duration - L.endGuard;
-                    const loLimit = L.startGuard;
-                    const est = scratchEst.current;
-                    atHi.current = est >= hiLimit;
-                    atLo.current = est <= loLimit;
-                    const before = rate;
-                    if (rate > 0) rate = Math.min(rate, Math.max(0, (hiLimit - est) / 0.5));
-                    else if (rate < 0) rate = Math.max(rate, -Math.max(0, (est - loLimit) / 0.5));
-                    if (rate !== before || atHi.current || atLo.current) recoverUntil.current = now + 900;
-                }
-                // Coming back from a limit (or after being slowed into it) the
-                // speed builds up gently instead of snapping to the finger's.
-                if (now < recoverUntil.current && Math.abs(rate - sentRate.current) > 0.03) {
-                    rate = sentRate.current + Math.sign(rate - sentRate.current) * 0.03;
-                }
-                sentRate.current = rate;
-                AudioEngine.scratchSetRate(rate);
-            }, TICK_MS);
+            api.current.ensureTick();
         },
         onPanResponderMove: (e) => {
             lastTouch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
@@ -469,10 +552,8 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             const a = angleOf(e.nativeEvent.pageX, e.nativeEvent.pageY, center.current);
             const d = wrap(a - lastAngle.current);
             lastAngle.current = a;
-            // Physically blocked at the limits: once the disc is at a crossfade
-            // area it will not turn further that way (the finger can keep moving,
-            // the disc stays put; turning the other way works again at once).
-            if ((d > 0 && atHi.current) || (d < 0 && atLo.current)) return;
+            // Not yours right now (easing back at an end of the song).
+            if (ignoreTouch.current || autoRef.current) return;
             pendingDeg.current += d;
             userRotVal.current += d;
             userRot.setValue(userRotVal.current);
@@ -480,6 +561,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         onPanResponderRelease: () => finishScratch(),
         onPanResponderTerminate: () => finishScratch(),
     })).current;
+
 
     const R = size;
     const labelD = R * 0.4;

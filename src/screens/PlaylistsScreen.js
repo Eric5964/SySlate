@@ -175,7 +175,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                                 s.card,
                                 { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -(CARD_INSET + CARD_BOTTOM_EXTRA), backgroundColor: base.surface,
                                   borderTopLeftRadius: cardRadius(size, CARD_INSET, shape), borderTopRightRadius: cardRadius(size, CARD_INSET, shape),
-                                  borderBottomLeftRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.45), borderBottomRightRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.45) },
+                                  borderBottomLeftRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.75), borderBottomRightRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.75) },
                                 shadowOn && COVER_SHADOW,
                             ]}
                         />
@@ -732,7 +732,7 @@ const s = StyleSheet.create({
     // (see below, fixed this round), not header height. 44 just made this
     // screen's title sit noticeably higher than All Songs/Settings (both
     // paddingTop:60) and Playlist Detail (56) — restored to match.
-    header: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5 },
+    header: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5, minHeight: TOP_PAD + 40 + 8 + TOP_FADE },
     title: { color: '#e5e5e5', fontSize: 28, fontWeight: '700' },
     btn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
     btnText: { fontSize: 28, lineHeight: 34, fontWeight: '600' },

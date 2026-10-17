@@ -226,7 +226,11 @@ export default function PlaylistDetailScreen() {
             <FlatList
                 data={filtered}
                 keyExtractor={item => item.id}
-                contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 160 }}
+                // Colored bar: the list runs up under the bar's soft fade (as on
+                // Playlists and Settings) instead of starting below it, which
+                // used to cut the rows off with a band of plain background.
+                style={topBarColor ? { marginTop: -TOP_FADE } : null}
+                contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 160 }}
                 scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
                 // Keep more rows mounted so covers already on screen stay decoded
                 // while scrolling back, instead of reloading each time.

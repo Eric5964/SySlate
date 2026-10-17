@@ -310,6 +310,9 @@ class AudioEngine: RCTEventEmitter {
     private var scratchFormat: AVAudioFormat?
     private var scratchActive: Bool = false
     private var scratchWasPlaying: Bool = false
+    // Set by JS when a scratch that began while paused should carry on playing
+    // when it ends (the disc was turned, not just touched).
+    private var scratchForcePlay: Bool = false
     private var scratchWindowStartSeconds: Double = 0
     private var scratchFileRate: Double = 44100
     private var scratchLoading: Bool = false
@@ -437,6 +440,9 @@ class AudioEngine: RCTEventEmitter {
         timePitchNode.bypass = true
         engine.connect(eqNode, to: normalizerNode, format: nil)
         engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
+        // The scratch source is wired in now, with the rest of the graph, so the
+        // first touch of the disc does not have to change a running engine.
+        _ = ensureScratchNode()
 
         // Frequencies match src/utils/eq.js's BAND_HZ exactly (index-for-
         // index) so a preset's bands array can be applied directly with
@@ -2169,6 +2175,17 @@ class AudioEngine: RCTEventEmitter {
         crossfadeIncomingNode = incomingNode
         crossfadeIncomingLeadInSeconds = leadInSeconds
         crossfadeIncomingTrailingCutSeconds = trailingCutSeconds
+        // The lock screen / car draws its progress bar only once it knows the
+        // song's length. The incoming song's length used to be learned only
+        // when the crossfade finished, so the bar appeared late. Known now,
+        // from the file, before the midpoint update.
+        do {
+            let incKey = "\(track.id)|\(track.qid ?? "")"
+            if sampleRate > 0, lastKnownDurationByKey[incKey] == nil {
+                let d = Double(file.length) / sampleRate - trailingCutSeconds
+                if d > 1 { lastKnownDurationByKey[incKey] = d }
+            }
+        }
         crossfadeAnnouncedIncoming = false
         crossfadeTargetVolume = targetVolume
         crossfadeIncomingGainCorrection = gainCorrection
@@ -3179,11 +3196,17 @@ class AudioEngine: RCTEventEmitter {
             let level = core.level
             let step = core.step
             let maxPos = Double(core.frames - 2)
+            let gr = core.gainRate
+            var mg = core.motion
             for i in 0..<n {
                 // Smoothing: the speed glides toward what the disc asks for
                 // (about 10ms) so a finger's jitter does not crackle.
                 cur += (tgt - cur) * 0.0018
-                g += (gTgt - g) * 0.0035
+                g += (gTgt - g) * gr
+                // Held still = true silence (not the one sample the disc
+                // is parked on, which sounds like a DC click when it starts or stops).
+                let mt: Float = abs(cur) > 0.02 ? 1 : 0
+                mg += (mt - mg) * 0.003
                 var spd = cur
                 let absNow = ws + pos / fr
                 if spd > 0 {
@@ -3198,13 +3221,14 @@ class AudioEngine: RCTEventEmitter {
                 if pos > maxPos { pos = maxPos }
                 let i0 = Int(pos)
                 let f = Float(pos - Double(i0))
-                let a = g * level
+                let a = g * level * mg
                 outL[i] = (l[i0] * (1 - f) + l[i0 + 1] * f) * a
                 outR[i] = (r[i0] * (1 - f) + r[i0 + 1] * f) * a
             }
             core.pos = pos
             core.cur = cur
             core.gain = g
+            core.motion = mg
             return noErr
         }
         engine.attach(node)
@@ -3224,13 +3248,19 @@ class AudioEngine: RCTEventEmitter {
             guard !self.scratchActive, !self.scratchLoading, !self.isCrossfading,
                   let idx = self.currentIndex, idx >= 0, idx < self.queue.count,
                   self.state == .playing || self.state == .paused || self.state == .ready,
-                  let file = self.currentFile, self.ensureScratchNode() else { resolve(false); return }
+                  let file = self.currentFile, self.ensureScratchNode() else {
+                self.debugLog(String(format: "[SCRATCH] begin refused: active=%@ loading=%@ crossfading=%@ state=%@", self.scratchActive ? "y" : "n", self.scratchLoading ? "y" : "n", self.isCrossfading ? "y" : "n", String(describing: self.state)))
+                resolve(false); return
+            }
             let track = self.queue[idx]
             let fileRate = file.processingFormat.sampleRate
             let totalSec = Double(file.length) / fileRate
             let now = self.currentPositionSeconds()
             // Native-side backstop for the same rule JS applies.
-            if now < 1.0 || now > totalSec - 4.0 { resolve(false); return }
+            if now < 1.0 || now > totalSec - 4.0 {
+                self.debugLog(String(format: "[SCRATCH] begin refused: position %.2f of %.2f", now, totalSec))
+                resolve(false); return
+            }
             let windowStart = max(0, now - 15)
             let windowEnd = min(totalSec, now + 15)
             self.scratchLoading = true
@@ -3268,6 +3298,7 @@ class AudioEngine: RCTEventEmitter {
                     let nowAfter = self.currentPositionSeconds()
                     let startPos = (nowAfter - windowStart) * fileRate
                     if startPos < 2 || startPos > Double(framesOut - 2) {
+                        self.debugLog(String(format: "[SCRATCH] begin refused: start %.0f outside window of %d", startPos, framesOut))
                         l.deallocate(); r.deallocate(); resolve(false); return
                     }
                     let core = self.scratchCore
@@ -3286,6 +3317,11 @@ class AudioEngine: RCTEventEmitter {
                     core.target = 0
                     core.gain = 0
                     core.gainTarget = 1
+                    // Comes up from silence over ~20ms (it used to be ~6ms, which
+                    // clicked when starting from pause), and only sounds once the disc moves.
+                    core.gainRate = 0.0012
+                    core.motion = 0
+                    self.scratchForcePlay = false
                     core.level = self.volume * self.currentGainCorrection
                     self.scratchWindowStartSeconds = windowStart
                     self.scratchFileRate = fileRate
@@ -3412,48 +3448,73 @@ class AudioEngine: RCTEventEmitter {
         scratchCore.target = max(-4, min(4, rate.floatValue))
     }
 
-    // Stops scratching, resumes the song from where the disc left it (playing
-    // if it was playing before) and resolves with that position in seconds.
+    // JS says the scratch that began while paused should play on when it ends.
+    @objc(scratchResumePlay)
+    func scratchResumePlay() {
+        DispatchQueue.main.async { [weak self] in self?.scratchForcePlay = true }
+    }
+
+    // Stops scratching and hands the song back to the normal player from where
+    // the disc left it. JS has already eased the disc to normal speed when the
+    // song carries on, so the hand-over is at 1x: the normal player starts a
+    // few ms ahead while the scratch audio is still playing, then the two swap
+    // over a short overlap (no gap, no jump). Resolves with the position.
     @objc(scratchEnd:rejecter:)
     func scratchEnd(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.scratchActive else { resolve(nil); return }
             let core = self.scratchCore
-            let wasPlaying = self.scratchWasPlaying
+            let carryOn = self.scratchWasPlaying || self.scratchForcePlay
+            self.scratchForcePlay = false
             let restoreVol = self.volume * self.currentGainCorrection
-            // Playing before: the disc first glides back up to normal speed
-            // (about 120ms, so letting go sounds like the record catching
-            // up, not a cut), then the normal player takes over from that
-            // exact spot with a short overlap. Paused before: just fade out.
-            core.target = wasPlaying ? 1 : 0
-            // Let go while held back (near a limit or nearly still): the song eases back to normal speed.
-            let glide: TimeInterval = wasPlaying ? (abs(core.cur) < 0.6 ? 0.45 : 0.12) : 0.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + glide) { [weak self] in
+            let fileRate = self.scratchFileRate
+            if carryOn {
+                core.target = 1
+                let lead = 0.04
+                let finalSec = max(0, core.windowStart + core.pos / fileRate)
+                self.scratchActive = false
+                self.stopScratchRefillTimer()
+                self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
+                self.activeNode.volume = 0
+                self.seekWithinCurrentTrack(startAtSeconds: finalSec + lead, autoPlay: true)
+                self.activeNode.volume = 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + lead) { [weak self] in
+                    guard let self = self, !self.scratchActive else { return }
+                    core.gainRate = 0.002
+                    core.gainTarget = 0
+                    for i in 1...10 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
+                            guard let self = self, !self.scratchActive else { return }
+                            self.activeNode.volume = restoreVol * Float(i) / 10
+                        }
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + lead + 0.25) { [weak self] in
+                    if self?.scratchActive == false { core.release() }
+                }
+                self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=play (handover at rate %.2f)", finalSec, core.cur))
+                resolve(finalSec)
+                return
+            }
+            // Paused and only touched: fade out and stay paused.
+            core.target = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 guard let self = self, self.scratchActive else { resolve(nil); return }
                 let finalSec = max(0, core.windowStart + core.pos / self.scratchFileRate)
+                core.gainRate = 0.003
                 core.gainTarget = 0
-                DispatchQueue.main.asyncAfter(deadline: .now() + (wasPlaying ? 0.0 : 0.06)) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
                     guard let self = self, self.scratchActive else { resolve(nil); return }
                     self.scratchActive = false
                     self.stopScratchRefillTimer()
                     self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
-                    self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: wasPlaying)
-                    // The normal player comes up over ~32ms while the scratch
-                    // audio fades out underneath it.
-                    self.activeNode.volume = 0
-                    for i in 1...8 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
-                            guard let self = self, !self.scratchActive else { return }
-                            self.activeNode.volume = restoreVol * Float(i) / 8
-                        }
-                    }
-                    if !wasPlaying, self.engine.isRunning { self.engine.pause() }
-                    // Let the scratch fade finish before its audio is dropped.
+                    self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: false)
+                    self.activeNode.volume = restoreVol
+                    if self.engine.isRunning { self.engine.pause() }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                        // A new scratch may have started meanwhile; only drop the audio if not.
                         if self?.scratchActive == false { core.release() }
                     }
-                    self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=%@", finalSec, wasPlaying ? "play" : "paused"))
+                    self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=paused", finalSec))
                     resolve(finalSec)
                 }
             }
@@ -3888,9 +3949,12 @@ class AudioEngine: RCTEventEmitter {
         // device audio to inspect.
         // A gentle dip: ease down, switch while quiet, ease back up. Short
         // linear ramps were themselves audible as a click-like "reverse pop".
-        let duckMs = 110.0
-        let settleMs = 40.0
-        let riseMs = 160.0
+        // Shorter than before (110/40/160): the dip only has to hide the switch,
+        // which is a step in the signal, so it needs to be near silent at that
+        // one moment and no longer.
+        let duckMs = 70.0
+        let settleMs = 20.0
+        let riseMs = 110.0
         normToggleToken &+= 1
         let token = normToggleToken
         let startVol = normToggleBaseVol ?? preMixNode.outputVolume
@@ -3980,6 +4044,8 @@ final class ScratchCore {
     var target: Float = 0
     var gain: Float = 0
     var gainTarget: Float = 0
+    var gainRate: Float = 0.0035
+    var motion: Float = 0
     var level: Float = 1
     // Absolute song time (seconds) of the first frame in `left`/`right`.
     var windowStart: Double = 0

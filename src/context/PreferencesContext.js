@@ -41,6 +41,7 @@ import {
     getLyricsScrollLocked, setLyricsScrollLocked as persistLyricsScrollLocked,
     getArtistDisplayJoin, setArtistDisplayJoin as persistArtistDisplayJoin,
     getTopBarColor, setTopBarColor as persistTopBarColor,
+    getBottomBarColor, setBottomBarColor as persistBottomBarColor,
     getPlaylistCoverShape, setPlaylistCoverShape as persistPlaylistCoverShape,
     getPlaylistCoverShadow, setPlaylistCoverShadow as persistPlaylistCoverShadow,
     getPlaylistCards, setPlaylistCards as persistPlaylistCards,
@@ -103,6 +104,7 @@ const Ctx = createContext({
     lyricsScrollLocked: false, setLyricsScrollLocked: () => { },
     artistDisplayJoin: 'comma', setArtistDisplayJoin: () => { },
     topBarColor: true, setTopBarColor: () => { },
+    bottomBarColor: true, setBottomBarColor: () => { },
     playlistCoverShape: 'rounded', setPlaylistCoverShape: () => { },
     playlistCoverShadow: true, setPlaylistCoverShadow: () => { },
     playlistCards: true, setPlaylistCards: () => { },
@@ -159,6 +161,7 @@ export function PreferencesProvider({ children }) {
     const [lyricsScrollLocked, setLyricsScrollLockedState] = useState(false);
     const [artistDisplayJoin, setArtistDisplayJoinState] = useState('comma');
     const [topBarColor, setTopBarColorState] = useState(true);
+    const [bottomBarColor, setBottomBarColorState] = useState(true);
     const [playlistCoverShape, setPlaylistCoverShapeState] = useState('rounded');
     const [playlistCoverShadow, setPlaylistCoverShadowState] = useState(true);
     const [playlistCards, setPlaylistCardsState] = useState(true);
@@ -255,6 +258,7 @@ export function PreferencesProvider({ children }) {
         getLyricsScrollLocked().then(setLyricsScrollLockedState);
         getArtistDisplayJoin().then(setArtistDisplayJoinState);
         getTopBarColor().then(setTopBarColorState);
+        getBottomBarColor().then(setBottomBarColorState);
         getPlaylistCoverShape().then(setPlaylistCoverShapeState);
         getPlaylistCoverShadow().then(setPlaylistCoverShadowState);
         getPlaylistCards().then(setPlaylistCardsState);
@@ -394,6 +398,7 @@ export function PreferencesProvider({ children }) {
     }, []);
 
     const setTopBarColor = useCallback((v) => { setTopBarColorState(v); persistTopBarColor(v); }, []);
+    const setBottomBarColor = useCallback((v) => { setBottomBarColorState(v); persistBottomBarColor(v); }, []);
     const setPlaylistCoverShape = useCallback((v) => { setPlaylistCoverShapeState(v); persistPlaylistCoverShape(v); }, []);
     const setPlaylistCoverShadow = useCallback((v) => { setPlaylistCoverShadowState(v); persistPlaylistCoverShadow(v); }, []);
     const setPlaylistCards = useCallback((v) => { setPlaylistCardsState(v); persistPlaylistCards(v); }, []);
@@ -437,6 +442,7 @@ export function PreferencesProvider({ children }) {
         lyricsScrollLocked, setLyricsScrollLocked,
         artistDisplayJoin, setArtistDisplayJoin,
         topBarColor, setTopBarColor,
+        bottomBarColor, setBottomBarColor,
         playlistCoverShape, setPlaylistCoverShape,
         playlistCoverShadow: performanceMode ? false : playlistCoverShadow, setPlaylistCoverShadow,
         playlistCards, setPlaylistCards,
@@ -448,7 +454,7 @@ export function PreferencesProvider({ children }) {
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, betweenTrackNorm, silenceTrim,
         showPlaylistTrackCount, showPlaylistTitles, lyricsScrollLocked, artistDisplayJoin,
-        topBarColor, playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, ui,
+        topBarColor, bottomBarColor, playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, ui,
     ]);
 
     return (

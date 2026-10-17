@@ -57,7 +57,11 @@ export default function DraggableRow({ dragKey, disabled, onDragStart, onDragMov
                     ref={panRef}
                     enabled={!disabled}
                     simultaneousHandlers={longPressRef}
-                    maxPointers={1}
+                    // No pointer limit: a second finger touching the screen used
+                    // to cancel the gesture and drop the row. It is ignored now (the
+                    // drag just carries on).
+                    minPointers={1}
+                    maxPointers={10}
                     onGestureEvent={onPanEvent}
                     onHandlerStateChange={onPanStateChange}
                 >

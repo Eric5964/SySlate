@@ -521,6 +521,8 @@ export const setPlayerBtn = (name, v) => safe(() => AsyncStorage.setItem(`player
 // Colored top bars on the three main screens (Playlists, All Songs, Settings).
 export const getTopBarColor = () => safe(() => AsyncStorage.getItem('top_bar_color').then(v => v !== 'false'), true);
 export const setTopBarColor = (v) => safe(() => AsyncStorage.setItem('top_bar_color', String(v)), null);
+export const getBottomBarColor = () => safe(() => AsyncStorage.getItem('bottom_bar_color').then(v => v !== 'false'), true);
+export const setBottomBarColor = (v) => safe(() => AsyncStorage.setItem('bottom_bar_color', String(v)), null);
 // Playlist covers have their own shape and shadow, separate from song covers
 // and the Player cover.
 export const getPlaylistCoverShape = () => safe(() => AsyncStorage.getItem('playlist_cover_shape').then(v => v || 'rounded'), 'rounded');
@@ -1022,7 +1024,7 @@ export const importAllSettings = async (jsonString) => {
         'show_player_cover', 'bg_image_enabled',
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
-        'top_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
+        'top_bar_color', 'bottom_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
         'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'performance_mode', 'use_volume_tags',
     ]);
     // [min, max] — matches each setting's own slider bounds in

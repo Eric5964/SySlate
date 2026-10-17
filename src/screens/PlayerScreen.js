@@ -80,9 +80,14 @@ export default function PlayerScreen() {
     // mount case is a no-op; only a later, real change fires this.
     const prevTrackIdRef = useRef(currentTrack?.id);
     const [justSwitched, setJustSwitched] = useState(false);
+    // Where the new song really is right after a change (a crossfade flips the
+    // display halfway, so it is already a few seconds in), so the time and bar
+    // start there instead of at 0:00 and jumping.
+    const [switchProg, setSwitchProg] = useState({ position: 0, duration: 0 });
     useEffect(() => {
         if (prevTrackIdRef.current === currentTrack?.id) return;
         prevTrackIdRef.current = currentTrack?.id;
+        setSwitchProg({ position: 0, duration: 0 });
         setJustSwitched(true);
         const t = setTimeout(() => setJustSwitched(false), 400);
         return () => clearTimeout(t);
@@ -464,7 +469,7 @@ export default function PlayerScreen() {
     // would need a native module or a metadata-parsing library — a separate,
     // bigger feature if you want it.
     const artwork = playerArtUri(currentTrack?.artwork);
-    const pct = justSwitched ? 0 : (progress.duration > 0 ? progress.position / progress.duration : 0);
+    const pct = justSwitched ? (switchProg.duration > 0 ? Math.min(1, switchProg.position / switchProg.duration) : 0) : (progress.duration > 0 ? progress.position / progress.duration : 0);
 
     // Lyrics: 'off' never even attempts a .lrc lookup (no wasted file I/O
     // for anyone who doesn't use this). 'manual' and 'auto' both look up
@@ -900,19 +905,24 @@ export default function PlayerScreen() {
             // intermediate value; the very next real poll corrects it via
             // the ordinary drift check below, same as always.
             console.log(`[BAR] track changed: bar reset to 0, last poll said ${(progress.position || 0).toFixed(1)}s of ${(progress.duration || 0).toFixed(1)}s`);
-            startRealTimeAnim(0, true);
-            // The new song may already be a couple of seconds in (a
-            // crossfade flips the display halfway through). Ask for the real
-            // spot right away instead of sitting at 0 until the next poll
-            // and then jumping, so the bar starts where the sound is.
+            // The new song may already be a few seconds in (a crossfade flips the
+            // display halfway through). Ask for the real spot and start the bar
+            // THERE, instead of at 0 and then jumping. Only if no usable answer
+            // comes back quickly does the bar fall back to 0.
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
+            let settled = false;
+            const toZero = () => { if (settled || lastSyncedTrackIdRef.current !== trackAtChange) return; settled = true; startRealTimeAnim(0, true); };
+            const fallback = setTimeout(toZero, 250);
             AudioEngine.getProgress().then(p => {
-                if (lastSyncedTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
-                if (idAtChange && p.id && p.id !== idAtChange) return;   // a reading for the other song
-                if (p.position > p.duration || p.position > 40) return;   // not a fresh song's spot, don't trust
+                if (settled || lastSyncedTrackIdRef.current !== trackAtChange) return;
+                const usable = p?.duration > 0 && !(idAtChange && p.id && p.id !== idAtChange) && p.position <= p.duration && p.position <= 40;
+                if (!usable) return;   // the fallback (or the next poll) handles it
+                settled = true;
+                clearTimeout(fallback);
+                setSwitchProg({ position: p.position, duration: p.duration });
                 startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
-            }).catch(() => { });
+            }).catch(() => { toZero(); });
             return;
         }
         // Drift is judged in SECONDS now. 2% of the song was 3-4 seconds on
@@ -1307,8 +1317,8 @@ export default function PlayerScreen() {
                             </PanGestureHandler>
                         </TapGestureHandler>
                         <View style={s.times}>
-                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? 0 : progress.position))}</Text>
-                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(justSwitched ? 0 : progress.duration)}</Text>
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? switchProg.position : progress.position))}</Text>
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(justSwitched ? switchProg.duration : progress.duration)}</Text>
                         </View>
                     </View>
                 </View>

@@ -295,7 +295,8 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
 
 const s = StyleSheet.create({
     container: { flex: 1 },
-    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5 },
+    // minHeight keeps the bar and title where they are when every button is switched off.
+    topRow: { flexDirection: 'row', alignItems: 'center', paddingTop: TOP_PAD, paddingHorizontal: 8, paddingBottom: 8 + TOP_FADE, zIndex: 5, minHeight: TOP_PAD + 40 + 8 + TOP_FADE },
     searchBlock: { paddingHorizontal: 16, paddingBottom: 10 },
     // Was 'flex-end' — with paddingTop:60 identical to Playlists' own
     // header, this was the actual cause of "All Songs title sits lower

@@ -74,19 +74,23 @@ export default function MiniPlayer({ withTabBar = true }) {
             // see AudioEngine.swift's getProgress), so don't trust it yet.
             // Force 0 and let the very next real poll (this same effect,
             // trackChanged now false) bring in the correct pair.
-            basisRef.current = { position: 0, duration: 0, at: Date.now() };
             // Same as the Player's bar: ask for the real spot now (a crossfade
-            // flips the display halfway, so the new song is already a couple
-            // of seconds in) instead of waiting for the next poll.
+            // flips the display halfway, so the new song is already a few
+            // seconds in) and start there. Falls back to 0 if no usable answer
+            // arrives quickly.
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
+            let settled = false;
+            const toZero = () => { if (settled || lastTrackIdRef.current !== trackAtChange) return; settled = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
+            setTimeout(toZero, 250);
             AudioEngine.getProgress().then(p => {
-                if (lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
+                if (settled || lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
                 if (idAtChange && p.id && p.id !== idAtChange) return;   // a reading for the other song
                 if (p.position > p.duration || p.position > 40) return;
+                settled = true;
                 basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
                 forceTick(t => t + 1);
-            }).catch(() => { });
+            }).catch(() => { toZero(); });
         } else {
             basisRef.current = { position: progress.position, duration: progress.duration, at: Date.now() };
         }

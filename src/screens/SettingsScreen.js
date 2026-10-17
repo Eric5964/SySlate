@@ -132,7 +132,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
@@ -536,7 +536,7 @@ export default function SettingsScreen() {
             setLyricsOffsetLocal(0); setLyricsOffsetSec(0);
             setLyricsScrollLocked(false);
         },
-        screen: () => { setTopBarColor(true); setKeepScreenAwake(false); },
+        screen: () => { setTopBarColor(true); setBottomBarColor(true); setKeepScreenAwake(false); },
         covers: () => { setCoverShape('rounded'); setPlaylistCoverShape('rounded'); setPlaylistCoverShadow(true); },
         artists: () => { setArtistSeparator([';']); setArtistDisplayJoin('comma'); },
         album: () => { setAlbumFromFolderState(false); setAlbumFromFolder(false); },
@@ -551,8 +551,8 @@ export default function SettingsScreen() {
     const GROUP_RESET_NOTE = {
         playback: 'Volume levelling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults. EQ presets are not touched.',
         screens: 'Every switch and option for the Playlists, All Songs, Playlist and Player screens goes back to its default.',
-        appearance: 'Cover shapes, shadows, colored top bars and keep-screen-awake go back to their defaults. Accent color, base color and the custom background are not touched.',
-        library: 'Multiple Artists and Album From Folder Name go back to their defaults. Your music and its location are not touched.',
+        appearance: 'Cover shapes, shadows, colored top and bottom bars and keep-screen-awake go back to their defaults. Accent color, base color and the custom background are not touched.',
+        library: 'Artist separators, how artists are shown and Album From Folder Name go back to their defaults. Your music and its location are not touched.',
     };
     const askGroupReset = (key, title) => Alert.alert(
         `Reset ${title}?`,
@@ -563,7 +563,7 @@ export default function SettingsScreen() {
     const resetEverything = () => {
         Alert.alert(
             'Reset all settings?',
-            'Every setting in Playback, Screens, Appearance (look only) and Library & Data goes back to its default.',
+            'Every setting in Playback, Screens, Appearance (look only) and Library goes back to its default.',
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -609,7 +609,7 @@ export default function SettingsScreen() {
         minimal: { cs: false, pcs: false, sps: false, mps: false, po: false, dout: false },
         soft: { cs: true, pcs: true, sps: true, mps: true, po: false, dout: false },
         bold: { cs: true, pcs: true, sps: true, mps: true, po: true, dout: true },
-        sharp: { cs: false, pcs: false, sps: false, mps: false, po: true, dout: true, shape: 'square' },
+        sharp: { cs: false, pcs: false, sps: false, mps: false, po: true, dout: true },
     };
     const currentLook = () => ({ cs: shadowsRaw.coverShadow, pcs: shadowsRaw.playlistCoverShadow, sps: shadowsRaw.songPillShadow, mps: shadowsRaw.miniPlayerShadow, po: playerOutline, dout: detailOutline });
     const sameLook = (a, b) => !!a && !!b && ['cs', 'pcs', 'sps', 'mps', 'po', 'dout'].every(k => !!a[k] === !!b[k]);
@@ -617,21 +617,18 @@ export default function SettingsScreen() {
     const applyLook = (L) => {
         setCoverShadow(L.cs); setPlaylistCoverShadow(L.pcs); setSongPillShadow(L.sps); setMiniPlayerShadow(L.mps);
         setPlayerOutline(L.po); setDetailOutline(L.dout);
-        if (L.shape) setRoundedCovers(false);
     };
     const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'soft', label: 'Soft' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }];
     const lookOn = (id) => sameLook(currentLook(), LOOKS[id]);
     const looksUi = (
         <>
             {chipRow(LOOK_CHIPS, lookOn, (id) => applyLook(LOOKS[id]))}
-            <View style={s.settingHeader}>
-                <Text style={s.toggleSub}>Minimal: flat, no shadows or outlines.{'\n'}Soft: shadows only.{'\n'}Bold: shadows and outlines.{'\n'}Sharp: outlines only, and square covers.</Text>
-            </View>
-            {toggle('Rounded Covers', 'Round the corners of song and playlist covers', coverShape === 'rounded', setRoundedCovers)}
+            <Text style={s.chipNote}>Minimal: no shadows nor outlines.{'\n'}Soft: shadows only.{'\n'}Bold: shadows and outlines.{'\n'}Sharp: outlines only.</Text>
+            {toggle('Rounded Covers', 'Rounded covers round song and playlist covers', coverShape === 'rounded', setRoundedCovers)}
         </>
     );
-    const performanceToggle = toggle('Performance Mode', 'For older iPhones. Turns off shadows, loads lists lighter, saves less in the background and stops the debug log. Your own shadow settings come back when it is off', performanceMode, setPerformanceMode, true);
-    const volumeTagToggle = toggle('Use Volume Tags', 'When Match Volume is on, use the volume value stored in the song file (ReplayGain) if it has one. Songs without one still use the estimate', useVolumeTags, setUseVolumeTags);
+    const performanceToggle = toggle('Performance Mode', 'For older devices. Turns off shadows, loads lists slower, saves less stuff during your listening', performanceMode, setPerformanceMode, true);
+    const volumeTagToggle = toggle('Use Volume Tags', 'If Match Volume is on, use the volume value stored in the song file (ReplayGain) if it has one', useVolumeTags, setUseVolumeTags);
     const askRestoreBackup = async () => {
         const list = await listAutoBackups();
         if (!list.length) { Alert.alert('No backups yet', 'A copy is made about once a day when the app opens, or tap Back Up Now.'); return; }
@@ -645,8 +642,8 @@ export default function SettingsScreen() {
     // time, repeats possible). Saved as one id, see utils/shuffle.js.
     const shuffleParts = MODE_PARTS[shuffleTypePref] || MODE_PARTS.full_cycle;
     const pickShuffle = (weight, order) => { const id = modeId(weight, order); setShuffleTypePref(id); changeShuffleMode(id); };
-    const WEIGHTS = [{ id: 'normal', label: 'Normal', sub: 'Every song equally likely' }, { id: 'smart', label: 'Smart', sub: 'Leans toward songs you have played less' }, { id: 'dumb', label: 'Dumb', sub: 'Leans toward songs you have played more' }];
-    const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Every song once per round' }, { id: 'random', label: 'Random', sub: 'Any song any time, repeats possible, no rounds' }];
+    const WEIGHTS = [{ id: 'normal', label: 'Normal', sub: 'Every song equally likely' }, { id: 'smart', label: 'Smart', sub: 'Leans toward less played songs' }, { id: 'dumb', label: 'Dumb', sub: 'Leans toward more played songs' }];
+    const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Avoids repeats by going through the playlist' }, { id: 'random', label: 'Random', sub: 'Chooses songs randomly from the playlist' }];
     const shuffleUi = (
         <>
             {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order), { paddingBottom: 8 })}
@@ -656,6 +653,9 @@ export default function SettingsScreen() {
             </Text>
         </>
     );
+    // Multi-select chips: each one is a switch. Lit = on.
+    const chipsFor = (map) => chipRow(map, (id) => map.find(m => m.id === id).on, (id) => map.find(m => m.id === id).set());
+    const uiChip = (id, label) => ({ id, label, on: uiOn(id), set: () => uiPick(id) });
     const noMatch = !!q && !SECTION_TITLES.some(t => sectionMatches(t, q));
 
     return (
@@ -675,6 +675,9 @@ export default function SettingsScreen() {
                 // grab the finger while it scrolls.
                 onScroll={(e) => noteScroll(e.nativeEvent.contentOffset.y)}
                 scrollEventThrottle={16}
+                // iOS waits ~150ms before passing a touch on to what is inside a
+                // ScrollView; that was the sluggish feel of the chips and switches.
+                delaysContentTouches={false}
                 // The list runs up under the bar's fade (so rows fade out
                 // instead of being cut off) and starts lower by the same
                 // amount, so nothing sits higher than before.
@@ -705,20 +708,20 @@ export default function SettingsScreen() {
                 <Section title="Sound" only="simple">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Crossfade & Fades</Text>
-                        <Text style={s.toggleSub}>One length (0 to 6s) for the end-of-song crossfade, skipping, and the fade when you play or pause</Text>
+                        <Text style={s.toggleSub}>End-of-song crossfade, skipping, play, and pause</Text>
                     </View>
                     {chipRow(SIMPLE_XF.map(v => ({ id: v, label: v === 0 ? 'Off' : `${v}s` })), (id) => simpleXfSelected === id, applySimpleCrossfade)}
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>Shuffle</Text>
-                        <Text style={s.toggleSub}>How songs are picked when shuffle is on</Text>
+                        <Text style={s.toggleSub}>How songs are picked with shuffle on</Text>
                     </View>
                     {shuffleUi}
-                    {toggle('Match Volume', 'Keeps songs at a similar loudness', betweenTrackNorm, setBetweenTrackNorm)}
+                    {toggle('Match Volume', 'Keeps different songs at a similar volume', betweenTrackNorm, setBetweenTrackNorm)}
                 </Section>
                 <Section title="Player" only="simple">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Opens On</Text>
-                        <Text style={s.toggleSub}>What the Player shows first for each song</Text>
+                        <Text style={s.toggleSub}>What the player shows first when opening</Text>
                     </View>
                     {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
                 </Section>
@@ -795,7 +798,7 @@ export default function SettingsScreen() {
                         picked (same as how a hardware EQ's master gain knob
                         works alongside its band sliders). */}
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Pre-amp</Text>
-                    <Text style={s.sliderNote}>Overall gain on top of the current preset — boost a quiet library or pull back a hot one</Text>
+                    <Text style={s.sliderNote}>Gain on top of the EQ</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{preAmpLocal > 0 ? '+' : ''}{preAmpLocal.toFixed(1)}dB</Text>
                     <PureSlider guardScroll style={s.slider} minimumValue={-12} maximumValue={12} step={0.5} value={preAmpLocal}
                         onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
@@ -812,15 +815,15 @@ export default function SettingsScreen() {
                                 Dynamics Processor) is compression WITHIN a
                                 track, not loudness matching across tracks. Split
                                 into two real, separate settings below. */}
-                            <Text style={s.toggleSub}>Evens out loud and quiet parts of a song</Text>
+                            <Text style={s.toggleSub}>Evens out loud and quiet parts of the same song</Text>
                         </View>
                         <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Match Volume Between Songs</Text>
-                            <Text style={s.toggleSub}>Keeps songs at a similar volume. An estimate, checked once per song</Text>
+                            <Text style={s.toggleLabel}>Match Volume</Text>
+                            <Text style={s.toggleSub}>Keeps different songs at a similar volume</Text>
                         </View>
                         <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -844,7 +847,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Crossfade</Text>
-                            <Text style={s.toggleSub}>Overlaps songs. Replaces the End of Track and On Skip ramps</Text>
+                            <Text style={s.toggleSub}>Overlaps songs while transitioning from one to the next</Text>
                         </View>
                         <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -862,7 +865,7 @@ export default function SettingsScreen() {
                                 AudioEngine.swift's advance()), so there's nothing
                                 for a fresh play to overlap FROM. */}
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade at End of Track</Text>
-                            <Text style={s.sliderNote}>Overlap as a song ends, also when looping</Text>
+                            <Text style={s.sliderNote}>Overlaps as a song ends or loops</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationEotLocal.toFixed(1)}s</Text>
                             {/* Max lowered 10→6 to match Ramp's End of Track
                                 cap right below — direct ask ("crossfade
@@ -886,7 +889,7 @@ export default function SettingsScreen() {
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Crossfade on Skip</Text>
-                            <Text style={s.sliderNote}>Overlap when you skip</Text>
+                            <Text style={s.sliderNote}>Overlaps during a skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{crossfadeDurationLocal.toFixed(1)}s</Text>
                             {/* Max lowered 10→3, matching Ramp's On Skip cap.
                                 minimumValue same fix as above — 0 instead of 1. */}
@@ -899,7 +902,7 @@ export default function SettingsScreen() {
                     ) : (
                         <>
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp at End of Track</Text>
-                            <Text style={s.sliderNote}>Fade out at the end, fade in the next</Text>
+                            <Text style={s.sliderNote}>Fade out and back in the next</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{eotRamp.toFixed(1)}s</Text>
                             <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={eotRamp}
                                 onValueChange={setEotRampState} onSlidingComplete={v => { setEotRampState(v); setEndOfTrackRamp(v); }}
@@ -907,7 +910,7 @@ export default function SettingsScreen() {
                             <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
 
                             <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Skip</Text>
-                            <Text style={s.sliderNote}>Softens skips</Text>
+                            <Text style={s.sliderNote}>Fade out and back in during a skip</Text>
                             <Text style={[s.sliderVal, { color: theme.accent }]}>{skipRamp.toFixed(1)}s</Text>
                             <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={skipRamp}
                                 onValueChange={setSkipRampState} onSlidingComplete={v => { setSkipRampState(v); setSkipRamp(v); }}
@@ -917,7 +920,7 @@ export default function SettingsScreen() {
                     )}
 
                     <Text style={[s.sliderSub, { paddingTop: 20 }]}>Ramp on Play</Text>
-                    <Text style={s.sliderNote}>Fade in when playback starts</Text>
+                    <Text style={s.sliderNote}>Fade in on start</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{ramp.toFixed(1)}s</Text>
                     <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={6} step={0.5} value={ramp}
                         onValueChange={setRamp} onSlidingComplete={v => { setRamp(v); setAudioRamp(v); }}
@@ -960,7 +963,7 @@ export default function SettingsScreen() {
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
-                            Always go back, or restart the song if you're past its start
+                            Always go back, or restart the song if you're past the threshold
                         </Text>
                     </View>
                     <View style={s.sortRow}>
@@ -981,7 +984,7 @@ export default function SettingsScreen() {
                             <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                                 <Text style={s.toggleLabel}>Previous-Track Window</Text>
                                 <Text style={s.toggleSub}>
-                                    Within this much of the song Previous goes back a song. After it, Previous restarts the song
+                                    Threshold of going to the previous song, otherwise restart the song
                                 </Text>
                             </View>
                             <View style={s.sortRow}>
@@ -1029,71 +1032,54 @@ export default function SettingsScreen() {
                 <GroupHeader title="Screens" onReset={() => askGroupReset('screens', 'Screens')} hidden={isHidden('screens')} onToggleHidden={() => toggleGroupHidden('screens')} />
                 {!isHidden('screens') && (<>
 
-                <Section title="Lists">
-                    <SubGroup title="Songs & playlists" first>
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Show Song Covers</Text>
-                            <Text style={s.toggleSub}>Cover art next to songs in lists</Text>
-                        </View>
-                        <Switch value={showSongCovers} onValueChange={setShowSongCovers}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Show Play Count</Text>
-                            <Text style={s.toggleSub}>In lists, the queue and the player</Text>
-                        </View>
-                        <Switch value={showPlayCount} onValueChange={setShowPlayCount}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Show Track Count</Text>
-                            <Text style={s.toggleSub}>Track counts on Playlists and inside each one</Text>
-                        </View>
-                        <Switch value={showPlaylistTrackCount} onValueChange={setShowPlaylistTrackCount}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Show Playlist Titles</Text>
-                            <Text style={s.toggleSub}>Playlist names under their covers and above the songs inside a playlist</Text>
-                        </View>
-                        <Switch value={showPlaylistTitles} onValueChange={setShowPlaylistTitles}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                    {toggle('Playlist Cards', 'A card behind every playlist, in all layouts', playlistCards, setPlaylistCards)}
-                    {toggle('Show Arrow', 'The arrow on the list layouts', playlistArrow, setPlaylistArrow)}
-                    </SubGroup>
-                    <SubGroup title="Playlists screen">
-                    {chipRow([{ id: 'pl_layout', label: 'Layout' }, { id: 'pl_reload', label: 'Reload' }], uiOn, uiPick)}
-                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
-                    </SubGroup>
-                    <SubGroup title="All Songs screen">
-                    {chipRow([{ id: 'as_eq', label: 'EQ' }, { id: 'as_queue', label: 'Queue' }], uiOn, uiPick)}
-                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
-                    </SubGroup>
-                    <SubGroup title="Playlist screen">
-                    {chipRow([{ id: 'pd_back', label: 'Back' }, { id: 'pd_search', label: 'Search' }, { id: 'pd_eq', label: 'EQ' }, { id: 'pd_queue', label: 'Queue' }, { id: 'pd_cover', label: 'Cover' }, { id: 'pd_play', label: 'Play' }, { id: 'pd_shuffle', label: 'Shuffle' }], uiOn, uiPick)}
-                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
-                    </SubGroup>
+                <Section title="Song Lists">
+                    {chipsFor([
+                        { id: 'covers', label: 'Covers', on: !!showSongCovers, set: () => setShowSongCovers(!showSongCovers) },
+                        { id: 'playcount', label: 'Play count', on: !!showPlayCount, set: () => setShowPlayCount(!showPlayCount) },
+                    ])}
+                    <Text style={s.chipNote}>Covers and play count show in every song list.</Text>
+                </Section>
+
+                <Section title="All Songs Screen">
+                    {chipsFor([uiChip('as_eq', 'EQ'), uiChip('as_queue', 'Queue')])}
+                    <Text style={s.chipNote}>Top bar buttons.</Text>
+                </Section>
+
+                <Section title="Playlists Screen">
+                    {chipsFor([
+                        uiChip('pl_layout', 'Layout'), uiChip('pl_reload', 'Reload'),
+                        { id: 'count', label: 'Track count', on: !!showPlaylistTrackCount, set: () => setShowPlaylistTrackCount(!showPlaylistTrackCount) },
+                        { id: 'titles', label: 'Titles', on: !!showPlaylistTitles, set: () => setShowPlaylistTitles(!showPlaylistTitles) },
+                        { id: 'cards', label: 'Cards', on: !!playlistCards, set: () => setPlaylistCards(!playlistCards) },
+                        { id: 'arrow', label: 'Arrow', on: !!playlistArrow, set: () => setPlaylistArrow(!playlistArrow) },
+                    ])}
+                    <Text style={s.chipNote}>Layout and Reload are top bar buttons. Track count and Titles show under and inside of each playlist. Cards puts a background behind every playlist. Arrow is only for list layouts.</Text>
+                </Section>
+
+                <Section title="Playlist Screen">
+                    {chipsFor([uiChip('pd_back', 'Back'), uiChip('pd_search', 'Search'), uiChip('pd_eq', 'EQ'), uiChip('pd_queue', 'Queue'), uiChip('pd_cover', 'Cover'), uiChip('pd_play', 'Play'), uiChip('pd_shuffle', 'Shuffle')])}
+                    <Text style={s.chipNote}>Back, Search, EQ and Queue are top bar buttons. Cover, Play and Shuffle are above the songs in the playlist.</Text>
                 </Section>
 
                 <Section title="Player">
-                    <SubGroup title="Buttons" first>
-                    {chipRow([{ id: 'sleep', label: 'Sleep' }, { id: 'speed', label: 'Speed' }, { id: 'eq', label: 'EQ' }, { id: 'queue', label: 'Queue' }, { id: 'back', label: 'Down arrow' }, { id: 'label', label: 'Playlist name' }], (id) => !!playerBtns[id], (id) => setPlayerBtnShown(id, !playerBtns[id]))}
-                    <View style={s.settingHeader}><Text style={s.toggleSub}>Tap to show or hide. Highlighted buttons are shown.</Text></View>
-                    </SubGroup>
+                    {chipsFor([
+                        { id: 'sleep', label: 'Sleep', on: !!playerBtns.sleep, set: () => setPlayerBtnShown('sleep', !playerBtns.sleep) },
+                        { id: 'speed', label: 'Speed', on: !!playerBtns.speed, set: () => setPlayerBtnShown('speed', !playerBtns.speed) },
+                        { id: 'eq', label: 'EQ', on: !!playerBtns.eq, set: () => setPlayerBtnShown('eq', !playerBtns.eq) },
+                        { id: 'queue', label: 'Queue', on: !!playerBtns.queue, set: () => setPlayerBtnShown('queue', !playerBtns.queue) },
+                        { id: 'back', label: 'Down arrow', on: !!playerBtns.back, set: () => setPlayerBtnShown('back', !playerBtns.back) },
+                        { id: 'label', label: 'Playlist name', on: !!playerBtns.label, set: () => setPlayerBtnShown('label', !playerBtns.label) },
+                    ])}
+                    <Text style={s.chipNote}>Buttons at the top of the Player.</Text>
                     <SubGroup title="Views">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Opens On</Text>
-                        <Text style={s.toggleSub}>What the Player shows first for each song. The button under the cover cycles through the views that are on</Text>
+                        <Text style={s.toggleSub}>What the player shows first when opening</Text>
                     </View>
                     {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
-                    {toggle('Cover', 'Album art on the Player', showPlayerCover, setShowPlayerCover, true)}
+                    {toggle('Cover', 'Album art in the Player', showPlayerCover, setShowPlayerCover, true)}
                     <View style={{ height: 22 }} />
-                    {toggle('Lyrics', 'A lyrics view, for songs that have lyrics', lyricsOn, setLyricsOn, true)}
+                    {toggle('Lyrics', 'A synced lyrics view for songs that have it', lyricsOn, setLyricsOn, true)}
                     {lyricsOn && (<>
                     <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
                     <Text style={s.sliderNote}>
@@ -1107,7 +1093,7 @@ export default function SettingsScreen() {
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>0s</Text><Text style={s.sliderEnd}>6s</Text></View>
                     <Text style={[s.sliderSub, { paddingTop: 14 }]}>Sync Offset</Text>
                     <Text style={s.sliderNote}>
-                        Fixes lyrics that run early or late. Positive shows lines sooner
+                        Adjusts lyrics timing, positive shows lines sooner
                     </Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>
                         {lyricsOffsetLocal > 0 ? '+' : ''}{lyricsOffsetLocal.toFixed(1)}s
@@ -1117,14 +1103,14 @@ export default function SettingsScreen() {
                         onSlidingComplete={v => { setLyricsOffsetLocal(v); setLyricsOffsetSec(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
-                    {toggle('Unscrollable Lyrics', 'Swiping lyrics closes the player instead of scrolling', lyricsScrollLocked, setLyricsScrollLocked)}
+                    {toggle('Unscrollable Lyrics', 'Disables swiping to scroll the lyrics', lyricsScrollLocked, setLyricsScrollLocked)}
                     </>)}
                     <View style={{ height: 22 }} />
                     {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc, true)}
                     {djDisc && (<>
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>DJ Disc Speed</Text>
-                        <Text style={s.toggleSub}>How fast the disc turns at normal playback speed. It follows the speed button in the Player</Text>
+                        <Text style={s.toggleSub}>How fast the disc turns at normal playback speed</Text>
                     </View>
                     <View style={s.sortRow}>
                         {DISC_RPM_OPTIONS.map(opt => (
@@ -1141,7 +1127,7 @@ export default function SettingsScreen() {
                     </View>
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>Disc Type</Text>
-                        <Text style={s.toggleSub}>Look of the disc: a vinyl record with the cover as its label, or a CD with the cover printed on it</Text>
+                        <Text style={s.toggleSub}>Style of the disc</Text>
                     </View>
                     <View style={s.sortRow}>
                         {[{ id: 'vinyl', label: 'Vinyl' }, { id: 'cd', label: 'CD' }].map(opt => (
@@ -1154,9 +1140,9 @@ export default function SettingsScreen() {
                             </TouchableOpacity>
                         ))}
                     </View>
-                    {toggle('Scratch Speed Assist', 'While scratching, the speed clings to 0.5x, 1x and 2x when your finger is close. Off = exactly your finger speed. Your finger plays at 1x when it turns the disc as fast as it idles at the speed above', djDiscAssist, setDjDiscAssist)}
-                    {toggle('Disc Spins', 'The disc keeps turning while a song plays', djDiscSpin, setDjDiscSpin)}
-                    {toggle('Touch & Scratch', 'Move or scratch the disc with a finger. Off also stops the dimming near the ends of songs', djDiscTouch, setDjDiscTouch)}
+                    {toggle('Scratch Speed Assist', 'While scratching, the speed clings to 0.5x, 1x, and 2x', djDiscAssist, setDjDiscAssist)}
+                    {toggle('Disc Spins', 'The disc turns while a song plays', djDiscSpin, setDjDiscSpin)}
+                    {toggle('Touch & Scratch', 'Move or scratch the disc with your finger', djDiscTouch, setDjDiscTouch)}
                     </>)}
                     </SubGroup>
                 </Section>
@@ -1173,11 +1159,12 @@ export default function SettingsScreen() {
                     {looksUi}
                     </SubGroup>
                     <SubGroup title="Top bars & screen">
-                    {toggle('Colored Top Bars', 'Playlists, All Songs, Settings and playlist top bars use the base color. Off: transparent, and lists scroll behind them', topBarColor, setTopBarColor, true)}
+                    {toggle('Colored Top Bars', 'Top tab bar in most screens, uses base color', topBarColor, setTopBarColor, true)}
+                    {toggle('Colored Bottom Bar', 'Bottom tab bar in most screens, uses base color', bottomBarColor, setBottomBarColor)}
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Screen Awake</Text>
-                            <Text style={s.toggleSub}>Only while a song plays</Text>
+                            <Text style={s.toggleSub}>Keeps your screen on while listening</Text>
                         </View>
                         <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -1199,7 +1186,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Light Mode</Text>
-                            <Text style={s.toggleSub}>Light background. Your dark base color returns when you turn it off</Text>
+                            <Text style={s.toggleSub}>Light background instead of a dark one</Text>
                         </View>
                         <Switch value={isLight} onValueChange={toggleLightMode}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -1226,7 +1213,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Background Image</Text>
-                            <Text style={s.toggleSub}>Image behind every screen. Colors stay the same</Text>
+                            <Text style={s.toggleSub}>Background image instead of a solid color</Text>
                         </View>
                         <Switch value={backgroundImageEnabled} onValueChange={v => {
                             if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
@@ -1250,7 +1237,7 @@ export default function SettingsScreen() {
 
                 </>)}
 
-                <GroupHeader title="Library & Data" onReset={() => askGroupReset('library', 'Library & Data')} hidden={isHidden('library')} onToggleHidden={() => toggleGroupHidden('library')} />
+                <GroupHeader title="Library" onReset={() => askGroupReset('library', 'Library')} hidden={isHidden('library')} onToggleHidden={() => toggleGroupHidden('library')} />
                 {!isHidden('library') && (<>
 
                 {/* Splits a tag's artist field into individual artists on this
@@ -1266,7 +1253,7 @@ export default function SettingsScreen() {
                     <SubGroup title="Multiple artists" first>
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
-                        <Text style={s.toggleSub}>What splits multiple artists in your files, like "A; B". Pick all you use</Text>
+                        <Text style={s.toggleSub}>What splits multiple artists in your files, select all that you use</Text>
                     </View>
                     <View style={s.sortRow}>
                         {ARTIST_SEPARATORS.map(opt => {
@@ -1319,7 +1306,7 @@ export default function SettingsScreen() {
                          on here; noted as a followup, not silently skipped. */}
                     <View style={[s.settingHeader, { marginTop: 14 }]}>
                         <Text style={s.toggleLabel}>Artist Display Format</Text>
-                        <Text style={s.toggleSub}>How multiple artists show in the app</Text>
+                        <Text style={s.toggleSub}>How multiple artists are shown after separating them</Text>
                     </View>
                     <View style={s.sortRow}>
                         {[
@@ -1424,11 +1411,15 @@ export default function SettingsScreen() {
                     </SubGroup>
                 </Section>
 
-                {/* 7. Export/Import */}
+                </>)}
+
+                <GroupHeader title="Data" hidden={isHidden('data')} onToggleHidden={() => toggleGroupHidden('data')} />
+                {!isHidden('data') && (<>
+
                 <Section title="Listening Stats" simple>
                     <TouchableOpacity style={s.row} onPress={() => navigation.navigate('Stats')}>
                         <Text style={s.rowLabel}>Listening Stats</Text>
-                        <Text style={s.rowSub}>Plays, hours, most played songs and top artists</Text>
+                        <Text style={s.rowSub}>Plays, hours, most played songs, and top artists</Text>
                     </TouchableOpacity>
                 </Section>
 
@@ -1439,18 +1430,18 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity style={[s.row, { borderTopWidth: 1, borderTopColor: base.border }]} onPress={askRestoreBackup}>
                         <Text style={s.rowLabel}>Restore a Backup</Text>
-                        <Text style={s.rowSub}>Pick one of the last 3 copies</Text>
+                        <Text style={s.rowSub}>Choose one of the last 3 copies to restore</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={async () => {
                         try { const json = await exportAllSettings(); await Share.share({ message: json, title: 'SySlate Settings' }); }
                         catch (e) { Alert.alert('Export failed', String(e?.message)); }
                     }}>
                         <Text style={s.rowLabel}>Export Settings</Text>
-                        <Text style={s.rowSub}>Share all your settings as text</Text>
+                        <Text style={s.rowSub}>Save all your settings as text to share</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
                         <Text style={s.rowLabel}>Import Settings</Text>
-                        <Text style={s.rowSub}>Paste settings you exported</Text>
+                        <Text style={s.rowSub}>Paste the settings to restore the settings</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={async () => {
                         try {
@@ -1459,7 +1450,7 @@ export default function SettingsScreen() {
                         } catch (e) { Alert.alert('Export failed', String(e?.message)); }
                     }}>
                         <Text style={s.rowLabel}>Export Covers & Background</Text>
-                        <Text style={s.rowSub}>Save the pictures as a file to move to another device</Text>
+                        <Text style={s.rowSub}>Save the pictures as a file to share</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={async () => {
                         try {
@@ -1479,11 +1470,9 @@ export default function SettingsScreen() {
                         } catch (e) { Alert.alert('Import failed', 'That is not a SySlate pictures file.'); }
                     }}>
                         <Text style={s.rowLabel}>Import Covers & Background</Text>
-                        <Text style={s.rowSub}>Pick the pictures file you exported</Text>
+                        <Text style={s.rowSub}>Paste the file to restore the pictures</Text>
                     </TouchableOpacity>
                 </Section>
-
-                </>)}
 
                 {/* No Xcode on a GH-Actions/sideloaded build means every
                     [RAMP-DEBUG]/[SEEK-DEBUG] console line so far has been
@@ -1500,6 +1489,8 @@ export default function SettingsScreen() {
                         <Text style={s.rowSub}>Console output from this session</Text>
                     </TouchableOpacity>
                 </Section>
+
+                </>)}
 
             </SettingsViewCtx.Provider>
             </ScrollView>
@@ -1591,23 +1582,17 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
     if (view.q || view.mode === 'simple') return null;
     return (
         <View style={{ marginTop: 26, marginBottom: 12, marginHorizontal: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface }}>
+            {/* Tap the name to fold the whole group up or open it again. */}
+            <TouchableOpacity onPress={onToggleHidden} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 6, right: 20 }}
+                style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface, opacity: hidden ? 0.6 : 1 }}>
                 <Text style={{ color: base.text, fontSize: 22, fontWeight: '700' }}>{title}</Text>
-            </View>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-                {onToggleHidden && (
-                    <TouchableOpacity onPress={onToggleHidden} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-                        style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface }}>
-                        <Text style={{ color: theme.accent, fontSize: 13, fontWeight: '700' }}>{hidden ? 'Show' : 'Hide'}</Text>
-                    </TouchableOpacity>
-                )}
-                {onReset && (
-                    <TouchableOpacity onPress={onReset} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-                        style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface }}>
-                        <Text style={{ color: theme.accent, fontSize: 13, fontWeight: '700' }}>Reset</Text>
-                    </TouchableOpacity>
-                )}
-            </View>
+            </TouchableOpacity>
+            {onReset && (
+                <TouchableOpacity onPress={onReset} activeOpacity={0.6} hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                    style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: base.surface }}>
+                    <Text style={{ color: theme.accent, fontSize: 13, fontWeight: '700' }}>Reset</Text>
+                </TouchableOpacity>
+            )}
         </View>
     );
 }
@@ -1618,9 +1603,12 @@ const SECTION_KW = {
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
     'Playback': 'shuffle random smart dumb cycle order queue up next priority previous back restart track',
-    'Lists': 'sort play count songs covers list artists playlists layout grid cards refresh title all search buttons playlist screen header',
+    'Song Lists': 'songs covers play count rounded list queue player artwork',
+    'All Songs Screen': 'all songs eq queue buttons top bar',
+    'Playlists Screen': 'playlists layout reload track count titles cards arrow grid list buttons',
+    'Playlist Screen': 'playlist back search eq queue cover play shuffle buttons header',
     'Player': 'player buttons speed sleep timer eq queue shuffle loop cover lyrics disc vinyl cd dj scratch rpm auto show opens spin touch',
-    'Look': 'shadow outline border looks style cover pill mini player shape rounded square minimal classic bold sharp covers artwork pictures screen awake top bar color',
+    'Look': 'shadow outline border looks style cover pill mini player minimal soft bold sharp pictures screen awake top bar bottom bar tab color transparent',
     'Accent Color': 'accent color theme',
     'Base Color': 'base color dark light theme',
     'Custom Background': 'background image picture wallpaper',
@@ -1639,20 +1627,14 @@ const sectionMatches = (title, q) => {
 const SettingsViewCtx = React.createContext({ mode: 'advanced', q: '' });
 
 // Small label that separates the parts of a merged section.
-const subGroupOpen = {};   // remembers which groups are open while the app runs
 function SubGroup({ title, first, children }) {
     const { base } = useTheme();
-    const { q } = useContext(SettingsViewCtx);
-    const [, force] = useState(0);
-    const open = !!q || !!subGroupOpen[title];
     return (
         <>
-            <TouchableOpacity activeOpacity={0.6} onPress={() => { subGroupOpen[title] = !open; force(n => n + 1); }}
-                style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 10, borderTopWidth: first ? 0 : 1, borderTopColor: base.border, flexDirection: 'row', alignItems: 'center' }}>
-                <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', flex: 1 }}>{title}</Text>
-                <Text style={{ color: base.textDim, fontSize: 18, fontWeight: '600', transform: [{ rotate: open ? '90deg' : '0deg' }] }}>›</Text>
-            </TouchableOpacity>
-            {open ? children : null}
+            <View style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 10, borderTopWidth: first ? 0 : 1, borderTopColor: base.border }}>
+                <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>{title}</Text>
+            </View>
+            {children}
         </>
     );
 }
@@ -1730,6 +1712,7 @@ const makeStyles = (base) => StyleSheet.create({
     // same shape, same interaction, for the same kind of "pick one of a
     // few options" control.
     sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24, paddingBottom: 16, gap: 8 },
+    chipNote: { color: base.textFaint, fontSize: 12, paddingHorizontal: 24, marginTop: -6, paddingBottom: 14, lineHeight: 17 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: base.border },
     sortChipText: { color: base.textDim, fontSize: 13, fontWeight: '600' },
     swatch: { justifyContent: 'center', alignItems: 'center' },
