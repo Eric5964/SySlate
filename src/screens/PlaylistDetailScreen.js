@@ -30,10 +30,17 @@ const SORTS = [
     { id: 'plays_r', label: 'Least Played' },
 ];
 
+// What this screen falls back to when it's opened without a playlist param
+// (a restored navigation state, a deep link, a fast refresh in development):
+// route.params is undefined in those cases, and destructuring it used to throw
+// before anything rendered at all. An empty playlist instead renders the
+// screen's normal "no tracks" state.
+const NO_PLAYLIST = { path: '', name: '', songs: [] };
+
 export default function PlaylistDetailScreen() {
     const navigation = useNavigation();
     const route = useRoute();
-    const { playlist, initialCover } = route.params;
+    const { playlist = NO_PLAYLIST, initialCover } = route.params ?? {};
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext,
     } = usePlayback();
@@ -181,7 +188,7 @@ export default function PlaylistDetailScreen() {
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
-            <View style={[s.topBar, topBarColor ? { zIndex: 5 } : OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
+            <View style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pd_back !== false ? (
                     <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
@@ -229,8 +236,9 @@ export default function PlaylistDetailScreen() {
                 // Colored bar: the list runs up under the bar's soft fade (as on
                 // Playlists and Settings) instead of starting below it, which
                 // used to cut the rows off with a band of plain background.
-                style={topBarColor ? { marginTop: -TOP_FADE } : null}
-                contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 160 }}
+                // The bar floats over the list (always above it, so its buttons
+                // can be tapped); rows start under the bar's fade.
+                contentContainerStyle={{ paddingTop: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH, paddingBottom: 160 }}
                 scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
                 // Keep more rows mounted so covers already on screen stay decoded
                 // while scrolling back, instead of reloading each time.
@@ -295,7 +303,7 @@ export default function PlaylistDetailScreen() {
                                     <TouchableOpacity
                                         key={opt.id}
                                         style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                        onPress={() => { setSortId(opt.id); setPlaylistSort(playlist.path, opt.id); setShowSort(false); }}
+                                        onPress={() => { setSortId(opt.id); if (playlist.path) setPlaylistSort(playlist.path, opt.id); setShowSort(false); }}
                                     >
                                         <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                             {opt.label}

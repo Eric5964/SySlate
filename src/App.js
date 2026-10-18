@@ -132,7 +132,7 @@ function Tabs() {
                 // Colored: the bar uses the base color. Off: transparent like the top bars, with lists passing behind it.
                 tabBarStyle: bottomBarColor
                     ? { backgroundColor: base.surface, borderTopColor: base.border, borderTopWidth: 1 }
-                    : { position: 'absolute', backgroundColor: 'transparent', borderTopWidth: 0, elevation: 0, shadowOpacity: 0 },
+                    : { position: 'absolute', backgroundColor: 'transparent', borderTopColor: 'transparent', borderTopWidth: 1, elevation: 0, shadowOpacity: 0 },
                 tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: '#444',
                 tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 2 },
@@ -367,7 +367,10 @@ function AppInner() {
             // PlaybackProvider's own mount effect — child effects fire BEFORE
             // parent effects on initial mount, so a restore effect living
             // inside PlaybackProvider (a child of AppInner) would have run
-            // before AudioEngine.setupPlayer() above ever finished.
+            // before AudioEngine.setupPlayer() above ever finished. That same
+            // flag is now handed down to PlaybackProvider as engineReady, which
+            // gates its restore effect on it rather than relying on render
+            // order alone.
             setPlayerReady(true);
         })();
     }, []);
@@ -429,7 +432,7 @@ function AppInner() {
                 so this shows through exactly where it used to). */}
             <PersistentBackgroundImage />
             <LibraryContext.Provider value={libraryContextValue}>
-                <PlaybackProvider>
+                <PlaybackProvider engineReady={playerReady}>
                     <NavigationContainer theme={NAV_THEME}>
                         {/* transparent, not base.bg — a stack screen's card
                             is an opaque layer by default, which would sit

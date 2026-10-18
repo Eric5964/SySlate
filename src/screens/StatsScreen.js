@@ -7,6 +7,21 @@ import ScreenBackground from '../components/ScreenBackground';
 import { getListeningStats } from '../utils/storage';
 import { usePreferences } from '../context/PreferencesContext';
 
+// Hoisted out of the screen body: a component defined inside a component is a
+// brand new type on every render, so React tore this row down and remounted it
+// instead of updating it (and it would have lost any state it kept). `s` is
+// passed in instead of closed over.
+const Row = ({ s, i, left, sub, right }) => (
+    <View style={s.row}>
+        <Text style={s.rank}>{i}</Text>
+        <View style={{ flex: 1 }}>
+            <Text style={s.rowTitle} numberOfLines={1}>{left}</Text>
+            {!!sub && <Text style={s.rowSub} numberOfLines={1}>{sub}</Text>}
+        </View>
+        <Text style={s.rowRight}>{right}</Text>
+    </View>
+);
+
 export default function StatsScreen({ navigation }) {
     const { base, theme } = useTheme();
     const insets = useSafeAreaInsets();
@@ -15,16 +30,6 @@ export default function StatsScreen({ navigation }) {
     const [stats, setStats] = useState(null);
     useEffect(() => { getListeningStats(allSongs || [], artistSeparator, artistDisplayJoin).then(setStats).catch(() => setStats({ totalPlays: 0, hours: 0, played: 0, librarySize: 0, topSongs: [], topArtists: [] })); }, [allSongs, artistSeparator, artistDisplayJoin]);
     const s = styles(base, theme);
-    const Row = ({ i, left, sub, right }) => (
-        <View style={s.row}>
-            <Text style={s.rank}>{i}</Text>
-            <View style={{ flex: 1 }}>
-                <Text style={s.rowTitle} numberOfLines={1}>{left}</Text>
-                {!!sub && <Text style={s.rowSub} numberOfLines={1}>{sub}</Text>}
-            </View>
-            <Text style={s.rowRight}>{right}</Text>
-        </View>
-    );
     return (
         <ScreenBackground ownImage>
             <StatusBar barStyle="light-content" />
@@ -48,11 +53,11 @@ export default function StatsScreen({ navigation }) {
                         <>
                             <Text style={s.sectionLabel}>Most played songs</Text>
                             <View style={s.body}>
-                                {stats.topSongs.map((r, i) => <Row key={i} i={i + 1} left={r.title} sub={r.artist} right={`${r.n}x`} />)}
+                                {stats.topSongs.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.title} sub={r.artist} right={`${r.n}x`} />)}
                             </View>
                             <Text style={s.sectionLabel}>Top artists</Text>
                             <View style={s.body}>
-                                {stats.topArtists.map((r, i) => <Row key={i} i={i + 1} left={r.name} right={`${r.n}x`} />)}
+                                {stats.topArtists.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.name} right={`${r.n}x`} />)}
                             </View>
                         </>
                     )}

@@ -56,9 +56,16 @@ import {
 // AsyncStorage before anything visually updates, not instant. A shared
 // context means every consumer re-renders the moment the value changes,
 // with no read required.
+// Every value here is a fallback for a consumer that renders OUTSIDE the
+// provider (never intended: the provider wraps the whole app, so these are only
+// ever seen if that breaks). They must still match the real defaults the
+// storage getters return, or such a consumer would disagree with the rest of
+// the app. Several had drifted (showSongCovers, lyricsResyncSec, coverShadow,
+// crossfadeEnabled, withinTrackNorm) — corrected to what storage.js actually
+// defaults to, which is also what the provider's own useState seeds.
 const Ctx = createContext({
     showPlayCount: true, setShowPlayCount: () => { },
-    showSongCovers: false, setShowSongCovers: () => { },
+    showSongCovers: true, setShowSongCovers: () => { },
     artistSeparator: [';'], setArtistSeparator: () => { },
     lyricsMode: 'manual', lyricsOn: true, setLyricsOn: () => { },
     djDisc: false, setDjDisc: () => { },
@@ -77,15 +84,15 @@ const Ctx = createContext({
     detailOutline: false, setDetailOutline: () => { },
     songPillShadow: false, setSongPillShadow: () => { },
     playerBtns: { sleep: true, speed: true, eq: true, queue: true, label: true, back: true }, setPlayerBtnShown: () => { },
-    lyricsResyncSec: 4, setLyricsResyncSec: () => { },
+    lyricsResyncSec: 2, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
     showPlayerCover: true, setShowPlayerCover: () => { },
-    coverShadow: false, setCoverShadow: () => { },
+    coverShadow: true, setCoverShadow: () => { },
     backgroundImageEnabled: false, setBackgroundImageEnabled: () => { },
     backgroundImageUri: null, setBackgroundImageUri: () => { },
-    crossfadeEnabled: false, setCrossfadeEnabled: () => { },
+    crossfadeEnabled: true, setCrossfadeEnabled: () => { },
     preAmp: 0, setPreAmp: () => { },
     // Renamed in meaning, not in name: this is now specifically the "on
     // skip" crossfade duration (see AudioEngine.swift's advance()) — kept
@@ -96,7 +103,7 @@ const Ctx = createContext({
     // field below.
     crossfadeDuration: 4, setCrossfadeDuration: () => { },
     crossfadeDurationEndOfTrack: 4, setCrossfadeDurationEndOfTrack: () => { },
-    withinTrackNorm: true, setWithinTrackNorm: () => { },
+    withinTrackNorm: false, setWithinTrackNorm: () => { },
     betweenTrackNorm: false, setBetweenTrackNorm: () => { },
     silenceTrim: false, setSilenceTrim: () => { },
     showPlaylistTrackCount: true, setShowPlaylistTrackCount: () => { },

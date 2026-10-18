@@ -1120,7 +1120,7 @@ class AudioEngine: RCTEventEmitter {
     private func nowPlayingElapsedSeconds() -> Double {
         if isCrossfading, crossfadeAnnouncedIncoming, let node = crossfadeIncomingNode, crossfadeIncomingSampleRate > 0 {
             if let nt = node.lastRenderTime, let pt = node.playerTime(forNodeTime: nt) {
-                return max(0, crossfadeIncomingLeadInSeconds + Double(pt.sampleTime) / crossfadeIncomingSampleRate)
+                return max(0, crossfadeIncomingLeadInSeconds + Double(pt.sampleTime) / (pt.sampleRate > 0 ? pt.sampleRate : crossfadeIncomingSampleRate))
             }
             return crossfadeIncomingLeadInSeconds
         }
@@ -1465,7 +1465,11 @@ class AudioEngine: RCTEventEmitter {
         // plays for activeNode's calculation just below.
         if isCrossfading, crossfadeAnnouncedIncoming, let incoming = crossfadeIncomingNode,
            let nodeTime = incoming.lastRenderTime, let playerTime = incoming.playerTime(forNodeTime: nodeTime) {
-            return crossfadeIncomingLeadInSeconds + Double(playerTime.sampleTime) / crossfadeIncomingSampleRate
+            // sampleTime is counted in the node's own rate (playerTime.sampleRate), which is not always the
+            // file's rate: dividing by the file's rate made the clock run slow after a crossfade (seen in a
+            // log: about half speed). Use the rate the count is really in.
+            let rate = playerTime.sampleRate > 0 ? playerTime.sampleRate : crossfadeIncomingSampleRate
+            return crossfadeIncomingLeadInSeconds + Double(playerTime.sampleTime) / rate
         }
         // While paused, always report the frozen snapshot.
         if state != .playing, let frozen = frozenPositionSeconds { return frozen }
@@ -1489,7 +1493,8 @@ class AudioEngine: RCTEventEmitter {
             }
             return segmentStartOffsetSeconds
         }
-        let live = segmentStartOffsetSeconds + Double(playerTime.sampleTime) / currentFileSampleRate
+        let liveRate = playerTime.sampleRate > 0 ? playerTime.sampleRate : currentFileSampleRate   // see the crossfade branch above
+        let live = segmentStartOffsetSeconds + Double(playerTime.sampleTime) / liveRate
         lastLivePositionSeconds = live
         lastLivePositionAt = Date()
         if state == .playing { frozenPositionSeconds = nil }
@@ -2429,10 +2434,25 @@ class AudioEngine: RCTEventEmitter {
         guard !isCrossfading, volume >= 0.02, wanted > 0.02 else { activeNode.play(); return }
         activeNode.volume = 0
         activeNode.play()
-        for i in 1...8 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
-                guard let self = self, self.state == .playing, !self.isCrossfading, !self.scratchActive, self.volume >= 0.02 else { return }
-                self.activeNode.volume = self.volume * self.currentGainCorrection * Float(i) / 8
+        // After the output has been asleep (a cold start) with no fade-in from
+        // JS, the song comes up over ~250ms instead of ~30ms, so it never
+        // arrives at full level in one step.
+        let cold = coldMuteHeld
+        let steps = cold ? 25 : 8
+        let stepSec = cold ? 0.01 : 0.004
+        // The level this fade was armed for. Each step used to recompute its
+        // target from whatever self.volume was AT THAT MOMENT, so anything
+        // that wrote the volume while the steps were still running (JS
+        // starting its own fade for a pause, a crossfade, a device-loss fade)
+        // got a LOWer level written back underneath it on the next step,
+        // audible as a pop/dip mid-fade. Now the first sign of another writer
+        // ends this fade instead of fighting it.
+        let armedVolume = volume
+        for i in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(i)) { [weak self] in
+                guard let self = self, self.state == .playing, !self.isCrossfading, !self.scratchActive,
+                      self.volume >= 0.02, abs(self.volume - armedVolume) < 0.0001 else { return }
+                self.activeNode.volume = self.volume * self.currentGainCorrection * Float(i) / Float(steps)
             }
         }
     }
@@ -2617,10 +2637,16 @@ class AudioEngine: RCTEventEmitter {
         // then down" — two independent fades landing conflicting values
         // on the same node in whatever order their timers happened to
         // fire. settleCrossfadeToIncoming ends the crossfade immediately
-        // (promoting the incoming node to activeNode at full volume, same
-        // as if it had finished naturally) so everything below then
+        // (promoting the incoming node to activeNode) so everything below then
         // operates on ONE settled node instead of two nodes mid-fight.
-        if isCrossfading { settleCrossfadeToIncoming() }
+        // snapToFull: false, the incoming song keeps whatever level the
+        // crossfade had already faded it to, instead of being stepped up to
+        // full volume for the instant between this call and the pause below,
+        // which was audible as a blip right as pause was pressed. Nothing
+        // needs that level kept: the resume path rebuilds the node's volume
+        // from the engine's own volume (playNodeWithMicroFade), and JS's
+        // ramp-in writes it from zero anyway.
+        if isCrossfading { settleCrossfadeToIncoming(snapToFull: false) }
         lastAudibleAt = Date()
         pendingPlayToken += 1
         frozenPositionSeconds = currentPositionSeconds()
@@ -2691,6 +2717,19 @@ class AudioEngine: RCTEventEmitter {
 
         activeNode = incomingNode
         isCrossfading = false
+        // runCrossfade starts the incoming node on a 50ms delay (its own
+        // comment explains why), and that closure bails the moment
+        // isCrossfading is false, which is exactly the state this just
+        // created. So a pause or a seek landing inside that window used to
+        // hand off to a node that had never been started: state, currentFile
+        // and currentIndex all said the incoming song was playing while
+        // nothing actually was, and the position then ran on past the end of
+        // the track with nothing left to finish it. Started here if it is
+        // still idle (a no-op in the normal case, where it is already playing).
+        if state == .playing, !incomingNode.isPlaying {
+            if !engine.isRunning { try? engine.start() }
+            incomingNode.play()
+        }
         // Same fix as runCrossfade's own handoff — keeps the INCOMING
         // track's gain correction in effect for setVolume() calls after
         // this (a pause or seek interrupting the crossfade), instead of
@@ -2824,7 +2863,7 @@ class AudioEngine: RCTEventEmitter {
     // of indexes still waiting to be removed.
     @objc(remove:resolver:rejecter:)
     func remove(_ indexes: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        let sorted = indexes.map { $0.intValue }.filter { $0 >= 0 && $0 < queue.count }.sorted(by: >)
+        let sorted = Array(Set(indexes.map { $0.intValue }.filter { $0 >= 0 && $0 < queue.count })).sorted(by: >)   // a repeated index must not remove a second, different song
         for idx in sorted {
             queue.remove(at: idx)
             if let current = currentIndex {
@@ -3238,6 +3277,72 @@ class AudioEngine: RCTEventEmitter {
         return true
     }
 
+    // A copy of about 24 seconds of the current song around the playing spot,
+    // kept ready so scratchBegin does not have to read the file at the touch.
+    private struct ScratchPrefetch { var url: URL; var start: Double; var rate: Double; var l: [Float]; var r: [Float] }
+    private var scratchCache: ScratchPrefetch? = nil
+    private var scratchPrefetching = false
+    // Bumped every time a prefetch is started, or when the disc leaves the
+    // screen. A background load whose token no longer matches is dropped
+    // instead of writing its buffer back into scratchCache, the old code had
+    // no way to tell "the disc left and JS asked me to free this memory" from
+    // "a newer load is running", so a load already in flight when JS called
+    // scratchPrefetch(false) put the whole buffer straight back.
+    private var scratchPrefetchToken: Int = 0
+
+    // JS calls this while the disc is on screen (on = true, every few seconds;
+    // it only loads when the ready copy no longer covers the playing spot) and
+    // once more with on = false when it leaves, which frees the memory.
+    @objc(scratchPrefetch:)
+    func scratchPrefetch(_ on: NSNumber) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if !on.boolValue {
+                // Leaving the disc: free the memory AND stop the load that
+                // might still be running from putting it back (see the token).
+                self.scratchPrefetchToken &+= 1
+                self.scratchPrefetching = false
+                self.scratchCache = nil
+                return
+            }
+            guard !self.scratchActive, !self.scratchLoading, !self.scratchPrefetching, !self.isCrossfading,
+                  let idx = self.currentIndex, idx >= 0, idx < self.queue.count, let file = self.currentFile else { return }
+            let url = self.queue[idx].url
+            let rate = file.processingFormat.sampleRate
+            let total = Double(file.length) / rate
+            let now = self.currentPositionSeconds()
+            guard now >= 1, now <= total - 4 else { return }
+            if let c = self.scratchCache, c.url == url, abs(c.rate - rate) < 1 {
+                let end = c.start + Double(c.l.count) / rate
+                if now - c.start > 5 && end - now > 5 { return }   // still covers the spot with room to spare
+            }
+            let ws = max(0, now - 12), we = min(total, now + 12)
+            self.scratchPrefetchToken &+= 1
+            let token = self.scratchPrefetchToken
+            self.scratchPrefetching = true
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                var out: ScratchPrefetch? = nil
+                if let f = try? AVAudioFile(forReading: url) {
+                    let count = AVAudioFrameCount(max(0, (we - ws) * rate))
+                    f.framePosition = AVAudioFramePosition(ws * rate)
+                    if count > 0, let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: count),
+                       (try? f.read(into: buf, frameCount: count)) != nil, buf.frameLength > 4, let ch = buf.floatChannelData {
+                        let n = Int(buf.frameLength)
+                        let chans = Int(buf.format.channelCount)
+                        let l = Array(UnsafeBufferPointer(start: ch[0], count: n))
+                        let r = Array(UnsafeBufferPointer(start: ch[chans > 1 ? 1 : 0], count: n))
+                        out = ScratchPrefetch(url: url, start: ws, rate: rate, l: l, r: r)
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, token == self.scratchPrefetchToken else { return }
+                    self.scratchPrefetching = false
+                    if let o = out { self.scratchCache = o }
+                }
+            }
+        }
+    }
+
     // Starts scratching at the current position. Resolves true once audio is
     // ready (false when it cannot start: crossfading, nothing loaded, or too
     // close to the start or end of the song).
@@ -3261,13 +3366,30 @@ class AudioEngine: RCTEventEmitter {
                 self.debugLog(String(format: "[SCRATCH] begin refused: position %.2f of %.2f", now, totalSec))
                 resolve(false); return
             }
-            let windowStart = max(0, now - 15)
-            let windowEnd = min(totalSec, now + 15)
+            // A window loaded ahead of time (scratchPrefetch) that covers this spot
+            // makes the start instant. A quick flick used to be over before a
+            // 30-second window had finished decoding.
+            let cached = self.scratchCache
+            let useCache: Bool = {
+                guard let c = cached, c.url == track.url, abs(c.rate - fileRate) < 1 else { return false }
+                let end = c.start + Double(c.l.count) / fileRate
+                return now - c.start > 1.5 && end - now > 1.5
+            }()
+            let windowStart = useCache ? cached!.start : max(0, now - 15)
+            let windowEnd = useCache ? (cached!.start + Double(cached!.l.count) / fileRate) : min(totalSec, now + 15)
             self.scratchLoading = true
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 var left: UnsafeMutablePointer<Float>? = nil
                 var right: UnsafeMutablePointer<Float>? = nil
                 var frames = 0
+                if useCache, let c = cached {
+                    frames = c.l.count
+                    let l = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+                    let r = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+                    c.l.withUnsafeBufferPointer { l.update(from: $0.baseAddress!, count: frames) }
+                    c.r.withUnsafeBufferPointer { r.update(from: $0.baseAddress!, count: frames) }
+                    left = l; right = r
+                } else {
                 do {
                     let f = try AVAudioFile(forReading: track.url)
                     let startFrame = AVAudioFramePosition(windowStart * fileRate)
@@ -3286,6 +3408,7 @@ class AudioEngine: RCTEventEmitter {
                         }
                     }
                 } catch { frames = 0 }
+                }
                 let leftOut = left, rightOut = right, framesOut = frames
                 DispatchQueue.main.async {
                     guard let self = self else { leftOut?.deallocate(); rightOut?.deallocate(); resolve(false); return }
@@ -3526,6 +3649,15 @@ class AudioEngine: RCTEventEmitter {
         let wasPlaying = state == .playing
         // [SEEK-DEBUG] Temporary — see PlayerScreen.js's matching tag.
         debugLog(String(format: "[SEEK-DEBUG] native seekTo called: seconds=%.3f wasPlaying=%@ currentIndex=%@ isCrossfading=%@", seconds.doubleValue, wasPlaying ? "true" : "false", currentIndex.map(String.init) ?? "nil", isCrossfading ? "true" : "false"))
+        // A seek that lands while a crossfade is running, before the app has been
+        // told the song changed, was made on the OUTGOING song's bar. Applying it
+        // would jump the INCOMING song to that spot (a log showed the previous
+        // song coming back at the same bar position). Dropped.
+        if isCrossfading && !crossfadeAnnouncedIncoming {
+            debugLog("[SEEK-DEBUG] seek ignored: made on the outgoing song during a crossfade")
+            resolve(nil)
+            return
+        }
         seekWithinCurrentTrack(startAtSeconds: seconds.doubleValue, autoPlay: wasPlaying)
         resolve(nil)
     }

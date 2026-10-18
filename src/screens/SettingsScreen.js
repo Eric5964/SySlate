@@ -493,7 +493,11 @@ export default function SettingsScreen() {
 
     // One on/off row. `first` rows have no divider above them.
     const toggle = (label, sub, value, onChange, first) => (
-        <View style={[s.toggleRow, !first && { borderTopWidth: 1, borderTopColor: base.border }]}>
+        // s.toggleRow already draws the top divider, so `first` has to switch
+        // it OFF: the old `!first && {...}` could only ever re-add a border
+        // that was already there, so the first row of every group kept a
+        // stray line above it.
+        <View style={[s.toggleRow, first && { borderTopWidth: 0 }]}>
             <View style={{ flex: 1 }}>
                 <Text style={s.toggleLabel}>{label}</Text>
                 {!!sub && <Text style={s.toggleSub}>{sub}</Text>}
@@ -618,12 +622,12 @@ export default function SettingsScreen() {
         setCoverShadow(L.cs); setPlaylistCoverShadow(L.pcs); setSongPillShadow(L.sps); setMiniPlayerShadow(L.mps);
         setPlayerOutline(L.po); setDetailOutline(L.dout);
     };
-    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'soft', label: 'Soft' }, { id: 'bold', label: 'Bold' }, { id: 'sharp', label: 'Sharp' }];
+    const LOOK_CHIPS = [{ id: 'minimal', label: 'Minimal' }, { id: 'soft', label: 'Soft' }, { id: 'sharp', label: 'Sharp' }, { id: 'bold', label: 'Bold' }];
     const lookOn = (id) => sameLook(currentLook(), LOOKS[id]);
     const looksUi = (
         <>
             {chipRow(LOOK_CHIPS, lookOn, (id) => applyLook(LOOKS[id]))}
-            <Text style={s.chipNote}>Minimal: no shadows nor outlines.{'\n'}Soft: shadows only.{'\n'}Bold: shadows and outlines.{'\n'}Sharp: outlines only.</Text>
+            <Text style={s.chipNote}>Minimal: no shadows nor outlines.{'\n'}Soft: shadows only.{'\n'}Sharp: outlines only.{'\n'}Bold: shadows and outlines.</Text>
             {toggle('Rounded Covers', 'Rounded covers round song and playlist covers', coverShape === 'rounded', setRoundedCovers)}
         </>
     );
@@ -947,7 +951,7 @@ export default function SettingsScreen() {
 
                 <Section title="Playback">
                     <SubGroup title="Shuffle" first>
-                    <View style={{ paddingTop: 14 }}>{shuffleUi}</View>
+                    <View>{shuffleUi}</View>
                     </SubGroup>
                     <SubGroup title="Queue">
                     <View style={s.toggleRow}>
@@ -959,6 +963,9 @@ export default function SettingsScreen() {
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     </SubGroup>
+                </Section>
+
+                <Section title="Previous Button">
                     <SubGroup title="Previous button">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
@@ -1078,8 +1085,7 @@ export default function SettingsScreen() {
                     </View>
                     {chipRow([{ id: 'cover', label: 'Cover' }, { id: 'lyrics', label: 'Lyrics' }, { id: 'disc', label: 'DJ Disc' }], (id) => autoShow === id, setAutoShow)}
                     {toggle('Cover', 'Album art in the Player', showPlayerCover, setShowPlayerCover, true)}
-                    <View style={{ height: 22 }} />
-                    {toggle('Lyrics', 'A synced lyrics view for songs that have it', lyricsOn, setLyricsOn, true)}
+                    {toggle('Lyrics', 'A synced lyrics view for songs that have it', lyricsOn, setLyricsOn)}
                     {lyricsOn && (<>
                     <Text style={[s.sliderSub, { paddingTop: 6 }]}>Resync Delay</Text>
                     <Text style={s.sliderNote}>
@@ -1105,8 +1111,7 @@ export default function SettingsScreen() {
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>-3s</Text><Text style={s.sliderEnd}>+3s</Text></View>
                     {toggle('Unscrollable Lyrics', 'Disables swiping to scroll the lyrics', lyricsScrollLocked, setLyricsScrollLocked)}
                     </>)}
-                    <View style={{ height: 22 }} />
-                    {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc, true)}
+                    {toggle('DJ Disc', 'A spinning record you can scratch', djDisc, setDjDisc)}
                     {djDisc && (<>
                     <View style={[s.settingHeader, { borderTopWidth: 1, borderTopColor: base.border }]}>
                         <Text style={s.toggleLabel}>DJ Disc Speed</Text>
@@ -1406,9 +1411,10 @@ export default function SettingsScreen() {
                         )}
                     </View>
                     </SubGroup>
-                    <SubGroup title="Performance">
+                </Section>
+
+                <Section title="Performance">
                     {performanceToggle}
-                    </SubGroup>
                 </Section>
 
                 </>)}
@@ -1608,6 +1614,8 @@ const SECTION_KW = {
     'Playlists Screen': 'playlists layout reload track count titles cards arrow grid list buttons',
     'Playlist Screen': 'playlist back search eq queue cover play shuffle buttons header',
     'Player': 'player buttons speed sleep timer eq queue shuffle loop cover lyrics disc vinyl cd dj scratch rpm auto show opens spin touch',
+    'Previous Button': 'previous back restart threshold window rewind',
+    'Performance': 'performance older device shadows slow lists',
     'Look': 'shadow outline border looks style cover pill mini player minimal soft bold sharp pictures screen awake top bar bottom bar tab color transparent',
     'Accent Color': 'accent color theme',
     'Base Color': 'base color dark light theme',
@@ -1626,17 +1634,10 @@ const sectionMatches = (title, q) => {
 };
 const SettingsViewCtx = React.createContext({ mode: 'advanced', q: '' });
 
-// Small label that separates the parts of a merged section.
-function SubGroup({ title, first, children }) {
-    const { base } = useTheme();
-    return (
-        <>
-            <View style={{ paddingHorizontal: 24, paddingTop: 14, paddingBottom: 10, borderTopWidth: first ? 0 : 1, borderTopColor: base.border }}>
-                <Text style={{ color: base.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>{title}</Text>
-            </View>
-            {children}
-        </>
-    );
+// Kept so the blocks inside a Section stay grouped in the code; it shows no
+// heading of its own (a part that needs a heading is its own Section).
+function SubGroup({ children }) {
+    return <>{children}</>;
 }
 
 // `simple`: also shown in the Simple view. `only="simple"`: shown only there.
@@ -1711,7 +1712,7 @@ const makeStyles = (base) => StyleSheet.create({
     // Matches the sort-chip pattern used in All Songs / Playlist Detail —
     // same shape, same interaction, for the same kind of "pick one of a
     // few options" control.
-    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24, paddingBottom: 16, gap: 8 },
+    sortRow: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 24, paddingTop: 14, paddingBottom: 16, gap: 8 },
     chipNote: { color: base.textFaint, fontSize: 12, paddingHorizontal: 24, marginTop: -6, paddingBottom: 14, lineHeight: 17 },
     sortChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: base.border },
     sortChipText: { color: base.textDim, fontSize: 13, fontWeight: '600' },

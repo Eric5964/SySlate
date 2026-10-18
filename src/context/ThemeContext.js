@@ -100,8 +100,11 @@ export const BASE_COLORS = {
 // Whether a given base id is the light one — screens that need to invert
 // something base.text/textDim/textFaint doesn't already cover (an icon
 // tinted to a literal color, an image overlay scrim meant for a dark photo)
-// can check this rather than hardcoding 'light' as a string.
-export const isLightBase = (id) => id === 'light';
+// can check this rather than hardcoding 'light' as a string. Matches the
+// provider's own isLight exactly: the real light bases are light_X (one per
+// hue) plus light_black, so checking only for the literal 'light' — the single
+// generic light theme that existed before it was split up — was always false.
+export const isLightBase = (id) => id === 'light' || !!id?.startsWith('light_');
 
 const ThemeContext = createContext({
     theme: THEMES.purple, themeId: 'purple', setTheme: () => { },

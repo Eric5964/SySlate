@@ -388,7 +388,12 @@ function extractTagsFromId3(bytes) {
     const tagEnd = Math.min(10 + tagSize, bytes.length);
     if (flags & 0x40) { // extended header present
         const extSize = majorVersion >= 4 ? readSynchsafe32(bytes, p) : readU32BE(bytes, p);
-        p += extSize > 0 ? extSize : 4;
+        // v2.4's extended-header size counts its own 4 size bytes, v2.3's does
+        // not. Advancing by extSize alone in v2.3 landed 4 bytes into the
+        // header, so the loop read the padding size as a frame ID, rejected it
+        // and gave up, the whole tag was silently lost and the song kept its
+        // filename guess.
+        p += extSize > 0 ? (majorVersion >= 4 ? extSize : extSize + 4) : 4;
     }
     const out = {};
     while (p + 10 <= tagEnd) {
@@ -484,7 +489,8 @@ async function readId3TagsBySeeking(url) {
         const ext = await readBytes(url, { position: pos, length: 4 });
         if (ext.length < 4) return null;
         const extSize = major >= 4 ? readSynchsafe32(ext, 0) : readU32BE(ext, 0);
-        pos += extSize > 0 ? extSize : 4;
+        // Same v2.3/v2.4 difference as extractTagsFromId3, see its comment.
+        pos += extSize > 0 ? (major >= 4 ? extSize : extSize + 4) : 4;
     }
     const wanted = new Set(['TIT2', 'TPE1', 'TALB', 'TRCK', 'TXXX']);
     const parts = [];

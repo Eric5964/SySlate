@@ -97,6 +97,8 @@ RCT_EXTERN_METHOD(scratchSetRate:(nonnull NSNumber *)rate)
 
 RCT_EXTERN_METHOD(scratchResumePlay)
 
+RCT_EXTERN_METHOD(scratchPrefetch:(nonnull NSNumber *)on)
+
 RCT_EXTERN_METHOD(scratchEnd:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

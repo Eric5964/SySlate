@@ -69,7 +69,11 @@ export async function getLyrics(song) {
         memCache.set(song.id, result);
         return result;
     } catch {
-        memCache.set(song.id, null);
+        // A read that failed is not "this song has no lyrics". Caching null
+        // here made a transient error (or opening the song before its .lrc
+        // had finished appearing) permanent for the rest of the session, so
+        // the same file was never looked at again. Only the confirmed-absent
+        // path above caches null.
         return null;
     }
 }

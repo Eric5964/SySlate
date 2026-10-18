@@ -21,6 +21,10 @@ import ScreenBackground from '../components/ScreenBackground';
 const SCREEN_W = Dimensions.get('window').width;
 const GRID_PADDING = 8;
 const CELL_MARGIN = 5;
+// Up and down spacing is a little larger than side to side, because a card
+// reaches further past its playlist at the bottom than at the sides; this makes
+// the gap between two cards the same going down as going across.
+const CELL_MARGIN_V = 6.5;
 
 // Fixed pixel math instead of percentage/aspectRatio-based sizing — that
 // combination was behaving unpredictably (only ever showing part of a grid),
@@ -165,7 +169,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
         return (
             <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
                 <Pressable
-                    style={({ pressed }) => [s.gridItem, { width: size, margin: CELL_MARGIN, opacity: pressed && !isActive ? 0.75 : 1 }]}
+                    style={({ pressed }) => [s.gridItem, { width: size, marginHorizontal: CELL_MARGIN, marginVertical: CELL_MARGIN_V, opacity: pressed && !isActive ? 0.75 : 1 }]}
                     {...handlers}
                 >
                     {cardOn && (
@@ -173,14 +177,14 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                             pointerEvents="none"
                             style={[
                                 s.card,
-                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -(CARD_INSET + CARD_BOTTOM_EXTRA), backgroundColor: base.surface,
+                                { top: -CARD_INSET, left: -CARD_INSET, right: -CARD_INSET, bottom: -(CARD_INSET + (hasText ? CARD_BOTTOM_EXTRA : 0)), backgroundColor: base.surface,
                                   borderTopLeftRadius: cardRadius(size, CARD_INSET, shape), borderTopRightRadius: cardRadius(size, CARD_INSET, shape),
                                   borderBottomLeftRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.75), borderBottomRightRadius: Math.round(cardRadius(size, CARD_INSET, shape) * 0.75) },
                                 shadowOn && COVER_SHADOW,
                             ]}
                         />
                     )}
-                    <View style={[{ width: size, height: size, marginBottom: hasText ? 8 : 0, borderRadius: r, backgroundColor: bg }, shadowOn && COVER_SHADOW]}>
+                    <View style={[{ width: size, height: size, marginBottom: hasText ? CARD_INSET + CARD_BOTTOM_EXTRA : 0, borderRadius: r, backgroundColor: bg }, shadowOn && COVER_SHADOW]}>
                         <View style={[s.gridArt, { width: size, height: size, borderRadius: r }]}>{art}</View>
                         {minus}
                     </View>
@@ -534,7 +538,7 @@ export default function PlaylistsScreen() {
         onPanResponderTerminate: () => latest.current.endDrag(),
     })).current;
 
-    useEffect(() => () => { clearTimers(); stopAutoScroll(); clearTimeout(timers.current.reset); }, []);
+    useEffect(() => () => { clearTimers(); stopAutoScroll(); clearTimeout(timers.current.reset); clearTimeout(emptyHold.current.timer); }, []);
 
     const persistOrder = async (newList) => {
         // Reordering only needs to persist the small order list and update
@@ -550,7 +554,11 @@ export default function PlaylistsScreen() {
 
     // Asks before removing a cover. The first call (press down) only marks the
     // touch as being on a playlist, so it is not read as a tap on empty space.
-    const removeCoverAsk = (item, down) => {
+    // useCallback: PlaylistRow is memoized so a drag/edit doesn't re-render
+    // every visible row, and a fresh function here every render defeated that
+    // completely, every row (and its running wiggle animation) re-rendered on
+    // every parent state change, which is the choppiness while reordering.
+    const removeCoverAsk = useCallback((item, down) => {
         if (down) { emptyHold.current.onItem = true; return; }
         Alert.alert(
             'Remove cover picture?',
@@ -560,7 +568,7 @@ export default function PlaylistsScreen() {
                 { text: 'Yes, remove', style: 'destructive', onPress: async () => { setCovers(await setPlaylistCover(item.path, null)); } },
             ]
         );
-    };
+    }, []);
 
     const changeCover = async (item) => {
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();

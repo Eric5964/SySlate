@@ -12,6 +12,9 @@ import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk, listArtUri } f
 // extractions back to back, even staggered, was too much sustained work in
 // one run. Cached lookups don't count against the cap.
 const MAX_NEW_EXTRACTIONS_PER_RUN = 60;
+// How many genuinely new extractions one 6s sweep tick may do once the first
+// pass has run out (see the sweep at the bottom of the effect).
+const SWEEP_EXTRACTIONS = 20;
 const FLUSH_BATCH_SIZE = 20;
 const YIELD_EVERY = 20;
 
@@ -98,12 +101,12 @@ export function useListArt(songs, enabled) {
         // Phase 2: genuinely new extractions — real file I/O — stay behind
         // the interaction/settle delay so they don't compete with
         // navigation transitions on the JS thread.
-        const runNewExtractions = async () => {
+        const runNewExtractions = async (maxCount = MAX_NEW_EXTRACTIONS_PER_RUN) => {
             let newExtractions = 0;
             for (const song of songs) {
                 if (isStale()) break;
                 if (resolved.has(song.id)) continue;
-                if (newExtractions >= MAX_NEW_EXTRACTIONS_PER_RUN) break;
+                if (newExtractions >= maxCount) break;
                 newExtractions++;
                 try {
                     const uri = await extractEmbeddedArt(song);
@@ -143,7 +146,16 @@ export function useListArt(songs, enabled) {
         const sweepInterval = setInterval(() => {
             if (isStale()) { clearInterval(sweepInterval); return; }
             if (resolved.size >= songs.length) { clearInterval(sweepInterval); return; }
-            runCacheOnly();
+            // Cache-only was not enough on its own: the one extraction pass
+            // above stops after MAX_NEW_EXTRACTIONS_PER_RUN, so in a list with
+            // more uncached covers than that, everything past that point kept
+            // a blank placeholder until the screen was left and re-entered.
+            // A small batch per sweep keeps the same per-run budget while
+            // actually finishing the list (and lets the interval stop on its
+            // own once everything has been tried).
+            runCacheOnly().then(() => {
+                if (!isStale() && resolved.size < songs.length) runNewExtractions(SWEEP_EXTRACTIONS);
+            });
         }, 6000);
 
         return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); };

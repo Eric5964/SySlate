@@ -26,6 +26,11 @@ import { COVER_SHADOW } from '../utils/shadow';
 const RPM_DEG_PER_SEC = 200;
 const MAX_RATE = 3;
 const TICK_MS = 20;
+// Wind-up used when a play happens and no transport ramp announced itself (the
+// ramp handler below is the normal path, and it matches the audio fade-in).
+// It used to start at full speed in one frame there as well, which read as a
+// snap next to the ramp's own wind-up.
+const FALLBACK_WINDUP_MS = 320;
 // The idle spin is a native decay animation with an almost-zero decay, i.e. a
 // perfectly steady turn that never reaches an end. (It used to be a looping
 // timing animation; native restarts a loop every turn, drops the leftover
@@ -134,6 +139,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const ignoreTouch = useRef(false);
     const maxAbsRate = useRef(0);
     const lagVal = useRef(0);
+    const grantAt = useRef(0);
     const api = useRef({});
 
     // On a song change the position still holds the old song's value for a
@@ -274,11 +280,10 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             if (justActivated) startSpin(0); // looks like it never stopped
             else if (spinState.current !== 'spinning') {
                 // Give the ramp announcement (below) a moment to arrive first,
-                // so the wind-up can match the audio fade-in exactly.
-                // The disc never winds up on its own: if music is already
-                // playing it turns at full speed at once. A real play fade-in
-                // announces itself below and gets its own wind-up.
-                startTimer.current = setTimeout(() => { if (spinState.current !== 'spinning') startSpin(0); }, 160);
+                // so the wind-up can match the audio fade-in exactly. If none
+                // arrives, wind up over a short fixed ramp rather than jumping
+                // to full speed in one frame (see FALLBACK_WINDUP_MS).
+                startTimer.current = setTimeout(() => { if (spinState.current !== 'spinning') startSpin(FALLBACK_WINDUP_MS); }, 160);
             }
         } else if (spinState.current === 'spinning') {
             // A real pause announces itself through the transport ramp below
@@ -299,9 +304,26 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     useEffect(() => subscribeTransportRamp(({ type, seconds }) => {
         if (!live.current.active || !live.current.spin || draggingRef.current) return;
         if (startTimer.current) { clearTimeout(startTimer.current); startTimer.current = null; }
-        if (type === 'play') startSpin(Math.max(250, seconds * 1000));
-        else slowSpin(seconds * 1000);
+        if (type === 'play') {
+            // Already turning at speed: a wind-up subtracts half a ramp of
+            // angle from the turn, so applying one here would visibly stop the
+            // disc and start it again. That double announcement (the Player
+            // opening, or the fallback in the effect above, plus this ramp
+            // arriving a moment later) is exactly the "rotates instantly, then
+            // starts to gain velocity" jump.
+            if (spinState.current === 'spinning') return;
+            startSpin(Math.max(250, seconds * 1000));
+        } else slowSpin(seconds * 1000);
     }), [startSpin, slowSpin]);
+
+    // While the disc can be scratched, keep a copy of the audio around the
+    // playing spot ready natively, so a touch starts scratching at once.
+    useEffect(() => {
+        if (!visible || !active || !touchOn) return undefined;
+        AudioEngine.scratchPrefetch(true);
+        const t = setInterval(() => AudioEngine.scratchPrefetch(true), 5000);
+        return () => { clearInterval(t); AudioEngine.scratchPrefetch(false); };
+    }, [visible, active, touchOn, trackKey]);
 
     // Only the round disc itself takes touches, not the square box around it.
     const refreshCenter = useCallback(() => {
@@ -331,7 +353,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         pendingDeg.current = 0;
         if (wasDragging && onTouching) onTouching(false);
         if (!force) {
-            if (autoRef.current) return;                          // already easing back: lifting changes nothing
+            if (autoRef.current) { ignoreTouch.current = false; return; }   // already easing back: nothing more to do (and the finger is up, so a new touch is possible once it is done)
             if (ignoreTouch.current) { ignoreTouch.current = false; return; }
             if (scratchingRef.current) { api.current.startAuto('release'); return; }
             api.current.stopTick();
@@ -339,6 +361,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             return;
         }
         ignoreTouch.current = false;
+        if (autoRef.current) api.current.settleAutoAngle();
         autoRef.current = null;
         api.current.stopTick();
         const wasScratching = scratchingRef.current;
@@ -393,6 +416,18 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         dim.stopAnimation();
         Animated.timing(dim, { toValue: ok ? 0 : 1, duration: 450, easing: Easing.inOut(Easing.quad), useNativeDriver: true }).start();
     };
+    // Degrees the disc has turned `u` (0 to 1) of the way through an ease: the
+    // sound's speed goes from `from` to `to` along a smoothstep.
+    api.current.autoDeg = (au, u) => au.degPerSec * (au.ms / 1000) * (au.from * u + (au.to - au.from) * (u * u * u - (u * u * u * u) / 2));
+    // Stops the native disc motion where it is and records the angle.
+    api.current.settleAutoAngle = () => {
+        const au = autoRef.current;
+        if (!au || !au.drive) return;
+        const u = Math.max(0, Math.min(1, (Date.now() - au.t0) / au.ms));
+        userRotVal.current = au.startAngle + api.current.autoDeg(au, u);
+        userRot.stopAnimation();
+        userRot.setValue(userRotVal.current);
+    };
     api.current.startAuto = (kind) => {
         const L = live.current;
         // A paused disc that was only touched goes back to silence; one that
@@ -400,8 +435,18 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         const to = (kind === 'release' && !L.isPlaying && maxAbsRate.current < 0.3) ? 0 : 1;
         const from = sentRate.current;
         const ms = kind === 'edge' ? 700 : (Math.abs(to - from) < 0.15 ? 120 : 320);
-        autoRef.current = { kind, t0: Date.now(), from, to, ms };
+        const au = { kind, t0: Date.now(), from, to, ms, degPerSec: Math.max(20, L.scratchDegPerSec), startAngle: userRotVal.current, drive: !!L.spin };
+        autoRef.current = au;
         lastTick.current = Date.now();
+        // The disc's motion during the ease runs on the native side (it was
+        // set from this timer every 20 ms, which made it look choppy): the
+        // same curve as the sound, worked out exactly.
+        const total = api.current.autoDeg(au, 1);
+        au.total = total;
+        if (au.drive && Math.abs(total) > 1) {
+            userRot.stopAnimation();
+            Animated.timing(userRot, { toValue: au.startAngle + total, duration: ms, easing: (u) => api.current.autoDeg(au, u) / total, useNativeDriver: true }).start();
+        }
         if (kind === 'edge') {
             // Fades like the end-of-song lock, so it is clear the disc is no
             // longer yours until it is done (and your finger is lifted).
@@ -415,6 +460,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         const au = autoRef.current;
         autoRef.current = null;
         stopTick();
+        if (au && au.drive && Math.abs(au.total) > 1) userRotVal.current = au.startAngle + au.total;
         const was = scratchingRef.current;
         scratchingRef.current = false;
         sentRate.current = 0;
@@ -427,7 +473,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         // The idle turn takes over from the same angle at the same speed.
         if (carryOn && L.active && L.spin) releaseSpin(1);
         if (au && au.kind === 'edge') api.current.refreshDim();
-        if (!draggingRef.current && onTouching) onTouching(false);
+        if (!draggingRef.current) { ignoreTouch.current = false; if (onTouching) onTouching(false); }
     };
     api.current.tick = () => {
         const now = Date.now();
@@ -442,8 +488,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             const rate = au.from + (au.to - au.from) * e;
             sentRate.current = rate;
             if (scratchingRef.current) AudioEngine.scratchSetRate(rate);
-            // The disc keeps turning with the song while it is not yours.
-            if (L.spin) { userRotVal.current += rate * Math.max(20, L.scratchDegPerSec) * dtS; userRot.setValue(userRotVal.current); }
             if (u >= 1) api.current.finishAuto();
             return;
         }
@@ -507,6 +551,8 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         onPanResponderGrant: (e) => {
             const au = autoRef.current;
             draggingRef.current = true;
+            grantAt.current = Date.now();
+            console.log('[DISC] touch down' + (au ? ' (during ' + au.kind + ' ease)' : ''));
             if (onTouching) onTouching(true);
             lastTouch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
             lastAngle.current = null;
@@ -520,6 +566,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             // Caught the disc again while it was still easing back after a
             // lift: carry on scratching from the speed it had.
             if (au && au.kind === 'release' && scratchingRef.current) {
+                api.current.settleAutoAngle();
                 autoRef.current = null;
                 smoothRate.current = sentRate.current;
                 api.current.ensureTick();
@@ -536,6 +583,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
                 if (!ok && n < 6) { setTimeout(() => { if (draggingRef.current && !scratchingRef.current) tryBegin(n + 1); }, 70); return; }
                 if (!ok) console.log('[DISC] could not start scratching after retries');
                 scratchingRef.current = !!ok;
+                console.log('[DISC] audio ready after ' + (Date.now() - grantAt.current) + 'ms: ' + (ok ? 'yes' : 'no'));
                 if (ok) {
                     scratchEst.current = live.current.position;
                     scratchEstT.current = Date.now();
@@ -558,8 +606,8 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             userRotVal.current += d;
             userRot.setValue(userRotVal.current);
         },
-        onPanResponderRelease: () => finishScratch(),
-        onPanResponderTerminate: () => finishScratch(),
+        onPanResponderRelease: () => { console.log('[DISC] finger lifted after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
+        onPanResponderTerminate: () => { console.log('[DISC] touch taken over by something else after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
     })).current;
 
 

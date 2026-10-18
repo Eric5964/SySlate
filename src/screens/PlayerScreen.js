@@ -24,6 +24,36 @@ import { getPlayCounts, peekPlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
+// The elapsed time. The player is only asked for its position every half
+// second, so the seconds used to run up to half a second behind the lock
+// screen's. This carries the last reading forward in real time (in its own
+// small component, so the whole screen is not redrawn for it) and never lets
+// the number step backwards when the next reading arrives.
+const LiveTime = React.memo(function LiveTime({ position, duration, playing, rate, style }) {
+    const basis = useRef({ position, at: Date.now() });
+    const shown = useRef(position);
+    const [, tick] = useState(0);
+    // `playing` is part of this on purpose: while paused the position prop
+    // stops changing, so without it the basis stayed frozen at the last
+    // movement and the first render after resuming counted every paused
+    // minute as playback, the clock snapped to the end of the song for the
+    // half second until the next reading arrived.
+    useEffect(() => { basis.current = { position, at: Date.now() }; }, [position, playing]);
+    useEffect(() => {
+        if (!playing) return undefined;
+        const t = setInterval(() => tick(x => x + 1), 200);
+        return () => clearInterval(t);
+    }, [playing]);
+    let p = position;
+    if (playing) {
+        p = basis.current.position + ((Date.now() - basis.current.at) / 1000) * (rate || 1);
+        if (duration > 0) p = Math.min(p, duration);
+        if (p < shown.current && shown.current - p < 1.2 && position >= shown.current - 1.5) p = shown.current;
+    }
+    shown.current = p;
+    return <Text style={style}>{fmt(p)}</Text>;
+});
+
 function fmt(sec) {
     if (!sec || isNaN(sec)) return '0:00';
     return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
@@ -1317,7 +1347,9 @@ export default function PlayerScreen() {
                             </PanGestureHandler>
                         </TapGestureHandler>
                         <View style={s.times}>
-                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : (justSwitched ? switchProg.position : progress.position))}</Text>
+                            {dragRatio !== null || justSwitched
+                                ? <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : switchProg.position)}</Text>
+                                : <LiveTime position={progress.position} duration={progress.duration} playing={isPlaying} rate={playbackRate} style={[s.time, { color: base.textFaint }]} />}
                             <Text style={[s.time, { color: base.textFaint }]}>{fmt(justSwitched ? switchProg.duration : progress.duration)}</Text>
                         </View>
                     </View>

@@ -350,10 +350,21 @@ function extractPictureFromMp4(bytes, baseOffset = 0) {
     return { mime: guessImageMime(payload), data: payload };
 }
 
-function hashCode(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-    return Math.abs(hash);
+// Two independent 32-bit hashes (djb2-xor and FNV-1a) written as fixed-width
+// hex, instead of one plain 31-multiplier hash. This is used to build the art
+// file's name, and a name collision here isn't a harmless cache miss: two songs
+// would share one file, so one of them shows the other's cover, and the
+// "delete the previous fingerprint's file" cleanup below can delete it out from
+// under the other. A single 32-bit value collides somewhere around 65k files
+// (birthday bound); 64 bits makes it practically impossible.
+function hashKey(str) {
+    let djb = 5381, fnv = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        djb = ((djb * 33) ^ c) >>> 0;
+        fnv = Math.imul(fnv ^ c, 0x01000193) >>> 0;   // exact 32-bit multiply (a plain * loses low bits past 2^53)
+    }
+    return djb.toString(16).padStart(8, '0') + fnv.toString(16).padStart(8, '0');
 }
 
 // Cache-only lookup — checks what we already know, plus one cheap stat call
@@ -539,7 +550,7 @@ async function extractEmbeddedArtUncached(song) {
         // filename means a replaced file always resolves to a brand new
         // path, so there's nothing for a URI-keyed cache to serve stale.
         const fpTag = fp ? `${fp.size}_${fp.mtime}` : 'nofp';
-        const dest = `${ART_DIR}${hashCode(song.id)}_${hashCode(fpTag)}.${fileExt}`;
+        const dest = `${ART_DIR}${hashKey(song.id)}_${hashKey(fpTag)}.${fileExt}`;
         await FileSystem.writeAsStringAsync(dest, bytesToBase64(picture.data), { encoding: FileSystem.EncodingType.Base64 });
         // Clean up the previous fingerprint's file for this song, if any,
         // now that it's no longer reachable from the cache entry — avoids

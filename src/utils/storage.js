@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { splitArtists, formatArtists } from './artists';
 import * as FileSystem from 'expo-file-system';
-import { EQ_MIN, EQ_MAX } from './eq';
+import { EQ_MIN, EQ_MAX, BAND_COUNT, clampEQBand } from './eq';
 import AudioEngine from '../native/AudioEngine';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
@@ -290,6 +290,7 @@ const readCoverMap = async () => {
 };
 export const getPlaylistCovers = () => safe(async () => expandMap(await readCoverMap(), true), {});
 export const setPlaylistCover = async (path, uri) => {
+    if (!path) return;   // same guard: no empty-key writes
     const covers = await readCoverMap();
     const key = toStablePath(path);
     const previous = covers[key];
@@ -681,6 +682,7 @@ export const getPlaylistSort = (playlistPath) => safe(async () => {
 }, 'alpha');
 
 export const setPlaylistSort = async (playlistPath, sortId) => {
+    if (!playlistPath) return;   // a screen opened without a playlist must not write under an empty key
     try {
         const all = await AsyncStorage.getItem('playlist_sort_orders');
         const backup = await readBackup();
@@ -842,8 +844,12 @@ export const exportPicturesFile = async () => {
 };
 
 export const importPicturesFile = async (fileUri) => {
+    // A pasted-in or shared file can be any size: refuse huge ones before reading
+    // them into memory, and cap how many pictures one file may hold.
+    const fileInfo = await FileSystem.getInfoAsync(fileUri).catch(() => null);
+    if (fileInfo && fileInfo.size > 300 * 1024 * 1024) throw new Error('That file is too large to be a SySlate pictures file.');
     const parsed = JSON.parse(await FileSystem.readAsStringAsync(fileUri));
-    if (!parsed || parsed.format !== 'syslate-pictures' || typeof parsed.images !== 'object') throw new Error('Not a SySlate pictures file.');
+    if (!parsed || parsed.format !== 'syslate-pictures' || !parsed.images || typeof parsed.images !== 'object' || Object.keys(parsed.images).length > 5000) throw new Error('Not a SySlate pictures file.');
     const dir = FileSystem.documentDirectory + '.covers/';
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => { });
     const stamp = Date.now();
@@ -960,7 +966,11 @@ export const exportAllSettings = async () => {
     // lyrics_scroll_locked, artist_display_join — 4 new settings, same
     // "silently dropped from export/import" risk as the note above if
     // left out.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    // Added this round: bottom_bar_color and bg_image_enabled, both are live
+    // settings that were in the validation lists but missing from this list,
+    // so Export Settings (and the auto-backup, which is built from this) threw
+    // them away, and import could never restore them.
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1013,6 +1023,7 @@ export const importAllSettings = async (jsonString) => {
     // than either crashing the whole import or writing something that'll
     // crash later. Only keys from the same allowlist exportAllSettings
     // produces are ever considered — nothing else gets written.
+    if (typeof jsonString !== 'string' || jsonString.length > 20 * 1024 * 1024) throw new Error('Not a settings file');
     const obj = JSON.parse(jsonString);
     if (!obj || typeof obj !== 'object') throw new Error('Not a settings object');
 
@@ -1044,12 +1055,15 @@ export const importAllSettings = async (jsonString) => {
         preamp_db: [-12, 12],
         playback_rate: [0.25, 3],
     };
-    // Keys whose value is itself a JSON-encoded string — validated by
-    // shape (array vs plain object), not by deep-inspecting every entry.
+    // Keys whose value is a JSON-encoded array of strings.
     const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order', 'settings_hidden_groups']);
     // (playlist_covers and bg_image_uri are NOT accepted here: a settings file could point them at any
     // file or web address. Pictures only come in through importPicturesFile, which writes its own copies.)
-    const JSON_OBJECT_KEYS = new Set(['playlist_sort_orders', 'eq_preset_overrides', 'my_look']);
+    // The playlist sort ids the two sort menus actually offer (see SORTS in
+    // AllSongsScreen.js / PlaylistDetailScreen.js). An imported sort that isn't
+    // one of these would just read back as 'alpha' at the other end, so there's
+    // nothing to gain by writing it through.
+    const SORT_IDS = new Set(['alpha', 'alpha_r', 'plays', 'plays_r']);
     // Plain string settings (enum-like ids, URIs) — no fixed enum list
     // enforced here (a future app version could legitimately add new
     // theme/cover-shape ids that this exact import code doesn't know about
@@ -1104,11 +1118,54 @@ export const importAllSettings = async (jsonString) => {
                 if (value.length <= 20) toWrite.push([key, JSON.stringify([value])]);
             }
         } else if (JSON_ARRAY_KEYS.has(key)) {
-            try { if (Array.isArray(JSON.parse(value))) toWrite.push([key, value]); } catch { }
-        } else if (JSON_OBJECT_KEYS.has(key)) {
+            // Arrays of plain strings (hidden preset ids, playlist paths,
+            // hidden settings groups). Capped in entry count and entry length
+            // so a hand-edited file can't write a huge string in as an "id".
+            try { const arr = JSON.parse(value); if (Array.isArray(arr) && arr.length <= 5000 && arr.every(x => typeof x === 'string' && x.length <= 500)) toWrite.push([key, value]); } catch { }
+        } else if (key === 'eq_preset_overrides') {
+            // { [builtInPresetId]: bands[] } — see getPresetById /
+            // mergePresetsForDisplay in eq.js. These bands are handed straight
+            // to the native EQ unit as "the gains for this preset", so a band
+            // that isn't a number or sits outside what the sliders support
+            // isn't something to write through and hope for the best — same
+            // shape check custom_eq_presets already gets. Out-of-range bands
+            // are clamped rather than rejected, which is what every other
+            // write path in the app does with a band value too.
             try {
                 const parsed = JSON.parse(value);
-                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) toWrite.push([key, value]);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const out = {};
+                    for (const [id, bands] of Object.entries(parsed)) {
+                        if (typeof id !== 'string' || !id || id.length > 100) continue;
+                        if (!Array.isArray(bands) || bands.length !== BAND_COUNT || !bands.every(b => typeof b === 'number' && Number.isFinite(b))) continue;
+                        out[id] = bands.map(clampEQBand);
+                    }
+                    if (Object.keys(out).length) toWrite.push([key, JSON.stringify(out)]);
+                }
+            } catch { }
+        } else if (key === 'playlist_sort_orders') {
+            // { stablePlaylistPath: sortId } — only the ids the sort menus
+            // actually offer (see SORT_IDS above); anything else would read
+            // back as 'alpha' anyway, so keeping it out is the same outcome
+            // without writing a value nothing understands.
+            try {
+                const parsed = JSON.parse(value);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const out = {};
+                    for (const [p, sort] of Object.entries(parsed)) {
+                        if (typeof p === 'string' && p.length <= 500 && SORT_IDS.has(sort)) out[p] = sort;
+                    }
+                    if (Object.keys(out).length) toWrite.push([key, JSON.stringify(out)]);
+                }
+            } catch { }
+        } else if (key === 'my_look') {
+            // A stored look/preset blob, read back as a whole. Only its size is
+            // checked (nothing in the app reads it at the moment, so there is
+            // no shape worth being strict about — just a ceiling on how big a
+            // single imported value is allowed to be).
+            try {
+                const parsed = JSON.parse(value);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && value.length <= 20000) toWrite.push([key, value]);
             } catch { }
         } else if (key === 'play_counts') {
             // Merged with this device's own counts (the higher number wins),
@@ -1123,14 +1180,23 @@ export const importAllSettings = async (jsonString) => {
             } catch { }
         } else if (key === 'last_session') {
             // Most safety-critical one to get wrong — restoreSession reads
-            // this on every cold launch. Requires the two fields it
-            // actually dereferences (playlist.queue as an array, index as
-            // a number) to exist and be the right shape before allowing it
-            // through at all; anything else is dropped rather than risking
-            // a broken cold-launch restore days after the import.
+            // this on every cold launch. Requires the fields it actually
+            // dereferences (playlist.path, playlist.queue as an array, index
+            // as a number inside that array) to exist and be the right shape
+            // before allowing it through at all, and every queue entry to be a
+            // real track object with a string id: a queue of nulls or strings
+            // would survive the old check and then sit there until the next
+            // cold launch, where it would throw inside restoreSession. Anything
+            // that fails is dropped rather than risking that.
             try {
                 const parsed = JSON.parse(value);
-                if (parsed && Array.isArray(parsed.playlist?.queue) && typeof parsed.index === 'number') {
+                const queue = parsed?.playlist?.queue;
+                if (parsed && parsed.playlist && typeof parsed.playlist.path === 'string' && parsed.playlist.path.length <= 5000
+                    && Array.isArray(queue) && queue.length >= 1 && queue.length <= 20000
+                    && Number.isInteger(parsed.index) && parsed.index >= 0 && parsed.index < queue.length
+                    && queue.every(t => t && typeof t === 'object' && !Array.isArray(t) && typeof t.id === 'string' && t.id.length <= 2000)
+                    && (parsed.priorityCount === undefined || (Number.isInteger(parsed.priorityCount) && parsed.priorityCount >= 0 && parsed.priorityCount <= queue.length))
+                    && (parsed.position === undefined || (Number.isFinite(parsed.position) && parsed.position >= 0))) {
                     toWrite.push([key, value]);
                 }
             } catch { }
@@ -1142,4 +1208,28 @@ export const importAllSettings = async (jsonString) => {
         // is silently dropped, not written.
     }
     if (toWrite.length) await AsyncStorage.multiSet(toWrite);
+
+    // A handful of these keys are also mirrored into the small JSON file in
+    // Documents (see writeBackup / BACKUP_PATH above) — that file is the
+    // fallback their getters use when AsyncStorage comes back empty after an
+    // app update, which is the exact situation it exists for. Importing
+    // settings wrote straight to AsyncStorage and left that file holding
+    // whatever was there before, so the fallback path could later restore the
+    // PRE-import values and quietly undo the import. Mirror whatever was
+    // actually accepted, in the same shape writeBackup stores.
+    const BACKUP_MIRRORED = {
+        custom_eq_presets: JSON.parse, hidden_eq_presets: JSON.parse,
+        eq_preset_overrides: JSON.parse, playlist_sort_orders: JSON.parse,
+        playlist_order: JSON.parse, settings_hidden_groups: JSON.parse,
+        my_look: JSON.parse,
+        playlist_view_format: (v) => v,
+        bg_image_enabled: (v) => v === 'true',
+    };
+    const patch = {};
+    for (const [k, v] of toWrite) {
+        const convert = BACKUP_MIRRORED[k];
+        if (!convert) continue;
+        try { patch[k] = convert(v); } catch { }
+    }
+    if (Object.keys(patch).length) await writeBackup(patch);
 };

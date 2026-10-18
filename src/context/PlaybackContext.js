@@ -5,7 +5,7 @@ import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
 import { getCustomPresets, getEQOverrides } from '../utils/storage';
-import { buildQueue, shuffleArray, modeNeedsCounts } from '../utils/shuffle';
+import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { getPlayCounts } from '../utils/storage';
@@ -70,7 +70,7 @@ export async function applyEQPreset(id) {
 }
 const stampQids = (tracks) => tracks.map(stampQid);
 
-export function PlaybackProvider({ children }) {
+export function PlaybackProvider({ children, engineReady = true }) {
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
     // Which playlist a manually queued song came from (song id -> name),
     // and the one that applies to the song playing right now. The Player's
@@ -377,6 +377,14 @@ export function PlaybackProvider({ children }) {
     // sleepTimerEndAt is a real epoch timestamp (not "minutes remaining")
     // so the UI can compute a live countdown itself without this context
     // needing to tick every second.
+    // sleepAtTrackEndRef mirrors sleepAtTrackEnd for the track-change handler
+    // below (a listener registered once, so it can't read fresh state). It's
+    // written directly in the setters, not only by the effect: the effect runs
+    // after the render commits, and a song can genuinely end inside that window
+    // (the whole point of "pause at the end of this track" is that you arm it
+    // right as the track is finishing), which used to leave the handler reading
+    // a stale `false` and letting the next track play. The effect stays as a
+    // backstop so the two can't drift.
     const [sleepTimerEndAt, setSleepTimerEndAt] = useState(null);
     const [sleepAtTrackEnd, setSleepAtTrackEnd] = useState(false);
     const sleepAtTrackEndRef = useRef(false);
@@ -386,12 +394,14 @@ export function PlaybackProvider({ children }) {
     const cancelSleepTimer = useCallback(() => {
         clearTimeout(sleepTimerTimeoutRef.current);
         sleepTimerTimeoutRef.current = null;
+        sleepAtTrackEndRef.current = false;
         setSleepTimerEndAt(null);
         setSleepAtTrackEnd(false);
     }, []);
 
     const setSleepTimer = useCallback((minutes) => {
         clearTimeout(sleepTimerTimeoutRef.current);
+        sleepAtTrackEndRef.current = false;
         setSleepAtTrackEnd(false);
         const endAt = Date.now() + minutes * 60000;
         setSleepTimerEndAt(endAt);
@@ -404,6 +414,7 @@ export function PlaybackProvider({ children }) {
     const setSleepTimerAtTrackEnd = useCallback(() => {
         clearTimeout(sleepTimerTimeoutRef.current);
         sleepTimerTimeoutRef.current = null;
+        sleepAtTrackEndRef.current = true;
         setSleepTimerEndAt(null);
         setSleepAtTrackEnd(true);
     }, []);
@@ -713,7 +724,7 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('moveInQueue:', e); return priorityRef.current; }
     }), []);
 
-    const jumpToQueueIndex = useCallback(async (realIndex) => {
+    const jumpToQueueIndex = useCallback((realIndex) => {
         // Real gap found here: tapping a song while something else was
         // already mid-transition (most commonly: the current track fading
         // toward its own natural end) just silently did nothing — return
@@ -727,110 +738,125 @@ export function PlaybackProvider({ children }) {
         // ramping already." Now consistent with the rest of this file.
         if (isTransitionLocked()) { queueAction(() => jumpToQueueIndex(realIndex)); return; }
         emitSkipPress();   // the DJ disc dims right away, before the song changes
-        try {
-            const currentIndex = await AudioEngine.getCurrentTrack();
-            if (currentIndex === null || currentIndex === undefined) return;
-            if (realIndex === currentIndex) return; // already playing this exact slot
-            const priorityCount = priorityRef.current.length;
-            const priorityStart = currentIndex + 1;
-            const priorityEnd = priorityStart + priorityCount;
+        // Same lock as add/promote/remove/move (see serialQueue's own
+        // comment): this reads the native queue, then the priority zone, then
+        // issues several remove/add/skip calls, and a swipe that landed in one
+        // of those gaps computed its own insert/removal positions from a stale
+        // priorityRef and native index. Exactly the class of bug the other four
+        // were already protected from.
+        return serialQueue(async () => {
+            try {
+                const currentIndex = await AudioEngine.getCurrentTrack();
+                if (currentIndex === null || currentIndex === undefined) return;
+                // `<=` and not `===`: the queue sheet builds its rows from the
+                // queue as it was when the sheet last refreshed, so a song change
+                // between the render and the tap can deliver an index that is now
+                // BEHIND the current one. That used to fall into the priority
+                // branch with a negative slice count (silently dropping most of
+                // the priority list) and skip backwards to an already-played
+                // track. Same guard the other queue actions use.
+                if (realIndex == null || realIndex <= currentIndex) return;
+                const priorityCount = priorityRef.current.length;
+                const priorityStart = currentIndex + 1;
+                const priorityEnd = priorityStart + priorityCount;
 
-            // Real bug found here: tapping a song in the queue ALWAYS went
-            // through fadeOutCurrentIfPlaying (a plain JS ramp) followed by
-            // a fresh ramp-in — even with Crossfade on and something
-            // already playing, this was never actually a crossfade, just a
-            // fade-out-then-fade-in with a gap between them. Native's
-            // skip(index) now crossfades itself when appropriate (see its
-            // comment) by reusing the same startCrossfade() the natural
-            // next-track transition uses — so when that applies, skip the
-            // JS-side fade-out and the playWithRamp wrapper entirely and
-            // hand off straight to native, which owns the whole transition
-            // (both the outgoing fade and the incoming one) on its own.
-            const wasPlaying = (await AudioEngine.getState()) === State.Playing;
-            const crossfadeReady = wasPlaying
-                && (await getCrossfadeEnabled())
-                && (await getCrossfadeDurationSkip()) > 0.05;
+                // Real bug found here: tapping a song in the queue ALWAYS went
+                // through fadeOutCurrentIfPlaying (a plain JS ramp) followed by
+                // a fresh ramp-in — even with Crossfade on and something
+                // already playing, this was never actually a crossfade, just a
+                // fade-out-then-fade-in with a gap between them. Native's
+                // skip(index) now crossfades itself when appropriate (see its
+                // comment) by reusing the same startCrossfade() the natural
+                // next-track transition uses — so when that applies, skip the
+                // JS-side fade-out and the playWithRamp wrapper entirely and
+                // hand off straight to native, which owns the whole transition
+                // (both the outgoing fade and the incoming one) on its own.
+                const wasPlaying = (await AudioEngine.getState()) === State.Playing;
+                const crossfadeReady = wasPlaying
+                    && (await getCrossfadeEnabled())
+                    && (await getCrossfadeDurationSkip()) > 0.05;
 
-            if (realIndex < priorityEnd) {
-                // Jumping to a row inside the priority zone itself (tapping
-                // the 2nd+ priority song in the Queue sheet, not just the
-                // first). The priority entries at priorityStart..realIndex
-                // (everything from the front of the priority list up to and
-                // including the one being jumped to) are about to end up
-                // BEHIND the new current index once this skip lands — they
-                // were "skipped past," not played, but either way they're no
-                // longer upcoming. Left untouched, priorityRef kept them
-                // forever, which threw off priorityCount (and therefore
-                // priorityEnd) for every add/promote/remove/jump after this.
-                // Trim them here; the ones still genuinely ahead
-                // (realIndex+1..priorityEnd-1) are untouched and stay
-                // priority, same as a normal "Up Next" jump leaves the rest
-                // of the queue untouched.
-                const skippedCount = realIndex - priorityStart + 1;
-                const next = priorityRef.current.slice(skippedCount);
-                priorityRef.current = next;
-                setPriorityQueue(next);
+                if (realIndex < priorityEnd) {
+                    // Jumping to a row inside the priority zone itself (tapping
+                    // the 2nd+ priority song in the Queue sheet, not just the
+                    // first). The priority entries at priorityStart..realIndex
+                    // (everything from the front of the priority list up to and
+                    // including the one being jumped to) are about to end up
+                    // BEHIND the new current index once this skip lands — they
+                    // were "skipped past," not played, but either way they're no
+                    // longer upcoming. Left untouched, priorityRef kept them
+                    // forever, which threw off priorityCount (and therefore
+                    // priorityEnd) for every add/promote/remove/jump after this.
+                    // Trim them here; the ones still genuinely ahead
+                    // (realIndex+1..priorityEnd-1) are untouched and stay
+                    // priority, same as a normal "Up Next" jump leaves the rest
+                    // of the queue untouched.
+                    const skippedCount = realIndex - priorityStart + 1;
+                    const next = priorityRef.current.slice(skippedCount);
+                    priorityRef.current = next;
+                    setPriorityQueue(next);
+                    if (crossfadeReady) {
+                        await AudioEngine.skip(realIndex);
+                    } else {
+                        await fadeOutCurrentIfPlaying(await getAudioRamp());
+                        forceReleaseFade();
+                        const preClaimedId = preClaimFadeForFreshStart();
+                        // Real bug found here: skip() has its OWN independent
+                        // native crossfade decision (see its Swift comment) —
+                        // this branch already decided NOT to crossfade
+                        // (crossfadeReady false) and is about to run its own
+                        // JS ramp-in via playWithRamp, but calling skip() as
+                        // the startAction let native re-decide for itself and
+                        // sometimes take its own crossfade branch anyway,
+                        // silently replacing the JS ramp-in with native's
+                        // internal crossfade volume curve — audible as "ramps
+                        // out of the previous song, but never ramps into the
+                        // new one" (the JS ramp-out above still ran normally;
+                        // native's own crossfade just took over from there
+                        // instead of the JS ramp-in that was supposed to
+                        // follow it). load() is the purpose-built alternative
+                        // that always does a plain track switch with no
+                        // crossfade decision of its own — exactly what a
+                        // JS-owned ramp needs under it.
+                        await playWithRamp(preClaimedId, () => AudioEngine.load(realIndex, true));
+                    }
+                    return;
+                }
+
+                const queue = await AudioEngine.getQueue();
+                const priorityTracks = queue.slice(priorityStart, priorityEnd);
+                for (let i = priorityEnd - 1; i >= priorityStart; i--) {
+                    await AudioEngine.remove(i);
+                }
+                const newTargetIndex = realIndex - priorityCount;
+                if (priorityTracks.length) {
+                    await AudioEngine.add(priorityTracks, newTargetIndex + 1);
+                }
                 if (crossfadeReady) {
-                    await AudioEngine.skip(realIndex);
+                    await AudioEngine.skip(newTargetIndex);
                 } else {
                     await fadeOutCurrentIfPlaying(await getAudioRamp());
                     forceReleaseFade();
                     const preClaimedId = preClaimFadeForFreshStart();
-                    // Real bug found here: skip() has its OWN independent
-                    // native crossfade decision (see its Swift comment) —
-                    // this branch already decided NOT to crossfade
-                    // (crossfadeReady false) and is about to run its own
-                    // JS ramp-in via playWithRamp, but calling skip() as
-                    // the startAction let native re-decide for itself and
-                    // sometimes take its own crossfade branch anyway,
-                    // silently replacing the JS ramp-in with native's
-                    // internal crossfade volume curve — audible as "ramps
-                    // out of the previous song, but never ramps into the
-                    // new one" (the JS ramp-out above still ran normally;
-                    // native's own crossfade just took over from there
-                    // instead of the JS ramp-in that was supposed to
-                    // follow it). load() is the purpose-built alternative
-                    // that always does a plain track switch with no
-                    // crossfade decision of its own — exactly what a
-                    // JS-owned ramp needs under it.
-                    await playWithRamp(preClaimedId, () => AudioEngine.load(realIndex, true));
+                    // Same fix as the priority-zone branch above — see its
+                    // comment.
+                    await playWithRamp(preClaimedId, () => AudioEngine.load(newTargetIndex, true));
                 }
-                return;
-            }
-
-            const queue = await AudioEngine.getQueue();
-            const priorityTracks = queue.slice(priorityStart, priorityEnd);
-            for (let i = priorityEnd - 1; i >= priorityStart; i--) {
-                await AudioEngine.remove(i);
-            }
-            const newTargetIndex = realIndex - priorityCount;
-            if (priorityTracks.length) {
-                await AudioEngine.add(priorityTracks, newTargetIndex + 1);
-            }
-            if (crossfadeReady) {
-                await AudioEngine.skip(newTargetIndex);
-            } else {
-                await fadeOutCurrentIfPlaying(await getAudioRamp());
-                forceReleaseFade();
-                const preClaimedId = preClaimFadeForFreshStart();
-                // Same fix as the priority-zone branch above — see its
-                // comment.
-                await playWithRamp(preClaimedId, () => AudioEngine.load(newTargetIndex, true));
-            }
-            // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
-            // call — enough for the steady-state "a song just finished,
-            // drip-feed a few more" case it was actually designed for, but
-            // jumping straight to a row well into "Up Next" can leave the
-            // window far short of a full QUEUE_WINDOW_SIZE (25) in one
-            // step; nothing here ever topped it back up afterward at all.
-            // Calling it repeatedly (bounded, not truly unbounded) restores
-            // a full window regardless of how big the jump was — each call
-            // re-reads the current state, so it naturally stops early once
-            // genuinely caught up or the logical queue itself runs out.
-            for (let i = 0; i < Math.ceil(QUEUE_WINDOW_SIZE / QUEUE_TOPUP_BATCH); i++) {
-                await topUpQueueIfNeeded();
-            }
-        } catch (e) { console.error('jumpToQueueIndex:', e); }
+                // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
+                // call — enough for the steady-state "a song just finished,
+                // drip-feed a few more" case it was actually designed for, but
+                // jumping straight to a row well into "Up Next" can leave the
+                // window far short of a full QUEUE_WINDOW_SIZE (25) in one
+                // step; nothing here ever topped it back up afterward at all.
+                // Calling it repeatedly (bounded, not truly unbounded) restores
+                // a full window regardless of how big the jump was — each call
+                // re-reads the current state, so it naturally stops early once
+                // genuinely caught up or the logical queue itself runs out.
+                for (let i = 0; i < Math.ceil(QUEUE_WINDOW_SIZE / QUEUE_TOPUP_BATCH); i++) {
+                    await topUpQueueIfNeeded();
+                }
+            } catch (e) { console.error('jumpToQueueIndex:', e); }
+        });
     }, []);
 
     // Loading an entire large playlist into TrackPlayer's native queue in one
@@ -854,8 +880,26 @@ export function PlaybackProvider({ children }) {
     // queuing or clearing priority tracks shouldn't grow or shrink the
     // normal window at all.
     const QUEUE_TOPUP_THRESHOLD = 23;
+    // How much of the not-yet-loaded order is written into a saved session
+    // (see saveSession). Only the loaded window lives natively, so a saved
+    // session has to carry the rest of the logical order with it or the queue
+    // comes back as just that window. Bounded because this is written on
+    // every track change and a whole-library shuffle can have thousands of
+    // songs ahead: 500 upcoming entries is far more than a session gets
+    // through, and past the cap the existing "the playlist finished a round"
+    // logic takes over exactly as it does today.
+    const MAX_SAVED_TAIL = 500;
     const logicalQueueRef = useRef([]);
     const loadedThroughRef = useRef(0);
+    // A top-up reads loadedThroughRef, awaits the native add, and only then
+    // advances it. Two of them overlapping (a track-change event landing while
+    // a remove/jump is still going) read the same value, compute the SAME
+    // slice, and add it twice, the same upcoming track then exists twice in
+    // the native queue. One at a time is all this ever needed to be.
+    const topUpRunningRef = useRef(false);
+    // A request that arrives while one is running used to be dropped. It is
+    // remembered instead, and one more pass runs when the current one ends.
+    const topUpPendingRef = useRef(false);
 
     // Resets TrackPlayer to a fresh window of `fullQueue` starting at logical
     // index `anchorIndex` — native index 0 IS anchorIndex, so there's no
@@ -921,7 +965,20 @@ export function PlaybackProvider({ children }) {
             await fadeOutCurrentIfPlaying(rampDuration);
             forceReleaseFade();
             const preClaimedId = preClaimFadeForFreshStart();
-            await primeNativeQueue(fullQueue, anchorIndex);
+            // Real bug found here: this branch claimed the fade lock and then
+            // handed the id to the caller to release by calling playWithRamp.
+            // If primeNativeQueue threw (a native reset/add failing), the
+            // caller never got an id, the lock was never released, and
+            // isTransitionLocked() stayed true for the rest of the session,
+            // every later play/pause/skip and every queue action went to
+            // queueAction, which then never drains. The crossfade branch below
+            // already guards this with a finally; this one didn't.
+            try {
+                await primeNativeQueue(fullQueue, anchorIndex);
+            } catch (e) {
+                forceReleaseFade();
+                throw e;
+            }
             return { preClaimedId, crossfaded: false };
         }
 
@@ -1027,6 +1084,8 @@ export function PlaybackProvider({ children }) {
     };
 
     const topUpQueueIfNeeded = async () => {
+        if (topUpRunningRef.current) { topUpPendingRef.current = true; return; }   // see its declaration: overlapping runs add the same slice twice
+        topUpRunningRef.current = true;
         try {
             if (loadedThroughRef.current >= logicalQueueRef.current.length) {
                 // Reached the true end of the logical playlist, not just the
@@ -1076,7 +1135,10 @@ export function PlaybackProvider({ children }) {
                     loadedThroughRef.current += next.length;
                 }
             }
-        } catch (e) { console.error('topUpQueue:', e); }
+        } catch (e) { console.error('topUpQueue:', e); } finally {
+            topUpRunningRef.current = false;
+            if (topUpPendingRef.current) { topUpPendingRef.current = false; topUpQueueIfNeeded(); }
+        }
     };
 
     // Captures whatever's currently in the priority zone before a playlist
@@ -1200,9 +1262,21 @@ export function PlaybackProvider({ children }) {
         const isOn = await getShuffleOnStorage();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
-        let queue = session?.queue ?? (isOn ? await buildQueueAsync(playlist.songs, mode) : [...playlist.songs]);
-        let startIndex = forceIndex ?? session?.index ?? 0;
-        if (startIndex >= queue.length) startIndex = 0;
+        // Also requires the remembered queue to actually still BE a non-empty
+        // array: a corrupt/hand-edited entry (or one written by an older
+        // version) could hold anything, and a non-array here would fail later
+        // inside queue.slice()/primeQueueForTransition with an unhandled
+        // rejection out of this callback (nothing wraps it in a try). When the
+        // remembered queue is unusable the remembered index goes with it —
+        // it's an index into THAT array, so carrying it over to a freshly
+        // built queue would start the playlist at an unrelated song.
+        const remembered = (Array.isArray(session?.queue) && session.queue.length) ? session.queue : null;
+        let queue = remembered ?? (isOn ? await buildQueueAsync(playlist.songs, mode) : [...playlist.songs]);
+        let startIndex = forceIndex ?? (remembered ? (session.index ?? 0) : 0);
+        // Both ends, not just the top: a negative index (a corrupt session, or
+        // an import) used to pass straight through into queue.slice() (which
+        // counts from the end) and setCurrentTrack(queue[-1]) = undefined.
+        if (!Number.isInteger(startIndex) || startIndex < 0 || startIndex >= queue.length) startIndex = 0;
 
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
@@ -1330,7 +1404,13 @@ export function PlaybackProvider({ children }) {
 
         let rest;
         if (isOn) {
-            rest = shuffleArray(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)));
+            // buildQueueAsync, not a plain shuffle: Smart/Dumb/random are real
+            // shuffles with their own rules, and every other shuffle entry
+            // point (loadPlaylist, playPlaylistShuffled, queuePlaylistNext,
+            // reshuffleUpcoming) already goes through this. Tapping a song
+            // with shuffle on handed you a plain Fisher-Yates order instead.
+            // `mode` was already being read here; it just wasn't used.
+            rest = await buildQueueAsync(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)), mode);
         } else {
             // Continue through the list in order starting right AFTER the
             // tapped song, wrapping back around — not just "everything else
@@ -1500,14 +1580,23 @@ export function PlaybackProvider({ children }) {
         } catch (e) { console.error('restoreSession:', e); }
     }, []);
 
+    // Waits for AppInner's setup effect (AudioEngine.setupPlayer) before running.
+    // PlaybackProvider is a CHILD of AppInner, and on a cold launch child
+    // effects run first, so this used to fire while the native engine was still
+    // being set up: getSavedSnapshot() and the reset()/add()/load() calls that
+    // prime the restored queue could all land before the engine existed, which
+    // is exactly the ordering problem App.js's own comment describes — the gate
+    // had been applied to the render path at some point but never to this
+    // effect. Waiting on the real readiness flag rather than a guessed delay.
     useEffect(() => {
+        if (!engineReady) return;
         (async () => {
             try {
                 const last = await getLastSession();
                 await restoreSession(last);
             } catch { }
         })();
-    }, [restoreSession]);
+    }, [engineReady, restoreSession]);
 
     // Rebuilds everything AFTER the current track + priority queue using the
     // new mode, leaving what's already playing/priority-queued untouched.
@@ -1655,9 +1744,28 @@ export function PlaybackProvider({ children }) {
                 // at every track change (so a later reload fell back to the
                 // global shuffle setting, even after pressing Play in order).
                 const shufOn = shuffleOnRef.current;
+                // The queue that gets saved has to be the FULL order, not only
+                // what happens to be loaded into the native window at this
+                // instant. Only ~25 tracks ever live natively (see
+                // primeNativeQueue), topped up as playback advances, so saving
+                // getQueue() alone meant a session came back with everything
+                // past ~25 upcoming songs missing. Worse, the shortened array
+                // is exactly what loadPlaylist reads next time as "this
+                // playlist's order", so the queue shrank further on every
+                // close/reopen until it was nothing but the window.
+                //
+                // loadedThroughRef is, by definition, how much of the logical
+                // order has already been handed to the native queue, so the
+                // part that still has to be saved is the rest of that logical
+                // order. The native array itself is kept as the head (so the
+                // saved index keeps pointing at the same slot, and priority
+                // copies stay exactly where they are), which makes this a
+                // strict superset of what used to be saved.
+                const tail = logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + MAX_SAVED_TAIL);
+                const savedQueue = tail.length ? [...queue, ...tail] : queue;
                 if (!sameSong) {
                     const prevSession = await getSession(pl.path);
-                    await setSession(pl.path, { ...(prevSession || {}), queue, index, shuffleOn: shufOn, shuffleMode: shuffleModeRef.current });
+                    await setSession(pl.path, { ...(prevSession || {}), queue: savedQueue, index, shuffleOn: shufOn, shuffleMode: shuffleModeRef.current });
                 }
                 // priorityCount is enough to reconstruct which of the
                 // tracks right after `index` were priority-queued on
@@ -1669,7 +1777,7 @@ export function PlaybackProvider({ children }) {
                 // there in the restored queue, just no longer TRACKED as
                 // priority, which is what "priority gets mushed together
                 // with up next after closing and reopening" was describing.
-                await setLastSession({ playlist: { ...pl, queue }, index, position: pos, priorityCount: priorityRef.current.length, shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
+                await setLastSession({ playlist: { ...pl, queue: savedQueue }, index, position: pos, priorityCount: priorityRef.current.length, shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
             }
         } catch { }
     }, []);

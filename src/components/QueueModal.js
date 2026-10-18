@@ -232,7 +232,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={() => actions.pressIn(stableKey)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
+                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={(e) => actions.pressIn(stableKey, e && e.nativeEvent ? e.nativeEvent.identifier : null)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
                         {showSongCovers && (
                             <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                                 {art
@@ -513,6 +513,14 @@ export default function QueueModal({ visible, onClose }) {
     const contentH = useRef(0);
     const listTop = useRef(0);
     const drag = useRef({ dy: 0, scroll0: 0, fingerY: -1 });
+    const primaryTouch = useRef(null);   // the finger that picked the row up; any other finger is ignored
+    // The identifier of the finger that held the row down (recorded on press
+    // in, which is the only place a specific touch can be identified
+    // reliably). Read at drag start so the drag can never pick up a second
+    // finger that happens to be first in the event's touch array.
+    const pressTouchId = useRef(null);
+    // Throttle for the [QUEUE] autoscroll diagnostic line.
+    const lastScrollLog = useRef(0);
     const scrollTimer = useRef(null);
     const rowListIdx = useRef([]);     // rows index -> index in the list data
     const finishRef = useRef(null);
@@ -525,13 +533,19 @@ export default function QueueModal({ visible, onClose }) {
         const startL = layoutOfRow(startIdx.current);
         if (!startL) return;
         dragY.setValue(d.dy + (scrollY.current - d.scroll0));
-        // The slot under the finger, in list (content) coordinates.
-        const pos = (d.fingerY - listTop.current) + scrollY.current;
+        // Where the dragged row's own CENTRE is now, in list (content)
+        // coordinates. Deliberately not the finger: the row is drawn with the
+        // grab point preserved, so a row grabbed near its top or bottom edge
+        // has its centre half a row away from the finger, and measuring the
+        // slot from the finger dropped it half a row off, the reported "it
+        // shifts up by one place".
+        const h = startL.height || ROW_HEIGHT;
+        const pos = startL.y + d.dy + (scrollY.current - d.scroll0) + h / 2;
         const list = rowsRef.current;
         let best = toIdx.current;
         const first = layoutOfRow(0), last = layoutOfRow(list.length - 1);
-        if (first && pos < first.y) best = 0;
-        else if (last && pos > last.y) best = list.length - 1;
+        if (first && pos < first.y + first.height / 2) best = 0;
+        else if (last && pos > last.y + last.height / 2) best = list.length - 1;
         else {
             for (let j = 0; j < list.length; j++) {
                 const l = layoutOfRow(j);
@@ -571,9 +585,14 @@ export default function QueueModal({ visible, onClose }) {
         setDragTo(idx);
     }, [dragY]);
 
-    const pressIn = useCallback((key) => {
+    const pressIn = useCallback((key, touchId) => {
         clearTimeout(holdTimer.current);
         suppressPress.current = false;
+        // The finger that starts the hold owns the drag from here on (see the
+        // pan responder's move handler): recorded here because this is the one
+        // place a specific touch can be identified, and because it is the hand
+        // that is actually on the row. Any other finger is ignored.
+        if (touchId !== undefined && touchId !== null) pressTouchId.current = touchId;
         // Same timing as moving playlists.
         holdTimer.current = setTimeout(() => arm(key), editRef.current ? EDIT_LIFT_MS : LIFT_MS);
     }, [arm]);
@@ -621,6 +640,13 @@ export default function QueueModal({ visible, onClose }) {
             const idx = rowsRef.current.findIndex(r => r.stableKey === armedKey.current);
             if (idx >= 0) { startIdx.current = idx; toIdx.current = idx; }
             drag.current = { dy: 0, scroll0: scrollY.current, fingerY: e.nativeEvent.pageY };
+            const touches0 = e.nativeEvent.touches || [];
+            primaryTouch.current = pressTouchId.current != null
+                ? pressTouchId.current
+                : (touches0.length ? touches0[0].identifier : null);
+            console.log('[QUEUE] drag start: touch=' + primaryTouch.current + ' of ' + touches0.length
+                + ' listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)
+                + ' contentH=' + Math.round(contentH.current) + ' fingerY=' + Math.round(drag.current.fingerY));
             clearInterval(scrollTimer.current);
             let lastT = Date.now();
             scrollTimer.current = setInterval(() => {
@@ -641,6 +667,15 @@ export default function QueueModal({ visible, onClose }) {
                 if (!v) return;
                 const step = (v * dt) / 1000;
                 const maxY = Math.max(0, contentH.current - viewH.current);
+                // [QUEUE] diagnostic: everything the touch-based auto-scroll
+                // depends on, so a recording shows which part is wrong when it
+                // doesn't move.
+                if (now - lastScrollLog.current > 500) {
+                    lastScrollLog.current = now;
+                    console.log('[QUEUE] autoscroll v=' + Math.round(v) + ' fy=' + Math.round(fy)
+                        + ' zone=' + Math.round(zone) + ' scrollY=' + Math.round(scrollY.current)
+                        + '/' + Math.round(maxY) + ' rows=' + visibleRef.current + '/' + totalRowsRef.current);
+                }
                 if (step > 0 && scrollY.current > maxY - viewH.current * 1.5 && visibleRef.current < totalRowsRef.current) {
                     setVisibleCount(c => (c < totalRowsRef.current ? Math.min(totalRowsRef.current, c + MORE_ROWS) : c));
                 }
@@ -652,8 +687,18 @@ export default function QueueModal({ visible, onClose }) {
             }, 16);
         },
         onPanResponderMove: (e, g) => {
-            drag.current.dy = g.dy;
-            drag.current.fingerY = g.moveY;
+            // Follow only the finger that picked the row up. g.dy and g.moveY
+            // are the CENTROID of every finger on the glass, so falling back to
+            // them (which this did whenever the identified finger wasn't found)
+            // put the row straight back onto "the average of the two fingers".
+            // If our finger isn't in this event the row is left where it is.
+            const touches = e.nativeEvent.touches || [];
+            const mine = primaryTouch.current != null ? touches.find(t => t.identifier === primaryTouch.current) : null;
+            const use = mine || (touches.length === 1 ? touches[0] : null);
+            if (use) {
+                drag.current.fingerY = use.pageY;
+                drag.current.dy = use.pageY - g.y0;
+            }
             refreshDrag();
         },
         onPanResponderRelease: () => { finishRef.current(); },
@@ -738,7 +783,7 @@ export default function QueueModal({ visible, onClose }) {
     const actionsRef = useRef({});
     actionsRef.current = { remove, promote, addCopy, jump, pressIn, pressOut };
     const rowActions = useRef({
-        pressIn: (k) => actionsRef.current.pressIn(k),
+        pressIn: (k, id) => actionsRef.current.pressIn(k, id),
         pressOut: () => actionsRef.current.pressOut(),
         remove: (i, k, q) => actionsRef.current.remove(i, k, q),
         promote: (i, q) => actionsRef.current.promote(i, q),

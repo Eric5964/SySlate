@@ -206,11 +206,20 @@ async function waitForPlaying(timeoutMs = 4000) {
         const sub = AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => {
             if (state === State.Playing) finish(true);
         });
+        // The grace period has to follow whatever timeout it was asked for.
+        // It used to be a flat 1500ms whatever the caller asked, which capped
+        // every call: the long-idle branch below asks for 12000ms ("stay at
+        // volume 0 until the audio system wakes up"), but this gave up at
+        // 1.5s, took the quick 0.4s catch-up fade instead, and that is the
+        // loud first play after being away. Short calls keep the original
+        // 1500ms; longer ones get the room they asked for, minus a margin so
+        // the caller's own timer still answers first.
+        const graceMs = timeoutMs > 4000 ? Math.max(1500, timeoutMs - 1500) : 1500;
         const graceTimer = setTimeout(() => {
             AudioEngine.getState().then((state) => {
                 if (state !== State.Playing) finish(false);
             }).catch(() => finish(false));
-        }, 1500);
+        }, graceMs);
         const timer = setTimeout(() => finish(false), timeoutMs);
     });
 }
@@ -515,7 +524,18 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                 // fade here is a safe middle ground either way (still
                 // clearly not the FULL configured ramp if this really was
                 // a genuine failure, but not a jarring cut either).
-                if (!reallyPlaying) {
+                // After a long time away the audio system can take several
+                // seconds to wake. Giving up at 4 s and doing a quick 0.4 s
+                // fade is what made the song come in loud. Wait much longer
+                // (the volume stays at 0 the whole time), and only if it
+                // truly never starts fall back to the quick fade.
+                let started = reallyPlaying;
+                if (!started) {
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: slow start, still waiting at volume 0`);
+                    started = await waitForPlaying(12000);
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: slow start finished, playing=${started}`);
+                }
+                if (!started) {
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: took the !reallyPlaying branch (timed out) — quick catch-up fade only, not the full configured ramp`);
                     if (!announcedEarly) emitTransportRamp('play', Math.min(0.4, ramp));
                     await fadeVol(0, 1, Math.min(0.4, ramp), id);

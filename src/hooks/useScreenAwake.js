@@ -15,6 +15,6 @@ export function useScreenAwake(shouldStayAwake) {
     useEffect(() => {
         if (!shouldStayAwake) return;
         activateKeepAwakeAsync(TAG).catch(() => { });
-        return () => { try { deactivateKeepAwake(TAG); } catch { } };
+        return () => { try { deactivateKeepAwake(TAG).catch(() => { }); } catch { } };
     }, [shouldStayAwake]);
 }
