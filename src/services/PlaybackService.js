@@ -116,6 +116,13 @@ function drainPending() {
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Silence kept between "playing" being reported and the start of a play ramp.
+// It was 320 ms. The pop at a cold start is already hidden natively (the main
+// mixer is held at 0 and the ramp itself waits for it to lift, see rampVolume
+// in AudioEngine.swift), so this only has to cover the gap between the state
+// event and sound actually reaching the output.
+const PLAY_SETTLE_MS = 120;
+
 // "Minimum is double the longest crossfade/ramp duration" — for the plain
 // (non-crossfade) ramp paths below. A ramp that's a meaningful fraction of
 // the whole track's length doesn't really "ramp in then play normally,"
@@ -497,7 +504,7 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
             try {
                 if ((await AudioEngine.getState()) !== State.Playing) {
                     announcedEarly = true;
-                    emitTransportRamp('play', ramp + 0.32 + 0.35);
+                    emitTransportRamp('play', ramp + PLAY_SETTLE_MS / 1000 + 0.35);
                 }
             } catch { }
             try {
@@ -556,9 +563,9 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
                     // means the ramp can start, and sometimes nearly
                     // finish, before there's anything audible for it to
                     // apply to — sounding exactly like no ramp happened.
-                    if (!announcedEarly) emitTransportRamp('play', ramp + 0.32);
-                    await sleep(320);
-                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: 320ms settle done, calling fadeVol(0,1,${ramp})`);
+                    if (!announcedEarly) emitTransportRamp('play', ramp + PLAY_SETTLE_MS / 1000);
+                    await sleep(PLAY_SETTLE_MS);
+                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: settle done, calling fadeVol(0,1,${ramp})`);
                     await fadeVol(0, 1, ramp, id);
                     console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: fadeVol resolved — ramp should be fully audible now`);
                     releaseFade(id);
@@ -926,7 +933,7 @@ export async function skipWithRamp(direction = 'next') {
                     // the same reason — see its comment. State.Playing (what
                     // waitForPlaying just confirmed) can fire slightly ahead
                     // of audio actually reaching the speaker.
-                    await sleep(320);
+                    await sleep(PLAY_SETTLE_MS);
                     await fadeVol(0, 1, dur, id);
                 }
             } finally {

@@ -2468,15 +2468,21 @@ class AudioEngine: RCTEventEmitter {
     // When JS last set the volume to ~0 (the first step of every fade-in).
     private var lastZeroVolumeAt: Date? = nil
 
+    // The mute lifts in a few short steps (was 8 x 15 ms) and a fade-in waits for
+    // the whole lift to finish before it starts, so the ramp is heard in full.
+    private let coldLiftSteps = 6
+    private let coldLiftStepSec: TimeInterval = 0.010
+    private let coldLiftDelay: TimeInterval = 0.05
+
     private func releaseColdStartMute(after delay: TimeInterval) {
         guard coldMuteHeld else { return }
         coldMuteHeld = false
         let token = coldStartToken
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, token == self.coldStartToken else { return }
-            let steps = 8
+            let steps = self.coldLiftSteps
             for i in 1...steps {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.015 * Double(i)) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.coldLiftStepSec * Double(i)) { [weak self] in
                     guard let self = self, token == self.coldStartToken else { return }
                     self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
                 }
@@ -3913,8 +3919,12 @@ class AudioEngine: RCTEventEmitter {
         activeNode.volume = fromVal * currentGainCorrection
         // The fade-in is now genuinely under way and the node has just been
         // written to its start level: only now is it safe to lift a
-        // cold-start mute (see coldMuteHeld).
-        releaseColdStartMute(after: 0.15)
+        // cold-start mute (see coldMuteHeld). The node is at its start level
+        // here, so the mute lifts after a short margin, and the ramp itself
+        // only begins once the lift is over (the node stays at its start level
+        // until then), instead of running underneath a muted mixer.
+        let rampStartDelay: TimeInterval = coldMuteHeld ? (coldLiftDelay + coldLiftStepSec * Double(coldLiftSteps)) : 0
+        releaseColdStartMute(after: coldLiftDelay)
 
         if dur <= 0.02 {
             volume = toVal
@@ -3927,14 +3937,14 @@ class AudioEngine: RCTEventEmitter {
         let myGeneration = rampGeneration
         pendingRampResolve = resolve
         rampInFlightTarget = toVal
-        let start = Date()
+        let start = Date().addingTimeInterval(rampStartDelay)
         // 1/60s tick — smooth without being any more bridge/CPU traffic
         // than a single scheduled Timer regardless of interval; the actual
         // volume math is trivial.
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             guard let self = self, self.rampGeneration == myGeneration else { t.invalidate(); return }
             let elapsed = Date().timeIntervalSince(start)
-            let progress = min(1.0, dur > 0 ? elapsed / dur : 1.0)
+            let progress = max(0.0, min(1.0, dur > 0 ? elapsed / dur : 1.0))
             let eased = Float((1 - cos(progress * Double.pi)) / 2)
             let v = fromVal + (toVal - fromVal) * eased
             self.volume = v
