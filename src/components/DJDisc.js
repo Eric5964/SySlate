@@ -313,7 +313,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             // starts to gain velocity" jump.
             if (spinState.current === 'spinning') return;
             startSpin(Math.max(250, seconds * 1000));
-        } else slowSpin(seconds * 1000);
+        } else slowSpin(Math.max(250, seconds * 1000));   // never stops dead, even with the pause fade off
     }), [startSpin, slowSpin]);
 
     // While the disc can be scratched, keep a copy of the audio around the

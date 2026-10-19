@@ -132,7 +132,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
@@ -200,6 +200,11 @@ export default function SettingsScreen() {
     // itself was fine the whole time, just never reflected here unless
     // you happened to drag the slider yourself.
     useEffect(() => { setPreAmpLocal(preAmp); }, [preAmp]);
+    // Same idea for the Spatial sliders: the value shown follows the slider live, and is only saved when it is let go.
+    const [widthLocal, setWidthLocal] = useState(spatialWidth);
+    const [balanceLocal, setBalanceLocal] = useState(spatialBalance);
+    useEffect(() => { setWidthLocal(spatialWidth); }, [spatialWidth]);
+    useEffect(() => { setBalanceLocal(spatialBalance); }, [spatialBalance]);
     useEffect(() => { setCrossfadeDurationLocal(crossfadeDuration); }, [crossfadeDuration]);
     // Same local-mirror pattern, now for the split-out End of Track
     // crossfade duration (was one shared "Crossfade Duration" slider —
@@ -515,6 +520,7 @@ export default function SettingsScreen() {
     // audio engine and the other screens follow along immediately.
     const resetters = {
         volume: () => { setWithinTrackNorm(false); setBetweenTrackNorm(false); },
+        spatial: () => { setSpatialWidth(100); setSpatialBalance(0); },
         shuffle: () => { setShuffleTypePref('full_cycle'); changeShuffleMode('full_cycle'); },
         crossfade: () => {
             setCrossfadeEnabled(true);
@@ -547,7 +553,7 @@ export default function SettingsScreen() {
     };
     // Reset buttons are per group (Playback, Screens, ...), not per section.
     const groupResetters = {
-        playback: () => ['volume', 'shuffle', 'crossfade', 'queue', 'prev'].forEach(k => resetters[k]()),
+        playback: () => ['volume', 'spatial', 'shuffle', 'crossfade', 'queue', 'prev'].forEach(k => resetters[k]()),
         screens: () => ['lists', 'playlistsScreen', 'allSongsScreen', 'playlistScreen', 'playerButtons', 'playerCover'].forEach(k => resetters[k]()),
         appearance: () => ['covers', 'screen'].forEach(k => resetters[k]()),
         library: () => ['artists', 'album'].forEach(k => resetters[k]()),
@@ -808,6 +814,24 @@ export default function SettingsScreen() {
                         onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
+                </Section>
+
+                <Section title="Spatial">
+                    <Text style={s.sliderSub}>Width</Text>
+                    <Text style={s.sliderNote}>How wide the stereo sound is. 100% is the song as it was recorded</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{Math.round(widthLocal)}%</Text>
+                    <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={200} step={5} value={widthLocal}
+                        onValueChange={setWidthLocal} onSlidingComplete={v => { setWidthLocal(v); setSpatialWidth(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>0% (mono)</Text><Text style={s.sliderEnd}>200%</Text></View>
+
+                    <Text style={[s.sliderSub, { paddingTop: 22 }]}>Balance</Text>
+                    <Text style={s.sliderNote}>Moves the sound left or right. The middle is normal</Text>
+                    <Text style={[s.sliderVal, { color: theme.accent }]}>{Math.round(balanceLocal) === 0 ? 'Center' : (balanceLocal < 0 ? 'Left ' : 'Right ') + Math.abs(Math.round(balanceLocal)) + '%'}</Text>
+                    <PureSlider guardScroll style={s.slider} minimumValue={-100} maximumValue={100} step={5} value={balanceLocal}
+                        onValueChange={setBalanceLocal} onSlidingComplete={v => { setBalanceLocal(v); setSpatialBalance(v); }}
+                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>Left</Text><Text style={s.sliderEnd}>Right</Text></View>
                 </Section>
 
                 <Section title="Volume Levelling">
@@ -1616,6 +1640,7 @@ const SECTION_KW = {
     'Player': 'player buttons speed sleep timer eq queue shuffle loop cover lyrics disc vinyl cd dj scratch rpm auto show opens spin touch',
     'Previous Button': 'previous back restart threshold window rewind',
     'Performance': 'performance older device shadows slow lists',
+    'Spatial': 'spatial width wide stereo mono balance left right pan skew',
     'Look': 'shadow outline border looks style cover pill mini player minimal soft bold sharp pictures screen awake top bar bottom bar tab color transparent',
     'Accent Color': 'accent color theme',
     'Base Color': 'base color dark light theme',

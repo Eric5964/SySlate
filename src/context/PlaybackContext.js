@@ -19,8 +19,9 @@ import {
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
     getCrossfadeEnabled, getCrossfadeDurationSkip, getPlaybackRate, setPlaybackRateStored,
 } from '../utils/storage';
-import { extractEmbeddedArt, getCachedArt, getCachedArtFast } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
+import { setProgressSeed } from '../utils/progressSeed';
 
 const Ctx = createContext(null);
 
@@ -1496,6 +1497,18 @@ export function PlaybackProvider({ children, engineReady = true }) {
                         });
                     }
                     if (found !== -1) last = { ...last, index: found, position: snap.position };
+                }
+            } catch { }
+            // Tell the mini player where this song is, and warm its cover, now,
+            // so both are there on its first frame (the song itself takes a
+            // moment longer to load).
+            try {
+                const cur0 = queue[last.index];
+                if (cur0 && cur0.duration > 0) setProgressSeed({ id: cur0.id, qid: cur0._qid, position: Math.max(0, last.position || 0), duration: cur0.duration });
+                if (cur0?.artwork) {
+                    Image.prefetch(cur0.artwork).catch(() => { });
+                    const thumb = listArtUri(cur0.artwork);
+                    if (thumb && thumb !== cur0.artwork) Image.prefetch(thumb).catch(() => { });
                 }
             } catch { }
             const mode = await getShuffleMode();

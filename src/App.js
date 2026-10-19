@@ -298,10 +298,10 @@ function AppInner() {
         try {
             const covers = await getPlaylistCovers();
             // Warm what we can, but never hold the splash screen more than
-            // ~0.6s for it. Anything not warm by then just loads as it shows.
+            // ~0.25s for it (it was 0.6s). Anything not warm by then just loads as it shows.
             await Promise.race([
                 Promise.all(Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))),
-                new Promise(r => setTimeout(r, 600)),
+                new Promise(r => setTimeout(r, 250)),
             ]);
             return covers;
         } catch { return null; }
@@ -325,12 +325,15 @@ function AppInner() {
     const reload = useCallback(async () => {
         const seq = ++reloadSeq.current;
         try {
-            const lib = await scanLibrary();
-            // Actually WAIT for these instead of firing-and-forgetting —
+            // The library scan and the cover warm-up do not depend on each
+            // other, so they run together (they used to run one after the
+            // other, which added the cover time on top of the scan time to the
+            // splash screen).
+            // Actually WAIT for both instead of firing-and-forgetting —
             // the whole point is the UI doesn't render until images are
             // already in RN's cache, otherwise this preload step does
             // nothing to prevent the first-render flash it's meant to fix.
-            const covers = await prefetchPlaylistCovers();
+            const [lib, covers] = await Promise.all([scanLibrary(), prefetchPlaylistCovers()]);
             if (seq !== reloadSeq.current) return;   // a newer scan was started: its result wins
             setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null, covers: covers ?? {} });
         } catch (e) { console.error('reload:', e); }
@@ -344,7 +347,8 @@ function AppInner() {
             try {
                 await AudioEngine.setupPlayer({ minBuffer: 5, maxBuffer: 50 });
                 await AudioEngine.setVolume(1);
-                await AudioEngine.updateOptions({
+                // Not waited for: the lock screen buttons being set up does not need to hold the splash screen.
+                AudioEngine.updateOptions({
                     capabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.Stop],
                     compactCapabilities: [Capability.Play, Capability.Pause, Capability.SkipToNext],
                     // Was `progressUpdateEventThrottle: 150` — not a real
@@ -360,7 +364,7 @@ function AppInner() {
                     // this — only the count, which had no other path to
                     // being incremented, silently never moved.
                     progressUpdateEventInterval: 1,
-                });
+                }).catch(() => { });
             } catch { }
             await libraryLoad;
             // Deliberately gate rendering on this instead of restoring inside
@@ -418,7 +422,7 @@ function AppInner() {
         // only ever there to give the icon a moment to actually be seen);
         // the moment playerReady/themeReady flip true, a quick 250ms fade
         // starts immediately.
-        Animated.timing(overlayOpacity, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => {
+        Animated.timing(overlayOpacity, { toValue: 0, duration: 120, useNativeDriver: true }).start(() => {
             setShowOverlay(false);
         });
     }, [playerReady, themeReady]);

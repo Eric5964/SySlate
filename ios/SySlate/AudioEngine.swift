@@ -634,6 +634,7 @@ class AudioEngine: RCTEventEmitter {
                 shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             }
             markOutputCold()
+            coldWakeExtra = true
             debugLog("[RAMP-DEBUG] interruption ENDED — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state), shouldResume=\(shouldResume)")
             // Deliberately not auto-resuming even when iOS suggests it's
             // safe to — most players require an explicit tap back to play.
@@ -790,6 +791,7 @@ class AudioEngine: RCTEventEmitter {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
         markOutputCold()
+        coldWakeExtra = true
         markScheduledAudioStale()
         savePlaybackSnapshot(force: true)
         debugLog("[POP] route change: reason=\(reasonValue) state=\(state) engineRunning=\(engine.isRunning) mixerVol=\(engine.mainMixerNode.outputVolume)")
@@ -2389,6 +2391,12 @@ class AudioEngine: RCTEventEmitter {
     private var lastAudibleAt: Date? = nil
     private var coldStartToken: Int = 0
 
+    // Set when the output was disturbed from outside (a device connected or
+    // disconnected, another app took over). The first play after that holds
+    // the engine running in silence a little longer before the song starts, so
+    // the output hardware (a DAC, Bluetooth, IEMs) is fully awake first. Cleared
+    // once that first play has used it.
+    private var coldWakeExtra: Bool = false
     private func markOutputCold() { outputIsCold = true }
 
     // The pop on the first play (and after a route change) was measured from a
@@ -2412,7 +2420,9 @@ class AudioEngine: RCTEventEmitter {
         // A Bluetooth link takes a few hundred ms to wake; starting the song only
         // after that keeps the first notes from being swallowed.
         let btExtra: TimeInterval = (coldMuteHeld && isBluetoothOutput()) ? 0.4 : 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay + btExtra) { [weak self] in
+        let wakeExtra: TimeInterval = (coldMuteHeld && coldWakeExtra) ? 0.3 : 0
+        if coldMuteHeld { coldWakeExtra = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay + max(btExtra, wakeExtra)) { [weak self] in
             guard let self = self, token == self.pendingPlayToken, self.state == .playing else { return }
             // Belt and braces: a fade-in must start from true silence. If JS
             // asked for volume 0, write it again right before the node
@@ -4067,6 +4077,63 @@ class AudioEngine: RCTEventEmitter {
         resolve(nil)
     }
 
+    // MARK: Spatial (width and balance)
+    //
+    // Width widens or narrows the stereo image (100% = the recording as it is,
+    // 0% = mono, 200% = twice as wide), Balance moves it left or right (0 =
+    // centre). Both are done by a small effect of our own between the
+    // normalizer and the main mixer. It is only put into the signal path the
+    // first time a setting leaves its default, so people who never touch these
+    // have exactly the graph they had before.
+    private var spatialUnit: SpatialAudioUnit? = nil
+    private var spatialInstalling = false
+    private var spatialWidth: Float = 1
+    private var spatialBalance: Float = 0
+
+    @objc(setSpatial:balance:)
+    func setSpatial(_ width: NSNumber, balance: NSNumber) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.spatialWidth = min(2, max(0, width.floatValue))
+            self.spatialBalance = min(1, max(-1, balance.floatValue))
+            self.spatialUnit?.targetWidth = self.spatialWidth
+            self.spatialUnit?.targetBalance = self.spatialBalance
+            let neutral = abs(self.spatialWidth - 1) < 0.001 && abs(self.spatialBalance) < 0.001
+            if self.spatialUnit == nil && !neutral { self.installSpatialUnit() }
+        }
+    }
+
+    private func installSpatialUnit() {
+        if spatialInstalling || spatialUnit != nil { return }
+        spatialInstalling = true
+        let desc = AudioComponentDescription(componentType: kAudioUnitType_Effect,
+                                             componentSubType: 0x73707264,        // 'sprd'
+                                             componentManufacturer: 0x53795331,   // 'SyS1'
+                                             componentFlags: 0, componentFlagsMask: 0)
+        if !spatialUnitRegistered {
+            AUAudioUnit.registerSubclass(SpatialAudioUnit.self, as: desc, name: "SySlate: Spatial", version: 1)
+            spatialUnitRegistered = true
+        }
+        AVAudioUnit.instantiate(with: desc, options: []) { [weak self] avUnit, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.spatialInstalling = false
+                guard let avUnit = avUnit, let au = avUnit.auAudioUnit as? SpatialAudioUnit else {
+                    self.debugLog("[SPATIAL] could not create the effect: \(String(describing: error))")
+                    return
+                }
+                au.targetWidth = self.spatialWidth
+                au.targetBalance = self.spatialBalance
+                self.engine.attach(avUnit)
+                self.engine.disconnectNodeOutput(self.normalizerNode)
+                self.engine.connect(self.normalizerNode, to: avUnit, format: nil)
+                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: nil)
+                self.spatialUnit = au
+                self.debugLog("[SPATIAL] effect added to the signal path")
+            }
+        }
+    }
+
     // Toggling .bypass on an AVAudioUnitEffect while audio is actively
     // flowing through it is a well-known click/pop source — the unit's
     // internal DSP state (the Dynamics Processor's attack/release envelope
@@ -4223,6 +4290,73 @@ final class ScratchCore {
             r?.deallocate()
             pl?.deallocate(); pr?.deallocate()
             rl?.deallocate(); rr?.deallocate()
+        }
+    }
+}
+
+// MARK: - Spatial effect (stereo width and balance)
+
+private var spatialUnitRegistered = false
+
+// Mid/side width plus left-right balance, in place on the stereo signal.
+// Width scales the side (L minus R) part: 0 = mono, 1 = unchanged, 2 = twice as
+// wide. Balance turns one side down: negative = left, positive = right. Both
+// move toward their targets a little each sample so a slider never clicks.
+private final class SpatialAudioUnit: AUAudioUnit {
+    private var inputBusArray: AUAudioUnitBusArray!
+    private var outputBusArray: AUAudioUnitBusArray!
+    var targetWidth: Float = 1
+    var targetBalance: Float = 0
+    private var curWidth: Float = 1
+    private var curGainL: Float = 1
+    private var curGainR: Float = 1
+
+    override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+        try super.init(componentDescription: componentDescription, options: options)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+        let inBus = try AUAudioUnitBus(format: format)
+        let outBus = try AUAudioUnitBus(format: format)
+        inputBusArray = AUAudioUnitBusArray(audioUnit: self, busType: .input, busses: [inBus])
+        outputBusArray = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outBus])
+        self.maximumFramesToRender = 4096
+    }
+
+    override var inputBusses: AUAudioUnitBusArray { return inputBusArray }
+    override var outputBusses: AUAudioUnitBusArray { return outputBusArray }
+
+    override var internalRenderBlock: AUInternalRenderBlock {
+        return { [unowned self] actionFlags, timestamp, frameCount, outputBusNumber, outputData, realtimeEventListHead, pullInputBlock in
+            guard let pull = pullInputBlock else { return kAudioUnitErr_NoConnection }
+            let status = pull(actionFlags, timestamp, frameCount, 0, outputData)
+            if status != noErr { return status }
+            let abl = UnsafeMutableAudioBufferListPointer(outputData)
+            guard abl.count >= 2,
+                  let lp = abl[0].mData?.assumingMemoryBound(to: Float.self),
+                  let rp = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+            let n = Int(frameCount)
+            let tw = self.targetWidth
+            let tb = self.targetBalance
+            let tgl: Float = tb > 0 ? 1 - tb : 1
+            let tgr: Float = tb < 0 ? 1 + tb : 1
+            var w = self.curWidth
+            var gl = self.curGainL
+            var gr = self.curGainR
+            let k: Float = 0.002
+            for i in 0..<n {
+                w += (tw - w) * k
+                gl += (tgl - gl) * k
+                gr += (tgr - gr) * k
+                let l = lp[i]
+                let r = rp[i]
+                let mid = (l + r) * 0.5
+                let side = (l - r) * 0.5 * w
+                lp[i] = (mid + side) * gl
+                rp[i] = (mid - side) * gr
+            }
+            self.curWidth = w
+            self.curGainL = gl
+            self.curGainR = gr
+            return noErr
         }
     }
 }

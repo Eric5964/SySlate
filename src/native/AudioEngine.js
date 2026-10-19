@@ -135,6 +135,8 @@ const AudioEngine = {
     scratchBegin: () => NativeAudioEngine.scratchBegin(),
     scratchSetRate: (rate) => NativeAudioEngine.scratchSetRate(rate),
     scratchResumePlay: () => { try { NativeAudioEngine.scratchResumePlay(); } catch (e) { } },
+    // Stereo width (0 to 2, 1 = as recorded) and balance (-1 left to 1 right, 0 = centre).
+    setSpatial: (width, balance) => { try { NativeAudioEngine.setSpatial(width, balance); } catch (e) { } },
     scratchPrefetch: (on) => { try { NativeAudioEngine.scratchPrefetch(!!on); } catch (e) { } },
     scratchEnd: () => NativeAudioEngine.scratchEnd(),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),

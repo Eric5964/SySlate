@@ -13,6 +13,7 @@ import GradientCap from './GradientCap';
 import { squircle } from '../utils/squircle';
 import { formatArtists } from '../utils/artists';
 import { PILL_H, PILL_COVER, PILL_COVER_PAD } from '../utils/layout';
+import { getProgressSeed, setProgressSeed } from '../utils/progressSeed';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = PILL_COVER;   // same cover size as the song pills
@@ -80,7 +81,14 @@ export default function MiniPlayer({ withTabBar = true }) {
             // arrives quickly.
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
-            let settled = false;
+            // Right after a session restore the position is already known: draw the bar from it at once.
+            const seed = getProgressSeed();
+            const seeded = !!(seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid));
+            if (seeded) {
+                basisRef.current = { position: seed.position, duration: seed.duration, at: Date.now() };
+                setProgressSeed(null);
+            }
+            let settled = seeded;
             const toZero = () => { if (settled || lastTrackIdRef.current !== trackAtChange) return; settled = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
             setTimeout(toZero, 250);
             AudioEngine.getProgress().then(p => {

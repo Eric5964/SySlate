@@ -115,6 +115,11 @@ export const setWithinTrackNorm = (v) => safe(() => AsyncStorage.setItem('vol_no
 // an 11th band. 0 = off/unity, same meaning as a flat EQ preset.
 export const getPreAmp = () => safe(() => AsyncStorage.getItem('preamp_db').then(v => v !== null ? parseFloat(v) : 0), 0);
 export const setPreAmp = (v) => safe(() => AsyncStorage.setItem('preamp_db', String(v)), null);
+// Spatial: stereo width in percent (100 = as recorded) and balance in percent (0 = centre, -100 left, 100 right).
+export const getSpatialWidth = () => safe(() => AsyncStorage.getItem('spatial_width').then(v => { const n = v !== null ? parseFloat(v) : 100; return Number.isFinite(n) ? n : 100; }), 100);
+export const setSpatialWidth = (v) => safe(() => AsyncStorage.setItem('spatial_width', String(v)), null);
+export const getSpatialBalance = () => safe(() => AsyncStorage.getItem('spatial_balance').then(v => { const n = v !== null ? parseFloat(v) : 0; return Number.isFinite(n) ? n : 0; }), 0);
+export const setSpatialBalance = (v) => safe(() => AsyncStorage.setItem('spatial_balance', String(v)), null);
 
 // Whether built-in ("premade") presets are shown in the Settings screen's
 // own EQ Presets grid. Separate from hiddenPresets (which governs the
@@ -970,7 +975,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1053,6 +1058,7 @@ export const importAllSettings = async (jsonString) => {
         restart_threshold_sec: [0, 24],
         restart_threshold_pct: [0, 50],
         preamp_db: [-12, 12],
+        spatial_width: [0, 200], spatial_balance: [-100, 100],
         playback_rate: [0.25, 3],
     };
     // Keys whose value is a JSON-encoded array of strings.
