@@ -4,8 +4,8 @@ import { Dimensions } from 'react-native';
 // Shared between App.js (the PlaylistDetail back-gesture's
 // gestureResponseDistance) and SwipeableRow's edgeExclude prop, so the two
 // always agree on exactly where the boundary is instead of two separate
-// magic numbers drifting apart. ~10% of screen width, per request.
-export const EDGE_SWIPE_WIDTH = Math.round(Dimensions.get('window').width * 0.1);
+// magic numbers drifting apart. ~18% of screen width, per request. Also used by the Stats and Debug Log back-swipes.
+export const EDGE_SWIPE_WIDTH = Math.round(Dimensions.get('window').width * 0.18);
 
 // Pill-style rows everywhere (Playlists list layouts, All Songs, Playlist
 // songs, Queue) share one height and one cover size, taken from the mini

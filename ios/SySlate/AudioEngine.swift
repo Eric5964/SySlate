@@ -603,6 +603,12 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // True from the moment another app/call/device takes the sound until we are
+    // given it back or the user presses play. The repair paths below must leave
+    // the engine alone during that time (they used to restart it underneath the
+    // app that had taken over).
+    private var interruptionActive = false
+
     @objc private func handleInterruption(_ notification: Notification) {
         guard let info = notification.userInfo,
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -626,6 +632,8 @@ class AudioEngine: RCTEventEmitter {
             // pause-with-ramp function is expected to call this module's
             // pause()/setVolume() itself, same as it does for a manual
             // pause tap.
+            interruptionActive = true
+            markOutputCold()
             savePlaybackSnapshot(force: true)
             sendEvent(withName: "AudioInterruptionBegan", body: nil)
         } else if type == .ended {
@@ -633,6 +641,7 @@ class AudioEngine: RCTEventEmitter {
             if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             }
+            interruptionActive = false
             markOutputCold()
             coldWakeExtra = true
             debugLog("[RAMP-DEBUG] interruption ENDED — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state), shouldResume=\(shouldResume)")
@@ -732,7 +741,7 @@ class AudioEngine: RCTEventEmitter {
     // switch), the scheduled audio is gone and a plain engine restart would
     // play silence. Only acts when the engine is really stopped.
     private func repairPlaybackAfterEngineStop(_ why: String) {
-        guard state == .playing, !isCrossfading, !scratchActive, !engine.isRunning, currentIndex != nil else { return }
+        guard state == .playing, !isCrossfading, !scratchActive, !interruptionActive, !engine.isRunning, currentIndex != nil else { return }
         debugLog("[REPAIR] engine was stopped while playing (\(why)): restarting the song at its current position")
         staleScheduleToken = nil
         let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
@@ -753,7 +762,7 @@ class AudioEngine: RCTEventEmitter {
         for delay in [1.0, 9.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self, t == self.silenceWatchdogToken,
-                      self.state == .playing, !self.isCrossfading, !self.scratchActive else { return }
+                      self.state == .playing, !self.isCrossfading, !self.scratchActive, !self.interruptionActive else { return }
                 var repaired = false
                 if !self.engine.isRunning {
                     self.softMute(holdFor: 0.12)
@@ -2410,9 +2419,15 @@ class AudioEngine: RCTEventEmitter {
     private var pendingPlayToken: Int = 0
     private let gainSettleDelay: TimeInterval = 0.08
 
+    // When the node is due to start (set while its start is being held back, e.g.
+    // for a waking device). A fade-in and the lifting of the cold-start mute both
+    // wait for it, so the mute never opens before the first sound has gone out.
+    private var nodeStartPlannedAt: Date? = nil
+
     private func startActiveNodeAfterGainSettles(needsSettle: Bool) {
         pendingPlayToken += 1
         if !needsSettle {
+            nodeStartPlannedAt = nil
             playNodeWithMicroFade()
             return
         }
@@ -2422,8 +2437,10 @@ class AudioEngine: RCTEventEmitter {
         let btExtra: TimeInterval = (coldMuteHeld && isBluetoothOutput()) ? 0.4 : 0
         let wakeExtra: TimeInterval = (coldMuteHeld && coldWakeExtra) ? 0.3 : 0
         if coldMuteHeld { coldWakeExtra = false }
+        nodeStartPlannedAt = Date().addingTimeInterval(gainSettleDelay + max(btExtra, wakeExtra))
         DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay + max(btExtra, wakeExtra)) { [weak self] in
             guard let self = self, token == self.pendingPlayToken, self.state == .playing else { return }
+            self.nodeStartPlannedAt = nil
             // Belt and braces: a fade-in must start from true silence. If JS
             // asked for volume 0, write it again right before the node
             // starts so nothing else can have left a stale level on it.
@@ -2527,6 +2544,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func playInternal() {
+        interruptionActive = false   // a play press takes the sound back
         deviceLossFadeToken &+= 1   // a play cancels a device-loss fade-out that is still under way
         if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }   // and puts the level back
         guard currentIndex != nil else {
@@ -3933,8 +3951,9 @@ class AudioEngine: RCTEventEmitter {
         // here, so the mute lifts after a short margin, and the ramp itself
         // only begins once the lift is over (the node stays at its start level
         // until then), instead of running underneath a muted mixer.
-        let rampStartDelay: TimeInterval = coldMuteHeld ? (coldLiftDelay + coldLiftStepSec * Double(coldLiftSteps)) : 0
-        releaseColdStartMute(after: coldLiftDelay)
+        let nodeWait: TimeInterval = nodeStartPlannedAt.map { max(0, $0.timeIntervalSinceNow + 0.06) } ?? 0
+        let rampStartDelay: TimeInterval = (coldMuteHeld ? (coldLiftDelay + coldLiftStepSec * Double(coldLiftSteps)) : 0) + nodeWait
+        releaseColdStartMute(after: coldLiftDelay + nodeWait)
 
         if dur <= 0.02 {
             volume = toVal
@@ -4103,8 +4122,13 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    private var spatialAV: AVAudioUnit? = nil
+    // Set when the effect failed its own check: Width and Balance then do nothing
+    // for the rest of the session instead of leaving the song silent.
+    private var spatialUnavailable = false
+
     private func installSpatialUnit() {
-        if spatialInstalling || spatialUnit != nil { return }
+        if spatialInstalling || spatialUnit != nil || spatialUnavailable { return }
         spatialInstalling = true
         let desc = AudioComponentDescription(componentType: kAudioUnitType_Effect,
                                              componentSubType: 0x73707264,        // 'sprd'
@@ -4120,18 +4144,68 @@ class AudioEngine: RCTEventEmitter {
                 self.spatialInstalling = false
                 guard let avUnit = avUnit, let au = avUnit.auAudioUnit as? SpatialAudioUnit else {
                     self.debugLog("[SPATIAL] could not create the effect: \(String(describing: error))")
+                    self.spatialUnavailable = true
                     return
+                }
+                // Use the format of the signal it is placed into, on both sides,
+                // instead of letting the engine negotiate from a fixed default.
+                let fmt = self.normalizerNode.outputFormat(forBus: 0)
+                guard fmt.sampleRate > 0, fmt.channelCount == 2 else {
+                    self.debugLog("[SPATIAL] not added: unexpected signal format \(fmt)")
+                    self.spatialUnavailable = true
+                    return
+                }
+                do {
+                    try au.inputBusses[0].setFormat(fmt)
+                    try au.outputBusses[0].setFormat(fmt)
+                } catch {
+                    self.debugLog("[SPATIAL] could not set the effect format: \(error)")
                 }
                 au.targetWidth = self.spatialWidth
                 au.targetBalance = self.spatialBalance
                 self.engine.attach(avUnit)
                 self.engine.disconnectNodeOutput(self.normalizerNode)
-                self.engine.connect(self.normalizerNode, to: avUnit, format: nil)
-                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: nil)
+                self.engine.connect(self.normalizerNode, to: avUnit, format: fmt)
+                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: fmt)
                 self.spatialUnit = au
-                self.debugLog("[SPATIAL] effect added to the signal path")
+                self.spatialAV = avUnit
+                self.debugLog("[SPATIAL] effect added to the signal path (\(Int(fmt.sampleRate)) Hz, \(fmt.channelCount) ch)")
+                for delay in [0.8, 3.0, 8.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.verifySpatialUnit() }
+                }
             }
         }
+    }
+
+    // Self-check after the effect is added: if the engine is running but never
+    // asked it for sound, or it reported errors, take it out again so the song
+    // is never left silent because of it. What it saw is logged either way.
+    private var spatialVerifyWaits = 0
+    private func verifySpatialUnit() {
+        guard let au = spatialUnit else { return }
+        // The engine is stopped whenever the song is paused, so there is nothing
+        // to judge yet: look again every 5 s (up to a minute) until it runs.
+        if !engine.isRunning && au.renderCalls == 0 && spatialVerifyWaits < 12 {
+            spatialVerifyWaits += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.verifySpatialUnit() }
+            return
+        }
+        debugLog("[SPATIAL] check: engineRunning=\(engine.isRunning) renders=\(au.renderCalls) errors=\(au.renderErrors) lastStatus=\(au.lastStatus) largestSlice=\(au.maxFramesSeen)")
+        if au.renderErrors > 0 || (engine.isRunning && au.renderCalls == 0) {
+            removeSpatialUnit()
+        }
+    }
+
+    private func removeSpatialUnit() {
+        guard let av = spatialAV else { return }
+        engine.disconnectNodeOutput(normalizerNode)
+        engine.disconnectNodeOutput(av)
+        engine.detach(av)
+        engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
+        spatialUnit = nil
+        spatialAV = nil
+        spatialUnavailable = true
+        debugLog("[SPATIAL] effect removed again (it was not working); Width and Balance are off until the app is restarted")
     }
 
     // Toggling .bypass on an AVAudioUnitEffect while audio is actively
@@ -4297,19 +4371,28 @@ final class ScratchCore {
 // MARK: - Spatial effect (stereo width and balance)
 
 private var spatialUnitRegistered = false
+private let spatialErrUninitialized: OSStatus = -10867   // kAudioUnitErr_Uninitialized
 
 // Mid/side width plus left-right balance, in place on the stereo signal.
 // Width scales the side (L minus R) part: 0 = mono, 1 = unchanged, 2 = twice as
 // wide. Balance turns one side down: negative = left, positive = right. Both
 // move toward their targets a little each sample so a slider never clicks.
+// The input is pulled into a buffer of the unit's own (the pattern Apple's
+// audio unit examples use) rather than into the host's output buffers.
 private final class SpatialAudioUnit: AUAudioUnit {
     private var inputBusArray: AUAudioUnitBusArray!
     private var outputBusArray: AUAudioUnitBusArray!
+    private var inputBuffer: AVAudioPCMBuffer?
     var targetWidth: Float = 1
     var targetBalance: Float = 0
     private var curWidth: Float = 1
     private var curGainL: Float = 1
     private var curGainR: Float = 1
+    // What the unit has seen, for the self-check and the log.
+    var renderCalls: Int = 0
+    var renderErrors: Int = 0
+    var maxFramesSeen: Int = 0
+    var lastStatus: Int32 = 0
 
     override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
         try super.init(componentDescription: componentDescription, options: options)
@@ -4318,22 +4401,60 @@ private final class SpatialAudioUnit: AUAudioUnit {
         let outBus = try AUAudioUnitBus(format: format)
         inputBusArray = AUAudioUnitBusArray(audioUnit: self, busType: .input, busses: [inBus])
         outputBusArray = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [outBus])
-        self.maximumFramesToRender = 4096
+        self.maximumFramesToRender = 8192
     }
 
     override var inputBusses: AUAudioUnitBusArray { return inputBusArray }
     override var outputBusses: AUAudioUnitBusArray { return outputBusArray }
 
+    override func allocateRenderResources() throws {
+        try super.allocateRenderResources()
+        inputBuffer = AVAudioPCMBuffer(pcmFormat: inputBusses[0].format, frameCapacity: maximumFramesToRender)
+    }
+
+    override func deallocateRenderResources() {
+        super.deallocateRenderResources()
+        inputBuffer = nil
+    }
+
     override var internalRenderBlock: AUInternalRenderBlock {
         return { [unowned self] actionFlags, timestamp, frameCount, outputBusNumber, outputData, realtimeEventListHead, pullInputBlock in
-            guard let pull = pullInputBlock else { return kAudioUnitErr_NoConnection }
-            let status = pull(actionFlags, timestamp, frameCount, 0, outputData)
-            if status != noErr { return status }
-            let abl = UnsafeMutableAudioBufferListPointer(outputData)
-            guard abl.count >= 2,
-                  let lp = abl[0].mData?.assumingMemoryBound(to: Float.self),
-                  let rp = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+            self.renderCalls &+= 1
             let n = Int(frameCount)
+            if n > self.maxFramesSeen { self.maxFramesSeen = n }
+            guard let pull = pullInputBlock, let inBuf = self.inputBuffer, frameCount <= inBuf.frameCapacity else {
+                self.renderErrors &+= 1
+                self.lastStatus = spatialErrUninitialized
+                return spatialErrUninitialized
+            }
+            let bytes = frameCount * inBuf.format.streamDescription.pointee.mBytesPerFrame
+            let inList = inBuf.mutableAudioBufferList
+            let inABL = UnsafeMutableAudioBufferListPointer(inList)
+            for i in 0..<inABL.count { inABL[i].mDataByteSize = bytes }
+            let status = pull(actionFlags, timestamp, frameCount, 0, inList)
+            if status != noErr {
+                self.renderErrors &+= 1
+                self.lastStatus = status
+                return status
+            }
+            let outABL = UnsafeMutableAudioBufferListPointer(outputData)
+            guard inABL.count >= 2, outABL.count >= 2,
+                  let il = inABL[0].mData?.assumingMemoryBound(to: Float.self),
+                  let ir = inABL[1].mData?.assumingMemoryBound(to: Float.self) else {
+                // Not the layout this processes: pass the sound through untouched.
+                for i in 0..<min(inABL.count, outABL.count) {
+                    if outABL[i].mData == nil { outABL[i].mData = inABL[i].mData }
+                    else if let src = inABL[i].mData, let dst = outABL[i].mData, dst != src { memcpy(dst, src, Int(bytes)) }
+                    outABL[i].mDataByteSize = bytes
+                }
+                return noErr
+            }
+            for i in 0..<2 {
+                if outABL[i].mData == nil { outABL[i].mData = inABL[i].mData }
+                outABL[i].mDataByteSize = bytes
+            }
+            guard let ol = outABL[0].mData?.assumingMemoryBound(to: Float.self),
+                  let orr = outABL[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
             let tw = self.targetWidth
             let tb = self.targetBalance
             let tgl: Float = tb > 0 ? 1 - tb : 1
@@ -4346,12 +4467,12 @@ private final class SpatialAudioUnit: AUAudioUnit {
                 w += (tw - w) * k
                 gl += (tgl - gl) * k
                 gr += (tgr - gr) * k
-                let l = lp[i]
-                let r = rp[i]
+                let l = il[i]
+                let r = ir[i]
                 let mid = (l + r) * 0.5
                 let side = (l - r) * 0.5 * w
-                lp[i] = (mid + side) * gl
-                rp[i] = (mid - side) * gr
+                ol[i] = (mid + side) * gl
+                orr[i] = (mid - side) * gr
             }
             self.curWidth = w
             self.curGainL = gl

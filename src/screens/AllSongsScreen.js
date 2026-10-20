@@ -10,6 +10,7 @@ import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import SwipeableRow from '../components/SwipeableRow';
+import DimPressable from '../components/DimPressable';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
@@ -92,6 +93,16 @@ export default function AllSongsScreen() {
         return () => { cancelled = true; };
     }, [dedupedSongs]));
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
+    // Play counts decide the Most Played orders. They used to be read only when
+    // the tab was first focused, so a saved "Most Played" sort showed up as
+    // alphabetical (every count empty) and then jumped into place on the first
+    // visit. Reading them as soon as the songs are known (the app is still
+    // behind its start screen then) means the first view is already right.
+    useEffect(() => {
+        let cancelled = false;
+        getPlayCounts(dedupedSongs).then(c => { if (!cancelled) setPlayCounts(c); });
+        return () => { cancelled = true; };
+    }, [dedupedSongs]);
 
     // Precomputed once per song instead of inside the sort comparator —
     // .sort() calls its comparator O(n log n) times, and recomputing
@@ -272,7 +283,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
     const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
-            <TouchableOpacity style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)} activeOpacity={0.7}>
+            <DimPressable style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
@@ -288,7 +299,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                 {showPlayCount && count > 0 && (
                     <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
                 )}
-            </TouchableOpacity>
+            </DimPressable>
         </SwipeableRow>
     );
 });

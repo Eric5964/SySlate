@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, unstable_batchedUpdates } from 'react-native';
+import DimPressable from './DimPressable';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -207,6 +208,22 @@ function CollapseBlock({ collapsing, growing, estH = 0, children }) {
 // of its own left to key its fade-out off of), which is a bigger, riskier
 // change than this pass — the appearing half was the specific complaint.
 
+// Always an animated value (never a plain 0), so a row's style never switches
+// between animated and plain numbers while it is on the native driver.
+const ZERO_SHIFT = new Animated.Value(0);
+
+// Slides the Priority / Up Next labels and the line between them out of the
+// way while a row is being moved, exactly like the rows do, so a held row never
+// passes over (or under) them.
+function ShiftBox({ shift, live, children }) {
+    const a = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        if (live) Animated.timing(a, { toValue: shift, duration: 150, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+        else a.setValue(0);
+    }, [shift, live, a]);
+    return <Animated.View style={{ transform: [{ translateY: live ? a : ZERO_SHIFT }] }}>{children}</Animated.View>;
+}
+
 // One queue row. Memoized: a refresh builds brand new row objects even when
 // nothing changed, and art / play-count lookups land one at a time, so
 // without this every visible row re-rendered on each of those.
@@ -223,7 +240,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
     return (
         <GrowInRow isNew={isNew}>
             <ShrinkOutRow removing={removing}>
-                <Animated.View style={[{ transform: [{ translateY: dragging ? dragY : shiftAnim }, { scale: dragging ? 1.03 : 1 }] }, dragging && s.dragged]}>
+                <Animated.View style={[{ transform: [{ translateY: dragging ? dragY : (live ? shiftAnim : ZERO_SHIFT) }, { scale: dragging ? 1.03 : 1 }] }, dragging && s.dragged]}>
                 <SwipeableRow
                     onSwipeLeft={editing ? undefined : () => actions.remove(realIndex, stableKey, song._qid)}
                     // Up Next row: promote it to Priority (a copy plays sooner).
@@ -232,7 +249,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                     rightColor={theme.accent}
                     leftColor="#dc2626"
                 >
-                    <TouchableOpacity style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={(e) => actions.pressIn(stableKey, e && e.nativeEvent ? e.nativeEvent.identifier : null)} onPressOut={() => actions.pressOut()} activeOpacity={0.7}>
+                    <DimPressable disabledDim={dragging} style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={(e) => actions.pressIn(stableKey, e && e.nativeEvent ? e.nativeEvent.identifier : null)} onPressOut={() => actions.pressOut()}>
                         {showSongCovers && (
                             <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                                 {art
@@ -248,7 +265,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                         {showPlayCount && playCount > 0 && (
                             <Text style={[s.qPlayCount, { color: base.textFaint }]}>{playCount}×</Text>
                         )}
-                    </TouchableOpacity>
+                    </DimPressable>
                 </SwipeableRow>
                 </Animated.View>
             </ShrinkOutRow>
@@ -311,7 +328,7 @@ export default function QueueModal({ visible, onClose }) {
     const priorityQueueRef = useRef(priorityQueue);
     useEffect(() => { priorityQueueRef.current = priorityQueue; }, [priorityQueue]);
 
-    const refresh = useCallback(async (priorityOverride, justAddedRealIndex) => {
+    const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply) => {
         try {
             // Tapping a song to play resets TrackPlayer's queue entirely and
             // re-adds the new window right after — there's a brief real gap
@@ -366,8 +383,15 @@ export default function QueueModal({ visible, onClose }) {
                     stableKey,
                 };
             });
-            setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
-            setRows(upcoming);
+            // One commit for the new rows AND whatever the caller wants cleared
+            // with them (the end of a drag): otherwise the rows were already in
+            // their new order while the old "make room" shifts were still on,
+            // so everything jumped for a moment and then snapped back.
+            unstable_batchedUpdates(() => {
+                setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
+                setRows(upcoming);
+                if (afterApply) afterApply();
+            });
         } catch { setRows([]); } finally { setHasLoadedOnce(true); }
     }, []);
 
@@ -614,19 +638,24 @@ export default function QueueModal({ visible, onClose }) {
         const from = startIdx.current, to = toIdx.current;
         armedKey.current = null;
         const fromL = layoutOfRow(from), toL = layoutOfRow(to);
-        if (from !== to && list[from] && list[to] && fromL && toL) {
-            // Settle the held row into its slot, then do the real move.
-            Animated.timing(dragY, { toValue: toL.y - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-            const next = await moveInQueue(list[from].realIndex, list[to].realIndex);
-            await refresh(next);
-        }
-        draggedListIndex = -1;
-        setDragKey(null); setDragTo(null);
-        dragY.setValue(0);
         // Moving a row is not a mode: once it is dropped everything is back to
-        // normal (swiping and tapping work again, no Done button).
-        editRef.current = false;
-        setEditMode(false);
+        // normal (swiping and tapping work again, no Done button). Run in the
+        // same commit as the reordered rows (see refresh).
+        const clear = () => {
+            draggedListIndex = -1;
+            editRef.current = false;
+            setDragKey(null); setDragTo(null); setEditMode(false);
+            dragY.setValue(0);
+        };
+        try {
+            if (from !== to && list[from] && list[to] && fromL && toL) {
+                // Settle the held row into its slot, then do the real move.
+                Animated.timing(dragY, { toValue: toL.y - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                const next = await moveInQueue(list[from].realIndex, list[to].realIndex);
+                await refresh(next, undefined, clear);
+            }
+        } catch (e) { console.log('[QUEUE] move failed: ' + e); }
+        clear();
     }, [dragY, moveInQueue, refresh]);
     finishRef.current = finishDrag;
 
@@ -657,7 +686,13 @@ export default function QueueModal({ visible, onClose }) {
                 // Only the very edge of the list scrolls it, and gently:
                 // speed grows with how far into the zone the finger is.
                 const zone = Math.min(EDGE, viewH.current * 0.2);
-                if (!(listTop.current > 0) || !(viewH.current > 0)) return;   // not measured yet: no scrolling on a guess
+                if (!(listTop.current > 0) || !(viewH.current > 0)) {
+                    // Not measured yet (or the measurement came back as 0): measure again
+                    // instead of never scrolling, and say so once in the log.
+                    if (boxRef.current) boxRef.current.measureInWindow((x, y) => { if (y > 0) listTop.current = y; });
+                    if (now - lastScrollLog.current > 1500) { lastScrollLog.current = now; console.log('[QUEUE] autoscroll waiting: listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)); }
+                    return;
+                }
                 const fy = drag.current.fingerY - listTop.current;
                 let v = 0;
                 // k is 0 at the inner border of the zone and 1 (never more) at the edge
@@ -831,7 +866,21 @@ export default function QueueModal({ visible, onClose }) {
     // branch is exactly what used to sit inline in the ScrollView below —
     // moved here only because FlatList needs one renderItem, not four
     // separate JSX blocks.
-    const renderItem = ({ item }) => {
+    // The same make-room shift for the labels and the divider: everything in the
+    // list between where the held row came from and where it is now moves by
+    // the held row's height.
+    const itemShift = (index) => {
+        if (dragKey == null || dragTo == null) return 0;
+        const src = rowListIdx.current[startIdx.current];
+        const tgt = rowListIdx.current[dragTo];
+        if (src == null || tgt == null || src === tgt) return 0;
+        const h = layoutOfRow(startIdx.current)?.height ?? ROW_HEIGHT;
+        if (src < tgt && index > src && index <= tgt) return -h;
+        if (src > tgt && index >= tgt && index < src) return h;
+        return 0;
+    };
+    const dragLive = dragKey != null && dragTo != null;
+    const renderItem = ({ item, index }) => {
         if (item.type === 'nowplaying') {
             return (
                 <>
@@ -872,10 +921,10 @@ export default function QueueModal({ visible, onClose }) {
             );
         }
         if (item.type === 'pill') {
-            return <CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={41}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></CollapseBlock>;
+            return <ShiftBox shift={itemShift(index)} live={dragLive}><CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={41}><View style={[s.groupPill, { backgroundColor: base.surface }]}><Text style={[s.groupLabel, { color: base.textDim }]}>{item.label}</Text></View></CollapseBlock></ShiftBox>;
         }
         if (item.type === 'divider') {
-            return <CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={9}><View style={[s.divider, { backgroundColor: base.border }]} /></CollapseBlock>;
+            return <ShiftBox shift={itemShift(index)} live={dragLive}><CollapseBlock collapsing={!!item.collapsing} growing={!!item.isNew} estH={9}><View style={[s.divider, { backgroundColor: base.border }]} /></CollapseBlock></ShiftBox>;
         }
         return renderRow(item.row);
     };

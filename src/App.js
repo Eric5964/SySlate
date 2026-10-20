@@ -298,10 +298,10 @@ function AppInner() {
         try {
             const covers = await getPlaylistCovers();
             // Warm what we can, but never hold the splash screen more than
-            // ~0.25s for it (it was 0.6s). Anything not warm by then just loads as it shows.
+            // ~0.8s for it (the library scan runs alongside, so this mostly overlaps with it). Anything not warm by then just loads as it shows.
             await Promise.race([
                 Promise.all(Object.values(covers).filter(Boolean).map(uri => Image.prefetch(uri).catch(() => { }))),
-                new Promise(r => setTimeout(r, 250)),
+                new Promise(r => setTimeout(r, 800)),
             ]);
             return covers;
         } catch { return null; }
@@ -414,18 +414,22 @@ function AppInner() {
     // the user.
     const overlayOpacity = useRef(new Animated.Value(1)).current;
     const [showOverlay, setShowOverlay] = useState(true);
+    // The mini player and its progress bar come from the restored session, which
+    // finishes a little after the player is ready. The start screen now waits for
+    // that too (with a cap, so a failed restore can never hold it), then gives the
+    // screens a short moment to paint and decode their covers before it fades.
+    const [sessionRestored, setSessionRestored] = useState(false);
+    const handleRestored = useCallback(() => setSessionRestored(true), []);
+    useEffect(() => { const t = setTimeout(() => setSessionRestored(true), 2500); return () => clearTimeout(t); }, []);
     useEffect(() => {
-        if (!playerReady || !themeReady) return;
-        // Per request: no more icon, no more 500ms floor — just the base
-        // color as a bridge over the real black frame before anything is
-        // ready, gone as soon as it can be. No artificial floor (that was
-        // only ever there to give the icon a moment to actually be seen);
-        // the moment playerReady/themeReady flip true, a quick 250ms fade
-        // starts immediately.
-        Animated.timing(overlayOpacity, { toValue: 0, duration: 120, useNativeDriver: true }).start(() => {
-            setShowOverlay(false);
-        });
-    }, [playerReady, themeReady]);
+        if (!playerReady || !themeReady || !sessionRestored) return;
+        const settle = setTimeout(() => {
+            Animated.timing(overlayOpacity, { toValue: 0, duration: 160, useNativeDriver: true }).start(() => {
+                setShowOverlay(false);
+            });
+        }, 250);
+        return () => clearTimeout(settle);
+    }, [playerReady, themeReady, sessionRestored]);
 
     return (
         <View style={{ flex: 1 }}>
@@ -436,7 +440,7 @@ function AppInner() {
                 so this shows through exactly where it used to). */}
             <PersistentBackgroundImage />
             <LibraryContext.Provider value={libraryContextValue}>
-                <PlaybackProvider engineReady={playerReady}>
+                <PlaybackProvider engineReady={playerReady} onRestored={handleRestored}>
                     <NavigationContainer theme={NAV_THEME}>
                         {/* transparent, not base.bg — a stack screen's card
                             is an opaque layer by default, which would sit
@@ -456,8 +460,8 @@ function AppInner() {
                                 utility screen, not part of the app's designed
                                 navigation feel, so it deliberately doesn't get
                                 any of the custom transition tuning below. */}
-                            <Root.Screen name="DebugLog" component={DebugLogScreen} />
-                            <Root.Screen name="Stats" component={StatsScreen} />
+                            <Root.Screen name="DebugLog" component={DebugLogScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH }} />
+                            <Root.Screen name="Stats" component={StatsScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH }} />
                             <Root.Screen
                                 name="Player"
                                 component={PlayerScreen}

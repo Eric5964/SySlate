@@ -8,6 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle, cardRadius } from '../utils/squircle';
+import DimPressable from '../components/DimPressable';
 import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import {
@@ -196,8 +197,10 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
     }
     return (
         <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
-            <Pressable
-                style={({ pressed }) => [s.row, { backgroundColor: cardOn ? base.surface : 'transparent' }, pillPad(format === 'list_art'), format === 'list_art' && { paddingRight: 12 }, cardOn && shadowOn && COVER_SHADOW, { opacity: pressed && !isActive ? 0.75 : 1 }]}
+            <DimPressable
+                fade={!cardOn}
+                disabledDim={isActive}
+                style={[s.row, { backgroundColor: cardOn ? base.surface : 'transparent' }, pillPad(format === 'list_art'), format === 'list_art' && { paddingRight: 12 }, cardOn && shadowOn && COVER_SHADOW]}
                 {...handlers}
             >
                 {format === 'list_art' && (
@@ -210,7 +213,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                     {showCount !== false && <Text style={[s.rowCount, { color: base.textFaint }]}>{item.songs.length} {item.songs.length === 1 ? 'track' : 'tracks'}</Text>}
                 </View>
                 {format === 'list_art' && minus ? <View style={{ marginLeft: 8 }}>{minus}</View> : (arrowOn && <Text style={[s.arrow, { color: base.textFaint }]}>›</Text>)}
-            </Pressable>
+            </DimPressable>
         </Animated.View>
     );
 });
@@ -240,18 +243,35 @@ export default function PlaylistsScreen() {
     // fresh afterward (a playlist-covers change elsewhere, or refocusing
     // this screen) exactly as before.
     const [covers, setCovers] = useState(initialCovers || {});
+    // Covers are only swapped in once they are known to be changed, and after
+    // the new pictures have been loaded (up to 0.6s), so a refresh (tab press,
+    // a shrunk cover file, coming back to the app) never shows blank tiles
+    // while a new file loads, and an unchanged set causes no redraw at all.
+    const coversRef = useRef(covers);
+    coversRef.current = covers;
+    const applyCovers = useCallback(async (next) => {
+        if (!next) return;
+        const cur = coversRef.current || {};
+        const keys = Object.keys(next);
+        if (keys.length === Object.keys(cur).length && keys.every(k => next[k] === cur[k])) return;
+        await Promise.race([
+            Promise.all(Object.values(next).filter(Boolean).map(u => Image.prefetch(u).catch(() => { }))),
+            new Promise(r => setTimeout(r, 600)),
+        ]);
+        setCovers(next);
+    }, []);
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
-    useEffect(() => { getPlaylistCovers().then(setCovers); }, [playlists]);
+    useEffect(() => { getPlaylistCovers().then(applyCovers); }, [playlists]);
     // Shrinks any older full-size covers once per launch, then refreshes.
     useEffect(() => {
         const t = setTimeout(() => {
-            shrinkOldPlaylistCovers().then(changed => { if (changed) getPlaylistCovers().then(setCovers); });
+            shrinkOldPlaylistCovers().then(changed => { if (changed) getPlaylistCovers().then(applyCovers); });
         }, 3000);
         return () => clearTimeout(t);
     }, []);
     useFocusEffect(useCallback(() => {
-        getPlaylistCovers().then(setCovers);
+        getPlaylistCovers().then(applyCovers);
         // Picks up a layout change made elsewhere (Reset Playlist Screen in Settings).
         getPlaylistViewFormat().then(f => {
             if (!f) return;

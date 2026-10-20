@@ -71,7 +71,9 @@ export async function applyEQPreset(id) {
 }
 const stampQids = (tracks) => tracks.map(stampQid);
 
-export function PlaybackProvider({ children, engineReady = true }) {
+export function PlaybackProvider({ children, engineReady = true, onRestored }) {
+    const onRestoredRef = useRef(onRestored);
+    onRestoredRef.current = onRestored;
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
     // Which playlist a manually queued song came from (song id -> name),
     // and the one that applies to the song playing right now. The Player's
@@ -1608,6 +1610,8 @@ export function PlaybackProvider({ children, engineReady = true }) {
                 const last = await getLastSession();
                 await restoreSession(last);
             } catch { }
+            // Done (restored or nothing to restore): lets the start screen know the mini player is ready to be seen.
+            try { onRestoredRef.current && onRestoredRef.current(); } catch { }
         })();
     }, [engineReady, restoreSession]);
 

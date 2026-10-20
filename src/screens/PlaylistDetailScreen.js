@@ -13,6 +13,8 @@ import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, 
 import { squircle, cardRadius } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
+import DimPressable from '../components/DimPressable';
+import BackSwipeZone from '../components/BackSwipeZone';
 import SwipeQueueButton from '../components/SwipeQueueButton';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
@@ -188,7 +190,7 @@ export default function PlaylistDetailScreen() {
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
-            <View style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
+            <BackSwipeZone onBack={() => navigation.goBack()} style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pd_back !== false ? (
                     <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
@@ -228,7 +230,7 @@ export default function PlaylistDetailScreen() {
                     </TouchableOpacity>
                     ) : <View style={s.topBtn} />}
                 </View>
-            </View>
+            </BackSwipeZone>
 
             <FlatList
                 data={filtered}
@@ -238,7 +240,7 @@ export default function PlaylistDetailScreen() {
                 // used to cut the rows off with a band of plain background.
                 // The bar floats over the list (always above it, so its buttons
                 // can be tapped); rows start under the bar's fade.
-                contentContainerStyle={{ paddingTop: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH, paddingBottom: 160 }}
+                contentContainerStyle={{ flexGrow: 1 }}
                 scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
                 // Keep more rows mounted so covers already on screen stay decoded
                 // while scrolling back, instead of reloading each time.
@@ -246,10 +248,14 @@ export default function PlaylistDetailScreen() {
                 windowSize={performanceMode ? 5 : 15}
                 maxToRenderPerBatch={performanceMode ? 4 : 10}
                 updateCellsBatchingPeriod={performanceMode ? 90 : 50}
+                ListFooterComponent={<BackSwipeZone onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
                 ListHeaderComponent={
                     <View>
+                        {/* The space under the top bar. It used to be padding on the
+                            list; as a real view a right swipe on it can go back. */}
+                        <BackSwipeZone onBack={() => navigation.goBack()} style={{ height: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH }} />
                         {ui.pd_cover !== false && (
-                        <View style={s.coverWrap}>
+                        <BackSwipeZone onBack={() => navigation.goBack()} style={s.coverWrap}>
                             {/* Card-style outline, same look as the cards on the Playlists screen. */}
                             {detailOutline && (
                                 <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: -3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
@@ -265,7 +271,7 @@ export default function PlaylistDetailScreen() {
                                     : null
                                 }
                             </TouchableOpacity>
-                        </View>
+                        </BackSwipeZone>
                         )}
 
                         <View style={s.actionRow}>
@@ -288,10 +294,10 @@ export default function PlaylistDetailScreen() {
                         </View>
 
                         <View style={s.titleRow}>
-                            <View style={{ flex: 1 }}>
+                            <BackSwipeZone onBack={() => navigation.goBack()} style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
                                 {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} {playlist.songs.length === 1 ? 'track' : 'tracks'}</Text>}
-                            </View>
+                            </BackSwipeZone>
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
                             </TouchableOpacity>
@@ -348,7 +354,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
     const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
-            <TouchableOpacity style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)} activeOpacity={0.7}>
+            <DimPressable style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
@@ -364,7 +370,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                 {showPlayCount && count > 0 && (
                     <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
                 )}
-            </TouchableOpacity>
+            </DimPressable>
         </SwipeableRow>
     );
 });

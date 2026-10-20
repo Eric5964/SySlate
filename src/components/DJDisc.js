@@ -430,9 +430,10 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     };
     api.current.startAuto = (kind) => {
         const L = live.current;
-        // A paused disc that was only touched goes back to silence; one that
-        // was really turned (or reached an end) carries on playing.
-        const to = (kind === 'release' && !L.isPlaying && maxAbsRate.current < 0.3) ? 0 : 1;
+        // A paused disc always goes back to silence and the song stays paused,
+        // however far it was turned (or if it reached an end). Only a disc that
+        // was playing when touched carries on playing.
+        const to = L.isPlaying ? 1 : 0;
         const from = sentRate.current;
         const ms = kind === 'edge' ? 700 : (Math.abs(to - from) < 0.15 ? 120 : 320);
         const au = { kind, t0: Date.now(), from, to, ms, degPerSec: Math.max(20, L.scratchDegPerSec), startAngle: userRotVal.current, drive: !!L.spin };
@@ -467,7 +468,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         const L = live.current;
         const carryOn = !au || au.to === 1;
         if (was) {
-            if (carryOn && !L.isPlaying) AudioEngine.scratchResumePlay();
             AudioEngine.scratchEnd().catch(() => { });
         }
         // The idle turn takes over from the same angle at the same speed.

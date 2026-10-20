@@ -586,6 +586,22 @@ export async function playWithRamp(preClaimedId, startAction = () => AudioEngine
     }
 }
 
+// Another app (or a call, Siri, a device taking over) has already taken the
+// sound when this fires, so a fade-out would only run over silence while the
+// screen kept showing "playing" (spinning disc, moving bar). Stop at once, and
+// cancel any fade or ramp that is still under way.
+async function pauseForInterruption() {
+    const id = claimFade();
+    try {
+        emitTransportRamp('pause', 0);
+        try { await AudioEngine.pause(); } catch { }
+        try { await AudioEngine.setVolume(1); } catch { }
+        try { await AudioEngine.setNowPlayingPaused(true); } catch { }
+    } finally {
+        releaseFade(id);
+    }
+}
+
 export async function pauseWithRamp() {
     // Per direct feedback (reversing an earlier round's deliberate change):
     // pause should behave identically whether it lands during a crossfade,
@@ -970,7 +986,7 @@ export async function PlaybackService() {
     // comment on it). A real interruption (call, Siri, another app) should
     // duck out the same way a manual pause tap does, not cut dead — so
     // this reuses the exact same ramp path rather than a hard pause.
-    AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => pauseWithRamp());
+    AudioEngine.addEventListener(Event.AudioInterruptionBegan, () => pauseForInterruption());
 
     AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => {
         if (state === State.Playing) startWatcher();

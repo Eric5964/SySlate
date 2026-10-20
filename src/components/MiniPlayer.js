@@ -10,6 +10,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
+import DimPressable from './DimPressable';
 import { squircle } from '../utils/squircle';
 import { formatArtists } from '../utils/artists';
 import { PILL_H, PILL_COVER, PILL_COVER_PAD } from '../utils/layout';
@@ -136,10 +137,9 @@ export default function MiniPlayer({ withTabBar = true }) {
     const artwork = listArtUri(currentTrack.artwork);
 
     return (
-        <TouchableOpacity
+        <DimPressable
             style={[styles.shell, miniPlayerShadow && styles.shellShadow, { bottom, backgroundColor: base.surface }]}
             onPress={() => navigation.navigate('Player', {})}
-            activeOpacity={0.9}
         >
           {/* Outer shell carries the shadow (a shadow can't coexist with
               overflow: hidden on the same view on iOS). This inner view owns
@@ -181,7 +181,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                 <SkipNextIcon size={20} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </DimPressable>
     );
 }
 
