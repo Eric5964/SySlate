@@ -20,7 +20,7 @@ import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle, cardRadius } from '../utils/squircle';
-import { getPlayCounts, peekPlayCount } from '../utils/storage';
+import { getPlayCounts, peekPlayCount, playCountKey, subscribePlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -156,6 +156,11 @@ export default function PlayerScreen() {
         }, pastHalf ? 400 : 0);
         return () => { cancelled = true; clearTimeout(t); };
     }, [currentTrack?.id, pastHalf]);
+
+    // Show the new count the moment this song's play is counted.
+    useEffect(() => subscribePlayCount(({ key, n }) => {
+        if (currentTrack?.id && playCountKey(currentTrack) === key) setPc({ id: currentTrack.id, n });
+    }), [currentTrack]);
 
     const shownCount = pc.id === currentTrack?.id ? pc.n : (peekPlayCount(currentTrack?.id) ?? 0);
     const progressRef = useRef(null);
@@ -608,7 +613,32 @@ export default function PlayerScreen() {
     // to the very first line and then jumped again once the real position
     // arrived a moment later — the reported "not synced when the player is
     // just opened".
-    const activeLine = (lyricsData && effectiveLyricsProgress.duration > 0) ? activeLyricIndex(lyricsData, effectiveLyricsProgress.position + lyricsOffsetSec) : -1;
+    const baseActiveLine = (lyricsData && effectiveLyricsProgress.duration > 0) ? activeLyricIndex(lyricsData, effectiveLyricsProgress.position + lyricsOffsetSec) : -1;
+
+    // The position only arrives every 500 ms, so a line used to switch up to half a
+    // second late (and only on a poll). While the lyrics are showing and the song is
+    // playing, the position is carried forward with the clock between polls and the
+    // line is picked from that, so lines change on time, to the millisecond of the file.
+    const lyricSample = useRef({ pos: 0, at: 0 });
+    useEffect(() => {
+        lyricSample.current = { pos: effectiveLyricsProgress.position, at: Date.now() };
+    }, [effectiveLyricsProgress.position, effectiveLyricsProgress.duration, currentTrack?.id]);
+    const [liveLine, setLiveLine] = useState(null);
+    const lyricsLive = !!(showingLyrics && isPlaying && lyricsData && effectiveLyricsProgress.duration > 0);
+    useEffect(() => {
+        if (!lyricsLive) { setLiveLine(null); return undefined; }
+        const rate = playbackRate || 1;
+        const tick = () => {
+            const smp = lyricSample.current;
+            const pos = smp.pos + ((Date.now() - smp.at) / 1000) * rate;
+            const idx = activeLyricIndex(lyricsData, pos + lyricsOffsetSec);
+            setLiveLine(prev => (prev === idx ? prev : idx));
+        };
+        tick();
+        const id = setInterval(tick, 60);
+        return () => clearInterval(id);
+    }, [lyricsLive, lyricsData, lyricsOffsetSec, playbackRate]);
+    const activeLine = (lyricsLive && liveLine !== null) ? liveLine : baseActiveLine;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -650,6 +680,32 @@ export default function PlayerScreen() {
         navigation.setOptions({ gestureEnabled: !touching });
     }, [navigation]);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
+    // While the queue sheet is open, the Player's own swipe-down-to-close must be off:
+    // dragging a queue row down (or up and then down) started it, and the whole Player
+    // followed the finger ("the page moves"). The sheet closes from its own handle.
+    useEffect(() => { navigation.setOptions({ gestureEnabled: !showQueue }); }, [navigation, showQueue]);
+    // The swipe-down-to-close gesture is only switched off AFTER a finger lands on
+    // the disc, and that takes a moment to reach the native side. A touch that
+    // moved in that moment was taken over by the close gesture (the log showed
+    // "touch taken over by something else" 10 to 90 ms after touching down, mostly
+    // on the first touch). While the disc is showing, the close zone is now only
+    // the strip above it, so the gesture never competes with the disc at all.
+    const discAreaRef = useRef(null);
+    const discTopRef = useRef(0);
+    const controlsYRef = useRef(0);
+    const discZoneOn = useRef(false);
+    const applyDismissZone = useCallback(() => {
+        const d = (discZoneOn.current && discTopRef.current > 0) ? Math.max(40, discTopRef.current - 8) : controlsYRef.current;
+        if (d > 0) navigation.setOptions({ gestureResponseDistance: d });
+    }, [navigation]);
+    const measureDiscArea = useCallback(() => {
+        if (discAreaRef.current) discAreaRef.current.measureInWindow((x, y) => { if (y > 0) { discTopRef.current = y; applyDismissZone(); } });
+    }, [applyDismissZone]);
+    useEffect(() => {
+        discZoneOn.current = !!(showingDisc && djDisc);
+        measureDiscArea();
+        applyDismissZone();
+    }, [showingDisc, djDisc, measureDiscArea, applyDismissZone]);
     useEffect(() => { if (showingLyrics && showingDisc) setShowingDisc(false); }, [showingLyrics, showingDisc]);
     const hasLyricsView = !!lyricsData;
     // The disc only exists when the DJ Disc setting is on.
@@ -1164,7 +1220,7 @@ export default function PlayerScreen() {
                         )}
                         </View>
                         </Animated.View>
-                        <Animated.View style={[StyleSheet.absoluteFill, { opacity: discFade }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
+                        <Animated.View ref={discAreaRef} onLayout={measureDiscArea} style={[StyleSheet.absoluteFill, { opacity: discFade }]} pointerEvents={showingDisc ? 'auto' : 'none'}>
                             {djDisc && (
                                 <DJDisc
                                     size={width - 56}
@@ -1372,7 +1428,7 @@ export default function PlayerScreen() {
                         // dismiss outright. measureInWindow needs the view
                         // already laid out, which onLayout guarantees.
                         controlsRef.current?.measureInWindow((x, y) => {
-                            if (y > 0) navigation.setOptions({ gestureResponseDistance: y });
+                            if (y > 0) { controlsYRef.current = y; applyDismissZone(); }
                         });
                     }}
                 >

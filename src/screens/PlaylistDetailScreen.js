@@ -9,7 +9,9 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
-import { getPlayCounts, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { subscribeDurations } from '../utils/durations';
+import useLivePlayCounts from '../hooks/useLivePlayCounts';
+import { getSongsTotalLength, subscribePlayCount, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { squircle, cardRadius } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
@@ -44,13 +46,33 @@ export default function PlaylistDetailScreen() {
     const route = useRoute();
     const { playlist = NO_PLAYLIST, initialCover } = route.params ?? {};
     const {
-        playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext,
+        playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext, queueEpoch,
     } = usePlayback();
     const { theme, base } = useTheme();
 
     const [search, setSearch] = useState('');
     const [sortId, setSortId] = useState('alpha');
-    const [playCounts, setPlayCounts] = useState({});
+    const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(playlist.songs);
+    // Total length of the playlist ("3 hr 12 min"; "~" while some songs have not been
+    // played yet, since their length is not known until then).
+    const [totalLenText, setTotalLenText] = useState('');
+    useEffect(() => {
+        let alive = true;
+        const calc = () => getSongsTotalLength(playlist.songs).then(r => {
+            if (!alive) return;
+            if (r.none || !(r.seconds > 0)) { setTotalLenText(''); return; }
+            const mins = Math.round(r.seconds / 60);
+            const h = Math.floor(mins / 60), m = mins % 60;
+            setTotalLenText((r.estimated ? '~' : '') + (h > 0 ? `${h} hr ${m} min` : `${m} min`));
+        });
+        calc();
+        const off = subscribePlayCount(calc);   // a newly learned song length improves the total
+        const off2 = subscribeDurations(calc);
+        return () => { alive = false; off(); off2(); };
+    }, [playlist.songs]);
+    // Shown counts go up at once; the order only follows the snapshot, which is read
+    // again when the screen opens, the sort is changed, or a different queue is played.
+    useEffect(() => { refreshSort(); }, [playlist.songs, sortId, queueEpoch, refreshSort]);
     const [showSort, setShowSort] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
@@ -65,7 +87,6 @@ export default function PlaylistDetailScreen() {
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     useEffect(() => {
-        getPlayCounts(playlist.songs).then(setPlayCounts);
         // Real bug found here (this is the "background image flashes...
         // always when opening a playlist" report): setCover(uri) handed
         // the Image component a URI it hadn't decoded yet, so the very
@@ -234,6 +255,7 @@ export default function PlaylistDetailScreen() {
 
             <FlatList
                 data={filtered}
+                extraData={liveCounts}
                 keyExtractor={item => item.id}
                 // Colored bar: the list runs up under the bar's soft fade (as on
                 // Playlists and Settings) instead of starting below it, which
@@ -296,7 +318,7 @@ export default function PlaylistDetailScreen() {
                         <View style={s.titleRow}>
                             <BackSwipeZone onBack={() => navigation.goBack()} style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
-                                {showPlaylistTrackCount !== false && <Text style={[s.subtitle, { color: base.textFaint }]}>{playlist.songs.length} {playlist.songs.length === 1 ? 'track' : 'tracks'}</Text>}
+                                {(showPlaylistTrackCount !== false || (ui.pd_hours !== false && totalLenText)) && <Text style={[s.subtitle, { color: base.textFaint }]}>{[showPlaylistTrackCount !== false ? `${playlist.songs.length} ${playlist.songs.length === 1 ? 'track' : 'tracks'}` : null, ui.pd_hours !== false ? totalLenText : null].filter(Boolean).join(' · ')}</Text>}
                             </BackSwipeZone>
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
@@ -324,7 +346,7 @@ export default function PlaylistDetailScreen() {
                     <SongRow
                         item={item}
                         art={artMap[item.id]}
-                        count={playCounts[item.id]}
+                        count={countFor(item)}
                         showSongCovers={showSongCovers}
                         showPlayCount={showPlayCount}
                         coverShape={coverShape}

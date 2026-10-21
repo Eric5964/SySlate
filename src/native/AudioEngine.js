@@ -148,6 +148,8 @@ const AudioEngine = {
     // story).
     setNowPlayingPaused: (paused) => NativeAudioEngine.setNowPlayingPaused(paused),
     makeThumbnail: (src, dest, maxPixel) => NativeAudioEngine.makeThumbnail(src, dest, maxPixel),
+    getDurations: (urls) => NativeAudioEngine.getDurations(urls),
+    importFolder: () => NativeAudioEngine.importFolder(),
     getSavedSnapshot: () => NativeAudioEngine.getSavedSnapshot(),
     getVolume: () => NativeAudioEngine.getVolume(),
     // Runs the whole from->to fade natively over one bridge call instead of

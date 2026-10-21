@@ -542,7 +542,7 @@ export const getPlaylistArrow = () => safe(() => AsyncStorage.getItem('playlist_
 export const setPlaylistArrow = (v) => safe(() => AsyncStorage.setItem('playlist_arrow', String(v)), null);
 // Show or hide individual items on the Playlists, All Songs and Playlist
 // screens (stored as ui_<name>, '1' / '0', default on).
-export const UI_TOGGLE_NAMES = ['pl_title', 'pl_layout', 'pl_reload', 'as_title', 'as_search', 'as_sort', 'as_eq', 'as_queue', 'pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_sort'];
+export const UI_TOGGLE_NAMES = ['pl_title', 'pl_layout', 'pl_reload', 'as_title', 'as_search', 'as_sort', 'as_eq', 'as_queue', 'pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_sort', 'pd_hours'];
 export const getUiToggle = (name) => safe(() => AsyncStorage.getItem(`ui_${name}`).then(v => v !== '0'), true);
 export const setUiToggle = (name, v) => safe(() => AsyncStorage.setItem(`ui_${name}`, v ? '1' : '0'), null);
 export const getPlaybackRate = () => safe(() => AsyncStorage.getItem('playback_rate').then(v => { const n = v !== null ? parseFloat(v) : 1; return Number.isFinite(n) ? Math.max(0.25, Math.min(3, n)) : 1; }), 1);
@@ -756,14 +756,24 @@ export const playCountKey = (song) => {
     return `pcn:${t}::${a}`;
 };
 
-export const incrementPlayCount = async (song) => {
+// Screens that show play counts listen here, so a count changes on screen the moment
+// it is counted. They only change the number shown: the order of a list and any queue
+// are left alone (see useLivePlayCounts).
+const playCountListeners = new Set();
+export const subscribePlayCount = (fn) => { playCountListeners.add(fn); return () => { playCountListeners.delete(fn); }; };
+
+export const incrementPlayCount = async (song, durationSec) => {
     if (!song) return;
     try {
         const k = playCountKey(song);
         let base = parseInt(await AsyncStorage.getItem(k)) || 0;
         if (!base) base = parseInt(await AsyncStorage.getItem(`pc:${song.id}`)) || 0;   // carry an older per-file count over instead of restarting at 1
         await AsyncStorage.setItem(k, String(base + 1));
+        // The song's length is only known to the player, never to the library, so it
+        // is remembered here for the "hours" figure in Listening Stats.
+        if (durationSec > 5 && durationSec < 7200) await AsyncStorage.setItem(`pdur:${k.slice(4)}`, String(Math.round(durationSec)));
         playCountCache.clear();
+        playCountListeners.forEach(fn => { try { fn({ key: k, n: base + 1 }); } catch { } });
     } catch { }
 };
 
@@ -924,13 +934,40 @@ export const restoreAutoBackup = async (n) => importAllSettings(await FileSystem
 // ---- Listening stats ---------------------------------------------------------
 // Everything comes from the play counts that are already kept (one per song,
 // matched by title + artist). Time is an estimate: plays x song length.
+// Total length of a list of songs, in seconds. The library has no song lengths of its
+// own: a length is learned the first time a song is counted as played (see
+// incrementPlayCount). Songs not heard yet count as the average of the known ones, and
+// `estimated` says so, so the total becomes exact once every song has been played.
+export const getSongsTotalLength = async (songs) => {
+    const list = songs || [];
+    if (!list.length) return { seconds: 0, estimated: false };
+    const keys = list.map(sg => 'pdur:' + playCountKey(sg).slice(4));
+    let seconds = 0, known = 0, knownSec = 0;
+    try {
+        const rows = await AsyncStorage.multiGet(keys);
+        list.forEach((sg, i) => {
+            const d = sg.duration > 0 ? sg.duration : parseFloat(rows[i] && rows[i][1]);
+            if (d > 0) { knownSec += d; known++; }
+        });
+    } catch { }
+    if (!known) return { seconds: 0, estimated: true, none: true };
+    const unknown = list.length - known;
+    seconds = knownSec + unknown * (knownSec / known);
+    return { seconds, estimated: unknown > 0 };
+};
+
 export const getListeningStats = async (songs, separators, joinId) => {
     const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:'));
     const counts = {};
     (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) counts[k] = n; });
+    // Song lengths remembered while playing (see incrementPlayCount).
+    const durs = {};
+    const durKeys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pdur:'));
+    (await AsyncStorage.multiGet(durKeys)).forEach(([k, v]) => { const d = parseFloat(v); if (d > 0) durs['pcn:' + k.slice(5)] = d; });
+    let knownSec = 0, knownPlays = 0;
     const byKey = {};
     for (const s of songs) { const k = playCountKey(s); if (!byKey[k]) byKey[k] = s; }
-    let totalPlays = 0, seconds = 0, played = 0;
+    let totalPlays = 0, seconds = 0, played = 0, unknownPlays = 0;
     const rows = [];
     const artists = {};
     for (const [k, n] of Object.entries(counts)) {
@@ -939,7 +976,10 @@ export const getListeningStats = async (songs, separators, joinId) => {
         const [t, a] = k.slice(4).split('::');
         const title = song ? (song.ourTitle ?? song.title) : t;
         const artist = song ? (song.ourArtist ?? song.artist) : a;
-        if (song) { played++; seconds += n * (song.duration || 0); }
+        if (song) played++;
+        const dur = (song && song.duration > 0) ? song.duration : durs[k];
+        if (dur > 0) { seconds += n * dur; knownSec += n * dur; knownPlays += n; }
+        else unknownPlays += n;
         rows.push({ title, artist: formatArtists(artist, separators, joinId), n });
         // A song with several artists counts for each of them.
         const parts = splitArtists(artist, separators);
@@ -949,6 +989,8 @@ export const getListeningStats = async (songs, separators, joinId) => {
             artists[id].n += n;
         }
     }
+    // Songs whose length has not been seen yet count as an average song (3 min if none is known).
+    seconds += unknownPlays * (knownPlays > 0 ? knownSec / knownPlays : 180);
     rows.sort((x, y) => y.n - x.n);
     const topArtists = Object.values(artists).sort((x, y) => y.n - x.n).slice(0, 5);
     return { totalPlays, hours: seconds / 3600, played, librarySize: songs.length, topSongs: rows.slice(0, 10), topArtists };

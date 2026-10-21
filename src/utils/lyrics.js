@@ -2,18 +2,25 @@ import * as FileSystem from 'expo-file-system';
 import { createBoundedCache } from './boundedCache';
 
 // Standard LRC timestamp tag: [mm:ss.xx] or [mm:ss:xx], fraction 1-3
-// digits. A single line can carry more than one timestamp (repeated
-// chorus lines commonly do) — each becomes its own entry pointing at the
-// same text.
-const TIME_TAG = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+// digits (spaces inside the brackets and 3-digit minutes are tolerated). A single
+// line can carry more than one timestamp (repeated chorus lines commonly do) —
+// each becomes its own entry pointing at the same text.
+const TIME_TAG = /\[\s*(\d{1,3}):(\d{1,2})(?:[.:,](\d{1,3}))?\s*\]/g;
+// Per-word times of "enhanced" LRC, e.g. <00:12.34>: not shown, only removed.
+const WORD_TAG = /<\d{1,3}:\d{1,2}(?:[.:,]\d{1,3})?>/g;
+// [offset:+250] shifts every line by that many milliseconds (positive = sooner).
+const OFFSET_TAG = /^\s*\[\s*offset\s*:\s*([+-]?\d+)\s*\]/i;
 
 function parseLRC(text) {
     const lines = text.split(/\r\n|\r|\n/);
     const entries = [];
+    let offsetSec = 0;
     for (const line of lines) {
+        const om = line.replace(/^\uFEFF/, '').match(OFFSET_TAG);
+        if (om) { offsetSec = parseInt(om[1], 10) / 1000; continue; }
         const matches = [...line.matchAll(TIME_TAG)];
         if (!matches.length) continue; // metadata tag ([ar:...], [ti:...]) or blank — skip
-        const content = line.replace(TIME_TAG, '').trim();
+        const content = line.replace(TIME_TAG, '').replace(WORD_TAG, '').trim();
         for (const m of matches) {
             const min = parseInt(m[1], 10);
             const sec = parseInt(m[2], 10);
@@ -21,8 +28,10 @@ function parseLRC(text) {
             // milliseconds so e.g. ".3" means 300ms, not 3ms.
             const frac = parseInt((m[3] || '0').padEnd(3, '0'), 10) / 1000;
             entries.push({ time: min * 60 + sec + frac, text: content });
+            // (offset applied below once the whole file has been read)
         }
     }
+    if (offsetSec) for (const e of entries) e.time = Math.max(0, e.time - offsetSec);
     entries.sort((a, b) => a.time - b.time);
     return entries;
 }

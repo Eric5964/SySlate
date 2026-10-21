@@ -52,6 +52,7 @@ import { PersistentBackgroundImage } from './components/ScreenBackground';
 import { preloadArtCache } from './utils/embeddedArt';
 import { scanLibrary } from './utils/files';
 import { getPlaylistCovers } from './utils/storage';
+import { fillSongDurations } from './utils/durations';
 import { EDGE_SWIPE_WIDTH } from './utils/layout';
 
 // Real cause of "background is a mixture of all screens" (torn/overlapping
@@ -251,6 +252,13 @@ function AppInner() {
     // search everywhere, not just an optional visual), so the two run under
     // independent conditions even though they share one loop/budget.
     useBackgroundLibraryLoader(library.allSongs, { art: playerReady && showSongCovers, tags: playerReady });
+    // Song lengths for playlist totals / listening hours: read once, in the background,
+    // a few seconds after the library is ready (see utils/durations.js).
+    useEffect(() => {
+        if (!playerReady || !library.allSongs.length) return undefined;
+        const t = setTimeout(() => { fillSongDurations(library.allSongs); }, 5000);
+        return () => clearTimeout(t);
+    }, [playerReady, library.allSongs]);
 
     // Real bug found here (contributes to overall app sluggishness): a
     // plain function, recreated every AppInner render — combined with the

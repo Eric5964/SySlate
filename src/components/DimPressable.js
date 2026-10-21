@@ -18,7 +18,7 @@ export default function DimPressable({ style, children, onPressIn, onPressOut, d
             onPressOut={(e) => { setDown(false); if (onPressOut) onPressOut(e); }}
         >
             {children}
-            {down && !fade ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: dim, borderRadius: flat.borderRadius, borderCurve: flat.borderCurve }]} /> : null}
+            {down && !fade && !disabledDim ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: dim, borderRadius: flat.borderRadius, borderCurve: flat.borderCurve }]} /> : null}
         </Pressable>
     );
 }

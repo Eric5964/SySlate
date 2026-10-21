@@ -14,7 +14,8 @@ import DimPressable from '../components/DimPressable';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlayCounts, getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import useLivePlayCounts from '../hooks/useLivePlayCounts';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
@@ -42,13 +43,12 @@ const ALL_SONGS_KEY = '__all__';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
-    const { playSongFromPlaylist, addToQueue } = usePlayback();
+    const { playSongFromPlaylist, addToQueue, queueEpoch } = usePlayback();
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const [playCounts, setPlayCounts] = useState({});
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui } = usePreferences();
@@ -84,26 +84,13 @@ export default function AllSongsScreen() {
         }
         return out;
     }, [allSongs]);
+    // Counts shown on rows go up the moment a play is counted; the ORDER only follows
+    // the snapshot, which is read again when the app opens, the sort is changed, the
+    // songs change, or a different queue is played.
+    const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(dedupedSongs);
+    useEffect(() => { refreshSort(); }, [dedupedSongs, sortId, queueEpoch, refreshSort]);
 
-    // Read again every time the tab is shown: this screen stays mounted, so counts (and the
-    // Most Played order) used to stay as they were when the library last loaded.
-    useFocusEffect(useCallback(() => {
-        let cancelled = false;
-        getPlayCounts(dedupedSongs).then(c => { if (!cancelled) setPlayCounts(c); });
-        return () => { cancelled = true; };
-    }, [dedupedSongs]));
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
-    // Play counts decide the Most Played orders. They used to be read only when
-    // the tab was first focused, so a saved "Most Played" sort showed up as
-    // alphabetical (every count empty) and then jumped into place on the first
-    // visit. Reading them as soon as the songs are known (the app is still
-    // behind its start screen then) means the first view is already right.
-    useEffect(() => {
-        let cancelled = false;
-        getPlayCounts(dedupedSongs).then(c => { if (!cancelled) setPlayCounts(c); });
-        return () => { cancelled = true; };
-    }, [dedupedSongs]);
-
     // Precomputed once per song instead of inside the sort comparator —
     // .sort() calls its comparator O(n log n) times, and recomputing
     // .toLowerCase() on the same strings that many times over adds up on a
@@ -237,6 +224,7 @@ export default function AllSongsScreen() {
                 <FlatList
                     ref={listRef}
                     data={filtered}
+                    extraData={liveCounts}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 150 }}
                     scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
@@ -251,7 +239,7 @@ export default function AllSongsScreen() {
                     <SongRow
                         item={item}
                         art={artMap[item.id]}
-                        count={playCounts[item.id]}
+                        count={countFor(item)}
                         showSongCovers={showSongCovers}
                         showPlayCount={showPlayCount}
                         coverShape={coverShape}

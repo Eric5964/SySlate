@@ -395,6 +395,23 @@ export default function SettingsScreen() {
             { text: 'Choose Files', onPress: (name) => run((name || '').trim()) },
         ], 'plain-text', 'Imported');
     };
+    // Copies a whole folder of playlists in from anywhere (Files, iCloud, other apps).
+    const importFolderFlow = () => {
+        const run = async () => {
+            try {
+                const r = await AudioEngine.importFolder();
+                if (!r) return;
+                await reload();
+                const names = (r.playlists || []);
+                Alert.alert('Import finished', `${r.copied} song(s) added to ${names.length} playlist(s)${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
+            } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
+        };
+        Alert.alert(
+            'Import Folder',
+            'Choose the folder that contains all the playlists you want to add.\n\nInside it, every folder is one playlist and the songs go inside that:\n\nChosen folder / Playlist name / Song.flac\n\nPlaylists with the same name as one you already have are combined, and songs that are already there are skipped. Lyrics (.lrc) and cover pictures next to the songs come along. Songs are copied into the app, so this takes a while for big libraries.',
+            [{ text: 'Cancel', style: 'cancel' }, { text: 'Choose Folder', onPress: run }],
+        );
+    };
     const pathLower = (scanPath ?? '').toLowerCase();
     const isLiveContainer = pathLower.includes('livecontainer');
     const isSideStore = !isLiveContainer && !!scanPath;
@@ -537,7 +554,7 @@ export default function SettingsScreen() {
         lists: () => { setShowSongCovers(true); setShowPlayCount(true); setShowPlaylistTrackCount(true); setShowPlaylistTitles(true); setPlaylistCards(true); setPlaylistArrow(true); setSongPillShadow(false); setMiniPlayerShadow(true); },
         playlistsScreen: () => ['pl_layout', 'pl_reload'].forEach(n => setUiShown(n, true)),
         allSongsScreen: () => ['as_eq', 'as_queue'].forEach(n => setUiShown(n, true)),
-        playlistScreen: () => { ['pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle'].forEach(n => setUiShown(n, true)); setDetailOutline(false); },
+        playlistScreen: () => { ['pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_hours'].forEach(n => setUiShown(n, true)); setDetailOutline(false); },
         playerButtons: () => ['sleep', 'speed', 'eq', 'queue', 'back', 'label'].forEach(n => setPlayerBtnShown(n, true)),
         playerCover: () => {
             setShowPlayerCover(true); setCoverShadow(true); setPlayerOutline(false);
@@ -1088,7 +1105,7 @@ export default function SettingsScreen() {
                 </Section>
 
                 <Section title="Playlist Screen">
-                    {chipsFor([uiChip('pd_back', 'Back'), uiChip('pd_search', 'Search'), uiChip('pd_eq', 'EQ'), uiChip('pd_queue', 'Queue'), uiChip('pd_cover', 'Cover'), uiChip('pd_play', 'Play'), uiChip('pd_shuffle', 'Shuffle')])}
+                    {chipsFor([uiChip('pd_back', 'Back'), uiChip('pd_search', 'Search'), uiChip('pd_eq', 'EQ'), uiChip('pd_queue', 'Queue'), uiChip('pd_cover', 'Cover'), uiChip('pd_play', 'Play'), uiChip('pd_shuffle', 'Shuffle'), uiChip('pd_hours', 'Total time')])}
                     <Text style={s.chipNote}>Back, Search, EQ and Queue are top bar buttons. Cover, Play and Shuffle are above the songs in the playlist.</Text>
                 </Section>
 
@@ -1231,7 +1248,7 @@ export default function SettingsScreen() {
                         Nothing else needed to change; the mapping logic was
                         already correct, this container was just blocking
                         all touches from ever reaching it. */}
-                    <View style={{ paddingVertical: 16, paddingHorizontal: 16 }}>
+                    <View style={{ paddingTop: 0, paddingBottom: 16, paddingHorizontal: 16 }}>
                         <View style={s.swatchRow}>
                             {baseEntries.map(renderBaseSwatch)}
                         </View>
@@ -1250,7 +1267,7 @@ export default function SettingsScreen() {
                         }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
-                    <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingVertical: 14, gap: 10 }}>
+                    <View style={{ flexDirection: 'row', paddingHorizontal: 24, paddingTop: 0, paddingBottom: 16, gap: 10 }}>
                         <TouchableOpacity onPress={pickBackgroundImage} style={[s.sortChip, { backgroundColor: theme.accent }]}>
                             <Text style={[s.sortChipText, { color: theme.onAccent }]}>
                                 {backgroundImageUri ? 'Change Image' : 'Choose Image'}
@@ -1381,6 +1398,10 @@ export default function SettingsScreen() {
                     <TouchableOpacity style={s.row} onPress={importSongsFlow}>
                         <Text style={s.rowLabel}>Import Songs</Text>
                         <Text style={s.rowSub}>Pick audio files from the Files app (use this if the Documents folder cannot be reached)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={importFolderFlow}>
+                        <Text style={s.rowLabel}>Import Folder</Text>
+                        <Text style={s.rowSub}>Pick the folder that holds your playlists (Folder / Playlist / Song). Each folder inside it becomes a playlist.</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={reload}>
                         <Text style={s.rowLabel}>Rescan Music</Text>

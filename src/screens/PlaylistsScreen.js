@@ -8,7 +8,7 @@ import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle, cardRadius } from '../utils/squircle';
-import DimPressable from '../components/DimPressable';
+import DimPressable, { DIM_COLOR } from '../components/DimPressable';
 import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import {
@@ -170,9 +170,10 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
         return (
             <Animated.View style={wrapStyle} onLayout={(e) => onItemLayout(index, e.nativeEvent.layout)}>
                 <Pressable
-                    style={({ pressed }) => [s.gridItem, { width: size, marginHorizontal: CELL_MARGIN, marginVertical: CELL_MARGIN_V, opacity: pressed && !isActive ? 0.75 : 1 }]}
+                    style={[s.gridItem, { width: size, marginHorizontal: CELL_MARGIN, marginVertical: CELL_MARGIN_V }]}
                     {...handlers}
                 >
+                    {({ pressed }) => (<>
                     {cardOn && (
                         <View
                             pointerEvents="none"
@@ -187,10 +188,12 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
                     )}
                     <View style={[{ width: size, height: size, marginBottom: hasText ? CARD_INSET + CARD_BOTTOM_EXTRA : 0, borderRadius: r, backgroundColor: bg }, shadowOn && COVER_SHADOW]}>
                         <View style={[s.gridArt, { width: size, height: size, borderRadius: r }]}>{art}</View>
+                        {pressed && !isActive ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, borderRadius: r, backgroundColor: DIM_COLOR }} /> : null}
                         {minus}
                     </View>
                     {showTitle !== false && <Text style={[s.gridName, { color: base.text }]} numberOfLines={2}>{item.name}</Text>}
                     {showCount !== false && <Text style={[s.gridCount, { color: base.textFaint }]}>{item.songs.length} {item.songs.length === 1 ? 'track' : 'tracks'}</Text>}
+                    </>)}
                 </Pressable>
             </Animated.View>
         );

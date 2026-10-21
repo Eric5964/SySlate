@@ -53,7 +53,12 @@ const setQueueLoop = async () => {
 // in the queue; this never does, because it isn't derived from anything
 // that changes.
 let qidCounter = 0;
-const stampQid = (track) => ({ ...track, _qid: `q${++qidCounter}` });
+// The counter starts over at 0 on every launch, while songs restored from the
+// last session keep the ids they were given back then. A new song could
+// therefore be handed an id a restored song already had, and the two rows
+// acted as one (deleting one removed both). A per-launch prefix keeps them apart.
+const QID_PREFIX = Date.now().toString(36);
+const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` });
 // Exported so SettingsScreen can re-apply immediately after editing whatever
 // preset is currently active, instead of the change only taking effect the
 // next time a preset gets selected.
@@ -75,6 +80,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const onRestoredRef = useRef(onRestored);
     onRestoredRef.current = onRestored;
     const [currentPlaylist, setCurrentPlaylist] = useState(null);
+    // Goes up each time a different queue is started (a playlist or song is played). Lists
+    // that show play counts re-sort only then, never while a song just keeps playing.
+    const [queueEpoch, setQueueEpoch] = useState(0);
     // Which playlist a manually queued song came from (song id -> name),
     // and the one that applies to the song playing right now. The Player's
     // top label shows this instead of a generic "Now Playing" once a queued
@@ -359,7 +367,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             if (playCreditedRef.current.credited && position < 3) playCreditedRef.current.credited = false;
             if (!playCreditedRef.current.credited && position / duration >= 0.5) {
                 playCreditedRef.current.credited = true;
-                incrementPlayCount(track);
+                incrementPlayCount(track, duration);
             }
         });
         return () => sub.remove();
@@ -1189,6 +1197,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         shuffleOnRef.current = pend.shuffled;
         if (pend.shuffled) shuffleModeRef.current = pend.mode;
         setCurrentPlaylist(pl);
+        setQueueEpoch(e => e + 1);
         setShuffleOn(pend.shuffled);
         if (pend.shuffled) setShuffleModeState(pend.mode);
         setSingleLoop(false);
@@ -1292,6 +1301,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
+        setQueueEpoch(e => e + 1);
         // Same reasoning as playSongFromPlaylist — don't wipe already-known
         // art for a song that turns out to be the one still playing.
         setCurrentTrack(prev => {
@@ -1321,6 +1331,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
+        setQueueEpoch(e => e + 1);
         setCurrentTrack(prev => {
             const next = queue[0] ?? null;
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
@@ -1353,6 +1364,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
+        setQueueEpoch(e => e + 1);
         setCurrentTrack(prev => {
             const next = queue[0] ?? null;
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
@@ -1438,6 +1450,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
+        setQueueEpoch(e => e + 1);
         // If this is the same song that was already playing (just reached
         // through a different playlist that also contains it, or the same
         // playlist replayed), keep whatever art was already resolved for it
@@ -1865,13 +1878,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // in useMemo is enough to actually get the benefit — consumers now
     // only re-render when a value they actually read changes.
     const value = useMemo(() => ({
-        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
-        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource,
+        currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,

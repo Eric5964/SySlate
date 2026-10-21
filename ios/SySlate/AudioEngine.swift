@@ -413,8 +413,13 @@ class AudioEngine: RCTEventEmitter {
         // to kDynamicsProcessorParam_OverallGain — the old symbol still
         // exists in the ObjC/C headers but is marked unavailable in Swift).
         let unit = normalizerNode.audioUnit
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -12.0, 0)
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 5.0, 0)
+        // Starts at the "off" settings (threshold at its top, head room at its
+        // widest: nothing is ever compressed). Switching the feature on or off
+        // slides these two values to the "on" settings (-12 dB, 5 dB) and back
+        // (see toggleNormalizerBypass) instead of flipping the unit's bypass
+        // while sound is playing, which was a click.
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, 20.0, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 40.0, 0)
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_ExpansionRatio, kAudioUnitScope_Global, 0, 1.0, 0)
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.02, 0)
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.15, 0)
@@ -634,6 +639,7 @@ class AudioEngine: RCTEventEmitter {
             // pause tap.
             interruptionActive = true
             markOutputCold()
+            coldWakeExtra = true   // an ENDED notice may never arrive (the user just switches back), so the first play after this waits for the hardware too
             savePlaybackSnapshot(force: true)
             sendEvent(withName: "AudioInterruptionBegan", body: nil)
         } else if type == .ended {
@@ -714,7 +720,20 @@ class AudioEngine: RCTEventEmitter {
         guard !coldMuteHeld else { return }
         softMuteToken &+= 1
         let t = softMuteToken
-        engine.mainMixerNode.outputVolume = 0
+        let mixerNow = engine.mainMixerNode.outputVolume
+        if engine.isRunning, mixerNow > 0.02 {
+            // Down in a few short steps (about 25 ms) rather than one jump, which is a
+            // click whenever sound is passing through at that moment.
+            let downSteps = 5
+            for i in 1...downSteps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.005 * Double(i)) { [weak self] in
+                    guard let self = self, t == self.softMuteToken, !self.coldMuteHeld else { return }
+                    self.engine.mainMixerNode.outputVolume = mixerNow * Float(downSteps - i) / Float(downSteps)
+                }
+            }
+        } else {
+            engine.mainMixerNode.outputVolume = 0
+        }
         debugLog("[POP] soft mute for \(hold)s (state=\(state), engineRunning=\(engine.isRunning))")
         DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
             guard let self = self, t == self.softMuteToken else { return }
@@ -851,12 +870,17 @@ class AudioEngine: RCTEventEmitter {
         if reason == .routeConfigurationChange || reason == .categoryChange {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.state == .playing else { return }
-                self.softMute(holdFor: 0.2)
-                self.engine.pause()
-                do {
-                    try self.engine.start()
-                } catch {
-                    NSLog("AudioEngine: failed to restart engine after route change: \(error)")
+                self.softMute(holdFor: 0.3)
+                // The engine is only paused once the mute has had time to take effect
+                // (pausing straight away cut the output at full level).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                    guard let self = self, self.state == .playing else { return }
+                    self.engine.pause()
+                    do {
+                        try self.engine.start()
+                    } catch {
+                        NSLog("AudioEngine: failed to restart engine after route change: \(error)")
+                    }
                 }
             }
         }
@@ -2046,6 +2070,16 @@ class AudioEngine: RCTEventEmitter {
         if let climbing = rampInFlightTarget, climbing > volume { volume = climbing }
         cancelActiveRampLocked()
         debugLog("[RAMP-DEBUG] startCrossfade: cancelled any in-flight JS ramp before starting crossfade")
+        // The JS fade-in is what normally lifts the cold-start mute (it waits for the
+        // node to really start). Cancelling it here, with the mute still held, left the
+        // output muted for good: a song resumed a few seconds from its end (after
+        // connecting Bluetooth) went straight into the crossfade, the mixer stayed at 0
+        // and only the silence watchdog fixed it, 9 s later. Lift it ourselves, after
+        // the node has started, exactly like the ramp would have.
+        if coldMuteHeld {
+            let nodeWait: TimeInterval = nodeStartPlannedAt.map { max(0, $0.timeIntervalSinceNow + 0.06) } ?? 0
+            releaseColdStartMute(after: coldLiftDelay + nodeWait)
+        }
         // Forget the previous crossfade's incoming file. Until runCrossfade sets
         // it again (after the async load below), a settle call must see "nothing
         // loaded yet" instead of the stale file from an earlier crossfade.
@@ -2435,7 +2469,7 @@ class AudioEngine: RCTEventEmitter {
         // A Bluetooth link takes a few hundred ms to wake; starting the song only
         // after that keeps the first notes from being swallowed.
         let btExtra: TimeInterval = (coldMuteHeld && isBluetoothOutput()) ? 0.4 : 0
-        let wakeExtra: TimeInterval = (coldMuteHeld && coldWakeExtra) ? 0.3 : 0
+        let wakeExtra: TimeInterval = (coldMuteHeld && coldWakeExtra) ? 0.5 : 0   // after another app or a route change; was 0.3, a pop was still heard
         if coldMuteHeld { coldWakeExtra = false }
         nodeStartPlannedAt = Date().addingTimeInterval(gainSettleDelay + max(btExtra, wakeExtra))
         DispatchQueue.main.asyncAfter(deadline: .now() + gainSettleDelay + max(btExtra, wakeExtra)) { [weak self] in
@@ -3627,26 +3661,36 @@ class AudioEngine: RCTEventEmitter {
             let fileRate = self.scratchFileRate
             if carryOn {
                 core.target = 1
-                let lead = 0.04
+                // The normal player is started at the exact spot the disc is at right
+                // now. (It used to start 40 ms AHEAD of the disc and only fade in 40 ms
+                // later, so the two copies of the song were 40 ms apart while they
+                // swapped: a skip in the waveform, heard as a pop.) Both copies are
+                // then crossed over with complementary curves: the disc's sound dies
+                // away as e^(-t/tau) and the player's comes up as 1 - e^(-t/tau), so
+                // two copies of the same sound always add up to the same level (the
+                // old curves dipped to about 65% in the middle of the swap).
                 let finalSec = max(0, core.windowStart + core.pos / fileRate)
                 self.scratchActive = false
                 self.stopScratchRefillTimer()
                 self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
                 self.activeNode.volume = 0
-                self.seekWithinCurrentTrack(startAtSeconds: finalSec + lead, autoPlay: true)
+                self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: true)
                 self.activeNode.volume = 0
-                DispatchQueue.main.asyncAfter(deadline: .now() + lead) { [weak self] in
-                    guard let self = self, !self.scratchActive else { return }
-                    core.gainRate = 0.002
-                    core.gainTarget = 0
-                    for i in 1...10 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
-                            guard let self = self, !self.scratchActive else { return }
-                            self.activeNode.volume = restoreVol * Float(i) / 10
-                        }
+                let sr = max(8000.0, Double(self.scratchFormat?.sampleRate ?? 44100))
+                let gr: Float = 0.002
+                core.gainRate = gr
+                core.gainTarget = 0
+                let tau = 1.0 / (Double(gr) * sr)   // time constant of the disc's fade-out, seconds
+                let stepSec = 0.004
+                let steps = 16                         // 64 ms, about 5.6 time constants
+                for i in 1...steps {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(i)) { [weak self] in
+                        guard let self = self, !self.scratchActive else { return }
+                        let up = i == steps ? Float(1) : Float(1 - exp(-stepSec * Double(i) / tau))
+                        self.activeNode.volume = restoreVol * up
                     }
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + lead + 0.25) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(steps) + 0.2) { [weak self] in
                     if self?.scratchActive == false { core.release() }
                 }
                 self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=play (handover at rate %.2f)", finalSec, core.cur))
@@ -3667,7 +3711,7 @@ class AudioEngine: RCTEventEmitter {
                     self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
                     self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: false)
                     self.activeNode.volume = restoreVol
-                    if self.engine.isRunning { self.engine.pause() }
+                    if self.engine.isRunning { self.engine.pause(); self.markOutputCold() }   // hardware stopped: the next play is a cold start
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
                         if self?.scratchActive == false { core.release() }
                     }
@@ -4025,6 +4069,147 @@ class AudioEngine: RCTEventEmitter {
     // silently bound to a 0-parameter private helper instead of this
     // method, and getProgress itself had no @objc at all. Moved to the
     // right declaration.
+    // ---- Song lengths (for playlist totals and listening hours) ----
+    // Reads each file's length from its header, the same way the player opens it, on a
+    // background queue so nothing waits. Returns { url: seconds } for the files it could read.
+    @objc(getDurations:resolver:rejecter:)
+    func getDurations(_ urls: [String], resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.global(qos: .utility).async {
+            var out: [String: Double] = [:]
+            for u in urls {
+                autoreleasepool {
+                    var path = u
+                    if path.hasPrefix("file://"), let url = URL(string: path) { path = url.path }
+                    if !FileManager.default.fileExists(atPath: path),
+                       let range = path.range(of: "/Documents/"),
+                       let realDocs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                        path = realDocs.appendingPathComponent(String(path[range.upperBound...])).path
+                    }
+                    if let f = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) {
+                        let sr = f.processingFormat.sampleRate
+                        if sr > 0 { out[u] = Double(f.length) / sr }
+                    }
+                }
+            }
+            resolve(out)
+        }
+    }
+
+    // ---- Import a folder of playlists from anywhere (Files, iCloud, other apps) ----
+    private var folderPickerDelegate: FolderPickDelegate?
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
+        var vc = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController ?? scene?.windows.first?.rootViewController
+        while let presented = vc?.presentedViewController { vc = presented }
+        return vc
+    }
+
+    // Shows the system folder picker. The chosen folder holds one sub-folder per playlist
+    // (root/playlist/song); every song, .lrc and cover picture in them is copied into the
+    // app's Documents folder under the same playlist name. A playlist that already exists
+    // is added to, and a file that is already there (same name and size) is skipped.
+    // Resolves { playlists, copied, skipped, failed }, or null if the picker was cancelled.
+    @objc(importFolder:rejecter:)
+    func importFolder(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.main.async {
+            guard let top = AudioEngine.topViewController() else { reject("NO_UI", "The picker could not be shown.", nil); return }
+            let picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
+            picker.allowsMultipleSelection = false
+            let del = FolderPickDelegate(onPick: { [weak self] url in
+                self?.folderPickerDelegate = nil
+                guard let url = url else { resolve(NSNull()); return }
+                self?.copyFolderIn(url, resolve: resolve)
+            })
+            self.folderPickerDelegate = del
+            picker.delegate = del
+            top.present(picker, animated: true, completion: nil)
+        }
+    }
+
+    private func copyFolderIn(_ root: URL, resolve: @escaping RCTPromiseResolveBlock) {
+        let scoped = root.startAccessingSecurityScopedResource()
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "importFolder") {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            defer {
+                if scoped { root.stopAccessingSecurityScopedResource() }
+                DispatchQueue.main.async {
+                    if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid }
+                }
+            }
+            guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { resolve(NSNull()); return }
+            let audio: Set<String> = ["flac", "mp3", "m4a", "wav", "aiff", "aac", "alac", "opus", "ogg", "mp4", "wma", "ape", "caf", "m4b"]
+            let extras: Set<String> = ["lrc", "jpg", "jpeg", "png", "webp"]
+            var copied = 0, skipped = 0, failed = 0
+            var touched = Set<String>()
+
+            func coordinatedCopy(_ src: URL, _ dst: URL) -> Bool {
+                var ok = false
+                var coordError: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: src, options: [], error: &coordError) { readURL in
+                    do { try fm.copyItem(at: readURL, to: dst); ok = true } catch { ok = false }
+                }
+                return ok && coordError == nil
+            }
+            func fileSize(_ u: URL) -> Int64 {
+                let n = (try? fm.attributesOfItem(atPath: u.path)[.size]) as? NSNumber
+                return n?.int64Value ?? -1
+            }
+            // Copies one file into <Documents>/<playlist>/<rel>, never overwriting.
+            func copyOne(_ src: URL, playlist: String, rel: String) {
+                let ext = src.pathExtension.lowercased()
+                guard audio.contains(ext) || extras.contains(ext) else { if !ext.isEmpty { skipped += 1 }; return }
+                var dst = docs.appendingPathComponent(playlist, isDirectory: true).appendingPathComponent(rel)
+                do { try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil) } catch { failed += 1; return }
+                if fm.fileExists(atPath: dst.path) {
+                    if fileSize(dst) == fileSize(src) { skipped += 1; return }
+                    let stem = dst.deletingPathExtension().lastPathComponent
+                    let dir = dst.deletingLastPathComponent()
+                    var n = 2
+                    var candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                    while fm.fileExists(atPath: candidate.path) && n < 100 {
+                        n += 1
+                        candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                    }
+                    dst = candidate
+                }
+                if coordinatedCopy(src, dst) {
+                    if audio.contains(ext) { copied += 1 }
+                    touched.insert(playlist)
+                } else { failed += 1 }
+            }
+            func walk(_ dir: URL, playlist: String) {
+                guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return }
+                let base = dir.standardizedFileURL.path
+                for case let url as URL in en {
+                    let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                    if isDir { continue }
+                    let full = url.standardizedFileURL.path
+                    let rel = full.hasPrefix(base + "/") ? String(full.dropFirst(base.count + 1)) : url.lastPathComponent
+                    copyOne(url, playlist: playlist, rel: rel)
+                }
+            }
+
+            let children = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+            for child in children {
+                let isDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                if isDir {
+                    walk(child, playlist: child.lastPathComponent)
+                } else {
+                    // Songs loose in the chosen folder go into a playlist named after that folder.
+                    copyOne(child, playlist: root.lastPathComponent, rel: child.lastPathComponent)
+                }
+            }
+            resolve(["playlists": Array(touched).sorted(), "copied": copied, "skipped": skipped, "failed": failed])
+        }
+    }
+
     @objc(getProgress:rejecter:)
     func getProgress(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         let position = currentPositionSeconds()
@@ -4163,10 +4348,34 @@ class AudioEngine: RCTEventEmitter {
                 }
                 au.targetWidth = self.spatialWidth
                 au.targetBalance = self.spatialBalance
-                self.engine.attach(avUnit)
-                self.engine.disconnectNodeOutput(self.normalizerNode)
-                self.engine.connect(self.normalizerNode, to: avUnit, format: fmt)
-                self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: fmt)
+                // Rewiring the signal path while the engine is running left the song
+                // silent until the next pause and play (the effect itself rendered
+                // fine). So the engine is paused for the change and started again,
+                // the way every other graph change in the app is made. The output is
+                // eased to silence first (and the pause waits for that), so stopping
+                // the engine mid-song does not click.
+                let rewire: () -> Void = { [weak self] in
+                    guard let self = self else { return }
+                    let wasRunning = self.engine.isRunning
+                    let nodeWasPlaying = self.activeNode?.isPlaying ?? false
+                    if wasRunning { self.engine.pause() }
+                    self.engine.attach(avUnit)
+                    self.engine.disconnectNodeOutput(self.normalizerNode)
+                    self.engine.connect(self.normalizerNode, to: avUnit, format: fmt)
+                    self.engine.connect(avUnit, to: self.engine.mainMixerNode, format: fmt)
+                    if wasRunning {
+                        self.engine.prepare()
+                        do { try self.engine.start() } catch { self.debugLog("[SPATIAL] could not restart the engine after adding the effect: \(error)") }
+                        if nodeWasPlaying, let n = self.activeNode, !n.isPlaying { n.play() }
+                        self.debugLog("[SPATIAL] engine restarted for the change: running=\(self.engine.isRunning) nodePlaying=\(self.activeNode?.isPlaying ?? false)")
+                    }
+                }
+                if self.engine.isRunning && !self.coldMuteHeld {
+                    self.softMute(holdFor: 0.35)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { rewire() }
+                } else {
+                    rewire()
+                }
                 self.spatialUnit = au
                 self.spatialAV = avUnit
                 self.debugLog("[SPATIAL] effect added to the signal path (\(Int(fmt.sampleRate)) Hz, \(fmt.channelCount) ch)")
@@ -4198,10 +4407,27 @@ class AudioEngine: RCTEventEmitter {
 
     private func removeSpatialUnit() {
         guard let av = spatialAV else { return }
-        engine.disconnectNodeOutput(normalizerNode)
-        engine.disconnectNodeOutput(av)
-        engine.detach(av)
-        engine.connect(normalizerNode, to: engine.mainMixerNode, format: nil)
+        let rewire: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            let wasRunning = self.engine.isRunning
+            let nodeWasPlaying = self.activeNode?.isPlaying ?? false
+            if wasRunning { self.engine.pause() }
+            self.engine.disconnectNodeOutput(self.normalizerNode)
+            self.engine.disconnectNodeOutput(av)
+            self.engine.detach(av)
+            self.engine.connect(self.normalizerNode, to: self.engine.mainMixerNode, format: nil)
+            if wasRunning {
+                self.engine.prepare()
+                do { try self.engine.start() } catch { self.debugLog("[SPATIAL] could not restart the engine after removing the effect: \(error)") }
+                if nodeWasPlaying, let n = self.activeNode, !n.isPlaying { n.play() }
+            }
+        }
+        if engine.isRunning && !coldMuteHeld {
+            softMute(holdFor: 0.35)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { rewire() }
+        } else {
+            rewire()
+        }
         spatialUnit = nil
         spatialAV = nil
         spatialUnavailable = true
@@ -4219,7 +4445,7 @@ class AudioEngine: RCTEventEmitter {
     private var normToggleToken: UInt64 = 0
     private var normToggleBaseVol: Float? = nil
 
-    private func toggleNormalizerBypass(_ bypassed: Bool) {
+    private func duckedNormalizerBypassFlip(_ bypassed: Bool) {
         // Widened from 15ms/40ms — the pop was specifically reported on the
         // OFF direction (normalizer active → bypassed), which makes sense:
         // turning bypass ON abruptly discards whatever gain reduction the
@@ -4264,6 +4490,52 @@ class AudioEngine: RCTEventEmitter {
                 if i == steps { self.normToggleBaseVol = nil }
             }
         }
+    }
+
+    // Volume Normalization on/off. The compressor's settings are slid between
+    // "off" (threshold +20 dB, head room 40 dB: nothing is touched) and "on"
+    // (-12 dB, 5 dB) over about 0.3 s, so the sound changes smoothly and there is
+    // no step to click. The unit's bypass switch is only used once per session,
+    // the first time the feature is turned on (while the sound is ducked, as
+    // before); after that the unit stays in the path and is simply neutral.
+    private var normMix: Float = 0
+    private var normRampToken: UInt64 = 0
+
+    private func applyNormalizerMix(_ m: Float) {
+        normMix = m
+        let unit = normalizerNode.audioUnit
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, 20.0 + (-12.0 - 20.0) * m, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 40.0 + (5.0 - 40.0) * m, 0)
+    }
+
+    private func rampNormalizerMix(to target: Float, token: UInt64) {
+        let from = normMix
+        let steps = 24
+        for i in 1...steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012 * Double(i)) { [weak self] in
+                guard let self = self, token == self.normRampToken else { return }
+                let x = Float(i) / Float(steps)
+                let e = x * x * (3 - 2 * x)
+                self.applyNormalizerMix(from + (target - from) * e)
+            }
+        }
+    }
+
+    private func toggleNormalizerBypass(_ bypassed: Bool) {
+        normRampToken &+= 1
+        let token = normRampToken
+        if normalizerNode.bypass {
+            if bypassed { return }   // already off, nothing in the path
+            // First time on: bring the unit into the path while it is neutral.
+            applyNormalizerMix(0)
+            duckedNormalizerBypassFlip(false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) { [weak self] in
+                guard let self = self, token == self.normRampToken else { return }
+                self.rampNormalizerMix(to: 1, token: token)
+            }
+            return
+        }
+        rampNormalizerMix(to: bypassed ? 0 : 1, token: token)
     }
 
     @objc(setCrossfadeEnabled:resolver:rejecter:)
@@ -4479,5 +4751,19 @@ private final class SpatialAudioUnit: AUAudioUnit {
             self.curGainR = gr
             return noErr
         }
+    }
+}
+
+// Receives the folder chosen in the system picker (see importFolder).
+private final class FolderPickDelegate: NSObject, UIDocumentPickerDelegate {
+    private var onPick: ((URL?) -> Void)?
+    init(onPick: @escaping (URL?) -> Void) { self.onPick = onPick }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        let cb = onPick; onPick = nil
+        cb?(urls.first)
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        let cb = onPick; onPick = nil
+        cb?(nil)
     }
 }

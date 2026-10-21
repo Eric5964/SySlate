@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, unstable_batchedUpdates } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, Dimensions, unstable_batchedUpdates } from 'react-native';
 import DimPressable from './DimPressable';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
@@ -14,7 +14,7 @@ import { listArtUri } from '../utils/embeddedArt';
 import { perf } from '../utils/perf';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
-import { getPlayCounts } from '../utils/storage';
+import { getPlayCounts, playCountKey, subscribePlayCount } from '../utils/storage';
 
 // Fixed estimate of a row's rendered height (thumb + padding + margins) —
 // used instead of measuring each row via onLayout, which would need an
@@ -526,6 +526,17 @@ export default function QueueModal({ visible, onClose }) {
     const dragY = useRef(new Animated.Value(0)).current;
     const rowsRef = useRef(rows);
     rowsRef.current = rows;
+    // A play that is counted while the queue is open shows at once. Only the number
+    // shown changes; the queue itself is not touched.
+    useEffect(() => subscribePlayCount(({ key, n }) => setPlayCounts(prev => {
+        let next = null;
+        const consider = (song) => {
+            if (song && playCountKey(song) === key && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
+        };
+        rowsRef.current.forEach(r => consider(r.song));
+        consider(currentTrack);
+        return next || prev;
+    })), [currentTrack]);
     const totalRowsRef = useRef(0);
     totalRowsRef.current = allRows.length;
     const visibleRef = useRef(0);
@@ -599,7 +610,7 @@ export default function QueueModal({ visible, onClose }) {
         startIdx.current = idx; toIdx.current = idx;
         dragY.setValue(0);
         editRef.current = true;
-        if (boxRef.current) boxRef.current.measureInWindow((x, y) => { listTop.current = y; });
+        if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { listTop.current = y; if (h > 0) viewH.current = h; });
         // More rows are built while a row is held, so there is always list
         // below to scroll into (rows are only ever appended, so the held
         // row and the slots measured so far keep their places).
@@ -686,10 +697,15 @@ export default function QueueModal({ visible, onClose }) {
                 // Only the very edge of the list scrolls it, and gently:
                 // speed grows with how far into the zone the finger is.
                 const zone = Math.min(EDGE, viewH.current * 0.2);
+                // The list's height was never reported on the phone (the log showed
+                // viewH=0 all through a drag), so there was no scrolling. The sheet
+                // is bottom-anchored with 34 px of padding under the list, so the
+                // height can be worked out from where the list starts.
+                if (!(viewH.current > 0) && listTop.current > 0) viewH.current = Math.max(0, Dimensions.get('window').height - listTop.current - 34);
                 if (!(listTop.current > 0) || !(viewH.current > 0)) {
                     // Not measured yet (or the measurement came back as 0): measure again
                     // instead of never scrolling, and say so once in the log.
-                    if (boxRef.current) boxRef.current.measureInWindow((x, y) => { if (y > 0) listTop.current = y; });
+                    if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
                     if (now - lastScrollLog.current > 1500) { lastScrollLog.current = now; console.log('[QUEUE] autoscroll waiting: listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)); }
                     return;
                 }
@@ -947,7 +963,7 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y) => { listTop.current = y; }); }} {...dragPan.panHandlers}>
+                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { listTop.current = y; if (h > 0) viewH.current = h; }); }} {...dragPan.panHandlers}>
                 <FlatList
                     ref={listRef}
                     scrollEventThrottle={16}
