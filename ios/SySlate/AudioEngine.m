@@ -7,6 +7,10 @@ RCT_EXTERN_METHOD(getDurations:(NSArray *)urls
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(replaceTracks:(NSArray *)pairs
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(importFolder:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
@@ -185,5 +189,7 @@ RCT_EXTERN_METHOD(setCrossfadeDuration:(nonnull NSNumber *)seconds
 RCT_EXTERN_METHOD(setCrossfadeDurationEndOfTrack:(nonnull NSNumber *)seconds
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(setVisualizerEnabled:(nonnull NSNumber *)on)
 
 @end

@@ -39,6 +39,7 @@ const FALLBACK_WINDUP_MS = 320;
 // so each frame's step stays far above the native decay's 0.1 stop threshold.
 const MT = 1000;
 const SPIN_K = 1e-10;
+const IDLE_SPAN_MS = 90000;   // length of the straight-line turn used right after a wind-up (see startSpin)
 
 // Where the disc was when the Player last closed, so reopening it shows the
 // disc at the same angle (and keeps it turning as if it never stopped).
@@ -208,17 +209,25 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         // No wind-up: just turn at full speed from the current angle, with no
         // read-back (a read-back freezes the disc for a few frames).
         if (rampMs <= 0) { runIdle(); return; }
-        spin.stopAnimation(() => {
+        spin.stopAnimation((v) => {
             if (token !== spinToken.current) return;
             lag.stopAnimation((l) => {
                 if (token !== spinToken.current) return;
-                runIdle();
-                if (rampMs > 0) {
-                    // Quadratic wind-up = the full-speed turn minus a gap that
-                    // closes with an out-quad ease; the gap ends at half a
-                    // turn-time of the ramp.
-                    Animated.timing(lag, { toValue: l - 0.5 * MT * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-                }
+                // The full-speed turn is a long straight-line timing here, NOT a decay: a
+                // decay and a timing animation started together do not begin on the same
+                // frame (the decay's first step already includes up to one frame of full
+                // speed, the timing's is zero), and from rest that showed as a sudden jump
+                // of about 3 degrees the moment Play was pressed (measured in a screen
+                // recording). Two timings begin identically. A few seconds before it
+                // runs out it is handed to the ordinary endless turn (runIdle), which
+                // at full speed cannot be told apart.
+                const spanMs = IDLE_SPAN_MS;
+                Animated.timing(spin, { toValue: v + MT * (spanMs / turnMsRef.current), duration: spanMs, easing: Easing.linear, useNativeDriver: true }).start();
+                setTimeout(() => { if (token === spinToken.current && spinState.current === 'spinning') runIdle(); }, spanMs - 10000);
+                // Quadratic wind-up = the full-speed turn minus a gap that
+                // closes with an out-quad ease; the gap ends at half a
+                // turn-time of the ramp.
+                Animated.timing(lag, { toValue: l - 0.5 * MT * (rampMs / turnMsRef.current), duration: rampMs, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
             });
         });
     }, [spin, lag, runIdle]);

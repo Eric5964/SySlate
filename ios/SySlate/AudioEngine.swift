@@ -99,8 +99,14 @@ class AudioEngine: RCTEventEmitter {
     // being permanently "the" player node.
     private let nodeA = AVAudioPlayerNode()
     private let nodeB = AVAudioPlayerNode()
+    // Third player: when a song is tapped while a crossfade is still running, the song that was
+    // fading out keeps fading on this spare player instead of being cut (see handOffToDyingNode).
+    private let nodeC = AVAudioPlayerNode()
+    private var dyingNode: AVAudioPlayerNode? = nil
+    private var dyingTimer: Timer? = nil
     private var activeNode: AVAudioPlayerNode!
-    private var idleNode: AVAudioPlayerNode { activeNode === nodeA ? nodeB : nodeA }
+    // The player that is neither playing nor still fading out.
+    private var idleNode: AVAudioPlayerNode { [nodeA, nodeB, nodeC].first { $0 !== activeNode && $0 !== dyingNode } ?? (activeNode === nodeA ? nodeB : nodeA) }
     // Both nodes feed into this before EQ/normalization — AVAudioUnitEQ
     // and AVAudioUnitEffect each only take one input, so two simultaneous
     // player nodes need a mixer ahead of them regardless of crossfade
@@ -343,6 +349,7 @@ class AudioEngine: RCTEventEmitter {
             "PlaybackState",
             "PlaybackTrackChanged",
             "PlaybackProgressUpdated",
+            "VizLevels",
             "RemotePlay",
             "RemotePause",
             "RemoteStop",
@@ -427,6 +434,7 @@ class AudioEngine: RCTEventEmitter {
 
         engine.attach(nodeA)
         engine.attach(nodeB)
+        engine.attach(nodeC)
         engine.attach(preMixNode)
         engine.attach(eqNode)
         engine.attach(timePitchNode)
@@ -434,6 +442,8 @@ class AudioEngine: RCTEventEmitter {
 
         engine.connect(nodeA, to: preMixNode, format: nil)
         engine.connect(nodeB, to: preMixNode, format: nil)
+        engine.connect(nodeC, to: preMixNode, format: nil)
+        nodeC.volume = 0
         // Node B has never been used before the first crossfade and would
         // otherwise sit at its default full volume, which is the loud blip at
         // the start of the first crossfade. Idle nodes now always rest at 0.
@@ -562,6 +572,7 @@ class AudioEngine: RCTEventEmitter {
         }
         let startA = nodeA.volume
         let startB = nodeB.volume
+        let startC = nodeC.volume
         let duration = 0.4
         let steps = 40
         for i in 1...steps {
@@ -569,12 +580,16 @@ class AudioEngine: RCTEventEmitter {
             let gain = Float((1 - t) * (1 - t))      // drops right away, so even a cut-short fade is heard as a fade
             nodeA.volume = startA * gain
             nodeB.volume = startB * gain
+            nodeC.volume = startC * gain
             Thread.sleep(forTimeInterval: duration / Double(steps))
         }
         nodeA.volume = 0
         nodeB.volume = 0
+        nodeC.volume = 0
+        killDyingNode()
         nodeA.pause()
         nodeB.pause()
+        nodeC.pause()
         savePlaybackSnapshot(force: true)
         if bgTask != .invalid {
             UIApplication.shared.endBackgroundTask(bgTask)
@@ -1103,8 +1118,11 @@ class AudioEngine: RCTEventEmitter {
     // artist from the lock screen.
     private var artworkOverrideById: [String: String] = [:]
     private var artistOverrideById: [String: String] = [:]
-    private var embeddedArtwork: MPMediaItemArtwork? = nil
-    private var embeddedArtworkKey: String? = nil
+    // Covers read out of song files, by song key. It used to be ONE slot (the last song read),
+    // so the next song's cover could not be ready before the song changed: the lock screen /
+    // car showed the new title with NO cover for a moment, then flashed the cover in. Now the
+    // next song's cover is read ahead of time and waits here.
+    private var embeddedArtworkCache: [String: MPMediaItemArtwork] = [:]
     private var embeddedArtworkAttempted = Set<String>()
     private var artLogged = Set<String>()
 
@@ -1126,7 +1144,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func loadEmbeddedArtworkIfNeeded(for track: Track, key: String) {
-        if embeddedArtworkKey == key { return }
+        if embeddedArtworkCache[key] != nil { return }
         if embeddedArtworkAttempted.contains(key) { return }
         embeddedArtworkAttempted.insert(key)
         let url = track.url
@@ -1135,8 +1153,12 @@ class AudioEngine: RCTEventEmitter {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if let image = image {
-                    self.embeddedArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                    self.embeddedArtworkKey = key
+                    if self.embeddedArtworkCache.count >= 8 {
+                        // Evicted songs must be readable again later (replay, loop), so forget that they were attempted.
+                        for k in self.embeddedArtworkCache.keys { self.embeddedArtworkAttempted.remove(k) }
+                        self.embeddedArtworkCache.removeAll()
+                    }
+                    self.embeddedArtworkCache[key] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                     self.debugLog("[ART] lock screen cover read straight from the song file for \(track.title ?? "?")")
                     self.updateNowPlayingInfo()
                 } else {
@@ -1250,7 +1272,7 @@ class AudioEngine: RCTEventEmitter {
             info[MPMediaItemPropertyArtwork] = artwork
         } else {
             // No usable file from JS: fall back to the cover inside the song.
-            if embeddedArtworkKey == durKey, let embedded = embeddedArtwork {
+            if let embedded = embeddedArtworkCache[durKey] {
                 info[MPMediaItemPropertyArtwork] = embedded
             } else {
                 loadEmbeddedArtworkIfNeeded(for: track, key: durKey)
@@ -1265,6 +1287,14 @@ class AudioEngine: RCTEventEmitter {
             debugLog("[NP-WRITE] title=\(track.title ?? "?") cover=\(info[MPMediaItemPropertyArtwork] != nil) playing=\(isPlayingForDisplay) crossfading=\(isCrossfading)")
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // Read the NEXT song's cover ahead of time (once per song, off the main thread), so
+        // it is ready the moment the song changes or a crossfade reaches its halfway point.
+        if idx + 1 < queue.count {
+            let nextTrack = queue[idx + 1]
+            if nextTrack.artwork == nil && artworkOverrideById[nextTrack.id] == nil {
+                loadEmbeddedArtworkIfNeeded(for: nextTrack, key: "\(nextTrack.id)|\(nextTrack.qid ?? "")")
+            }
+        }
         // Control Center reads this explicit state, not just the rate above.
         // Without it, Control Center could show or snap back to "playing"
         // while the lock screen (which follows the rate) stayed paused.
@@ -1537,6 +1567,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func loadAndScheduleCurrentTrack(startAtSeconds: Double = 0, autoPlay: Bool, announceChange: Bool = true) {
+        playBlockedAfterReplace = false   // a song is being loaded: Play works again
         abortScratch()   // a song change during a scratch ends the scratch (no two songs at once)
         guard let idx = currentIndex, idx >= 0, idx < queue.count else {
             setState(.stopped)
@@ -1647,7 +1678,7 @@ class AudioEngine: RCTEventEmitter {
             // unconditionally here.
             currentGainCorrection = gainCorrection
 
-            activeNode.stop()
+            killDyingNode(); activeNode.stop()
 
             let startFrame = AVAudioFramePosition(effectiveStartAtSeconds * currentFileSampleRate)
             let trailingCutFrames = AVAudioFramePosition(trailingCutSeconds * currentFileSampleRate)
@@ -1904,7 +1935,39 @@ class AudioEngine: RCTEventEmitter {
         crossfadeSelfLoop = false
         nodeA.stop()
         nodeB.stop()
+        nodeC.stop()
+        killDyingNode()
         isCrossfading = false
+    }
+
+    // A song that was fading out when another song was tapped keeps fading to silence by itself
+    // (about 0.7 s) instead of being stopped dead, so quick taps never cut a song off.
+    private func handOffToDyingNode(_ node: AVAudioPlayerNode) {
+        killDyingNode()   // only one can fade at a time: an older one is already almost silent
+        dyingNode = node
+        let start = node.volume
+        let steps = 20
+        var step = 0
+        dyingTimer = Timer.scheduledTimer(withTimeInterval: 0.035, repeats: true) { [weak self, weak node] timer in
+            guard let self = self, let node = node, self.dyingNode === node else { timer.invalidate(); return }
+            step += 1
+            let t = Float(step) / Float(steps)
+            node.volume = start * (1 - t) * (1 - t)
+            if step >= steps {
+                timer.invalidate()
+                self.dyingTimer = nil
+                node.stop()
+                node.volume = 0
+                self.dyingNode = nil
+            }
+        }
+    }
+
+    private func killDyingNode() {
+        dyingTimer?.invalidate()
+        dyingTimer = nil
+        if let n = dyingNode { n.stop(); n.volume = 0 }
+        dyingNode = nil
     }
 
     // Single-use override — set by JS right before a plain (non-crossfade)
@@ -1963,7 +2026,7 @@ class AudioEngine: RCTEventEmitter {
             // playing yet to visibly stop.
             debugLog("[RAMP-DEBUG] advance(): newIndex \(newIndex) out of bounds (queue.count=\(queue.count), from idx=\(idx), direction=\(direction), wrap=\(wrap)) — clearing currentIndex")
             currentIndex = nil
-            activeNode.stop()
+            killDyingNode(); activeNode.stop()
             setState(.ended)
             return
         }
@@ -1973,7 +2036,7 @@ class AudioEngine: RCTEventEmitter {
         // running). Finish the running one at its current level first, then
         // fade onward from there.
         if isManualSkip, isCrossfading, crossfadeEnabled, crossfadeDurationSkipSeconds > 0.05, autoPlay, state == .playing {
-            settleCrossfadeToIncoming(snapToFull: false)
+            settleCrossfadeToIncoming(snapToFull: false, fadeOutOutgoing: true)
         }
         let crossfadeDuration = isManualSkip ? crossfadeDurationSkipSeconds : crossfadeDurationEndOfTrackSeconds
         // Added: guard against the INCOMING track itself being too short for
@@ -2577,7 +2640,15 @@ class AudioEngine: RCTEventEmitter {
         return true
     }
 
+    // Set when the song that is playing was replaced by a newer copy of itself (an import).
+    // The loaded audio is the old file, so Play does nothing until a song is chosen or skipped to.
+    private var playBlockedAfterReplace = false
+
     private func playInternal() {
+        if playBlockedAfterReplace {
+            debugLog("[REPLACE] play ignored: the song was replaced, pick or skip to a song first")
+            return
+        }
         interruptionActive = false   // a play press takes the sound back
         deviceLossFadeToken &+= 1   // a play cancels a device-loss fade-out that is still under way
         if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }   // and puts the level back
@@ -2718,6 +2789,7 @@ class AudioEngine: RCTEventEmitter {
         lastAudibleAt = Date()
         pendingPlayToken += 1
         frozenPositionSeconds = currentPositionSeconds()
+        killDyingNode()
         activeNode.pause()
         setState(.paused)
         savePlaybackSnapshot(force: true)
@@ -2758,7 +2830,7 @@ class AudioEngine: RCTEventEmitter {
     // crossfade had already faded it to instead of jumping it to full
     // volume. The jump was audible as a loud blip whenever anything (a JS
     // fade, a volume write) landed in the middle of a crossfade.
-    private func settleCrossfadeToIncoming(snapToFull: Bool = true) {
+    private func settleCrossfadeToIncoming(snapToFull: Bool = true, fadeOutOutgoing: Bool = false) {
         guard isCrossfading else { return }
         queuedSkipDirection = nil
         crossfadeFadeTimer?.invalidate()
@@ -2779,8 +2851,7 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         let incomingNode = idleNode
-        outgoingNode.stop()
-        outgoingNode.volume = 0
+        if fadeOutOutgoing { handOffToDyingNode(outgoingNode) } else { outgoingNode.stop(); outgoingNode.volume = 0 }
         if snapToFull { incomingNode.volume = crossfadeTargetVolume }
 
         activeNode = incomingNode
@@ -2842,7 +2913,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
         playbackToken &+= 1
-        activeNode.stop()
+        killDyingNode(); activeNode.stop()
         progressTimer?.invalidate()
         setState(.stopped)
         // Speculative fix, lower confidence than most of this file's other
@@ -3039,7 +3110,7 @@ class AudioEngine: RCTEventEmitter {
         // second crossfade on top used the song fading IN as the "idle" player
         // and stopped it dead. Bring the running fade to its current state
         // first (nothing jumps), then fade from there to the tapped song.
-        if isCrossfading { settleCrossfadeToIncoming(snapToFull: false) }
+        if isCrossfading { settleCrossfadeToIncoming(snapToFull: false, fadeOutOutgoing: true) }
         // Same song again (Previous restarting it, or tapping the song that is
         // already playing): the song fades into its own start. It is not a
         // track change, so no change event is sent for it.
@@ -3141,6 +3212,42 @@ class AudioEngine: RCTEventEmitter {
         currentIndex = nil
         activeNodeTrack = nil
         sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": NSNull()])
+        resolve(nil)
+    }
+
+    // Swaps queue entries for a song that was replaced by a newer copy (an import of the same
+    // title + artist). Every slot holding the old song (played, current or upcoming) now holds
+    // the new file, keeping the slot's own id (`qid`). If the CURRENT slot was swapped, the audio
+    // already loaded is the old file, so Play is ignored until a song is loaded again.
+    // pairs: [{ oldId: String, track: {id, url, ...} }]
+    @objc(replaceTracks:resolver:rejecter:)
+    func replaceTracks(_ pairs: [NSDictionary], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        var swappedCurrent = false
+        for pair in pairs {
+            guard let oldId = pair["oldId"] as? String,
+                  let dict = pair["track"] as? NSDictionary,
+                  let fresh = Track(dict: dict) else { continue }
+            for i in queue.indices where queue[i].id == oldId {
+                var t = fresh
+                t.qid = queue[i].qid
+                queue[i] = t
+                if i == currentIndex { swappedCurrent = true }
+            }
+            let oldPrefix = oldId + "|"
+            let staleDur = lastKnownDurationByKey.keys.filter { $0.hasPrefix(oldPrefix) }
+            for k in staleDur { lastKnownDurationByKey.removeValue(forKey: k) }
+            let staleArt = embeddedArtworkCache.keys.filter { $0.hasPrefix(oldPrefix) }
+            for k in staleArt {
+                embeddedArtworkCache.removeValue(forKey: k)
+                embeddedArtworkAttempted.remove(k)
+            }
+            artworkOverrideById.removeValue(forKey: oldId)
+            artistOverrideById.removeValue(forKey: oldId)
+        }
+        if swappedCurrent {
+            playBlockedAfterReplace = true
+            debugLog("[REPLACE] current song swapped for a newer copy: Play is ignored until a song is loaded")
+        }
         resolve(nil)
     }
 
@@ -3784,7 +3891,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer = nil
         segmentStartOffsetSeconds = startAtSeconds
         frozenPositionSeconds = nil // a seek moves the origin; never keep the pre-seek snapshot
-        activeNode.stop()
+        killDyingNode(); activeNode.stop()
         playbackToken &+= 1
         let token = playbackToken
 
@@ -4109,8 +4216,9 @@ class AudioEngine: RCTEventEmitter {
     // Shows the system folder picker. The chosen folder holds one sub-folder per playlist
     // (root/playlist/song); every song, .lrc and cover picture in them is copied into the
     // app's Documents folder under the same playlist name. A playlist that already exists
-    // is added to, and a file that is already there (same name and size) is skipped.
-    // Resolves { playlists, copied, skipped, failed }, or null if the picker was cancelled.
+    // is added to; a file that is already there (same name and size) is skipped; a lyrics file or
+    // picture with the same name but another size replaces the old one.
+    // Resolves { playlists, copied, skipped, failed, added }, or null if the picker was cancelled.
     @objc(importFolder:rejecter:)
     func importFolder(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.main.async {
@@ -4148,6 +4256,7 @@ class AudioEngine: RCTEventEmitter {
             let extras: Set<String> = ["lrc", "jpg", "jpeg", "png", "webp"]
             var copied = 0, skipped = 0, failed = 0
             var touched = Set<String>()
+            var added: [String] = []   // audio files copied in, as paths under Documents (the app then replaces older copies of the same song)
 
             func coordinatedCopy(_ src: URL, _ dst: URL) -> Bool {
                 var ok = false
@@ -4169,18 +4278,29 @@ class AudioEngine: RCTEventEmitter {
                 do { try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil) } catch { failed += 1; return }
                 if fm.fileExists(atPath: dst.path) {
                     if fileSize(dst) == fileSize(src) { skipped += 1; return }
-                    let stem = dst.deletingPathExtension().lastPathComponent
-                    let dir = dst.deletingLastPathComponent()
-                    var n = 2
-                    var candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
-                    while fm.fileExists(atPath: candidate.path) && n < 100 {
-                        n += 1
-                        candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                    if extras.contains(ext) {
+                        // A lyrics file or picture with the same name: the newer one replaces the old one.
+                        // (A "(2)" copy would never be found: lyrics and covers are matched by the song's name.)
+                        do { try fm.removeItem(at: dst) } catch { failed += 1; return }
+                    } else {
+                        let stem = dst.deletingPathExtension().lastPathComponent
+                        let dir = dst.deletingLastPathComponent()
+                        var n = 2
+                        var candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                        while fm.fileExists(atPath: candidate.path) && n < 100 {
+                            n += 1
+                            candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                        }
+                        dst = candidate
                     }
-                    dst = candidate
                 }
                 if coordinatedCopy(src, dst) {
-                    if audio.contains(ext) { copied += 1 }
+                    if audio.contains(ext) {
+                        copied += 1
+                        let docsPath = docs.standardizedFileURL.path
+                        let dstPath = dst.standardizedFileURL.path
+                        if dstPath.hasPrefix(docsPath + "/") { added.append(String(dstPath.dropFirst(docsPath.count + 1))) }
+                    }
                     touched.insert(playlist)
                 } else { failed += 1 }
             }
@@ -4206,7 +4326,7 @@ class AudioEngine: RCTEventEmitter {
                     copyOne(child, playlist: root.lastPathComponent, rel: child.lastPathComponent)
                 }
             }
-            resolve(["playlists": Array(touched).sorted(), "copied": copied, "skipped": skipped, "failed": failed])
+            resolve(["playlists": Array(touched).sorted(), "copied": copied, "skipped": skipped, "failed": failed, "added": added])
         }
     }
 
@@ -4293,6 +4413,70 @@ class AudioEngine: RCTEventEmitter {
     private var spatialInstalling = false
     private var spatialWidth: Float = 1
     private var spatialBalance: Float = 0
+
+    // MARK: - Visualizer
+    // Eight loudness readings (low to high pitch) of what is playing, sent to JS about 20
+    // times a second for the song-list visualizer. It is a small tap on the main mixer and
+    // exists only while the visualizer is switched on (JS turns it on and off).
+    private var vizOn = false
+    private var vizLastSent: TimeInterval = 0
+    private var vizWin: [Double] = []
+    private let vizFreqs: [Double] = [60, 120, 250, 500, 1000, 2000, 4000, 8000]
+
+    @objc(setVisualizerEnabled:)
+    func setVisualizerEnabled(_ on: NSNumber) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let want = on.boolValue
+            self.vizOn = want
+            let mixer = self.engine.mainMixerNode
+            mixer.removeTap(onBus: 0)   // also makes a repeated "on" safe: the tap is put in fresh
+            if !want { return }
+            mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+                self?.vizProcess(buffer)
+            }
+        }
+    }
+
+    // Runs on the audio tap's own thread. A Goertzel filter per band (cheap: 8 x 1024
+    // multiply-adds per call), with a Hann window to keep the bands apart.
+    private func vizProcess(_ buffer: AVAudioPCMBuffer) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - vizLastSent < 0.045 { return }
+        guard let ch = buffer.floatChannelData else { return }
+        let n = Int(buffer.frameLength)
+        if n < 64 { return }
+        if vizWin.count != n {
+            vizWin = (0..<n).map { 0.5 - 0.5 * cos(2.0 * Double.pi * Double($0) / Double(n - 1)) }
+        }
+        let sr = buffer.format.sampleRate
+        let left = ch[0]
+        let right: UnsafeMutablePointer<Float>? = buffer.format.channelCount > 1 ? ch[1] : nil
+        var levels = [Double]()
+        levels.reserveCapacity(vizFreqs.count)
+        for (bandIndex, f) in vizFreqs.enumerated() {
+            let w = 2.0 * Double.pi * f / sr
+            let coeff = 2.0 * cos(w)
+            var s1 = 0.0
+            var s2 = 0.0
+            for i in 0..<n {
+                var v = Double(left[i])
+                if let r = right { v = 0.5 * (v + Double(r[i])) }
+                let s0 = v * vizWin[i] + coeff * s1 - s2
+                s2 = s1
+                s1 = s0
+            }
+            let power = s1 * s1 + s2 * s2 - coeff * s1 * s2
+            let amp = 4.0 / Double(n) * sqrt(max(0.0, power))   // x2 for the window, x2 for one-sided
+            let db = 20.0 * log10(amp + 1e-7) + 2.5 * Double(bandIndex)   // highs carry less energy: small tilt
+            levels.append(min(1.0, max(0.0, (db + 66.0) / 54.0)))
+        }
+        vizLastSent = now
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.vizOn else { return }
+            self.sendEvent(withName: "VizLevels", body: ["l": levels])
+        }
+    }
 
     @objc(setSpatial:balance:)
     func setSpatial(_ width: NSNumber, balance: NSNumber) {
@@ -4504,8 +4688,30 @@ class AudioEngine: RCTEventEmitter {
     private func applyNormalizerMix(_ m: Float) {
         normMix = m
         let unit = normalizerNode.audioUnit
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, 20.0 + (-12.0 - 20.0) * m, 0)
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 40.0 + (5.0 - 40.0) * m, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, 20.0 + (AudioEngine.normThresholdOn - 20.0) * m, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 40.0 + (AudioEngine.normHeadRoomOn - 40.0) * m, 0)
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0, AudioEngine.normMakeupOn * m, 0)
+    }
+
+    // "On" settings of Volume Normalization. This used to be threshold -12 dB / head room
+    // 5 dB with NO make-up gain: it only shaved the loudest peaks a little and nothing
+    // quiet was ever raised, so it was hard to hear any effect. Now it starts earlier
+    // (-18 dB), squeezes harder (head room 6 dB is about 3:1) and adds back +4 dB, so
+    // loud parts come down, quiet parts come up, and the song as a whole stays near the
+    // same level. Peaks end up below about -8 dBFS, so nothing clips.
+    private static let normThresholdOn: Float = -18.0
+    private static let normHeadRoomOn: Float = 6.0
+    private static let normMakeupOn: Float = 4.0
+
+    // Reads how many dB the compressor is taking off right now (0 = doing nothing), into the
+    // debug log, so it can be checked that Volume Normalization really is working.
+    private func logNormalizerActivity(after delay: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.normMix > 0.99, !self.normalizerNode.bypass else { return }
+            var amount: AudioUnitParameterValue = 0
+            let err = AudioUnitGetParameter(self.normalizerNode.audioUnit, kDynamicsProcessorParam_CompressionAmount, kAudioUnitScope_Global, 0, &amount)
+            self.debugLog(String(format: "[NORM] compressor is taking off %.1f dB right now (err=%d, playing=%@)", amount, Int(err), self.state == .playing ? "yes" : "no"))
+        }
     }
 
     private func rampNormalizerMix(to target: Float, token: UInt64) {
@@ -4519,6 +4725,7 @@ class AudioEngine: RCTEventEmitter {
                 self.applyNormalizerMix(from + (target - from) * e)
             }
         }
+        if target > 0.99 { for d in [1.0, 4.0, 10.0] { logNormalizerActivity(after: 0.012 * Double(steps) + d) } }
     }
 
     private func toggleNormalizerBypass(_ bypassed: Bool) {

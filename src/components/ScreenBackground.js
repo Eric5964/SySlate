@@ -92,7 +92,7 @@ function BackgroundLayers({ uri, onError }) {
     );
 }
 
-export default function ScreenBackground({ style, children, ownImage }) {
+export default function ScreenBackground({ style, children, ownImage, viewProps }) {
     const { base } = useTheme();
     const { backgroundImageEnabled, backgroundImageUri } = usePreferences();
     const hasImage = backgroundImageEnabled && backgroundImageUri;
@@ -110,14 +110,14 @@ export default function ScreenBackground({ style, children, ownImage }) {
         return (
             <View style={[styles.flexFill, { backgroundColor: base.bg }]}>
                 <BackgroundLayers uri={backgroundImageUri} />
-                <View style={[styles.flexFill, style]}>{children}</View>
+                <View style={[styles.flexFill, style]} {...viewProps}>{children}</View>
             </View>
         );
     }
 
     return (
         <View style={[styles.flexFill, !hasImage && { backgroundColor: base.bg }]}>
-            <View style={[styles.flexFill, style]}>{children}</View>
+            <View style={[styles.flexFill, style]} {...viewProps}>{children}</View>
         </View>
     );
 }

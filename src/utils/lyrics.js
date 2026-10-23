@@ -45,6 +45,10 @@ function parseLRC(text) {
 // open recently."
 const memCache = createBoundedCache(40);
 
+// Forget what was found so far (an import can add or replace .lrc files; "no lyrics" and old
+// lyrics would otherwise stay cached until the app is restarted).
+export function clearLyricsCache() { memCache.clear(); }
+
 // Synchronous cache check, no file I/O — lets a caller (PlayerScreen, on
 // mount/track-change) know the answer immediately if this song's lyrics
 // were already resolved earlier this session, instead of always waiting a

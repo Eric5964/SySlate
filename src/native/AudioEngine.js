@@ -40,6 +40,8 @@ export const Event = {
     // NSLog(...) calls (tagged [RAMP-DEBUG]/[SEEK-DEBUG] etc.) now also
     // fire this event, since NSLog alone is invisible without Xcode.
     DebugLog: 'DebugLog',
+    // Eight loudness readings for the song-list visualizer, only sent while it is on.
+    VizLevels: 'VizLevels',
 };
 
 export const State = {
@@ -137,6 +139,7 @@ const AudioEngine = {
     scratchResumePlay: () => { try { NativeAudioEngine.scratchResumePlay(); } catch (e) { } },
     // Stereo width (0 to 2, 1 = as recorded) and balance (-1 left to 1 right, 0 = centre).
     setSpatial: (width, balance) => { try { NativeAudioEngine.setSpatial(width, balance); } catch (e) { } },
+    setVisualizerEnabled: (on) => { try { NativeAudioEngine.setVisualizerEnabled(!!on); } catch (e) { } },
     scratchPrefetch: (on) => { try { NativeAudioEngine.scratchPrefetch(!!on); } catch (e) { } },
     scratchEnd: () => NativeAudioEngine.scratchEnd(),
     setVolume: (volume) => NativeAudioEngine.setVolume(volume),
@@ -150,6 +153,8 @@ const AudioEngine = {
     makeThumbnail: (src, dest, maxPixel) => NativeAudioEngine.makeThumbnail(src, dest, maxPixel),
     getDurations: (urls) => NativeAudioEngine.getDurations(urls),
     importFolder: () => NativeAudioEngine.importFolder(),
+    // Swaps queue entries for a newer copy of the same song (see AudioEngine.swift's replaceTracks).
+    replaceTracks: (pairs) => NativeAudioEngine.replaceTracks(pairs),
     getSavedSnapshot: () => NativeAudioEngine.getSavedSnapshot(),
     getVolume: () => NativeAudioEngine.getVolume(),
     // Runs the whole from->to fade natively over one bridge call instead of

@@ -675,7 +675,7 @@ export default function QueueModal({ visible, onClose }) {
         // Only once a row has been picked up, and the finger has moved a little.
         onMoveShouldSetPanResponderCapture: (_e, g) => armedKey.current != null && Math.abs(g.dy) > DRAG_SLOP,
         onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: (e) => {
+        onPanResponderGrant: (e, g) => {
             dragging.current = true;
             const idx = rowsRef.current.findIndex(r => r.stableKey === armedKey.current);
             if (idx >= 0) { startIdx.current = idx; toIdx.current = idx; }
@@ -684,6 +684,10 @@ export default function QueueModal({ visible, onClose }) {
             primaryTouch.current = pressTouchId.current != null
                 ? pressTouchId.current
                 : (touches0.length ? touches0[0].identifier : null);
+            // Where THIS finger was at the start. g.y0 is the average of every finger on the glass, so a
+            // second finger down at that moment used to shift the row away from the finger holding it.
+            const mine0 = primaryTouch.current != null ? touches0.find(t => t.identifier === primaryTouch.current) : null;
+            drag.current.startY = mine0 ? mine0.pageY : (g && typeof g.y0 === 'number' ? g.y0 : e.nativeEvent.pageY);
             console.log('[QUEUE] drag start: touch=' + primaryTouch.current + ' of ' + touches0.length
                 + ' listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)
                 + ' contentH=' + Math.round(contentH.current) + ' fingerY=' + Math.round(drag.current.fingerY));
@@ -748,7 +752,7 @@ export default function QueueModal({ visible, onClose }) {
             const use = mine || (touches.length === 1 ? touches[0] : null);
             if (use) {
                 drag.current.fingerY = use.pageY;
-                drag.current.dy = use.pageY - g.y0;
+                drag.current.dy = use.pageY - (typeof drag.current.startY === 'number' ? drag.current.startY : g.y0);
             }
             refreshDrag();
         },

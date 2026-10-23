@@ -1,6 +1,6 @@
 import React, { useContext, useState, useEffect, useLayoutEffect, useCallback, useMemo, memo, useRef, createContext } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated, PanResponder, Easing,
+    View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated, PanResponder, Easing, AppState,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -266,6 +266,16 @@ export default function PlaylistsScreen() {
 
     useEffect(() => { getPlaylistViewFormat().then(f => f && setFormat(f)); }, []);
     useEffect(() => { getPlaylistCovers().then(applyCovers); }, [playlists]);
+    // iOS can drop decoded pictures from memory while the app is in the background, which is
+    // the "covers sometimes reload" flash on coming back. Loading them again the moment the
+    // app becomes active (before the list is looked at) puts them back in the image cache.
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (st) => {
+            if (st !== 'active') return;
+            Object.values(coversRef.current || {}).filter(Boolean).forEach(u => { Image.prefetch(u).catch(() => { }); });
+        });
+        return () => sub.remove();
+    }, []);
     // Shrinks any older full-size covers once per launch, then refreshes.
     useEffect(() => {
         const t = setTimeout(() => {

@@ -10,6 +10,8 @@ import BottomSheet from '../components/BottomSheet';
 import AudioEngine from '../native/AudioEngine';
 import { useLibrary } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
+import { replaceImportedDuplicates } from '../utils/replaceImported';
+import { clearLyricsCache } from '../utils/lyrics';
 import { useTheme, THEMES, BASE_COLORS } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
@@ -86,7 +88,7 @@ const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 
 export default function SettingsScreen() {
     const navigation = useNavigation();
-    const { changeShuffleMode, eqPresetId } = usePlayback();
+    const { changeShuffleMode, eqPresetId, holdPlaybackForReplace, replaceSongsInPlayback } = usePlayback();
     const { reload, scanPath, scanError } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
     const s = useMemo(() => makeStyles(base), [base]);
@@ -132,7 +134,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
@@ -381,6 +383,19 @@ export default function SettingsScreen() {
 
     // Best-effort detection of which sideload tool is running this build.
     // Copies songs picked in the Files app into the app's own Documents folder (see utils/importMusic.js).
+    // After an import: newer copies of songs that were already in the same playlist (same title +
+    // artist) replace the older ones. Runs in the background after the "Import finished" message.
+    const replaceOlderCopies = async (added) => {
+        try {
+            clearLyricsCache();
+            if (!added?.length) return;
+            const res = await replaceImportedDuplicates(added, { hold: holdPlaybackForReplace, swap: replaceSongsInPlayback });
+            if (res.replaced > 0) {
+                await reload();
+                Alert.alert('Older copies replaced', `${res.replaced} older cop${res.replaced === 1 ? 'y' : 'ies'} of songs you already had (same title and artist, same playlist) ${res.replaced === 1 ? 'was' : 'were'} replaced by the new one.`);
+            }
+        } catch (e) { console.error('replaceOlderCopies:', e); }
+    };
     const importSongsFlow = () => {
         const run = async (folder) => {
             try {
@@ -388,6 +403,7 @@ export default function SettingsScreen() {
                 if (!r) return;
                 await reload();
                 Alert.alert('Import finished', `${r.copied} song(s) added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
+                replaceOlderCopies(r.added);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.prompt('Import Songs', 'Playlist folder to put them in. Leave empty to add them to All Songs only.', [
@@ -404,11 +420,12 @@ export default function SettingsScreen() {
                 await reload();
                 const names = (r.playlists || []);
                 Alert.alert('Import finished', `${r.copied} song(s) added to ${names.length} playlist(s)${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
+                replaceOlderCopies(r.added);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.alert(
             'Import Folder',
-            'Choose the folder that contains all the playlists you want to add.\n\nInside it, every folder is one playlist and the songs go inside that:\n\nChosen folder / Playlist name / Song.flac\n\nPlaylists with the same name as one you already have are combined, and songs that are already there are skipped. Lyrics (.lrc) and cover pictures next to the songs come along. Songs are copied into the app, so this takes a while for big libraries.',
+            'Choose the folder that contains all the playlists you want to add.\n\nInside it, every folder is one playlist and the songs go inside that:\n\nChosen folder / Playlist name / Song.flac\n\nPlaylists with the same name as one you already have are combined, and a song with the same title and artist as one already in that playlist replaces the older copy (the old file is deleted). Lyrics (.lrc) and cover pictures next to the songs come along. Songs are copied into the app, so this takes a while for big libraries.',
             [{ text: 'Cancel', style: 'cancel' }, { text: 'Choose Folder', onPress: run }],
         );
     };
@@ -551,7 +568,7 @@ export default function SettingsScreen() {
         },
         queue: () => { setKeepPriority(true); setKeepPriorityOnPlaylistSwitch(true); },
         prev: () => { setPrevButtonModeState('previous_track'); setPrevButtonMode('previous_track'); setRestartThresholdState(3); setRestartThresholdSec(3); setRestartUnitState('sec'); setRestartThresholdUnit('sec'); setRestartPctState(5); setRestartThresholdPct(5); },
-        lists: () => { setShowSongCovers(true); setShowPlayCount(true); setShowPlaylistTrackCount(true); setShowPlaylistTitles(true); setPlaylistCards(true); setPlaylistArrow(true); setSongPillShadow(false); setMiniPlayerShadow(true); },
+        lists: () => { setVizMode('off'); setShowSongCovers(true); setShowPlayCount(true); setShowPlaylistTrackCount(true); setShowPlaylistTitles(true); setPlaylistCards(true); setPlaylistArrow(true); setSongPillShadow(false); setMiniPlayerShadow(true); },
         playlistsScreen: () => ['pl_layout', 'pl_reload'].forEach(n => setUiShown(n, true)),
         allSongsScreen: () => ['as_eq', 'as_queue'].forEach(n => setUiShown(n, true)),
         playlistScreen: () => { ['pd_back', 'pd_search', 'pd_eq', 'pd_queue', 'pd_cover', 'pd_play', 'pd_shuffle', 'pd_hours'].forEach(n => setUiShown(n, true)); setDetailOutline(false); },
@@ -673,8 +690,8 @@ export default function SettingsScreen() {
     const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Avoids repeats by going through the playlist' }, { id: 'random', label: 'Random', sub: 'Chooses songs randomly from the playlist' }];
     const shuffleUi = (
         <>
-            {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order), { paddingBottom: 8 })}
-            {chipRow(ORDERS, (id) => shuffleParts.order === id, (id) => pickShuffle(shuffleParts.weight, id), { paddingBottom: 12 })}
+            {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order), { paddingBottom: 0 })}
+            {chipRow(ORDERS, (id) => shuffleParts.order === id, (id) => pickShuffle(shuffleParts.weight, id), { paddingTop: 8, paddingBottom: 12 })}
             <Text style={[s.toggleSub, { paddingHorizontal: 24, paddingBottom: 16 }]}>
                 {WEIGHTS.find(w => w.id === shuffleParts.weight)?.sub}. {ORDERS.find(o => o.id === shuffleParts.order)?.sub}.
             </Text>
@@ -990,10 +1007,13 @@ export default function SettingsScreen() {
                     </View>
                 </Section>
 
-                <Section title="Playback">
+                <Section title="Shuffle">
                     <SubGroup title="Shuffle" first>
                     <View>{shuffleUi}</View>
                     </SubGroup>
+                </Section>
+
+                <Section title="Queue">
                     <SubGroup title="Queue">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
@@ -1086,6 +1106,12 @@ export default function SettingsScreen() {
                         { id: 'playcount', label: 'Play count', on: !!showPlayCount, set: () => setShowPlayCount(!showPlayCount) },
                     ])}
                     <Text style={s.chipNote}>Covers and play count show in every song list.</Text>
+                    <View style={s.settingHeader}>
+                        <Text style={s.toggleLabel}>Visualizer</Text>
+                        <Text style={s.toggleSub}>A soft, see-through animation in your accent color on the song that is playing</Text>
+                    </View>
+                    {chipRow([{ id: 'off', label: 'Off' }, { id: 'cover', label: 'Cover' }, { id: 'pill', label: 'Whole row' }], (id) => vizMode === id, setVizMode)}
+                    <Text style={s.chipNote}>Cover shows it on the song's cover only, Whole row across the entire row. It only shows on the song that is playing in the list it was played from.</Text>
                 </Section>
 
                 <Section title="All Songs Screen">
@@ -1653,8 +1679,9 @@ const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
-    'Playback': 'shuffle random smart dumb cycle order queue up next priority previous back restart track',
-    'Song Lists': 'songs covers play count rounded list queue player artwork',
+    'Shuffle': 'shuffle random smart dumb cycle order playback',
+    'Queue': 'queue up next priority playback keep switching playlists',
+    'Song Lists': 'songs covers play count rounded list queue player artwork visualizer visualiser bars animation equalizer',
     'All Songs Screen': 'all songs eq queue buttons top bar',
     'Playlists Screen': 'playlists layout reload track count titles cards arrow grid list buttons',
     'Playlist Screen': 'playlist back search eq queue cover play shuffle buttons header',

@@ -41,7 +41,7 @@ function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 // tag loader. A song whose tags haven't been warmed into the cache yet
 // just keeps its filename-based guess until the next scan after the
 // background loader reaches it.
-async function applyTags(track, albumFromFolder, artistSeparator) {
+export async function applyTags(track, albumFromFolder, artistSeparator) {
     const tags = await getCachedTagsFast(track);
     if (!tags) return track;
     // artistSeparator is now an array (Multiple Artists supports selecting

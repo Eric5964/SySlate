@@ -15,6 +15,7 @@ export function createBoundedCache(maxSize) {
     const map = new Map();
     return {
         has: (key) => map.has(key),
+        clear: () => map.clear(),
         get: (key) => map.get(key),
         set(key, value) {
             if (!map.has(key) && map.size >= maxSize) {

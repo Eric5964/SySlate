@@ -433,6 +433,12 @@ export const getAutoShow = () => safe(async () => {
     return mig;
 }, 'cover');
 export const setAutoShow = (v) => safe(() => AsyncStorage.setItem('auto_show', v), null);
+// Song-list visualizer: 'off', 'cover' (on the song's cover only) or 'pill' (across the whole row).
+export const getVizMode = () => safe(async () => {
+    const v = await AsyncStorage.getItem('viz_mode');
+    return v === 'cover' || v === 'pill' ? v : 'off';
+}, 'off');
+export const setVizMode = (v) => safe(() => AsyncStorage.setItem('viz_mode', v), null);
 // Disc spinning (idle turning) and disc touch (moving / scratching it with a
 // finger) are separate switches. Both default on.
 export const getDjDiscSpin = () => safe(() => AsyncStorage.getItem('dj_disc_spin').then(v => v !== 'false'), true);
@@ -756,24 +762,54 @@ export const playCountKey = (song) => {
     return `pcn:${t}::${a}`;
 };
 
+// The key a song had BEFORE its tags were read: its title and artist as guessed from the file name
+// ("Title - Artist.ext", same rule as files.js). A song played in that time had its count filed
+// under this spelling; once the tags arrive the list's key changes and that count was left behind
+// (lists showed no count while the Player, still holding the old spelling, did). Reading this key
+// too brings the old count back.
+const fileNameKey = (song) => {
+    const f = song?.filename;
+    if (!f) return null;
+    const dot = f.lastIndexOf('.');
+    const parts = (dot > 0 ? f.slice(0, dot) : f).split(' - ');
+    const t = (parts[0] || '').trim().toLowerCase();
+    const a = (parts.length >= 2 ? parts.slice(1).join(' - ') : '').trim().toLowerCase();
+    const key = `pcn:${t}::${a}`;
+    return key === playCountKey(song) ? null : key;
+};
+
 // Screens that show play counts listen here, so a count changes on screen the moment
 // it is counted. They only change the number shown: the order of a list and any queue
 // are left alone (see useLivePlayCounts).
 const playCountListeners = new Set();
 export const subscribePlayCount = (fn) => { playCountListeners.add(fn); return () => { playCountListeners.delete(fn); }; };
 
-export const incrementPlayCount = async (song, durationSec) => {
+// A song's count is kept under its title + artist (shared by copies of the same song)
+// AND under its own file (`pci:<path>`, never shared). A list reads the larger of the two,
+// so a song whose title/artist spelling differs between two lists (one scanned before its
+// tags were read, one after) still shows the same number everywhere.
+// `libSong` is the library's own copy of the song, when known: its spelling is the one the
+// lists use, so the shared count is written under that one.
+export const incrementPlayCount = async (song, durationSec, libSong) => {
     if (!song) return;
     try {
-        const k = playCountKey(song);
-        let base = parseInt(await AsyncStorage.getItem(k)) || 0;
-        if (!base) base = parseInt(await AsyncStorage.getItem(`pc:${song.id}`)) || 0;   // carry an older per-file count over instead of restarting at 1
-        await AsyncStorage.setItem(k, String(base + 1));
+        const k = playCountKey(libSong || song);
+        const kTrack = playCountKey(song);
+        const idKey = `pci:${song.id}`;
+        const keys = [...new Set([k, kTrack, idKey, `pc:${song.id}`, fileNameKey(libSong || song), fileNameKey(song)].filter(Boolean))];
+        const rows = await AsyncStorage.multiGet(keys);
+        let base = 0;
+        rows.forEach(([key, v]) => { base = Math.max(base, parseInt(v) || 0); });
+        const n = base + 1;
+        await AsyncStorage.multiSet([[k, String(n)], [idKey, String(n)]]);
         // The song's length is only known to the player, never to the library, so it
         // is remembered here for the "hours" figure in Listening Stats.
         if (durationSec > 5 && durationSec < 7200) await AsyncStorage.setItem(`pdur:${k.slice(4)}`, String(Math.round(durationSec)));
         playCountCache.clear();
-        playCountListeners.forEach(fn => { try { fn({ key: k, n: base + 1 }); } catch { } });
+        // The screens match on the spelling THEY hold, so tell them under both.
+        const notify = (key) => playCountListeners.forEach(fn => { try { fn({ key, n }); } catch { } });
+        notify(k);
+        if (kTrack !== k) notify(kTrack);
     } catch { }
 };
 
@@ -794,6 +830,12 @@ export const getPlayCounts = async (songs) => {
         songs.forEach(s => { (byKey[playCountKey(s)] ??= []).push(s); });
         const keys = Object.keys(byKey);
         const pairs = await AsyncStorage.multiGet(keys);
+        const idPairs = await AsyncStorage.multiGet(songs.map(sg => `pci:${sg.id}`));
+        const altKeys = [...new Set(songs.map(fileNameKey).filter(Boolean))];
+        const altCounts = {};
+        if (altKeys.length) (await AsyncStorage.multiGet(altKeys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) altCounts[k] = n; });
+        const idCounts = {};
+        idPairs.forEach(([k, v]) => { const n = parseInt(v); if (n > 0) idCounts[k] = n; });
         const keyCounts = {};
         const missingKeys = [];
         pairs.forEach(([k, v]) => {
@@ -809,7 +851,7 @@ export const getPlayCounts = async (songs) => {
             });
         }
         const out = {};
-        songs.forEach(s => { out[s.id] = keyCounts[playCountKey(s)] ?? 0; playCountCache.set(s.id, out[s.id]); });
+        songs.forEach(s => { out[s.id] = Math.max(keyCounts[playCountKey(s)] ?? 0, idCounts[`pci:${s.id}`] ?? 0, altCounts[fileNameKey(s)] ?? 0); playCountCache.set(s.id, out[s.id]); });
         return out;
     } catch { return {}; }
 };
@@ -1017,7 +1059,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1121,7 +1163,7 @@ export const importAllSettings = async (jsonString) => {
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape',
-        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show', 'settings_mode',
+        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show', 'viz_mode', 'settings_mode',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.

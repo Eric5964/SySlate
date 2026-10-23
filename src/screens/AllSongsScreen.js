@@ -11,10 +11,11 @@ import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import SwipeableRow from '../components/SwipeableRow';
 import DimPressable from '../components/DimPressable';
+import SongVisualizer from '../components/SongVisualizer';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { getPlaylistSort, setPlaylistSort, playCountKey } from '../utils/storage';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
@@ -43,7 +44,7 @@ const ALL_SONGS_KEY = '__all__';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
-    const { playSongFromPlaylist, addToQueue, queueEpoch } = usePlayback();
+    const { playSongFromPlaylist, addToQueue, queueEpoch, currentTrack } = usePlayback();
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
@@ -51,7 +52,8 @@ export default function AllSongsScreen() {
     const [showQueue, setShowQueue] = useState(false);
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
-    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui } = usePreferences();
+    const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui, vizMode } = usePreferences();
+    const vizId = (vizMode !== 'off' && !performanceMode) ? (currentTrack?.id ?? null) : null;
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE + 52);
 
     const listRef = useRef(null);
@@ -77,7 +79,7 @@ export default function AllSongsScreen() {
         const seen = new Set();
         const out = [];
         for (const s of allSongs) {
-            const key = `${(s.title || '').trim().toLowerCase()}::${(s.artist || '').trim().toLowerCase()}`;
+            const key = playCountKey(s);   // the same title + artist key play counts use, so "same song" means one thing everywhere
             if (seen.has(key)) continue;
             seen.add(key);
             out.push(s);
@@ -88,6 +90,7 @@ export default function AllSongsScreen() {
     // the snapshot, which is read again when the app opens, the sort is changed, the
     // songs change, or a different queue is played.
     const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(dedupedSongs);
+    const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
     useEffect(() => { refreshSort(); }, [dedupedSongs, sortId, queueEpoch, refreshSort]);
 
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
@@ -224,7 +227,7 @@ export default function AllSongsScreen() {
                 <FlatList
                     ref={listRef}
                     data={filtered}
-                    extraData={liveCounts}
+                    extraData={vizExtra}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 150 }}
                     scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
@@ -249,6 +252,7 @@ export default function AllSongsScreen() {
                         base={base}
                         onPlay={stablePlay}
                         onQueue={stableAddToQueue}
+                        viz={vizId && item.id === vizId ? vizMode : 'off'}
                     />
                 )}
                 />
@@ -267,17 +271,19 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 // (opening the queue or EQ sheet, a cover finishing loading for another
 // row, the play counts arriving) do not re-render every visible row, which
 // is what made the sheets stutter when they opened and closed.
-const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue }) {
+const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
     const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
             <DimPressable style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
+                {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" /></View> : null}
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
                             : null
                         }
+                        {viz === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" /> : null}
                     </View>
                 )}
                 <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>

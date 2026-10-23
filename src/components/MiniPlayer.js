@@ -82,6 +82,9 @@ export default function MiniPlayer({ withTabBar = true }) {
             // arrives quickly.
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
+            // The old song's position must not stay on screen while the real one is asked for:
+            // the bar goes to the start at once, then moves to the real spot when it is known.
+            basisRef.current = { position: 0, duration: 0, at: Date.now() };
             // Right after a session restore the position is already known: draw the bar from it at once.
             const seed = getProgressSeed();
             const seeded = !!(seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid));

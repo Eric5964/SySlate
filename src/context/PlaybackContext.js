@@ -8,8 +8,9 @@ import { getCustomPresets, getEQOverrides } from '../utils/storage';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
+import { useLibrary } from './LibraryContext';
 import { getPlayCounts } from '../utils/storage';
-import { playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
+import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { emitSkipPress } from '../utils/transportRamp';
 import { withTimeout } from '../utils/withTimeout';
 import {
@@ -87,6 +88,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // and the one that applies to the song playing right now. The Player's
     // top label shows this instead of a generic "Now Playing" once a queued
     // song starts.
+    // The library's own copy of every song, by id. Play counts are filed under the spelling
+    // the library lists use, so a queue entry with an older spelling still lands on the
+    // same count the lists show.
+    const { allSongs: libraryAllSongs } = useLibrary();
+    const librarySongsRef = useRef(new Map());
+    useEffect(() => {
+        const m = new Map();
+        for (const sg of (libraryAllSongs || [])) { if (sg?.id) m.set(sg.id, sg); }
+        librarySongsRef.current = m;
+    }, [libraryAllSongs]);
     const queueSourceRef = useRef({});
     const [queueSource, setQueueSource] = useState(null); // { id, name }
     // Playback speed (pitch is kept). Saved, so it survives relaunches and
@@ -367,7 +378,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             if (playCreditedRef.current.credited && position < 3) playCreditedRef.current.credited = false;
             if (!playCreditedRef.current.credited && position / duration >= 0.5) {
                 playCreditedRef.current.credited = true;
-                incrementPlayCount(track, duration);
+                incrementPlayCount(track, duration, librarySongsRef.current.get(track.id));
             }
         });
         return () => sub.remove();
@@ -443,6 +454,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             const seq = ++trackChangeSeqRef.current;
             if (nextTrack === null || nextTrack === undefined) return;
+            setPlayBlocked(false);   // a song was loaded: Play works again after a replaced song
             try {
                 let track = await AudioEngine.getTrack(nextTrack);
                 if (!track) {
@@ -747,6 +759,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // song near the end of the current one — matching "account for a
         // user clicking into the end of a song where it's supposed to be
         // ramping already." Now consistent with the rest of this file.
+        setPlayBlocked(false);   // choosing a song lifts the block after a replaced song
         if (isTransitionLocked()) { queueAction(() => jumpToQueueIndex(realIndex)); return; }
         emitSkipPress();   // the DJ disc dims right away, before the song changes
         // Same lock as add/promote/remove/move (see serialQueue's own
@@ -1077,6 +1090,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const run = async () => {
             if (latestPendingRef.current !== entry) return; // superseded before it got a turn
             latestPendingRef.current = null;
+            setPlayBlocked(false);   // starting a song lifts the block after a replaced song
             try {
                 await fn();
             } catch (e) {
@@ -1599,6 +1613,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             setArtNonce(n => n + 1);
             setShuffleModeState(mode);
             setShuffleOn(on);
+            if (last.queueSources && typeof last.queueSources === 'object') Object.assign(queueSourceRef.current, last.queueSources);
             const priorityCount = last.priorityCount ?? 0;
             const restoredPriority = priorityCount > 0
                 ? queue.slice(last.index + 1, last.index + 1 + priorityCount).map(t => t.id)
@@ -1739,6 +1754,17 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // spot are all unchanged (paused), and the per-playlist copy is only
     // rewritten when the song/queue/shuffle changed.
     const lastSavedRef = useRef({ sig: '', pos: -1, at: 0 });
+    // Which playlist each queued song came from, for the songs that matter after a restart:
+    // the one playing and the ones waiting in Priority. Without this the Player's top label
+    // fell back to a generic "Now Playing" once the app had been closed and reopened.
+    const pickQueueSources = (currentId) => {
+        const out = {};
+        const all = queueSourceRef.current;
+        for (const id of [currentId, ...priorityRef.current]) {
+            if (id && all[id]) out[id] = all[id];
+        }
+        return out;
+    };
     const saveSession = useCallback(async (force = false) => {
         const pl = playlistRef.current;
         if (!pl?.path) return;
@@ -1807,7 +1833,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // there in the restored queue, just no longer TRACKED as
                 // priority, which is what "priority gets mushed together
                 // with up next after closing and reopening" was describing.
-                await setLastSession({ playlist: { ...pl, queue: savedQueue }, index, position: pos, priorityCount: priorityRef.current.length, shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
+                await setLastSession({ playlist: { ...pl, queue: savedQueue }, index, position: pos, priorityCount: priorityRef.current.length, queueSources: pickQueueSources(queue[index]?.id), shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
             }
         } catch { }
     }, []);
@@ -1877,17 +1903,69 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // already useCallback-wrapped (stable), so wrapping the object itself
     // in useMemo is enough to actually get the benefit — consumers now
     // only re-render when a value they actually read changes.
+    // An import brought a newer copy of a song that is already in the library (same title + artist
+    // in the same playlist). Step 1, BEFORE any file is touched: if the playing song is one of the
+    // old ones it ramps out and pauses, and Play stays blocked until a song is chosen or skipped to.
+    const holdPlaybackForReplace = useCallback(async (oldIds) => {
+        if (!oldIds?.length) return;
+        const olds = new Set(oldIds);
+        try {
+            const ci = await AudioEngine.getCurrentTrack();
+            const q = await AudioEngine.getQueue();
+            const cur = (ci !== null && ci !== undefined) ? q[ci] : null;
+            if (cur && olds.has(cur.id)) {
+                setPlayBlocked(true);
+                if ((await AudioEngine.getState()) === State.Playing) {
+                    await pauseWithRamp();
+                    // pauseWithRamp can be queued behind a running fade: wait until it has really paused.
+                    for (let i = 0; i < 80; i++) {
+                        if ((await AudioEngine.getState()) !== State.Playing) break;
+                        await new Promise(r => setTimeout(r, 100));
+                    }
+                }
+            }
+        } catch (e) { console.error('holdPlaybackForReplace:', e); }
+    }, []);
+
+    // Step 2, AFTER the files are replaced. pairs: [{ oldId, newSong }]. Every queue slot holding
+    // the old song (played, playing or upcoming) is switched to the new file, so going back to it
+    // plays the new copy.
+    const replaceSongsInPlayback = useCallback(async (pairs) => {
+        if (!pairs?.length) return;
+        const byOld = new Map(pairs.map(p => [p.oldId, p.newSong]));
+        try { await AudioEngine.replaceTracks(pairs.map(p => ({ oldId: p.oldId, track: { ...p.newSong } }))); }
+        catch (e) { console.error('replaceSongsInPlayback (native):', e); }
+        const swap = (t) => (t && byOld.has(t.id)) ? { ...t, ...byOld.get(t.id) } : t;
+        logicalQueueRef.current = logicalQueueRef.current.map(swap);
+        const pri = priorityRef.current.map(id => byOld.has(id) ? byOld.get(id).id : id);
+        priorityRef.current = pri;
+        setPriorityQueue(pri);
+        for (const [oldId, ns] of byOld) {
+            if (queueSourceRef.current[oldId] !== undefined && oldId !== ns.id) {
+                queueSourceRef.current[ns.id] = queueSourceRef.current[oldId];
+                delete queueSourceRef.current[oldId];
+            }
+        }
+        const swapPlaylist = (pl) => (pl && Array.isArray(pl.songs)) ? { ...pl, songs: pl.songs.map(swap) } : pl;
+        setCurrentPlaylist(prev => swapPlaylist(prev));
+        const pend = pendingNextPlaylistRef.current;
+        if (pend) {
+            pendingNextPlaylistRef.current = { ...pend, queue: Array.isArray(pend.queue) ? pend.queue.map(swap) : pend.queue, playlist: swapPlaylist(pend.playlist) };
+        }
+        try { await saveSessionRef.current?.(true); } catch { }
+    }, []);
+
     const value = useMemo(() => ({
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

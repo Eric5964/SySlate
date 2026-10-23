@@ -5,6 +5,7 @@ import { playerArtUri } from '../utils/embeddedArt';
 import AudioEngine, { useProgress, usePlaybackState, matchProgress, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
+import { useLibrary } from '../context/LibraryContext';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
 import { getLyrics, activeLyricIndex, peekLyrics } from '../utils/lyrics';
@@ -93,6 +94,18 @@ export default function PlayerScreen() {
         loadPlaylist, toggleShuffle, toggleSingleLoop,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
+    // Last resort for the top label: a song that is not in the loaded playlist and has no
+    // remembered source (e.g. queued before the app was last restarted) is named after a
+    // playlist that contains it, instead of a generic "Now Playing".
+    const { playlists: libraryPlaylists } = useLibrary();
+    const curId = currentTrack?.id;
+    const homePlaylistName = React.useMemo(() => {
+        if (!curId || !Array.isArray(libraryPlaylists)) return null;
+        for (const p of libraryPlaylists) {
+            if (p?.songs?.some(x => x.id === curId)) return p.name;
+        }
+        return null;
+    }, [curId, libraryPlaylists]);
 
     const rawProgress = useProgress(500);
     // Only readings that belong to the song being shown count (a late reading
@@ -676,30 +689,37 @@ export default function PlayerScreen() {
     const discHeldRef = useRef(false);
     const setDiscTouching = useCallback((touching) => {
         discHeldRef.current = !!touching;
+        // Straight to the navigator, NOT through a state change and an effect: that route
+        // re-rendered this whole screen first, and the swipe-down gesture could take the
+        // touch from the disc before it was switched off ("touch taken over", 10-90 ms in).
+        navigation.setOptions({ gestureEnabled: !touching && !showQueueRef.current });
         setDiscHeld(!!touching);
-        navigation.setOptions({ gestureEnabled: !touching });
     }, [navigation]);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
     // While the queue sheet is open, the Player's own swipe-down-to-close must be off:
     // dragging a queue row down (or up and then down) started it, and the whole Player
     // followed the finger ("the page moves"). The sheet closes from its own handle.
+    // Swipe-down-to-close is off while the queue sheet is open. While a finger is on the disc
+    // it is switched off too, but that is done directly in setDiscTouching (fast path above).
+    const showQueueRef = useRef(false);
+    showQueueRef.current = showQueue;
     useEffect(() => { navigation.setOptions({ gestureEnabled: !showQueue }); }, [navigation, showQueue]);
+    // Leaving the disc view always lets go of a finger-on-disc state and turns the gesture back on.
+    useEffect(() => { if (!showingDisc && discHeldRef.current) { discHeldRef.current = false; setDiscHeld(false); navigation.setOptions({ gestureEnabled: !showQueueRef.current }); } }, [showingDisc, navigation]);
     // The swipe-down-to-close gesture is only switched off AFTER a finger lands on
-    // the disc, and that takes a moment to reach the native side. A touch that
-    // moved in that moment was taken over by the close gesture (the log showed
-    // "touch taken over by something else" 10 to 90 ms after touching down, mostly
-    // on the first touch). While the disc is showing, the close zone is now only
-    // the strip above it, so the gesture never competes with the disc at all.
+    // the disc, and that takes a moment to reach the native side, so it is sent
+    // straight to the navigator (see setDiscTouching) to keep that moment as short as
+    // possible. Swipe-down-to-close works from anywhere above the controls.
     const discAreaRef = useRef(null);
     const discTopRef = useRef(0);
     const controlsYRef = useRef(0);
     const discZoneOn = useRef(false);
     const applyDismissZone = useCallback(() => {
-        const d = (discZoneOn.current && discTopRef.current > 0) ? Math.max(40, discTopRef.current - 8) : controlsYRef.current;
+        const d = controlsYRef.current;   // swipe-down works from anywhere above the controls; the disc switches it off itself while touched
         if (d > 0) navigation.setOptions({ gestureResponseDistance: d });
     }, [navigation]);
     const measureDiscArea = useCallback(() => {
-        if (discAreaRef.current) discAreaRef.current.measureInWindow((x, y) => { if (y > 0) { discTopRef.current = y; applyDismissZone(); } });
+        if (discAreaRef.current) discAreaRef.current.measureInWindow((x, y) => { if (y > 60 && y < 500) { discTopRef.current = y; applyDismissZone(); } });
     }, [applyDismissZone]);
     useEffect(() => {
         discZoneOn.current = !!(showingDisc && djDisc);
@@ -995,6 +1015,11 @@ export default function PlayerScreen() {
             // display halfway through). Ask for the real spot and start the bar
             // THERE, instead of at 0 and then jumping. Only if no usable answer
             // comes back quickly does the bar fall back to 0.
+            // The old song's bar is cleared at once (it used to keep running for up to a
+            // quarter second after a skip while the real spot was being asked for).
+            stopAnim();
+            animPct.setValue(0);
+            animPctValueRef.current = 0;
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
             let settled = false;
@@ -1134,7 +1159,7 @@ export default function PlayerScreen() {
                     </TouchableOpacity>
                     : <View style={s.topBtn} />}
                 {playerBtns.label
-                    ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? (currentPlaylist?.name && (!currentPlaylist.songs || currentPlaylist.songs.some(x => x.id === currentTrack?.id)) ? currentPlaylist.name : null) ?? 'Now Playing'}</Text>
+                    ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? (currentPlaylist?.name && (!currentPlaylist.songs || currentPlaylist.songs.some(x => x.id === currentTrack?.id)) ? currentPlaylist.name : null) ?? homePlaylistName ?? 'Now Playing'}</Text>
                     : <View style={{ flex: 1 }} />}
                 <View style={{ flexDirection: 'row', gap: 6 }}>
                     {/* EQ used to be hidden here with a comment saying

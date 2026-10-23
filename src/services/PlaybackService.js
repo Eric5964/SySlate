@@ -449,7 +449,15 @@ export async function fadeOutCurrentIfPlaying(dur) {
     } catch { }
 }
 
-export async function playWithRamp(preClaimedId, startAction = () => AudioEngine.play()) {
+// True while the song that was playing has just been replaced by a newer copy (an import): a
+// plain Play/resume does nothing until a song is chosen or skipped to (see replaceSongsInPlayback).
+let playBlockedAfterReplace = false;
+export function setPlayBlocked(v) { playBlockedAfterReplace = !!v; }
+
+export async function playWithRamp(preClaimedId, startActionArg) {
+    // Only a plain Play/resume is blocked; loading a chosen song passes its own startAction.
+    if (!startActionArg && !preClaimedId && playBlockedAfterReplace) return;
+    const startAction = startActionArg || (() => AudioEngine.play());
     if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
     rampLock = true;
     try {
