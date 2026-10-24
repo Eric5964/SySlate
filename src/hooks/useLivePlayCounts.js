@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getPlayCounts, playCountKey, subscribePlayCount } from '../utils/storage';
+import { getPlayCounts, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
 
 // Play counts for a list of songs, split in two on purpose:
 //  - sortCounts: a snapshot read from storage. Lists sort by THIS, so a list in
@@ -25,7 +25,7 @@ export default function useLivePlayCounts(songs) {
     useEffect(() => subscribePlayCount(({ key, n }) => setLive(prev => ({ ...prev, [key]: n }))), []);
     const countFor = useCallback((song) => {
         if (!song) return 0;
-        const l = live[playCountKey(song)];
+        const l = live[playCountKey(song)] ?? live[playCountKeyN(song)];
         return l !== undefined ? l : sortCounts[song.id];
     }, [live, sortCounts]);
     return { sortCounts, live, refreshSort, countFor };

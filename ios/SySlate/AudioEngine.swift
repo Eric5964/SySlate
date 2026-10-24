@@ -33,6 +33,9 @@ struct Track {
     // ReplayGain-style track gain from the song's tags, in dB, already limited
     // by the tag's peak on the JS side. Only sent when "Use Volume Tags" is on.
     var replayGainDb: Double?
+    // The album written in the song's tags (not the folder name): part of what makes a song "the same
+    // song" for play counts. Only carried through so the queue and the Player still have it.
+    var tagAlbum: String?
 
     init?(dict: NSDictionary) {
         guard let idVal = dict["id"] as? String,
@@ -49,6 +52,7 @@ struct Track {
         self.duration = dict["duration"] as? Double
         self.qid = dict["_qid"] as? String
         self.replayGainDb = dict["replayGainDb"] as? Double
+        self.tagAlbum = dict["tagAlbum"] as? String
     }
 
     func toDict() -> [String: Any] {
@@ -62,6 +66,7 @@ struct Track {
             "duration": duration as Any,
             "_qid": qid as Any,
             "replayGainDb": replayGainDb as Any,
+            "tagAlbum": tagAlbum as Any,
         ]
     }
 }
@@ -1992,17 +1997,24 @@ class AudioEngine: RCTEventEmitter {
 
     private func advance(direction: Int, wrap: Bool, autoPlay: Bool, isManualSkip: Bool) {
         abortScratch()
-        cancelCrossfadeIfNeeded()
         let suppressCrossfade = suppressNextCrossfade && (suppressNextCrossfadeAt.map { Date().timeIntervalSince($0) < 5 } ?? false)
         suppressNextCrossfade = false
         suppressNextCrossfadeAt = nil
+        // Next/Previous pressed while a crossfade is running: the song that is fading out
+        // is NOT cut here. It is handed to the spare player below (settleCrossfadeToIncoming
+        // with fadeOutOutgoing) and fades to silence by itself while the new fade starts.
+        // Every other case still stops the running crossfade first.
+        let keepFade = isManualSkip && isCrossfading && crossfadeEnabled && crossfadeDurationSkipSeconds > 0.05 && autoPlay && state == .playing && !suppressCrossfade
+        if !keepFade { cancelCrossfadeIfNeeded() }
         guard !queue.isEmpty else {
+            cancelCrossfadeIfNeeded()
             debugLog("[RAMP-DEBUG] advance(): queue is empty, clearing currentIndex (was \(currentIndex.map(String.init) ?? "nil"))")
             currentIndex = nil
             setState(.stopped)
             return
         }
         guard let idx = currentIndex else {
+            cancelCrossfadeIfNeeded()
             currentIndex = 0
             loadAndScheduleCurrentTrack(autoPlay: autoPlay)
             return
@@ -2025,6 +2037,7 @@ class AudioEngine: RCTEventEmitter {
             // with nothing visibly wrong on screen since nothing was
             // playing yet to visibly stop.
             debugLog("[RAMP-DEBUG] advance(): newIndex \(newIndex) out of bounds (queue.count=\(queue.count), from idx=\(idx), direction=\(direction), wrap=\(wrap)) — clearing currentIndex")
+            cancelCrossfadeIfNeeded()
             currentIndex = nil
             killDyingNode(); activeNode.stop()
             setState(.ended)
@@ -2035,7 +2048,7 @@ class AudioEngine: RCTEventEmitter {
         // fall through to a hard cut (a crossfade can't start while one is
         // running). Finish the running one at its current level first, then
         // fade onward from there.
-        if isManualSkip, isCrossfading, crossfadeEnabled, crossfadeDurationSkipSeconds > 0.05, autoPlay, state == .playing {
+        if keepFade, isCrossfading {
             settleCrossfadeToIncoming(snapToFull: false, fadeOutOutgoing: true)
         }
         let crossfadeDuration = isManualSkip ? crossfadeDurationSkipSeconds : crossfadeDurationEndOfTrackSeconds

@@ -2,7 +2,7 @@ import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { scanLibrary, applyTags } from './files';
 import { extractTags, getCachedTags } from './tags';
-import { getAlbumFromFolder, getArtistSeparator, playCountKey } from './storage';
+import { getAlbumFromFolder, getArtistSeparator, playCountKey, baseCountKey } from './storage';
 
 // After an import: a song that was just added replaces an OLDER copy of the same song in the same
 // playlist. "Same song" is the one rule used everywhere in the app (play counts, All Songs):
@@ -40,7 +40,7 @@ export async function replaceImportedDuplicates(added, hooks) {
         try { if ((await getCachedTags(song)) === undefined) { await extractTags(song); await sleep(15); } } catch { }
         const resolved = await applyTags(song, albumFromFolder, artistSeparator);
         const key = playCountKey(resolved);
-        return { key, resolved, empty: key === 'pcn:::' };
+        return { key, resolved, empty: baseCountKey(resolved) === 'pcn:::' };
     };
 
     // The newest copy wins when several new files share one song.

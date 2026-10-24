@@ -752,30 +752,56 @@ export const persistCoverImage = async (pickerUri, maxPx = 0) => {
     }
 };
 
-// Keyed by title+artist rather than song.id (a file path) — two files of
-// the "same song" living in different playlists used to track separate
-// counts since they had different paths. Normalizing case/whitespace so
-// "Song.flac" and "song.flac" style differences don't split a count.
-export const playCountKey = (song) => {
+// Keyed by title + artist + album rather than song.id (a file path): two files of the
+// "same song" living in different playlists share one count, whatever their format,
+// length, size or file name. The album is the one written in the file's TAGS (never the
+// folder name that "Album from folder" shows), so the same title + artist on two albums
+// is two songs. A song whose tags are not read yet, or that has no album tag, has no
+// album part, which is also the form every older count was filed under.
+const albumOf = (song) => (typeof song?.tagAlbum === 'string' ? song.tagAlbum.trim() : '');
+export const baseCountKey = (song) => {
     const t = (song?.ourTitle ?? song?.title ?? '').trim().toLowerCase();
     const a = (song?.ourArtist ?? song?.artist ?? '').trim().toLowerCase();
     return `pcn:${t}::${a}`;
 };
+export const playCountKey = (song) => {
+    const alb = albumOf(song).toLowerCase();
+    return alb ? `${baseCountKey(song)}::${alb}` : baseCountKey(song);
+};
 
-// The key a song had BEFORE its tags were read: its title and artist as guessed from the file name
-// ("Title - Artist.ext", same rule as files.js). A song played in that time had its count filed
-// under this spelling; once the tags arrive the list's key changes and that count was left behind
-// (lists showed no count while the Player, still holding the old spelling, did). Reading this key
-// too brings the old count back.
-const fileNameKey = (song) => {
+// The same key with the spelling smoothed out: letters and digits only, and the artists
+// split on every usual separator (; , & / | + x feat. and) and put in order. A song with
+// several artists is spelled differently depending on where it came from (the file name
+// says "A, B", the tags are joined with the Multiple Artists separator, the queue may hold
+// an older spelling), and its count was filed under whichever spelling was playing. Every
+// spelling of one song now reaches the same `pcx:` count.
+const alnum = (x) => String(x ?? '').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '');
+const ARTIST_SPLIT = /\s*(?:[;,&\/|+\u00d7]|\s(?:x|feat\.?|ft\.?|featuring|and)\s)\s*/i;
+const normKey = (title, artist, album) => {
+    const t = alnum(title) || String(title ?? '').trim().toLowerCase();
+    const a = String(artist ?? '').split(ARTIST_SPLIT).map(alnum).filter(Boolean).sort().join('|');
+    const alb = alnum(album);
+    return `pcx:${t}::${a}${alb ? '::' + alb : ''}`;
+};
+const baseCountKeyN = (song) => normKey(song?.ourTitle ?? song?.title, song?.ourArtist ?? song?.artist, '');
+export const playCountKeyN = (song) => normKey(song?.ourTitle ?? song?.title, song?.ourArtist ?? song?.artist, albumOf(song));
+const fileNameParts = (song) => {
     const f = song?.filename;
     if (!f) return null;
     const dot = f.lastIndexOf('.');
     const parts = (dot > 0 ? f.slice(0, dot) : f).split(' - ');
-    const t = (parts[0] || '').trim().toLowerCase();
-    const a = (parts.length >= 2 ? parts.slice(1).join(' - ') : '').trim().toLowerCase();
-    const key = `pcn:${t}::${a}`;
-    return key === playCountKey(song) ? null : key;
+    return { t: (parts[0] || '').trim(), a: parts.length >= 2 ? parts.slice(1).join(' - ').trim() : '' };
+};
+// The keys a count is filed under for this song right now (exact + smoothed spelling).
+const primaryKeys = (song) => [...new Set([playCountKey(song), playCountKeyN(song)])];
+// Older keys without the album (and the ones from the file-name spelling): only used
+// when the song has no count of its own under its album yet, so counts from before the
+// album was part of the key are not lost. The first play afterwards moves them over.
+const fallbackKeys = (song) => {
+    const out = [baseCountKey(song), baseCountKeyN(song)];
+    const f = fileNameParts(song);
+    if (f) out.push(`pcn:${f.t.toLowerCase()}::${f.a.toLowerCase()}`, normKey(f.t, f.a, ''));
+    return [...new Set(out)].filter(k => !primaryKeys(song).includes(k));
 };
 
 // Screens that show play counts listen here, so a count changes on screen the moment
@@ -793,23 +819,38 @@ export const subscribePlayCount = (fn) => { playCountListeners.add(fn); return (
 export const incrementPlayCount = async (song, durationSec, libSong) => {
     if (!song) return;
     try {
-        const k = playCountKey(libSong || song);
-        const kTrack = playCountKey(song);
+        // The library's copy has the best spelling and the album tag; it is the one the
+        // count is filed under (one `pcn:` key per song, which Listening Stats adds up).
+        const main = libSong || song;
         const idKey = `pci:${song.id}`;
-        const keys = [...new Set([k, kTrack, idKey, `pc:${song.id}`, fileNameKey(libSong || song), fileNameKey(song)].filter(Boolean))];
+        const mine = primaryKeys(main);
+        const others = libSong ? primaryKeys(song) : [];
+        const fb = fallbackKeys(main);
+        const keys = [...new Set([...mine, ...others, ...fb, ...fallbackKeys(song), idKey, `pc:${song.id}`])];
         const rows = await AsyncStorage.multiGet(keys);
-        let base = 0;
-        rows.forEach(([key, v]) => { base = Math.max(base, parseInt(v) || 0); });
+        const val = {};
+        rows.forEach(([key, v]) => { val[key] = parseInt(v) || 0; });
+        const hasAlbum = !!albumOf(main);
+        const ownBase = Math.max(0, ...mine.map(x => val[x] || 0), ...others.map(x => val[x] || 0), val[idKey] || 0);
+        // With an album, only its own count is used once it has one; before that the older
+        // album-less count (if any) is carried over.
+        const migrating = hasAlbum && ownBase === 0;
+        const base = migrating ? Math.max(0, ...keys.map(x => val[x] || 0)) : Math.max(ownBase, hasAlbum ? 0 : Math.max(0, ...fb.map(x => val[x] || 0)));
         const n = base + 1;
-        await AsyncStorage.multiSet([[k, String(n)], [idKey, String(n)]]);
+        const k = playCountKey(main);
+        const writes = [[k, String(n)], [playCountKeyN(main), String(n)], [idKey, String(n)]];
+        if (libSong && libSong.id !== song.id) writes.push([`pci:${libSong.id}`, String(n)]);
+        await AsyncStorage.multiSet(writes);
+        // The old album-less count now lives under the album: removed so Listening Stats does
+        // not count it twice.
+        if (migrating) { const old = fb.filter(x => val[x] > 0 && x !== k); if (old.length) await AsyncStorage.multiRemove(old); }
         // The song's length is only known to the player, never to the library, so it
         // is remembered here for the "hours" figure in Listening Stats.
         if (durationSec > 5 && durationSec < 7200) await AsyncStorage.setItem(`pdur:${k.slice(4)}`, String(Math.round(durationSec)));
         playCountCache.clear();
-        // The screens match on the spelling THEY hold, so tell them under both.
+        // The screens match on the spelling THEY hold, so tell them under all of them.
         const notify = (key) => playCountListeners.forEach(fn => { try { fn({ key, n }); } catch { } });
-        notify(k);
-        if (kTrack !== k) notify(kTrack);
+        [...new Set([...mine, ...others])].forEach(notify);
     } catch { }
 };
 
@@ -828,30 +869,31 @@ export const getPlayCounts = async (songs) => {
     try {
         const byKey = {};
         songs.forEach(s => { (byKey[playCountKey(s)] ??= []).push(s); });
-        const keys = Object.keys(byKey);
-        const pairs = await AsyncStorage.multiGet(keys);
-        const idPairs = await AsyncStorage.multiGet(songs.map(sg => `pci:${sg.id}`));
-        const altKeys = [...new Set(songs.map(fileNameKey).filter(Boolean))];
-        const altCounts = {};
-        if (altKeys.length) (await AsyncStorage.multiGet(altKeys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) altCounts[k] = n; });
-        const idCounts = {};
-        idPairs.forEach(([k, v]) => { const n = parseInt(v); if (n > 0) idCounts[k] = n; });
-        const keyCounts = {};
-        const missingKeys = [];
-        pairs.forEach(([k, v]) => {
-            if (v) keyCounts[k] = parseInt(v);
-            else missingKeys.push(k);
-        });
-        if (missingKeys.length) {
-            const legacyKeys = missingKeys.flatMap(k => byKey[k].map(s => `pc:${s.id}`));
-            const legacyPairs = await AsyncStorage.multiGet(legacyKeys);
-            const legacyMap = Object.fromEntries(legacyPairs);
-            missingKeys.forEach(k => {
-                keyCounts[k] = byKey[k].reduce((sum, s) => sum + (parseInt(legacyMap[`pc:${s.id}`]) || 0), 0);
-            });
+        const prim = songs.map(primaryKeys);
+        const fall = songs.map(fallbackKeys);
+        const lookup = [...new Set([...prim.flat(), ...fall.flat(), ...songs.map(sg => `pci:${sg.id}`)])];
+        const got = {};
+        (await AsyncStorage.multiGet(lookup)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) got[k] = n; });
+        const ownOf = (s, i) => Math.max(got[`pci:${s.id}`] ?? 0, ...prim[i].map(k => got[k] ?? 0));
+        const fallOf = (i) => Math.max(0, ...fall[i].map(k => got[k] ?? 0));
+        // A song with an album tag uses its own count; only without one is the album-less
+        // (older) count read, so two albums never share a count.
+        const base = songs.map((s, i) => { const own = ownOf(s, i); return own > 0 ? own : fallOf(i); });
+        // Old per-file counts ('pc:<path>') from before counts were shared by title + artist:
+        // only looked at for a song nothing else knows, summed over every copy of it.
+        const needLegacy = Object.keys(byKey).filter(k => byKey[k].every(s => !base[songs.indexOf(s)]));
+        const legacy = {};
+        if (needLegacy.length) {
+            const legacyKeys = needLegacy.flatMap(k => byKey[k].map(s => `pc:${s.id}`));
+            (await AsyncStorage.multiGet(legacyKeys)).forEach(([k, v]) => { legacy[k] = parseInt(v) || 0; });
         }
         const out = {};
-        songs.forEach(s => { out[s.id] = Math.max(keyCounts[playCountKey(s)] ?? 0, idCounts[`pci:${s.id}`] ?? 0, altCounts[fileNameKey(s)] ?? 0); playCountCache.set(s.id, out[s.id]); });
+        songs.forEach((s, i) => {
+            let n = base[i];
+            const k = playCountKey(s);
+            if (!n && needLegacy.includes(k)) n = byKey[k].reduce((sum, x) => sum + (legacy[`pc:${x.id}`] || 0), 0);
+            out[s.id] = n; playCountCache.set(s.id, n);
+        });
         return out;
     } catch { return {}; }
 };
@@ -1008,12 +1050,23 @@ export const getListeningStats = async (songs, separators, joinId) => {
     (await AsyncStorage.multiGet(durKeys)).forEach(([k, v]) => { const d = parseFloat(v); if (d > 0) durs['pcn:' + k.slice(5)] = d; });
     let knownSec = 0, knownPlays = 0;
     const byKey = {};
-    for (const s of songs) { const k = playCountKey(s); if (!byKey[k]) byKey[k] = s; }
+    // Counts filed before the album was part of the key have no album on them: they are matched to a
+    // song by title + artist alone, until that song's next play moves them under its album.
+    const byBase = {};
+    for (const s of songs) { const k = playCountKey(s); if (!byKey[k]) byKey[k] = s; const bk = baseCountKey(s); if (!byBase[bk]) byBase[bk] = s; }
     let totalPlays = 0, seconds = 0, played = 0, unknownPlays = 0;
     const rows = [];
     const artists = {};
+    // One song can have its count filed under more than one spelling (and an older copy of the same count
+    // can still be around): such keys are one song here, and the largest count is the one used.
+    const groups = {};
     for (const [k, n] of Object.entries(counts)) {
-        const song = byKey[k];
+        const [gt, ga, galb] = k.slice(4).split('::');
+        const gk = normKey(gt, ga, galb);
+        if (!groups[gk] || n > groups[gk].n) groups[gk] = { k, n };
+    }
+    for (const { k, n } of Object.values(groups)) {
+        const song = byKey[k] || byBase[k];
         totalPlays += n;
         const [t, a] = k.slice(4).split('::');
         const title = song ? (song.ourTitle ?? song.title) : t;

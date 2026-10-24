@@ -59,6 +59,9 @@ export async function applyTags(track, albumFromFolder, artistSeparator) {
         artist: artist !== undefined && artist !== '' ? artist : track.artist,
         ourArtist: artist !== undefined && artist !== '' ? artist : track.ourArtist,
         album: (!albumFromFolder && tags.album) || track.album,
+        // The album as written in the tags, whatever "Album from folder" shows. Part of what makes a
+        // song the same song (play counts, All Songs, import replacing).
+        tagAlbum: typeof tags.album === 'string' ? tags.album : '',
         // Volume tag (ReplayGain track gain), limited so the boost can never
         // push the song's tagged peak past full scale.
         replayGainDb: typeof tags.rgDb === 'number'

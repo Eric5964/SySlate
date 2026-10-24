@@ -21,7 +21,7 @@ import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle, cardRadius } from '../utils/squircle';
-import { getPlayCounts, peekPlayCount, playCountKey, subscribePlayCount } from '../utils/storage';
+import { getPlayCounts, peekPlayCount, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -172,7 +172,7 @@ export default function PlayerScreen() {
 
     // Show the new count the moment this song's play is counted.
     useEffect(() => subscribePlayCount(({ key, n }) => {
-        if (currentTrack?.id && playCountKey(currentTrack) === key) setPc({ id: currentTrack.id, n });
+        if (currentTrack?.id && (playCountKey(currentTrack) === key || playCountKeyN(currentTrack) === key)) setPc({ id: currentTrack.id, n });
     }), [currentTrack]);
 
     const shownCount = pc.id === currentTrack?.id ? pc.n : (peekPlayCount(currentTrack?.id) ?? 0);

@@ -14,7 +14,7 @@ import { listArtUri } from '../utils/embeddedArt';
 import { perf } from '../utils/perf';
 import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
-import { getPlayCounts, playCountKey, subscribePlayCount } from '../utils/storage';
+import { getPlayCounts, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
 
 // Fixed estimate of a row's rendered height (thumb + padding + margins) —
 // used instead of measuring each row via onLayout, which would need an
@@ -36,11 +36,25 @@ const EDIT_LIFT_MS = 120;
 // finger even after the list has scrolled.
 let draggedListIndex = -1;
 const cellLayouts = {};
-function Cell({ children, style, index, onLayout, ...props }) {
+// Layouts are also kept by the row's own key: when the queue changes under a
+// held row (the song ends and everything moves up one), list indexes shift
+// but a key still points at the same row.
+const cellLayoutsByKey = {};
+// Called whenever a cell is measured while a row is held, so the held row's
+// position and slot are recomputed from the fresh layout.
+let dragLayoutHook = null;
+function Cell({ children, style, index, item, onLayout, ...props }) {
+    const key = item ? item.key : null;
+    useEffect(() => () => { if (key != null) delete cellLayoutsByKey[key]; }, [key]);
     return (
         <View
             {...props}
-            onLayout={(e) => { cellLayouts[index] = e.nativeEvent.layout; if (onLayout) onLayout(e); }}
+            onLayout={(e) => {
+                cellLayouts[index] = e.nativeEvent.layout;
+                if (key != null) cellLayoutsByKey[key] = e.nativeEvent.layout;
+                if (onLayout) onLayout(e);
+                if (draggedListIndex >= 0 && dragLayoutHook) dragLayoutHook();
+            }}
             style={[style, { zIndex: index === draggedListIndex ? 50 : 0 }]}
         >
             {children}
@@ -531,7 +545,7 @@ export default function QueueModal({ visible, onClose }) {
     useEffect(() => subscribePlayCount(({ key, n }) => setPlayCounts(prev => {
         let next = null;
         const consider = (song) => {
-            if (song && playCountKey(song) === key && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
+            if (song && (playCountKey(song) === key || playCountKeyN(song) === key) && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
         };
         rowsRef.current.forEach(r => consider(r.song));
         consider(currentTrack);
@@ -559,23 +573,44 @@ export default function QueueModal({ visible, onClose }) {
     const scrollTimer = useRef(null);
     const rowListIdx = useRef([]);     // rows index -> index in the list data
     const finishRef = useRef(null);
+    const refreshDragRef = useRef(null);
+    const edgeSince = useRef(0);   // when the finger entered the edge zone (for the slight speed-up)
 
     const stopAutoScroll = () => { clearInterval(scrollTimer.current); scrollTimer.current = null; };
 
-    const layoutOfRow = (i) => cellLayouts[rowListIdx.current[i]];
+    const layoutOfRow = (i) => {
+        const r = rowsRef.current[i];
+        return (r && cellLayoutsByKey[r.stableKey]) || cellLayouts[rowListIdx.current[i]];
+    };
     const refreshDrag = () => {
         const d = drag.current;
-        const startL = layoutOfRow(startIdx.current);
+        if (!dragging.current || armedKey.current == null) return;
+        // The held row is found by its key every time, never by a remembered
+        // position: the queue can change under it (the song ends, everything
+        // moves up one).
+        const si = rowsRef.current.findIndex(r => r.stableKey === armedKey.current);
+        if (si < 0) {
+            // The held row is gone (it just became the playing song): put it down.
+            stopAutoScroll();
+            dragging.current = false; armedKey.current = null; editRef.current = false;
+            draggedListIndex = -1;
+            setDragKey(null); setDragTo(null); setEditMode(false);
+            dragY.setValue(0);
+            return;
+        }
+        if (si !== startIdx.current) { toIdx.current = Math.max(0, Math.min(rowsRef.current.length - 1, toIdx.current + si - startIdx.current)); startIdx.current = si; }
+        const startL = layoutOfRow(si);
         if (!startL) return;
-        dragY.setValue(d.dy + (scrollY.current - d.scroll0));
+        if (typeof d.cell0 !== 'number') d.cell0 = startL.y;
+        // How far the row is drawn from its own cell: the finger's travel, plus
+        // how far the list has scrolled, plus how far the cell itself has moved
+        // since the pick-up (rows removed or added above it).
+        const ty = d.dy + (scrollY.current - d.scroll0) + (d.cell0 - startL.y);
+        dragY.setValue(ty);
         // Where the dragged row's own CENTRE is now, in list (content)
-        // coordinates. Deliberately not the finger: the row is drawn with the
-        // grab point preserved, so a row grabbed near its top or bottom edge
-        // has its centre half a row away from the finger, and measuring the
-        // slot from the finger dropped it half a row off, the reported "it
-        // shifts up by one place".
+        // coordinates (not the finger: the grab point is preserved).
         const h = startL.height || ROW_HEIGHT;
-        const pos = startL.y + d.dy + (scrollY.current - d.scroll0) + h / 2;
+        const pos = startL.y + ty + h / 2;
         const list = rowsRef.current;
         let best = toIdx.current;
         const first = layoutOfRow(0), last = layoutOfRow(list.length - 1);
@@ -589,6 +624,13 @@ export default function QueueModal({ visible, onClose }) {
         }
         if (best !== toIdx.current) { toIdx.current = best; setDragTo(best); }
     };
+    refreshDragRef.current = refreshDrag;
+
+    useEffect(() => {
+        dragLayoutHook = () => { if (dragging.current && refreshDragRef.current) refreshDragRef.current(); };
+        return () => { dragLayoutHook = null; };
+    }, []);
+    useEffect(() => { if (dragging.current && refreshDragRef.current) refreshDragRef.current(); }, [rows]);
 
     const exitEdit = useCallback(() => {
         clearTimeout(holdTimer.current);
@@ -610,7 +652,7 @@ export default function QueueModal({ visible, onClose }) {
         startIdx.current = idx; toIdx.current = idx;
         dragY.setValue(0);
         editRef.current = true;
-        if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { listTop.current = y; if (h > 0) viewH.current = h; });
+        if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
         // More rows are built while a row is held, so there is always list
         // below to scroll into (rows are only ever appended, so the held
         // row and the slots measured so far keep their places).
@@ -646,7 +688,8 @@ export default function QueueModal({ visible, onClose }) {
         if (!dragging.current) return;
         dragging.current = false;
         const list = rowsRef.current;
-        const from = startIdx.current, to = toIdx.current;
+        const heldIdx = list.findIndex(r => r.stableKey === armedKey.current);
+        const from = heldIdx >= 0 ? heldIdx : startIdx.current, to = Math.min(toIdx.current, list.length - 1);
         armedKey.current = null;
         const fromL = layoutOfRow(from), toL = layoutOfRow(to);
         // Moving a row is not a mode: once it is dropped everything is back to
@@ -680,6 +723,11 @@ export default function QueueModal({ visible, onClose }) {
             const idx = rowsRef.current.findIndex(r => r.stableKey === armedKey.current);
             if (idx >= 0) { startIdx.current = idx; toIdx.current = idx; }
             drag.current = { dy: 0, scroll0: scrollY.current, fingerY: e.nativeEvent.pageY };
+            { const l0 = layoutOfRow(startIdx.current); if (l0) drag.current.cell0 = l0.y; }
+            edgeSince.current = 0;
+            // The sheet may still have been sliding in when it was measured
+            // (open the queue and grab a row straight away): measure again now.
+            if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
             const touches0 = e.nativeEvent.touches || [];
             primaryTouch.current = pressTouchId.current != null
                 ? pressTouchId.current
@@ -719,7 +767,11 @@ export default function QueueModal({ visible, onClose }) {
                 // or beyond it, so the speed can never exceed MAX_SCROLL_PX_S.
                 if (fy < zone) { const k = Math.min(1, Math.max(0, (zone - fy) / zone)); v = -k * k * MAX_SCROLL_PX_S; }
                 else if (fy > viewH.current - zone) { const k = Math.min(1, Math.max(0, (fy - (viewH.current - zone)) / zone)); v = k * k * MAX_SCROLL_PX_S; }
-                if (!v) return;
+                if (!v) { edgeSince.current = 0; return; }
+                // A very slight speed-up the longer the finger stays at the edge:
+                // up to 1.4x after about a second and a half.
+                if (!edgeSince.current) edgeSince.current = now;
+                v *= 1 + 0.4 * Math.min(1, (now - edgeSince.current) / 1500);
                 const step = (v * dt) / 1000;
                 const maxY = Math.max(0, contentH.current - viewH.current);
                 // [QUEUE] diagnostic: everything the touch-based auto-scroll
@@ -827,6 +879,17 @@ export default function QueueModal({ visible, onClose }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [rows, currentTrack, newKeys, removingKeys]);
     draggedListIndex = dragKey == null ? -1 : listData.findIndex(it => it.key === dragKey);
+    // The queue can change while a row is held (the song ends and every row
+    // moves up one). The held row and its target slot are followed by key so
+    // the make-room gaps never show one slot off.
+    if (dragKey != null) {
+        const si = rows.findIndex(r => r.stableKey === dragKey);
+        if (si >= 0 && si !== startIdx.current) {
+            toIdx.current = Math.max(0, Math.min(rows.length - 1, toIdx.current + si - startIdx.current));
+            startIdx.current = si;
+        }
+    }
+    const toEff = dragKey != null && dragTo != null ? toIdx.current : null;
     {
         const byKey = new Map();
         listData.forEach((it, i) => { if (it.type === 'row') byKey.set(it.key, i); });
@@ -848,13 +911,13 @@ export default function QueueModal({ visible, onClose }) {
 
     // How far a row slides to make room for the held one (0 for rows that stay).
     const rowShift = (key) => {
-        if (dragKey == null || dragTo == null) return 0;
+        if (dragKey == null || toEff == null) return 0;
         const i = rows.findIndex(r => r.stableKey === key);
         const f = startIdx.current;
         if (i < 0 || i === f) return 0;
         const h = layoutOfRow(f)?.height ?? ROW_HEIGHT;
-        if (f < dragTo && i > f && i <= dragTo) return -h;
-        if (f > dragTo && i >= dragTo && i < f) return h;
+        if (f < toEff && i > f && i <= toEff) return -h;
+        if (f > toEff && i >= toEff && i < f) return h;
         return 0;
     };
 
@@ -876,7 +939,7 @@ export default function QueueModal({ visible, onClose }) {
             actions={rowActions}
             editing={editMode}
             dragging={dragKey === row.stableKey}
-            live={dragKey != null && dragTo != null}
+            live={toEff != null}
             shift={rowShift(row.stableKey)}
             dragY={dragY}
         />
@@ -890,16 +953,16 @@ export default function QueueModal({ visible, onClose }) {
     // list between where the held row came from and where it is now moves by
     // the held row's height.
     const itemShift = (index) => {
-        if (dragKey == null || dragTo == null) return 0;
+        if (dragKey == null || toEff == null) return 0;
         const src = rowListIdx.current[startIdx.current];
-        const tgt = rowListIdx.current[dragTo];
+        const tgt = rowListIdx.current[toEff];
         if (src == null || tgt == null || src === tgt) return 0;
         const h = layoutOfRow(startIdx.current)?.height ?? ROW_HEIGHT;
         if (src < tgt && index > src && index <= tgt) return -h;
         if (src > tgt && index >= tgt && index < src) return h;
         return 0;
     };
-    const dragLive = dragKey != null && dragTo != null;
+    const dragLive = toEff != null;
     const renderItem = ({ item, index }) => {
         if (item.type === 'nowplaying') {
             return (
@@ -967,7 +1030,7 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { listTop.current = y; if (h > 0) viewH.current = h; }); }} {...dragPan.panHandlers}>
+                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; }); }} {...dragPan.panHandlers}>
                 <FlatList
                     ref={listRef}
                     scrollEventThrottle={16}
