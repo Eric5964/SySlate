@@ -692,7 +692,9 @@ export default function PlayerScreen() {
         // Straight to the navigator, NOT through a state change and an effect: that route
         // re-rendered this whole screen first, and the swipe-down gesture could take the
         // touch from the disc before it was switched off ("touch taken over", 10-90 ms in).
-        navigation.setOptions({ gestureEnabled: !touching && !showQueueRef.current });
+        // Nothing is switched off here any more: the disc follows the finger with a native gesture
+        // handler (see DJDisc), which the swipe-down-to-close cannot take a touch from. Switching the
+        // navigator at the moment of the touch re-rendered it right when the scratch had to start.
         setDiscHeld(!!touching);
     }, [navigation]);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
@@ -715,7 +717,7 @@ export default function PlayerScreen() {
     const controlsYRef = useRef(0);
     const discZoneOn = useRef(false);
     const applyDismissZone = useCallback(() => {
-        const d = controlsYRef.current;   // swipe-down works from anywhere above the controls; the disc switches it off itself while touched
+        const d = controlsYRef.current;   // swipe-down works from anywhere above the controls (the disc box excepted, see DJDisc)
         if (d > 0) navigation.setOptions({ gestureResponseDistance: d });
     }, [navigation]);
     const measureDiscArea = useCallback(() => {

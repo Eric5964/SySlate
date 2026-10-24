@@ -1,5 +1,6 @@
-import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
-import { View, Image, Text, Animated, Easing, PanResponder, StyleSheet } from 'react-native';
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
+import { View, Image, Text, Animated, Easing, StyleSheet } from 'react-native';
+import { Gesture, GestureDetector, State } from 'react-native-gesture-handler';
 import AudioEngine from '../native/AudioEngine';
 import { subscribeTransportRamp, subscribeSkipPress } from '../utils/transportRamp';
 import { COVER_SHADOW } from '../utils/shadow';
@@ -549,14 +550,12 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         AudioEngine.scratchSetRate(rate);
     };
 
-    const pan = useRef(PanResponder.create({
+    const panCfg = useRef({
         onStartShouldSetPanResponder: (e) => {
             const au = autoRef.current;
             return live.current.touch && live.current.allowed && !skipHold.current && !ignoreTouch.current
-                && !(au && au.kind === 'edge') && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY);
+                && !(au && au.kind === 'edge') && (typeof e.nativeEvent.locX === 'number' ? Math.hypot(e.nativeEvent.locX - size / 2, e.nativeEvent.locY - size / 2) <= size / 2 : insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY));
         },
-        onMoveShouldSetPanResponder: () => false,
-        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
             const au = autoRef.current;
             draggingRef.current = true;
@@ -616,8 +615,43 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             userRot.setValue(userRotVal.current);
         },
         onPanResponderRelease: () => { console.log('[DISC] finger lifted after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
-        onPanResponderTerminate: () => { console.log('[DISC] touch taken over by something else after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
-    })).current;
+        onPanResponderTerminate: () => { console.log('[DISC] touch cancelled by the system after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
+    }).current;
+
+    // The finger is followed by a native gesture handler (not the JS touch responder) so the Player's
+    // swipe-down-to-close, which is a gesture handler too, can never take the touch away. Two handlers on one
+    // touch are exclusive, so this one claims the touch the instant a finger lands ON THE DISC ITSELF (the round
+    // disc, not the square around it): the handler is activated by hand on touch-down, long before the swipe
+    // needs its 5 px of movement. A finger that lands outside the circle makes this handler give up at once,
+    // so swiping down from the corners still closes the Player.
+    const accepted = useRef(false);
+    const [gestureOn, setGestureOn] = useState(allowed);
+    useEffect(() => { if (!draggingRef.current) setGestureOn(allowed); }, [allowed]);
+    // x/y are measured from the disc's own corner, so "on the disc" never depends on a screen measurement that
+    // could be out of date (the Player is still sliding up when it first opens).
+    const asTouch = (t) => ({ nativeEvent: { pageX: t.absoluteX, pageY: t.absoluteY, locX: t.x, locY: t.y } });
+    const gesture = useMemo(() => Gesture.Pan()
+        .enabled(gestureOn)
+        .manualActivation(true)
+        .shouldCancelWhenOutside(false)
+        .runOnJS(true)
+        .onTouchesDown((e, manager) => {
+            if (accepted.current) return;   // a second finger: the first one owns the disc
+            const t = e.changedTouches && e.changedTouches[0];
+            if (!t) { manager.fail(); return; }
+            const te = asTouch(t);
+            if (!panCfg.onStartShouldSetPanResponder(te)) { manager.fail(); return; }
+            accepted.current = true;
+            manager.activate();
+            panCfg.onPanResponderGrant(te);
+        })
+        .onUpdate((e) => { if (accepted.current) panCfg.onPanResponderMove({ nativeEvent: { pageX: e.absoluteX, pageY: e.absoluteY } }); })
+        .onFinalize((e) => {
+            if (!accepted.current) return;
+            accepted.current = false;
+            if (e.state === State.CANCELLED || e.state === State.FAILED) panCfg.onPanResponderTerminate(); else panCfg.onPanResponderRelease();
+            setGestureOn(live.current.allowed);
+        }), [gestureOn]);
 
 
     const R = size;
@@ -628,13 +662,9 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const userDeg = useMemo(() => userRot.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] }), [userRot]);
 
     return (
-        <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R }} {...pan.panHandlers}
-            // Turns the Player's swipe-down-to-close off the moment a finger
-            // lands ON the disc (only when the disc will take the touch), so
-            // swiping anywhere else on the screen still closes the Player.
-            onTouchStart={(e) => { if (live.current.allowed && !skipHold.current && onTouching && insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY)) onTouching(true); }}
-            onTouchEnd={() => { if (!draggingRef.current && onTouching) onTouching(false); }}
-            onTouchCancel={() => { if (!draggingRef.current && onTouching) onTouching(false); }}>
+        <GestureDetector gesture={gesture}>
+        <View collapsable={false} style={{ width: R, height: R }}>
+        <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R }}>
             <Animated.View style={{ width: R, height: R, opacity: dim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.55] }) }}>
             {/* Card-style outline (same look as the playlist cards): a ring
                 of card color behind the disc, so it does not turn with it.
@@ -656,6 +686,8 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
             </Animated.View>
         </View>
+        </View>
+        </GestureDetector>
     );
 }
 
