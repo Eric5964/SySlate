@@ -3250,7 +3250,7 @@ class AudioEngine: RCTEventEmitter {
                 t.qid = queue[i].qid
                 queue[i] = t
                 if i == currentIndex { swappedCurrent = true }
-                if i == currentIndex + 1 { debugLog("[REPLACE] the slot right after the playing song was swapped (isCrossfading=\(isCrossfading))") }
+                if let ci = currentIndex, i == ci + 1 { debugLog("[REPLACE] the slot right after the playing song was swapped (isCrossfading=\(isCrossfading))") }
             }
             let oldPrefix = oldId + "|"
             let staleDur = lastKnownDurationByKey.keys.filter { $0.hasPrefix(oldPrefix) }
@@ -4347,7 +4347,7 @@ class AudioEngine: RCTEventEmitter {
             let del = FolderPickDelegate(onPick: { [weak self] url in
                 self?.folderPickerDelegate = nil
                 self?.pickedImportRoot = url
-                debugLog("[IMPORT] folder picker closed: " + (url == nil ? "cancelled" : "folder chosen"))
+                self?.debugLog("[IMPORT] folder picker closed: " + (url == nil ? "cancelled" : "folder chosen"))
                 resolve(url != nil)
             })
             self.folderPickerDelegate = del

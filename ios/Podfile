@@ -31,6 +31,9 @@ post_install do |installer|
     installer.pods_project.targets.each do |pod_target|
       pod_target.build_configurations.each do |build_config|
         build_config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
+        # Build-time only: no dSYM bundles and no index store for the ~65 pods (nobody reads them from CI).
+        build_config.build_settings['DEBUG_INFORMATION_FORMAT'] = 'dwarf'
+        build_config.build_settings['COMPILER_INDEX_STORE_ENABLE'] = 'NO'
         if pod_target.name == 'Expo' || pod_target.name == 'ExpoModulesCore'
           build_config.build_settings['DEFINES_MODULE'] = 'YES'
           build_config.build_settings['SWIFT_COMPILATION_MODE'] = 'wholemodule'
