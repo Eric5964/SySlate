@@ -107,6 +107,16 @@ async function runThumbQueue() {
     thumbRunning = false;
 }
 
+async function makeListThumbNow(uri) {
+    try {
+        const name = thumbNameFor(uri);
+        if (thumbNames.has(name)) return;
+        thumbQueued.add(name);
+        const ok = await AudioEngine.makeThumbnail(uri, THUMB_DIR + name, THUMB_PX);
+        if (ok) thumbNames.add(name);
+    } catch { }
+}
+
 // The URI a list row should draw: the small copy if it exists, otherwise the
 // full one (and the small one is made in the background for next time).
 export function listArtUri(uri) {
@@ -419,10 +429,25 @@ export async function getCachedArtFast(song) {
 // decode (several MB apiece) for the identical song at the identical time.
 // This makes concurrent callers share one in-flight extraction instead.
 const inFlightExtractions = new Map();
+// At most two real extractions at once, whoever asks (the background loader, a list that just
+// opened, the playing song): they used to pile up, each holding megabytes of file data.
+const MAX_CONCURRENT_EXTRACTIONS = 2;
+let activeExtractions = 0;
+const extractionWaiters = [];
+async function runGated(fn) {
+    if (activeExtractions >= MAX_CONCURRENT_EXTRACTIONS) await new Promise(r => extractionWaiters.push(r));
+    activeExtractions++;
+    try { return await fn(); }
+    finally {
+        activeExtractions--;
+        const next = extractionWaiters.shift();
+        if (next) next();
+    }
+}
 export async function extractEmbeddedArt(song) {
     if (!song?.id || !song?.url) return null;
     if (inFlightExtractions.has(song.id)) return inFlightExtractions.get(song.id);
-    const promise = extractEmbeddedArtUncached(song).finally(() => {
+    const promise = runGated(() => extractEmbeddedArtUncached(song)).finally(() => {
         inFlightExtractions.delete(song.id);
     });
     inFlightExtractions.set(song.id, promise);
@@ -475,6 +500,130 @@ async function locateMoovNearEnd(song, fileSize) {
     return null;
 }
 
+// ---- Locating a cover without reading or decoding the file's first megabytes ----------------
+// The readers above fetch up to 3 MB, decode it byte by byte in JS, copy the picture out and
+// encode it back to base64 in JS to write it. For an M4A with no cover (or a moov at the front) the
+// tail search then read and decoded up to 6 MB and 24 MB more. Done for every song during a first
+// load, that was tens of MB of short-lived strings and arrays at a time, which is the most likely
+// reason loading could end in a memory kill.
+//
+// These work out where the picture is from a few small reads of the box/block headers, and the
+// picture itself is then copied as the base64 the system already produces (no JS decoding or
+// encoding at all). The file written is byte-for-byte the one the readers above produce; any
+// file these are not sure about returns null and falls back to those readers.
+function makeWindowReader(uri, windowSize) {
+    let wPos = -1, wBuf = null;
+    return async (pos, len) => {
+        if (wBuf && pos >= wPos && pos + len <= wPos + wBuf.length) return wBuf.subarray(pos - wPos, pos - wPos + len);
+        const b = await readBytes(uri, { position: pos, length: Math.max(len, windowSize) });
+        wPos = pos; wBuf = b;
+        return b.subarray(0, Math.min(len, b.length));
+    };
+}
+function b64ByteLength(b64) {
+    const pad = b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0);
+    return Math.floor(b64.length * 3 / 4) - pad;
+}
+async function readRangeAsBase64(uri, position, length) {
+    const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64, position, length });
+    return b64ByteLength(b64) === length ? b64 : null;
+}
+
+// FLAC: walk the metadata block headers to the first PICTURE block. Same limits as
+// extractPictureFromFlac (nothing past the first FRONT_PREFIX_BYTES counts).
+// Returns { found: false } (no usable picture), { found: true, mime, start, length }, or null (unsure).
+async function locateFlacPicture(uri, fileSize, noLimit = false) {
+    // `noLimit` (the end-of-loading pass for large covers) looks through the whole file; the normal pass keeps the old 3 MB window.
+    const limit = noLimit ? (fileSize > 0 ? fileSize : FRONT_PREFIX_BYTES) : (fileSize > 0 ? Math.min(FRONT_PREFIX_BYTES, fileSize) : FRONT_PREFIX_BYTES);
+    const get = makeWindowReader(uri, 4096);
+    let start = 0;
+    const head = await get(0, 10);
+    if (limit > 10 && head.length >= 10 && head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) {
+        start = 10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f));
+    }
+    if (limit < start + 4) return { found: false, limited: limit < fileSize };
+    const magic = await get(start, 4);
+    if (magic.length < 4 || magic[0] !== 0x66 || magic[1] !== 0x4C || magic[2] !== 0x61 || magic[3] !== 0x43) return { found: false };
+    let offset = start + 4;
+    for (let n = 0; n < 4096 && offset + 4 <= limit; n++) {
+        const h = await get(offset, 4);
+        if (h.length < 4) return { found: false };
+        const isLast = (h[0] & 0x80) !== 0;
+        const blockType = h[0] & 0x7f;
+        const blockLen = readU24BE(h, 1);
+        const blockStart = offset + 4;
+        if (blockType === 6) {
+            if (blockStart + blockLen > limit) return { found: false, limited: limit < fileSize };
+            const hb = await get(blockStart, Math.min(blockLen, 2048));
+            let p = 4;
+            if (p + 4 > hb.length) return null;
+            const mimeLen = readU32BE(hb, p); p += 4;
+            if (mimeLen > 64) return { found: false };
+            if (p + mimeLen + 4 > hb.length) return null;
+            const mime = String.fromCharCode(...hb.slice(p, p + mimeLen)); p += mimeLen;
+            const descLen = readU32BE(hb, p); p += 4 + descLen;
+            p += 16;
+            if (p + 4 > hb.length) return null;
+            const dataLen = readU32BE(hb, p); p += 4;
+            if (dataLen <= 0) return { found: false };
+            if (blockStart + p + dataLen > limit) return { found: false, limited: limit < fileSize };
+            return { found: true, mime, start: blockStart + p, length: dataLen };
+        }
+        offset = blockStart + blockLen;
+        if (isLast) return { found: false };   // walked every block: there is no picture
+    }
+    // Ran out of the window before the last block: a picture could be further on.
+    return { found: false, limited: limit < fileSize };
+}
+
+// M4A/MP4: hop moov -> udta -> meta -> ilst -> covr -> data. The moov can be anywhere in the
+// file (front, or after the audio), the picture is not read at all while looking for it.
+// Same result as extractPictureFromMp4 / the tail search together, found in a few reads.
+async function locateMp4Picture(uri, fileSize, maxLen = 20 * 1024 * 1024) {
+    if (!(fileSize > 0)) return null;
+    const get = makeWindowReader(uri, 16384);
+    const BAD = { bad: true };
+    const header = async (pos, end) => {
+        const h = await get(pos, 16);
+        if (h.length < 8) return BAD;
+        let size = readU32BE(h, 0), hdr = 8;
+        const type = String.fromCharCode(h[4], h[5], h[6], h[7]);
+        if (size === 1) {
+            if (h.length < 16 || pos + 16 > end) return BAD;
+            size = readU32BE(h, 12); hdr = 16;
+        }
+        if (size < hdr) return { type, zero: size === 0 };
+        return { type, start: pos, hdr, size, dataStart: pos + hdr, dataEnd: Math.min(pos + size, end), trueEnd: pos + size };
+    };
+    // 'absent' = the range ended with no such box; null = anything odd (let the full reader decide).
+    const find = async (start, end, type, top) => {
+        let p = start;
+        for (let i = 0; i < 400; i++) {
+            if (p + 8 > end) return 'absent';
+            const b = await header(p, end);
+            if (b === BAD) return null;
+            if (b.size === undefined) return (top && b.zero && b.type !== type) ? 'absent' : null;
+            if (b.type === type) return b;
+            p += b.size;
+        }
+        return null;
+    };
+    const moov = await find(0, fileSize, 'moov', true); if (moov === null) return null; if (moov === 'absent') return { found: false };
+    const udta = await find(moov.dataStart, moov.dataEnd, 'udta'); if (udta === null) return null; if (udta === 'absent') return { found: false };
+    const meta = await find(udta.dataStart, udta.dataEnd, 'meta'); if (meta === null) return null; if (meta === 'absent') return { found: false };
+    const ilst = await find(meta.dataStart + 4, meta.dataEnd, 'ilst'); if (ilst === null) return null; if (ilst === 'absent') return { found: false };
+    const covr = await find(ilst.dataStart, ilst.dataEnd, 'covr'); if (covr === null) return null; if (covr === 'absent') return { found: false };
+    const data = await find(covr.dataStart, covr.dataEnd, 'data'); if (data === null) return null; if (data === 'absent') return { found: false };
+    if (data.trueEnd !== data.dataEnd) return null;
+    const payloadStart = data.dataStart + 8;
+    const length = data.dataEnd - payloadStart;
+    if (length <= 0) return { found: false };
+    if (length > maxLen) return { found: false, limited: true };
+    const first = await get(payloadStart, 2);
+    if (first.length < 2) return null;
+    return { found: true, mime: (first[0] === 0xFF && first[1] === 0xD8) ? 'image/jpeg' : 'image/png', start: payloadStart, length };
+}
+
 const MAX_MP4_PICTURE_BYTES = 20 * 1024 * 1024;
 
 async function resolveMp4Picture(song, bytes, baseOffset) {
@@ -503,7 +652,19 @@ async function extractEmbeddedArtUncached(song) {
         const ext = (song.filename || song.id || '').split('.').pop().toLowerCase();
         let picture = null;
 
-        if (ext === 'flac') {
+        // Fast path first (see "Locating a cover" above). `located` null = not sure: the original
+        // readers below then run exactly as before.
+        let located = null;
+        if (ext === 'flac') located = await locateFlacPicture(song.url, fp?.size);
+        else if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') located = await locateMp4Picture(song.url, fp?.size);
+        if (located?.found) {
+            const b64 = await readRangeAsBase64(song.url, located.start, located.length);
+            if (b64) picture = { mime: located.mime, b64, length: located.length };
+            else located = null;   // the file did not give back what its headers promised: use the full readers
+        }
+        if (located) {
+            // nothing more to do: no picture, or already read above
+        } else if (ext === 'flac') {
             const bytes = await readBytes(song.url, { position: 0, length: FRONT_PREFIX_BYTES });
             picture = extractPictureFromFlac(bytes);
         } else if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') {
@@ -531,8 +692,10 @@ async function extractEmbeddedArtUncached(song) {
             }
         }
 
-        if (!picture?.data?.length) {
-            await saveCacheEntry(song.id, { uri: null, fp });
+        if (!(picture?.b64 ? picture.length > 0 : picture?.data?.length)) {
+            // `bc`: the file was looked through completely (no size limit was hit), so the
+            // end-of-loading pass for large covers has nothing to re-check here.
+            await saveCacheEntry(song.id, located && located.found === false && !located.limited ? { uri: null, fp, bc: 1 } : { uri: null, fp });
             return null;
         }
 
@@ -551,7 +714,11 @@ async function extractEmbeddedArtUncached(song) {
         // path, so there's nothing for a URI-keyed cache to serve stale.
         const fpTag = fp ? `${fp.size}_${fp.mtime}` : 'nofp';
         const dest = `${ART_DIR}${hashKey(song.id)}_${hashKey(fpTag)}.${fileExt}`;
-        await FileSystem.writeAsStringAsync(dest, bytesToBase64(picture.data), { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.writeAsStringAsync(dest, picture.b64 ?? bytesToBase64(picture.data), { encoding: FileSystem.EncodingType.Base64 });
+        // The small list copy is made right away: a row that shows this cover for the first time used to be
+        // handed the full-size picture (often thousands of pixels wide, tens of MB once decoded) and only got
+        // the small one later. Many such rows at once while a library loads is a memory spike.
+        await makeListThumbNow(dest);
         // Clean up the previous fingerprint's file for this song, if any,
         // now that it's no longer reachable from the cache entry — avoids
         // orphaned art files quietly accumulating in ART_DIR every time a
@@ -563,6 +730,65 @@ async function extractEmbeddedArtUncached(song) {
         return dest;
     } catch (e) {
         console.error('extractEmbeddedArt:', e);
+        return null;
+    }
+}
+
+
+// ---- Large covers, looked at last --------------------------------------------------------------
+// The normal pass skips pictures that start or end past the first 3 MB (FLAC) or are over 20 MB (M4A),
+// to keep memory low while the whole library loads. Once everything else is done, this goes back
+// for them one at a time: the picture is copied file-to-file by the system in small pieces (it never
+// goes through a JS string), then the small list copy is made from it.
+const MAX_LARGE_PICTURE_BYTES = 80 * 1024 * 1024;
+const artListeners = new Set();
+// cb(songId, listUri, fullUri) is called when a cover turns up later than the lists first asked for it.
+export function subscribeArtUpdates(cb) { artListeners.add(cb); return () => artListeners.delete(cb); }
+
+const extOfSong = (song) => (song.filename || song.id || '').split('.').pop().toLowerCase();
+const LARGE_ART_EXT = new Set(['flac', 'm4a', 'mp4', 'alac']);
+
+// Songs checked with no cover whose file has not yet been looked through completely.
+export async function listLargeArtCandidates(songs) {
+    const cache = await loadCacheMap();
+    const out = [];
+    for (const song of songs || []) {
+        if (!song?.id || !LARGE_ART_EXT.has(extOfSong(song))) continue;
+        const entry = cache[song.id];
+        if (entry !== undefined && (entry.uri ?? null) === null && !entry.bc) out.push(song);
+    }
+    return out;
+}
+
+export async function extractLargeEmbeddedArt(song) {
+    try {
+        const cache = await loadCacheMap();
+        const entry = cache[song.id];
+        if (!entry || (entry.uri ?? null) !== null || entry.bc) return entry?.uri ?? null;
+        const fp = await getFingerprint(song.url);
+        if (entry.fp && fp && !fingerprintsMatch(entry.fp, fp)) return null;   // the file changed: the normal pass will redo it
+        const ext = extOfSong(song);
+        const located = ext === 'flac'
+            ? await locateFlacPicture(song.url, fp?.size, true)
+            : await locateMp4Picture(song.url, fp?.size, MAX_LARGE_PICTURE_BYTES);
+        if (located === null) return null;   // unsure: leave it unmarked, nothing is lost
+        if (!located.found || located.length > MAX_LARGE_PICTURE_BYTES) {
+            await saveCacheEntry(song.id, { uri: null, fp, bc: 1 });
+            return null;
+        }
+        await FileSystem.makeDirectoryAsync(ART_DIR, { intermediates: true }).catch(() => { });
+        const fileExt = located.mime?.includes('png') ? 'png' : 'jpg';
+        const fpTag = fp ? `${fp.size}_${fp.mtime}` : 'nofp';
+        const dest = `${ART_DIR}${hashKey(song.id)}_${hashKey(fpTag)}.${fileExt}`;
+        const ok = await AudioEngine.copyFileRange(song.url, located.start, located.length, dest);
+        if (!ok) return null;   // could not copy (or an older build without the copy call): try again next time
+        await makeListThumbNow(dest);
+        await saveCacheEntry(song.id, { uri: dest, fp, bc: 1 });
+        const shown = listArtUri(dest);
+        for (const cb of artListeners) { try { cb(song.id, shown, dest); } catch { } }
+        return dest;
+    } catch (e) {
+        console.error('extractLargeEmbeddedArt:', e);
         return null;
     }
 }

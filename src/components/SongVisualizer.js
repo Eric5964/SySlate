@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Animated, StyleSheet } from 'react-native';
 import AudioEngine, { Event, usePlaybackState, State } from '../native/AudioEngine';
 
@@ -31,13 +31,34 @@ const releaseTap = () => {
     }
 };
 
-export default function SongVisualizer({ color, mode }) {
+// Bars are drawn by scaling (a native transform), not by changing their height, so a reading
+// costs no layout pass; each bar is anchored to the bottom of the box.
+const MIN = 0.06, SPAN = 0.84;
+const BAR_OPACITY = 0.32;   // the same on a pill and on a cover
+const COVER_DIM = 0.5;      // a cover is darkened under the bars so they show on bright artwork
+
+function Bar({ v, h, color }) {
+    return (
+        <Animated.View
+            style={{
+                flex: 1,
+                height: h,
+                backgroundColor: color,
+                opacity: BAR_OPACITY,
+                transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [h / 2, 0] }) }, { scaleY: v }],
+            }}
+        />
+    );
+}
+
+export default function SongVisualizer({ color, mode, radius = 0 }) {
     const bars = mode === 'cover' ? BARS_COVER : BARS_PILL;
     const vals = useRef(null);
-    if (!vals.current || vals.current.length !== bars) vals.current = Array.from({ length: bars }, () => new Animated.Value(0));
+    if (!vals.current || vals.current.length !== bars) vals.current = Array.from({ length: bars }, () => new Animated.Value(MIN));
     const shown = useRef(new Array(bars).fill(0));
     const target = useRef(new Array(8).fill(0));
     const lastEvent = useRef(0);
+    const [h, setH] = useState(0);
     const { state } = usePlaybackState();
     const playing = state === State.Playing;
 
@@ -59,39 +80,36 @@ export default function SongVisualizer({ color, mode }) {
         if (playing) AudioEngine.setVisualizerEnabled(true);   // playback restarted: put the tap in fresh (the engine may have been rebuilt)
     }, [playing]);
 
-    // 20 times a second: ease each bar toward its reading; with no readings (paused) fall to rest.
+    // Once per screen frame (it was a 50 ms timer, which alone added up to 50 ms of delay): ease each bar
+    // toward its reading, very quick up and slower down; with no readings (paused) fall to rest.
     useEffect(() => {
-        const id = setInterval(() => {
+        let raf = 0;
+        const loop = () => {
             const live = Date.now() - lastEvent.current < 250;
             for (let i = 0; i < bars; i++) {
                 const pos = (i / Math.max(1, bars - 1)) * 7;
                 const a = Math.floor(pos); const b = Math.min(7, a + 1); const f = pos - a;
                 const want = live ? target.current[a] * (1 - f) + target.current[b] * f : 0;
                 const prev = shown.current[i];
-                const next = want > prev ? prev + (want - prev) * 0.6 : prev + (want - prev) * 0.18;
-                if (Math.abs(next - prev) > 0.01) { shown.current[i] = next; vals.current[i].setValue(next); }
+                const next = want > prev ? prev + (want - prev) * 0.85 : prev + (want - prev) * 0.22;
+                if (Math.abs(next - prev) > 0.004) { shown.current[i] = next; vals.current[i].setValue(MIN + next * SPAN); }
             }
-        }, 50);
-        return () => clearInterval(id);
+            raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+        return () => cancelAnimationFrame(raf);
     }, [bars]);
 
+    // The box fills the whole pill or cover and is cut to its exact outline, so the bars follow the
+    // curve of the corners instead of stopping short of them.
     return (
-        <View pointerEvents="none" style={styles.box}>
-            {vals.current.map((v, i) => (
-                <Animated.View
-                    key={i}
-                    style={[styles.bar, {
-                        backgroundColor: color,
-                        height: v.interpolate({ inputRange: [0, 1], outputRange: ['6%', '90%'] }),
-                    }]}
-                />
-            ))}
+        <View pointerEvents="none" onLayout={(e) => setH(e.nativeEvent.layout.height)} style={[styles.box, { borderRadius: radius }]}>
+            {mode === 'cover' ? <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,' + COVER_DIM + ')' }]} /> : null}
+            {h > 0 ? vals.current.map((v, i) => <Bar key={i} v={v} h={h} color={color} />) : null}
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    // Inset from the edges so the bars sit entirely inside the cover or row, never touching or spilling past it.
-    box: { position: 'absolute', left: 3, right: 3, top: 3, bottom: 3, flexDirection: 'row', alignItems: 'flex-end', gap: 2, overflow: 'hidden' },
-    bar: { flex: 1, borderRadius: 2, opacity: 0.32 },
+    box: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, flexDirection: 'row', alignItems: 'flex-end', gap: 2, overflow: 'hidden' },
 });

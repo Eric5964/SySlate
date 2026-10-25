@@ -42,12 +42,17 @@ const CACHE_KEY = 'song_tags_cache_v6';
 const FRONT_PREFIX_BYTES = 1 * 1024 * 1024; // tags live at the front for every format handled here
 
 let cacheMapPromise = null;
+let cacheMapSync = null;   // the same map once loaded, so a scan can read it without awaiting per song
 async function loadCacheMap() {
     if (!cacheMapPromise) {
-        cacheMapPromise = AsyncStorage.getItem(CACHE_KEY).then(v => v ? JSON.parse(v) : {}).catch(() => ({}));
+        cacheMapPromise = AsyncStorage.getItem(CACHE_KEY).then(v => v ? JSON.parse(v) : {}).catch(() => ({}))
+            .then(m => { cacheMapSync = m; return m; });
     }
     return cacheMapPromise;
 }
+// Starts reading the tag cache (or waits for it). A scan calls this first, then uses
+// getCachedTagsSync for every file.
+export function preloadTagCache() { return loadCacheMap(); }
 // Writing the whole cache after every single song made the first pass over a big library
 // re-save (and re-serialize) the entire map thousands of times. Now one save per ~1.5 s.
 let persistTimer = null;
@@ -61,6 +66,7 @@ function schedulePersist(getMap) {
 async function saveCacheEntry(songId, value) {
     const map = await loadCacheMap();
     map[songId] = value;
+    cacheMapSync = map;
     cacheMapPromise = Promise.resolve(map);
     schedulePersist(() => map);
 }
@@ -352,6 +358,15 @@ function readIlstTextAtomMulti(bytes, ilst, fourcc) {
     }
     return out;
 }
+function extractTagsFromIlst(bytes, ilst) {
+    const out = {};
+    const title = readIlstTextAtom(bytes, ilst, '\u00A9nam'); if (title) out.title = title;
+    const artists = readIlstTextAtomMulti(bytes, ilst, '\u00A9ART');
+    if (artists.length === 1) out.artist = artists[0];
+    else if (artists.length > 1) out.artists = artists;
+    const album = readIlstTextAtom(bytes, ilst, '\u00A9alb'); if (album) out.album = album;
+    return Object.keys(out).length ? out : null;
+}
 function extractTagsFromMp4(bytes) {
     const moov = findAtom(bytes, 0, bytes.length, 'moov');
     if (!moov) return null;
@@ -361,13 +376,7 @@ function extractTagsFromMp4(bytes) {
     if (!meta) return null;
     const ilst = findAtom(bytes, meta.dataStart + 4, meta.dataEnd, 'ilst');
     if (!ilst) return null;
-    const out = {};
-    const title = readIlstTextAtom(bytes, ilst, '\u00A9nam'); if (title) out.title = title;
-    const artists = readIlstTextAtomMulti(bytes, ilst, '\u00A9ART');
-    if (artists.length === 1) out.artist = artists[0];
-    else if (artists.length > 1) out.artists = artists;
-    const album = readIlstTextAtom(bytes, ilst, '\u00A9alb'); if (album) out.album = album;
-    return Object.keys(out).length ? out : null;
+    return extractTagsFromIlst(bytes, ilst);
 }
 
 // --- MP3: ID3v2 text frames ----------------------------------------------
@@ -516,11 +525,150 @@ async function readId3TagsBySeeking(url) {
     for (const part of parts) { out.set(part, o); o += part.length; }
     return extractTagsFromId3(out);
 }
+// ---- Fast paths for M4A and Ogg/Opus ---------------------------------------------------------
+// Both give the same tags as the whole-prefix readers they sit in front of (they use the same
+// parsers on the same atoms/comment block), but read a few KB instead of decoding 1 MB per song.
+// Anything they cannot be sure about returns null and the original reader runs as before.
+
+// Reads small pieces of a file through one remembered window, so walking a run of box headers
+// next to each other costs one read, not one per header.
+function makeWindowReader(url, windowSize) {
+    let wPos = -1, wBuf = null;
+    return async (pos, len) => {
+        if (wBuf && pos >= wPos && pos + len <= wPos + wBuf.length) return wBuf.subarray(pos - wPos, pos - wPos + len);
+        const b = await readBytes(url, { position: pos, length: Math.max(len, windowSize) });
+        wPos = pos; wBuf = b;
+        return b.subarray(0, Math.min(len, b.length));
+    };
+}
+
+// M4A/MP4: hops box to box (moov -> udta -> meta -> ilst) and reads only the title, artist and
+// album atoms, so a big cover picture inside 'ilst', or a moov at the END of the file, costs a
+// few small reads instead of the first megabyte plus (for a trailing moov) the whole moov.
+async function readMp4TagsBySeeking(url) {
+    const get = makeWindowReader(url, 16384);
+    const header = async (pos, end) => {
+        if (pos + 8 > end) return null;
+        const h = await get(pos, 16);
+        if (h.length < 8) return null;
+        let size = readU32BE(h, 0), hdr = 8;
+        const type = String.fromCharCode(h[4], h[5], h[6], h[7]);
+        if (size === 1) {   // same as findAtom: only the low 32 bits of the 64-bit size are used
+            if (h.length < 16 || pos + 16 > end) return null;
+            size = readU32BE(h, 12); hdr = 16;
+        }
+        if (size < hdr) return null;
+        return { start: pos, hdr, size, type, dataStart: pos + hdr, dataEnd: Math.min(pos + size, end) };
+    };
+    const find = async (start, end, type) => {
+        let p = start;
+        for (let i = 0; i < 200 && p + 8 <= end; i++) {
+            const b = await header(p, end);
+            if (!b) return null;
+            if (b.type === type) return b;
+            p += b.size;
+        }
+        return null;
+    };
+    const moov = await find(0, Number.MAX_SAFE_INTEGER, 'moov');
+    if (!moov) return null;
+    const udta = await find(moov.dataStart, moov.dataEnd, 'udta'); if (!udta) return null;
+    const meta = await find(udta.dataStart, udta.dataEnd, 'meta'); if (!meta) return null;
+    const ilst = await find(meta.dataStart + 4, meta.dataEnd, 'ilst'); if (!ilst) return null;
+    const wanted = new Set(['\u00A9nam', '\u00A9ART', '\u00A9alb']);
+    const parts = [];
+    let total = 0;
+    let p = ilst.dataStart;
+    for (let i = 0; i < 500 && p + 8 <= ilst.dataEnd; i++) {
+        const b = await header(p, ilst.dataEnd);
+        if (!b) break;
+        if (wanted.has(b.type)) {
+            if (b.size > 1024 * 1024) return null;   // not a normal text atom: let the full reader decide
+            const body = await get(b.start, Math.min(b.size, ilst.dataEnd - b.start));
+            parts.push(body); total += body.length;
+        }
+        p += b.size;
+    }
+    if (!parts.length) return null;
+    // A small 'ilst' holding just those atoms, so the same extraction code reads it.
+    const synth = new Uint8Array(8 + total);
+    const n = 8 + total;
+    synth[0] = (n >>> 24) & 255; synth[1] = (n >>> 16) & 255; synth[2] = (n >>> 8) & 255; synth[3] = n & 255;
+    synth[4] = 0x69; synth[5] = 0x6C; synth[6] = 0x73; synth[7] = 0x74;   // "ilst"
+    let o = 8;
+    for (const part of parts) { synth.set(part, o); o += part.length; }
+    return extractTagsFromIlst(synth, { dataStart: 8, dataEnd: synth.length });
+}
+
+// Where the comment list that starts at `offset` ends, or -1 if it does not end inside `end`.
+function vorbisCommentBlockEnd(bytes, offset, end) {
+    let p = offset;
+    if (p + 4 > end) return -1;
+    p += 4 + readU32LE(bytes, p);
+    if (p + 4 > end) return -1;
+    const count = readU32LE(bytes, p); p += 4;
+    for (let i = 0; i < count; i++) {
+        if (p + 4 > end) return -1;
+        p += 4 + readU32LE(bytes, p);
+        if (p > end) return -1;
+    }
+    return p;
+}
+// Ogg Vorbis / Opus: the comment header sits in the first page or two, so 64 KB is almost always
+// plenty. Only used when the whole comment block is inside what was read (a big embedded picture
+// can push it out), otherwise the full 1 MB reader below runs exactly as before.
+async function readOggTagsFast(url) {
+    const bytes = await readBytes(url, { position: 0, length: 64 * 1024 });
+    const markers = [
+        { bytes: [0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73], len: 8 },
+        { bytes: [0x03, 0x76, 0x6F, 0x72, 0x62, 0x69, 0x73], len: 7 },
+    ];
+    for (const m of markers) {
+        for (let i = 0; i + m.len < bytes.length; i++) {
+            let match = true;
+            for (let j = 0; j < m.len; j++) if (bytes[i + j] !== m.bytes[j]) { match = false; break; }
+            if (match) {
+                if (vorbisCommentBlockEnd(bytes, i + m.len, bytes.length) < 0) return null;
+                const result = parseVorbisCommentBlock(bytes, i + m.len, bytes.length);
+                if (result) return result;
+            }
+        }
+    }
+    return null;
+}
+
 async function extractTagsUncached(song) {
     if (!song?.id || !song?.url) return null;
     try {
         const ext = (song.filename || song.id || '').split('.').pop().toLowerCase();
-        const bytes = await readBytes(song.url, { position: 0, length: FRONT_PREFIX_BYTES });
+        // FLAC: walk the metadata block headers with small reads instead of reading and decoding
+        // the first 1 MB just to find one comment block (same parser, so the same tags; a
+        // comment block larger than the old 1 MB window is now read whole instead of cut off).
+        // Anything unexpected falls through to the original whole-prefix read below.
+        if (ext === 'flac') {
+            const seeked = await readFlacTagsBySeeking(song.url);
+            if (seeked) return seeked;
+        }
+        if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') {
+            const seeked = await readMp4TagsBySeeking(song.url);
+            if (seeked) return seeked;
+        }
+        if (ext === 'opus' || ext === 'ogg') {
+            const quick = await readOggTagsFast(song.url);
+            if (quick) return quick;
+        }
+        // MP3: the tag's own size is in its 10-byte header, so only the tag is read (up to the
+        // same 1 MB as before), not a full megabyte of tag plus audio.
+        let bytes;
+        if (ext === 'mp3') {
+            const head = await readBytes(song.url, { position: 0, length: 10 });
+            const hasTag = head.length >= 10 && head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33;
+            bytes = hasTag
+                ? await readBytes(song.url, { position: 0, length: Math.min(FRONT_PREFIX_BYTES, 10 + readSynchsafe32(head, 6)) })
+                : head;
+        } else {
+            bytes = await readBytes(song.url, { position: 0, length: FRONT_PREFIX_BYTES });
+        }
         if (ext === 'flac') return extractTagsFromFlac(bytes) || await readFlacTagsBySeeking(song.url);
         if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') {
             const front = extractTagsFromMp4(bytes);
@@ -586,17 +734,32 @@ export async function getCachedTagsFast(song) {
     }
 }
 
+// Same answer as getCachedTagsFast, but synchronous. Only valid after preloadTagCache() has
+// resolved (before that it says "unknown", like a song that is not cached yet).
+export function getCachedTagsSync(song) {
+    if (!song?.id || !cacheMapSync) return undefined;
+    const entry = cacheMapSync[song.id];
+    return entry === undefined ? undefined : (entry.tags ?? null);
+}
+
 // The real, expensive read+parse+cache-write. Only ever called from the
 // background loader (or directly, if a caller genuinely needs a fresh
 // result right now) — never from the scan path.
+// Songs that could not be read in this session (no fingerprint, or the read threw). They are not
+// cached (a later launch tries again) but nothing else retries them either: the up-front reading
+// and the background loader skip them, and they never count as "tags read".
+const failedThisSession = new Set();
+export function tagReadFailed(song) { return !!song?.id && failedThisSession.has(song.id); }
 export async function extractTags(song) {
     if (!song?.id || !song?.url) return null;
     try {
         const fp = await getFingerprint(song.url);
         const tags = await extractTagsUncached(song);
-        if (fp) await saveCacheEntry(song.id, { tags, fp });   // no fingerprint = file unreadable right now: try again next scan
+        if (fp) { await saveCacheEntry(song.id, { tags, fp }); failedThisSession.delete(song.id); }
+        else failedThisSession.add(song.id);   // no fingerprint = file unreadable right now
         return tags;
     } catch (e) {
+        failedThisSession.add(song.id);
         console.error('extractTags:', song?.filename, e);
         return null;
     }

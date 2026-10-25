@@ -327,6 +327,11 @@ class AudioEngine: RCTEventEmitter {
     private var scratchWindowStartSeconds: Double = 0
     private var scratchFileRate: Double = 44100
     private var scratchLoading: Bool = false
+    // How far BEHIND the disc the normal player is when it first sounds after a scratch: it takes a moment to
+    // start, and the disc keeps playing meanwhile, so a player started at the disc's exact spot repeated that
+    // moment (heard as the end of the release played twice). It is started this far ahead instead, and the value
+    // is corrected after every release from what was actually measured.
+    private var scratchHandoverLead: Double = 0.06
     // Length chosen when the natural-end crossfade timer was armed (shorter
     // than the setting when the song's audible end leaves less runway).
     private var crossfadeLeadDurationSeconds: Double? = nil
@@ -3245,6 +3250,7 @@ class AudioEngine: RCTEventEmitter {
                 t.qid = queue[i].qid
                 queue[i] = t
                 if i == currentIndex { swappedCurrent = true }
+                if i == currentIndex + 1 { debugLog("[REPLACE] the slot right after the playing song was swapped (isCrossfading=\(isCrossfading))") }
             }
             let oldPrefix = oldId + "|"
             let staleDur = lastKnownDurationByKey.keys.filter { $0.hasPrefix(oldPrefix) }
@@ -3337,6 +3343,65 @@ class AudioEngine: RCTEventEmitter {
                 try data.write(to: URL(fileURLWithPath: destPathPlain), options: .atomic)
                 resolve(true)
             } catch {
+                resolve(false)
+            }
+        }
+    }
+
+    // Copies `length` bytes of a file, starting at `offset`, into a new file, a megabyte at a time.
+    // Used for big embedded cover pictures: they never have to exist as one big string in JS.
+    @objc(copyFileRange:offset:length:destPath:resolver:rejecter:)
+    func copyFileRange(_ src: String, offset: NSNumber, length: NSNumber, destPath dest: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.global(qos: .utility).async {
+            func plainPath(_ p: String) -> String {
+                if p.hasPrefix("file://"), let u = URL(string: p) { return u.path }
+                return p
+            }
+            let fm = FileManager.default
+            var srcPath = plainPath(src)
+            let destPlain = plainPath(dest)
+            if !fm.fileExists(atPath: srcPath),
+               let range = srcPath.range(of: "/Documents/"),
+               let realDocs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+                srcPath = realDocs.appendingPathComponent(String(srcPath[range.upperBound...])).path
+            }
+            let start = offset.int64Value
+            var remaining = length.int64Value
+            guard start >= 0, remaining > 0, let input = FileHandle(forReadingAtPath: srcPath) else {
+                resolve(false)
+                return
+            }
+            let tmp = destPlain + ".part"
+            var ok = true
+            do {
+                try fm.createDirectory(atPath: (destPlain as NSString).deletingLastPathComponent, withIntermediateDirectories: true, attributes: nil)
+                fm.createFile(atPath: tmp, contents: nil, attributes: nil)
+                guard let output = FileHandle(forWritingAtPath: tmp) else {
+                    try? input.close()
+                    resolve(false)
+                    return
+                }
+                try input.seek(toOffset: UInt64(start))
+                while remaining > 0 && ok {
+                    autoreleasepool {
+                        do {
+                            let want = Int(min(remaining, 1_048_576))
+                            guard let data = try input.read(upToCount: want), !data.isEmpty else { ok = false; return }
+                            try output.write(contentsOf: data)
+                            remaining -= Int64(data.count)
+                        } catch { ok = false }
+                    }
+                }
+                try? output.close()
+            } catch {
+                ok = false
+            }
+            try? input.close()
+            if ok {
+                try? fm.removeItem(atPath: destPlain)
+                do { try fm.moveItem(atPath: tmp, toPath: destPlain); resolve(true) } catch { try? fm.removeItem(atPath: tmp); resolve(false) }
+            } else {
+                try? fm.removeItem(atPath: tmp)
                 resolve(false)
             }
         }
@@ -3794,8 +3859,14 @@ class AudioEngine: RCTEventEmitter {
                 self.stopScratchRefillTimer()
                 self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
                 self.activeNode.volume = 0
-                self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: true)
+                let lead = self.scratchHandoverLead
+                self.seekWithinCurrentTrack(startAtSeconds: finalSec + lead, autoPlay: true)
                 self.activeNode.volume = 0
+                // Until the player is really rendering, positions are read from here: the spot the disc left
+                // the song at (the old reading was from BEFORE the scratch, so the bar jumped).
+                self.frozenPositionSeconds = nil
+                self.lastLivePositionSeconds = finalSec
+                self.lastLivePositionAt = Date()
                 let sr = max(8000.0, Double(self.scratchFormat?.sampleRate ?? 44100))
                 let gr: Float = 0.002
                 core.gainRate = gr
@@ -3806,6 +3877,16 @@ class AudioEngine: RCTEventEmitter {
                 for i in 1...steps {
                     DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(i)) { [weak self] in
                         guard let self = self, !self.scratchActive else { return }
+                        // Measure how far the player really is from the disc (both are still sounding) and
+                        // correct the lead for the next release.
+                        if i == 12, let nt = self.activeNode.lastRenderTime, let pt = self.activeNode.playerTime(forNodeTime: nt), pt.sampleTime >= 0 {
+                            let sr2 = pt.sampleRate > 0 ? pt.sampleRate : self.currentFileSampleRate
+                            let pPlayer = self.segmentStartOffsetSeconds + Double(pt.sampleTime) / sr2
+                            let pDisc = core.windowStart + core.pos / fileRate
+                            let off = pDisc - pPlayer   // > 0: the player is behind the disc
+                            if abs(off) < 0.4 { self.scratchHandoverLead = max(0, min(0.3, self.scratchHandoverLead + 0.6 * off)) }
+                            self.debugLog(String(format: "[SCRATCH] handover: player was %.0f ms behind the disc, lead %.0f ms -> %.0f ms", off * 1000, lead * 1000, self.scratchHandoverLead * 1000))
+                        }
                         let up = i == steps ? Float(1) : Float(1 - exp(-stepSec * Double(i) / tau))
                         self.activeNode.volume = restoreVol * up
                     }
@@ -3830,6 +3911,10 @@ class AudioEngine: RCTEventEmitter {
                     self.stopScratchRefillTimer()
                     self.timePitchNode.bypass = abs(self.playbackRate - 1) < 0.001
                     self.seekWithinCurrentTrack(startAtSeconds: finalSec, autoPlay: false)
+                    // Paused: the bar and the lock screen read the spot the disc left it at (not the one from before).
+                    self.frozenPositionSeconds = finalSec
+                    self.lastLivePositionSeconds = finalSec
+                    self.lastLivePositionAt = Date()
                     self.activeNode.volume = restoreVol
                     if self.engine.isRunning { self.engine.pause(); self.markOutputCold() }   // hardware stopped: the next play is a cold start
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
@@ -4249,6 +4334,36 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // Same picker as importFolder, but it only picks: resolves true (a folder was chosen) or false
+    // (cancelled). The copy is started separately (copyPickedFolder), so the app can show its loading
+    // card only once the picker is closed and the real work begins.
+    private var pickedImportRoot: URL?
+    @objc(pickImportFolder:rejecter:)
+    func pickImportFolder(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.main.async {
+            guard let top = AudioEngine.topViewController() else { reject("NO_UI", "The picker could not be shown.", nil); return }
+            let picker = UIDocumentPickerViewController(documentTypes: ["public.folder"], in: .open)
+            picker.allowsMultipleSelection = false
+            let del = FolderPickDelegate(onPick: { [weak self] url in
+                self?.folderPickerDelegate = nil
+                self?.pickedImportRoot = url
+                debugLog("[IMPORT] folder picker closed: " + (url == nil ? "cancelled" : "folder chosen"))
+                resolve(url != nil)
+            })
+            self.folderPickerDelegate = del
+            picker.delegate = del
+            top.present(picker, animated: true, completion: nil)
+        }
+    }
+
+    // Copies the folder chosen by pickImportFolder. Resolves like importFolder, or null if none was chosen.
+    @objc(copyPickedFolder:rejecter:)
+    func copyPickedFolder(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        guard let root = pickedImportRoot else { resolve(NSNull()); return }
+        pickedImportRoot = nil
+        copyFolderIn(root, resolve: resolve)
+    }
+
     private func copyFolderIn(_ root: URL, resolve: @escaping RCTPromiseResolveBlock) {
         let scoped = root.startAccessingSecurityScopedResource()
         var bgTask: UIBackgroundTaskIdentifier = .invalid
@@ -4270,6 +4385,13 @@ class AudioEngine: RCTEventEmitter {
             var copied = 0, skipped = 0, failed = 0
             var touched = Set<String>()
             var added: [String] = []   // audio files copied in, as paths under Documents (the app then replaces older copies of the same song)
+            var reserved = Set<String>()   // destination paths already taken by a copy in progress
+            // Copies run a few at a time (an iCloud file has to be downloaded first, which is mostly
+            // waiting), so everything the copies share is only touched inside locked { }.
+            let lock = NSLock()
+            func locked(_ body: () -> Void) { lock.lock(); body(); lock.unlock() }
+            // Folder names the app's library scan ignores: a playlist with one of these names would be invisible.
+            let hiddenNames: Set<String> = ["Application Support", "Caches", "Cookies", "Preferences", "Saved Application State", "SystemData", "tmp", "Library"]
 
             func coordinatedCopy(_ src: URL, _ dst: URL) -> Bool {
                 var ok = false
@@ -4284,39 +4406,52 @@ class AudioEngine: RCTEventEmitter {
                 return n?.int64Value ?? -1
             }
             // Copies one file into <Documents>/<playlist>/<rel>, never overwriting.
-            func copyOne(_ src: URL, playlist: String, rel: String) {
+            func copyOne(_ src: URL, playlist rawPlaylist: String, rel: String) {
+                let playlist = hiddenNames.contains(rawPlaylist) ? rawPlaylist + " (imported)" : rawPlaylist
                 let ext = src.pathExtension.lowercased()
-                guard audio.contains(ext) || extras.contains(ext) else { if !ext.isEmpty { skipped += 1 }; return }
+                guard audio.contains(ext) || extras.contains(ext) else { if !ext.isEmpty { locked { skipped += 1 } }; return }
                 var dst = docs.appendingPathComponent(playlist, isDirectory: true).appendingPathComponent(rel)
-                do { try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil) } catch { failed += 1; return }
-                if fm.fileExists(atPath: dst.path) {
-                    if fileSize(dst) == fileSize(src) { skipped += 1; return }
-                    if extras.contains(ext) {
-                        // A lyrics file or picture with the same name: the newer one replaces the old one.
-                        // (A "(2)" copy would never be found: lyrics and covers are matched by the song's name.)
-                        do { try fm.removeItem(at: dst) } catch { failed += 1; return }
-                    } else {
-                        let stem = dst.deletingPathExtension().lastPathComponent
-                        let dir = dst.deletingLastPathComponent()
-                        var n = 2
-                        var candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
-                        while fm.fileExists(atPath: candidate.path) && n < 100 {
-                            n += 1
-                            candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                do { try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: nil) } catch { locked { failed += 1 }; return }
+                let srcSize = fileSize(src)
+                var skipThis = false
+                var failThis = false
+                locked {
+                    if fm.fileExists(atPath: dst.path) {
+                        if fileSize(dst) == srcSize { skipThis = true }
+                        else if extras.contains(ext) {
+                            // A lyrics file or picture with the same name: the newer one replaces the old one.
+                            // (A "(2)" copy would never be found: lyrics and covers are matched by the song's name.)
+                            do { try fm.removeItem(at: dst) } catch { failThis = true }
+                        } else {
+                            let stem = dst.deletingPathExtension().lastPathComponent
+                            let dir = dst.deletingLastPathComponent()
+                            var n = 2
+                            var candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                            while (fm.fileExists(atPath: candidate.path) || reserved.contains(candidate.path)) && n < 100 {
+                                n += 1
+                                candidate = dir.appendingPathComponent("\(stem) (\(n))").appendingPathExtension(ext)
+                            }
+                            dst = candidate
                         }
-                        dst = candidate
                     }
+                    if !skipThis && !failThis { reserved.insert(dst.path) }
                 }
-                if coordinatedCopy(src, dst) {
-                    if audio.contains(ext) {
-                        copied += 1
-                        let docsPath = docs.standardizedFileURL.path
-                        let dstPath = dst.standardizedFileURL.path
-                        if dstPath.hasPrefix(docsPath + "/") { added.append(String(dstPath.dropFirst(docsPath.count + 1))) }
-                    }
-                    touched.insert(playlist)
-                } else { failed += 1 }
+                if skipThis { locked { skipped += 1 }; return }
+                if failThis { locked { failed += 1 }; return }
+                let ok = coordinatedCopy(src, dst)
+                locked {
+                    if ok {
+                        if audio.contains(ext) {
+                            copied += 1
+                            let docsPath = docs.standardizedFileURL.path
+                            let dstPath = dst.standardizedFileURL.path
+                            if dstPath.hasPrefix(docsPath + "/") { added.append(String(dstPath.dropFirst(docsPath.count + 1))) }
+                        }
+                        touched.insert(playlist)
+                    } else { failed += 1 }
+                }
             }
+            var jobs: [(URL, String, String)] = []   // (file, playlist, path inside the playlist)
             func walk(_ dir: URL, playlist: String) {
                 guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return }
                 let base = dir.standardizedFileURL.path
@@ -4325,7 +4460,7 @@ class AudioEngine: RCTEventEmitter {
                     if isDir { continue }
                     let full = url.standardizedFileURL.path
                     let rel = full.hasPrefix(base + "/") ? String(full.dropFirst(base.count + 1)) : url.lastPathComponent
-                    copyOne(url, playlist: playlist, rel: rel)
+                    jobs.append((url, playlist, rel))
                 }
             }
 
@@ -4336,9 +4471,23 @@ class AudioEngine: RCTEventEmitter {
                     walk(child, playlist: child.lastPathComponent)
                 } else {
                     // Songs loose in the chosen folder go into a playlist named after that folder.
-                    copyOne(child, playlist: root.lastPathComponent, rel: child.lastPathComponent)
+                    jobs.append((child, root.lastPathComponent, child.lastPathComponent))
                 }
             }
+            let group = DispatchGroup()
+            let slots = DispatchSemaphore(value: 4)
+            let copyQueue = DispatchQueue(label: "importFolder.copy", qos: .userInitiated, attributes: .concurrent)
+            for job in jobs {
+                slots.wait()
+                group.enter()
+                copyQueue.async {
+                    copyOne(job.0, playlist: job.1, rel: job.2)
+                    slots.signal()
+                    group.leave()
+                }
+            }
+            group.wait()
+            added.sort()
             resolve(["playlists": Array(touched).sorted(), "copied": copied, "skipped": skipped, "failed": failed, "added": added])
         }
     }
@@ -4428,7 +4577,7 @@ class AudioEngine: RCTEventEmitter {
     private var spatialBalance: Float = 0
 
     // MARK: - Visualizer
-    // Eight loudness readings (low to high pitch) of what is playing, sent to JS about 20
+    // Eight loudness readings (low to high pitch) of what is playing, sent to JS about 45
     // times a second for the song-list visualizer. It is a small tap on the main mixer and
     // exists only while the visualizer is switched on (JS turns it on and off).
     private var vizOn = false
@@ -4455,7 +4604,7 @@ class AudioEngine: RCTEventEmitter {
     // multiply-adds per call), with a Hann window to keep the bands apart.
     private func vizProcess(_ buffer: AVAudioPCMBuffer) {
         let now = ProcessInfo.processInfo.systemUptime
-        if now - vizLastSent < 0.045 { return }
+        if now - vizLastSent < 0.022 { return }
         guard let ch = buffer.floatChannelData else { return }
         let n = Int(buffer.frameLength)
         if n < 64 { return }

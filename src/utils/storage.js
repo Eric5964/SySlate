@@ -801,7 +801,8 @@ const fallbackKeys = (song) => {
     const out = [baseCountKey(song), baseCountKeyN(song)];
     const f = fileNameParts(song);
     if (f) out.push(`pcn:${f.t.toLowerCase()}::${f.a.toLowerCase()}`, normKey(f.t, f.a, ''));
-    return [...new Set(out)].filter(k => !primaryKeys(song).includes(k));
+    const prim = new Set(primaryKeys(song));
+    return [...new Set(out)].filter(k => !prim.has(k));
 };
 
 // Screens that show play counts listen here, so a count changes on screen the moment
@@ -867,13 +868,18 @@ export const peekPlayCount = (id) => playCountCache.get(id);
 
 export const getPlayCounts = async (songs) => {
     try {
-        const byKey = {};
-        songs.forEach(s => { (byKey[playCountKey(s)] ??= []).push(s); });
+        // Each song's keys are worked out once (they used to be rebuilt several times per song),
+        // and the "which songs need the old counts" step uses lookups instead of searching the
+        // whole list for every song, which got slow with thousands of songs.
+        const keyOf = songs.map(playCountKey);
+        const byKey = new Map();
+        songs.forEach((s, i) => { const k = keyOf[i]; const l = byKey.get(k); if (l) l.push(i); else byKey.set(k, [i]); });
         const prim = songs.map(primaryKeys);
         const fall = songs.map(fallbackKeys);
-        const lookup = [...new Set([...prim.flat(), ...fall.flat(), ...songs.map(sg => `pci:${sg.id}`)])];
+        const lookupSet = new Set();
+        songs.forEach((sg, i) => { prim[i].forEach(k => lookupSet.add(k)); fall[i].forEach(k => lookupSet.add(k)); lookupSet.add(`pci:${sg.id}`); });
         const got = {};
-        (await AsyncStorage.multiGet(lookup)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) got[k] = n; });
+        (await AsyncStorage.multiGet([...lookupSet])).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) got[k] = n; });
         const ownOf = (s, i) => Math.max(got[`pci:${s.id}`] ?? 0, ...prim[i].map(k => got[k] ?? 0));
         const fallOf = (i) => Math.max(0, ...fall[i].map(k => got[k] ?? 0));
         // A song with an album tag uses its own count; only without one is the album-less
@@ -881,17 +887,19 @@ export const getPlayCounts = async (songs) => {
         const base = songs.map((s, i) => { const own = ownOf(s, i); return own > 0 ? own : fallOf(i); });
         // Old per-file counts ('pc:<path>') from before counts were shared by title + artist:
         // only looked at for a song nothing else knows, summed over every copy of it.
-        const needLegacy = Object.keys(byKey).filter(k => byKey[k].every(s => !base[songs.indexOf(s)]));
+        const needLegacy = new Set();
+        for (const [k, idxs] of byKey) if (idxs.every(i => !base[i])) needLegacy.add(k);
         const legacy = {};
-        if (needLegacy.length) {
-            const legacyKeys = needLegacy.flatMap(k => byKey[k].map(s => `pc:${s.id}`));
+        if (needLegacy.size) {
+            const legacyKeys = [];
+            for (const k of needLegacy) for (const i of byKey.get(k)) legacyKeys.push(`pc:${songs[i].id}`);
             (await AsyncStorage.multiGet(legacyKeys)).forEach(([k, v]) => { legacy[k] = parseInt(v) || 0; });
         }
         const out = {};
         songs.forEach((s, i) => {
             let n = base[i];
-            const k = playCountKey(s);
-            if (!n && needLegacy.includes(k)) n = byKey[k].reduce((sum, x) => sum + (legacy[`pc:${x.id}`] || 0), 0);
+            const k = keyOf[i];
+            if (!n && needLegacy.has(k)) n = byKey.get(k).reduce((sum, j) => sum + (legacy[`pc:${songs[j].id}`] || 0), 0);
             out[s.id] = n; playCountCache.set(s.id, n);
         });
         return out;
@@ -1041,12 +1049,13 @@ export const getSongsTotalLength = async (songs) => {
 };
 
 export const getListeningStats = async (songs, separators, joinId) => {
-    const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:'));
+    const allKeys = await AsyncStorage.getAllKeys();
+    const keys = allKeys.filter(k => k.startsWith('pcn:'));
     const counts = {};
     (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { const n = parseInt(v); if (n > 0) counts[k] = n; });
     // Song lengths remembered while playing (see incrementPlayCount).
     const durs = {};
-    const durKeys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pdur:'));
+    const durKeys = allKeys.filter(k => k.startsWith('pdur:'));
     (await AsyncStorage.multiGet(durKeys)).forEach(([k, v]) => { const d = parseFloat(v); if (d > 0) durs['pcn:' + k.slice(5)] = d; });
     let knownSec = 0, knownPlays = 0;
     const byKey = {};
@@ -1075,7 +1084,7 @@ export const getListeningStats = async (songs, separators, joinId) => {
         const dur = (song && song.duration > 0) ? song.duration : durs[k];
         if (dur > 0) { seconds += n * dur; knownSec += n * dur; knownPlays += n; }
         else unknownPlays += n;
-        rows.push({ title, artist: formatArtists(artist, separators, joinId), n });
+        rows.push({ title, artist: formatArtists(artist, separators, joinId), n, songId: song ? song.id : null });
         // A song with several artists counts for each of them.
         const parts = splitArtists(artist, separators);
         for (const part of (parts.length ? parts : ['Unknown'])) {

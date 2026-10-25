@@ -20,7 +20,7 @@ import {
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
     getCrossfadeEnabled, getCrossfadeDurationSkip, getPlaybackRate, setPlaybackRateStored,
 } from '../utils/storage';
-import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
 import { setProgressSeed } from '../utils/progressSeed';
 
@@ -124,6 +124,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // though the restored song's id is the one already showing.
     const [artNonce, setArtNonce] = useState(0);
     const [currentTrack, setCurrentTrack] = useState(null);
+    const currentTrackLiveRef = useRef(null);
+    currentTrackLiveRef.current = currentTrack;
     const [shuffleOn, setShuffleOn] = useState(false);
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
     const [eqPresetId, setEqPresetId] = useState('flat');
@@ -353,6 +355,24 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         return () => { cancelled = true; if (timer) clearTimeout(timer); };
     }, [currentTrack?.id, artNonce]);
+
+    // A large cover found at the end of library loading (see extractLargeEmbeddedArt): if it belongs to
+    // the song that is playing, the Player, mini player, disc and lock screen get it now instead of at
+    // the next song change.
+    useEffect(() => subscribeArtUpdates(async (id, _listUri, fullUri) => {
+        const cur = currentTrackLiveRef.current;
+        if (!cur || cur.id !== id || !fullUri || cur.artwork === fullUri) return;
+        console.log('[ART] late cover for the playing song: ' + id);
+        try { await Image.prefetch(fullUri); } catch { }
+        if (currentTrackLiveRef.current?.id !== id) return;
+        setCurrentTrack(prev => (prev?.id === id ? { ...prev, artwork: fullUri } : prev));
+        try {
+            const queue = await AudioEngine.getQueue();
+            const c = currentTrackLiveRef.current;
+            const idx = queue.findIndex(t => (c?._qid != null ? t._qid === c._qid : t.id === id));
+            if (idx !== -1) await AudioEngine.updateMetadataForTrack(idx, { artwork: fullUri, id, _qid: c?._qid != null ? String(c._qid) : undefined });
+        } catch { }
+    }), []);
 
     // "Only count a play after playing half of the song continuously without
     // skipping" — credited the moment real playback position crosses 50% of
@@ -1907,13 +1927,17 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // in the same playlist). Step 1, BEFORE any file is touched: if the playing song is one of the
     // old ones it ramps out and pauses, and Play stays blocked until a song is chosen or skipped to.
     const holdPlaybackForReplace = useCallback(async (oldIds) => {
-        if (!oldIds?.length) return;
+        if (!oldIds?.length) return null;
         const olds = new Set(oldIds);
+        let blockedId = null;
         try {
             const ci = await AudioEngine.getCurrentTrack();
             const q = await AudioEngine.getQueue();
             const cur = (ci !== null && ci !== undefined) ? q[ci] : null;
+            const nxt = (ci !== null && ci !== undefined) ? q[ci + 1] : null;
+            if (nxt && olds.has(nxt.id)) console.log('[REPLACE] the next song in the queue is one of the old copies: ' + nxt.id);
             if (cur && olds.has(cur.id)) {
+                blockedId = cur.id;
                 setPlayBlocked(true);
                 if ((await AudioEngine.getState()) === State.Playing) {
                     await pauseWithRamp();
@@ -1925,7 +1949,10 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 }
             }
         } catch (e) { console.error('holdPlaybackForReplace:', e); }
+        return blockedId;   // the id of the playing song when Play was blocked, else null
     }, []);
+    // The replace did not touch the playing song after all: Play works again.
+    const releasePlaybackHold = useCallback(() => { setPlayBlocked(false); }, []);
 
     // Step 2, AFTER the files are replaced. pairs: [{ oldId, newSong }]. Every queue slot holding
     // the old song (played, playing or upcoming) is switched to the new file, so going back to it
@@ -1959,13 +1986,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

@@ -384,14 +384,14 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
             <DimPressable style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
-                {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" /></View> : null}
+                {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                         {art
                             ? <Image source={{ uri: art }} style={s.thumbImg} resizeMode="cover" />
                             : null
                         }
-                        {viz === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" /> : null}
+                        {viz === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(PILL_COVER, coverShape)} /> : null}
                     </View>
                 )}
                 <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>

@@ -4,6 +4,7 @@ import DimPressable from './DimPressable';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
+import SongVisualizer from './SongVisualizer';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
 import { pillPad, PILL_COVER, addedClearance } from '../utils/layout';
@@ -299,7 +300,8 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
     const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue } = usePlayback();
-    const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow } = usePreferences();
+    const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow, vizMode, performanceMode } = usePreferences();
+    const showViz = vizMode !== 'off' && !performanceMode;   // the visualizer on the Now Playing row, as on the song lists
     // allRows is the whole upcoming queue; only the first `visibleCount` are
     // ever turned into list items, cover lookups and row components. A queue
     // built from All Songs can be thousands long, and building all of it on
@@ -576,7 +578,7 @@ export default function QueueModal({ visible, onClose }) {
     const refreshDragRef = useRef(null);
     const edgeSince = useRef(0);   // when the finger entered the edge zone (for the slight speed-up)
 
-    const stopAutoScroll = () => { clearInterval(scrollTimer.current); scrollTimer.current = null; };
+    const stopAutoScroll = () => { if (scrollTimer.current != null) cancelAnimationFrame(scrollTimer.current); scrollTimer.current = null; };
 
     const layoutOfRow = (i) => {
         const r = rowsRef.current[i];
@@ -634,7 +636,7 @@ export default function QueueModal({ visible, onClose }) {
 
     const exitEdit = useCallback(() => {
         clearTimeout(holdTimer.current);
-        clearInterval(scrollTimer.current); scrollTimer.current = null;
+        stopAutoScroll();
         armedKey.current = null;
         dragging.current = false;
         editRef.current = false;
@@ -739,11 +741,13 @@ export default function QueueModal({ visible, onClose }) {
             console.log('[QUEUE] drag start: touch=' + primaryTouch.current + ' of ' + touches0.length
                 + ' listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)
                 + ' contentH=' + Math.round(contentH.current) + ' fingerY=' + Math.round(drag.current.fingerY));
-            clearInterval(scrollTimer.current);
+            stopAutoScroll();
             let lastT = Date.now();
-            scrollTimer.current = setInterval(() => {
+            // One step per screen frame (a 16 ms timer drifted against the display and stepped unevenly,
+            // which showed as choppy scrolling).
+            const stepScroll = () => {
                 const now = Date.now();
-                const dt = Math.min(64, now - lastT);   // ms since the last step
+                const dt = Math.min(100, now - lastT);   // ms since the last step
                 lastT = now;
                 if (!dragging.current) return;
                 // Only the very edge of the list scrolls it, and gently:
@@ -768,10 +772,9 @@ export default function QueueModal({ visible, onClose }) {
                 if (fy < zone) { const k = Math.min(1, Math.max(0, (zone - fy) / zone)); v = -k * k * MAX_SCROLL_PX_S; }
                 else if (fy > viewH.current - zone) { const k = Math.min(1, Math.max(0, (fy - (viewH.current - zone)) / zone)); v = k * k * MAX_SCROLL_PX_S; }
                 if (!v) { edgeSince.current = 0; return; }
-                // A very slight speed-up the longer the finger stays at the edge:
-                // up to 1.4x after about a second and a half.
+                // A speed-up the longer the finger stays at the edge: up to 2x after about 1.5 seconds.
                 if (!edgeSince.current) edgeSince.current = now;
-                v *= 1 + 0.4 * Math.min(1, (now - edgeSince.current) / 1500);
+                { const held = Math.min(1, (now - edgeSince.current) / 1500); v *= 1 + held * (2 - held); }
                 const step = (v * dt) / 1000;
                 const maxY = Math.max(0, contentH.current - viewH.current);
                 // [QUEUE] diagnostic: everything the touch-based auto-scroll
@@ -791,7 +794,13 @@ export default function QueueModal({ visible, onClose }) {
                 scrollY.current = ny;
                 if (listRef.current) listRef.current.scrollToOffset({ offset: ny, animated: false });
                 refreshDrag();
-            }, 16);
+            };
+            const loop = () => {
+                if (!dragging.current) { scrollTimer.current = null; return; }
+                stepScroll();
+                scrollTimer.current = requestAnimationFrame(loop);
+            };
+            scrollTimer.current = requestAnimationFrame(loop);
         },
         onPanResponderMove: (e, g) => {
             // Follow only the finger that picked the row up. g.dy and g.moveY
@@ -811,7 +820,7 @@ export default function QueueModal({ visible, onClose }) {
         onPanResponderRelease: () => { finishRef.current(); },
         onPanResponderTerminate: () => { finishRef.current(); },
     })).current;
-    useEffect(() => () => clearInterval(scrollTimer.current), []);
+    useEffect(() => () => { if (scrollTimer.current != null) cancelAnimationFrame(scrollTimer.current); }, []);
 
     const jump = async (realIndex) => {
         if (suppressPress.current || editRef.current) return;
@@ -983,12 +992,14 @@ export default function QueueModal({ visible, onClose }) {
                         })();
                     }} rightColor={theme.accent}>
                         <View style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]}>
+                            {showViz && vizMode === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                             {showSongCovers && (
                                 <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
                                     {currentTrack.artwork
                                         ? <Image source={{ uri: listArtUri(currentTrack.artwork) }} style={s.thumbImg} resizeMode="cover" />
                                         : null
                                     }
+                                    {showViz && vizMode === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(PILL_COVER, coverShape)} /> : null}
                                 </View>
                             )}
                             <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? playCounts[currentTrack.id] : 0) }}>
@@ -1070,9 +1081,11 @@ export default function QueueModal({ visible, onClose }) {
                     // be exact), enough to help FlatList size its initial
                     // window reasonably without a measurement pass.
                     initialNumToRender={perf.on ? 6 : 10}
-                    maxToRenderPerBatch={perf.on ? 4 : 8}
-                    updateCellsBatchingPeriod={perf.on ? 100 : 60}
-                    windowSize={perf.on ? 4 : 7}
+                    // While a row is held the list is scrolled fast: many more rows are kept built, and
+                    // new ones are built right away, so rows are not being created as they scroll in.
+                    maxToRenderPerBatch={dragKey != null ? 24 : (perf.on ? 4 : 8)}
+                    updateCellsBatchingPeriod={dragKey != null ? 16 : (perf.on ? 100 : 60)}
+                    windowSize={dragKey != null ? 21 : (perf.on ? 4 : 7)}
                     onEndReachedThreshold={1.5}
                     onEndReached={() => setVisibleCount(c => (c < allRows.length ? Math.min(allRows.length, c + MORE_ROWS) : c))}
                 />

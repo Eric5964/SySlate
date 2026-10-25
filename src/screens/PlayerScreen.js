@@ -723,6 +723,19 @@ export default function PlayerScreen() {
     const measureDiscArea = useCallback(() => {
         if (discAreaRef.current) discAreaRef.current.measureInWindow((x, y) => { if (y > 60 && y < 500) { discTopRef.current = y; applyDismissZone(); } });
     }, [applyDismissZone]);
+    // The controls are measured while the Player is still sliding up, so the swipe-down zone could be
+    // set from a position the screen was not going to stay at (and was only corrected by touching
+    // something). Measured again when the open animation has finished, and whenever the screen is focused.
+    useEffect(() => {
+        const remeasure = () => {
+            controlsRef.current?.measureInWindow((x, y) => { if (y > 0) { controlsYRef.current = y; applyDismissZone(); } });
+            measureDiscArea();
+        };
+        const u1 = navigation.addListener('transitionEnd', (e) => { if (!e?.data?.closing) remeasure(); });
+        const u2 = navigation.addListener('focus', () => { setTimeout(remeasure, 50); });
+        const t = setTimeout(remeasure, 600);
+        return () => { u1(); u2(); clearTimeout(t); };
+    }, [navigation, applyDismissZone, measureDiscArea]);
     useEffect(() => {
         discZoneOn.current = !!(showingDisc && djDisc);
         measureDiscArea();

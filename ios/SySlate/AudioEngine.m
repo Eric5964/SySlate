@@ -11,12 +11,25 @@ RCT_EXTERN_METHOD(replaceTracks:(NSArray *)pairs
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(pickImportFolder:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(copyPickedFolder:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(importFolder:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
 RCT_EXTERN_METHOD(makeThumbnail:(NSString *)src
                   destPath:(NSString *)dest
                   maxPixel:(nonnull NSNumber *)maxPixel
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(copyFileRange:(NSString *)src
+                  offset:(nonnull NSNumber *)offset
+                  length:(nonnull NSNumber *)length
+                  destPath:(NSString *)dest
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

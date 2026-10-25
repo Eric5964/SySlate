@@ -1,9 +1,21 @@
 import * as FileSystem from 'expo-file-system';
 import { getPlaylistOrder, getAlbumFromFolder, getArtistSeparator } from './storage';
-import { getCachedTagsFast } from './tags';
-import { compareTitles } from './sortKey';
+import { getCachedTagsFast, getCachedTagsSync, preloadTagCache } from './tags';
+import { compareTitles, titleKey, compareKeys } from './sortKey';
 
 const AUDIO_EXT = new Set(['.flac', '.mp3', '.m4a', '.wav', '.aiff', '.aac', '.alac', '.opus', '.ogg', '.mp4', '.wma', '.ape', '.caf', '.m4b']);
+
+// Every folder/file check is a trip over the native bridge; thousands at once (lyrics and cover
+// files now come along with imports) is a memory spike, so only a few run at a time.
+const MAX_STATS = 24;
+let activeStats = 0;
+const statWaiters = [];
+async function getInfoLimited(path) {
+    if (activeStats >= MAX_STATS) await new Promise(r => statWaiters.push(r));
+    activeStats++;
+    try { return await FileSystem.getInfoAsync(path); }
+    finally { activeStats--; const n = statWaiters.shift(); if (n) n(); }
+}
 
 function ext(name) { const i = name.lastIndexOf('.'); return i >= 0 ? name.slice(i).toLowerCase() : ''; }
 
@@ -42,7 +54,15 @@ function normPath(p) { return p.endsWith('/') ? p : p + '/'; }
 // just keeps its filename-based guess until the next scan after the
 // background loader reaches it.
 export async function applyTags(track, albumFromFolder, artistSeparator) {
-    const tags = await getCachedTagsFast(track);
+    return applyTagsObj(track, await getCachedTagsFast(track), albumFromFolder, artistSeparator);
+}
+
+// Same thing without awaiting anything, for the scan (which loads the tag cache once up front).
+function applyTagsSync(track, albumFromFolder, artistSeparator) {
+    return applyTagsObj(track, getCachedTagsSync(track), albumFromFolder, artistSeparator);
+}
+
+function applyTagsObj(track, tags, albumFromFolder, artistSeparator) {
     if (!tags) return track;
     // artistSeparator is now an array (Multiple Artists supports selecting
     // more than one separator at once) — joining genuinely discrete
@@ -99,29 +119,45 @@ async function listDir(dirFs, dirId) {
     return [];
 }
 
-async function walkFolder(dirId, dirFs, albumName, depth, albumFromFolder, artistSeparator, out, skipped) {
+// Returns the songs found, in the same order a one-by-one walk would have found them (files
+// and sub-folders in directory order), but sub-folders are looked at together instead of one
+// after the other: every folder check is a separate trip to the file system.
+async function walkFolder(dirId, dirFs, albumName, depth, albumFromFolder, artistSeparator, skipped) {
     const items = await listDir(dirFs, dirId);
+    const parts = [];   // per item, in order: a song, or a promise for a folder's songs
     for (const item of items) {
         if (item.startsWith('.')) continue;
         const id = normPath(dirId) + item;
         const e = ext(item);
         if (AUDIO_EXT.has(e)) {
-            out.push(await applyTags({ id, url: encodeFileUrl(id), filename: item, ...parseFilename(item, albumName) }, albumFromFolder, artistSeparator));
+            parts.push(applyTagsSync({ id, url: encodeFileUrl(id), filename: item, ...parseFilename(item, albumName) }, albumFromFolder, artistSeparator));
         } else if (depth < MAX_DEPTH) {
-            try {
-                const fs = childFs(dirFs, item);
-                const info = await FileSystem.getInfoAsync(fs);
-                if (info.isDirectory) await walkFolder(id, fs, item, depth + 1, albumFromFolder, artistSeparator, out, skipped);
-                else if (skipped) skipped[e || '(no extension)'] = (skipped[e || '(no extension)'] || 0) + 1;
-            } catch { }
+            parts.push((async () => {
+                try {
+                    const fs = childFs(dirFs, item);
+                    const info = await getInfoLimited(fs);
+                    if (info.isDirectory) return await walkFolder(id, fs, item, depth + 1, albumFromFolder, artistSeparator, skipped);
+                    if (skipped) skipped[e || '(no extension)'] = (skipped[e || '(no extension)'] || 0) + 1;
+                } catch { }
+                return [];
+            })());
         }
     }
+    const out = [];
+    for (const p of await Promise.all(parts)) { if (Array.isArray(p)) { for (const x of p) out.push(x); } else out.push(p); }
+    return out;
+}
+
+// Sorts by title without rebuilding each title's sort key on every comparison.
+function sortByTitle(list, titleOf) {
+    const keyed = list.map(x => ({ x, k: titleKey(titleOf(x) || '') }));
+    keyed.sort((p, q) => compareKeys(p.k, q.k));
+    return keyed.map(p => p.x);
 }
 
 async function scanFolder(folderPath, folderFs, folderName, albumFromFolder, artistSeparator, skipped) {
-    const tracks = [];
-    await walkFolder(folderPath, folderFs, folderName, 0, albumFromFolder, artistSeparator, tracks, skipped);
-    return tracks.sort((a, b) => compareTitles(a.ourTitle, b.ourTitle));
+    const tracks = await walkFolder(folderPath, folderFs, folderName, 0, albumFromFolder, artistSeparator, skipped);
+    return sortByTitle(tracks, t => t.ourTitle);
 }
 
 const SKIP = new Set(['Application Support', 'Caches', 'Cookies', 'Preferences', 'Saved Application State', 'SystemData', 'tmp', 'Library']);
@@ -129,6 +165,10 @@ const SKIP = new Set(['Application Support', 'Caches', 'Cookies', 'Preferences',
 export async function scanLibrary() {
     const base = FileSystem.documentDirectory;
     if (!base) return { playlists: [], allSongs: [], scanPath: '', scanError: 'FileSystem.documentDirectory was empty/undefined.' };
+    // Everything that does not depend on the folder listing is started right away, so the
+    // (big) tag cache and the settings load while the folder is being read.
+    const tagCacheReady = preloadTagCache().catch(() => { });
+    const settingsReady = Promise.all([getAlbumFromFolder(), getArtistSeparator(), getPlaylistOrder()]);
     let items = [];
     try {
         items = await FileSystem.readDirectoryAsync(base);
@@ -142,34 +182,44 @@ export async function scanLibrary() {
     const playlists = [];
     const seenIds = new Set();
     const rootSongs = [];
-    const albumFromFolder = await getAlbumFromFolder();
-    const artistSeparator = await getArtistSeparator();
+    const [albumFromFolder, artistSeparator, order] = await settingsReady;
+    await tagCacheReady;
     const skipped = {};   // file types that were seen but are not audio (for the diagnostic message)
     let unreadable = 0;   // entries that could not be looked at
 
-    for (const item of items) {
-        if (item.startsWith('.') || SKIP.has(item)) continue;
+    // Every entry of Documents is looked at together (one slow folder no longer holds up the
+    // rest); the results are then put together in the original directory order.
+    const looked = await Promise.all(items.map(async (item) => {
+        if (item.startsWith('.') || SKIP.has(item)) return null;
         const path = normPath(base) + item;
         const fsPath = childFs(base, item);
         let info;
-        try { info = await FileSystem.getInfoAsync(fsPath); } catch { unreadable++; continue; }
+        try { info = await getInfoLimited(fsPath); } catch { return { item, path, failed: true }; }
         if (info.isDirectory) {
-            const songs = await scanFolder(path, fsPath, item, albumFromFolder, artistSeparator, skipped);
-            if (songs.length > 0) {
-                playlists.push({ name: item, path: normPath(path), songs });
-                songs.forEach(s => seenIds.add(s.id));
+            return { item, path, songs: await scanFolder(path, fsPath, item, albumFromFolder, artistSeparator, skipped) };
+        }
+        return { item, path, file: true };
+    }));
+
+    for (const r of looked) {
+        if (!r) continue;
+        const { item, path } = r;
+        if (r.failed) { unreadable++; continue; }
+        if (r.songs) {
+            if (r.songs.length > 0) {
+                playlists.push({ name: item, path: normPath(path), songs: r.songs });
+                r.songs.forEach(s => seenIds.add(s.id));
             }
         } else if (AUDIO_EXT.has(ext(item)) && !seenIds.has(path)) {
-            rootSongs.push(await applyTags({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') }, albumFromFolder, artistSeparator));
+            rootSongs.push(applyTagsSync({ id: path, url: encodeFileUrl(path), filename: item, ...parseFilename(item, 'Library') }, albumFromFolder, artistSeparator));
             seenIds.add(path);
-        } else if (!info.isDirectory) {
+        } else {
             const e = ext(item) || '(no extension)';
             skipped[e] = (skipped[e] || 0) + 1;
         }
     }
 
     playlists.sort((a, b) => compareTitles(a.name, b.name));
-    const order = await getPlaylistOrder();
     if (order.length) {
         const pos = new Map(order.map((p, i) => [p, i]));
         playlists.sort((a, b) => {
@@ -183,11 +233,11 @@ export async function scanLibrary() {
     const allSongs = [];
     for (const p of playlists) for (const s of p.songs) if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
     for (const s of rootSongs) if (!seen2.has(s.id)) { allSongs.push(s); seen2.add(s.id); }
-    allSongs.sort((a, b) => compareTitles(a.ourTitle, b.ourTitle));
-    const scanError = (playlists.length === 0 && allSongs.length === 0)
+    const allSorted = sortByTitle(allSongs, x => x.ourTitle);
+    const scanError = (playlists.length === 0 && allSorted.length === 0)
         ? `Found ${items.length} item(s) in Documents (${items.slice(0, 5).join(', ')}${items.length > 5 ? '...' : ''}), but none were recognized as audio files or folders containing audio files.`
             + (Object.keys(skipped).length ? ` File types seen but not audio: ${Object.entries(skipped).slice(0, 6).map(([k, n]) => `${k} x${n}`).join(', ')}.` : '')
             + (unreadable ? ` ${unreadable} item(s) could not be opened.` : '')
         : null;
-    return { playlists, allSongs, scanPath: base, scanError };
+    return { playlists, allSongs: allSorted, scanPath: base, scanError };
 }

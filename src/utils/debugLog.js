@@ -33,7 +33,9 @@ const notify = () => { for (const l of listeners) l(); };
 const push = (line) => {
     if (perf.on) return;   // Performance mode: no log capture
     lines.push({ t: Date.now(), line });
-    if (lines.length > MAX_LINES) lines = lines.slice(lines.length - MAX_LINES);
+    // Trim in steps of 250 lines, not a fresh copy of the whole array on every line past the cap
+    // (a busy log, e.g. during a scratch, made that thousands of 1500-entry copies a second).
+    if (lines.length > MAX_LINES + 250) lines = lines.slice(lines.length - MAX_LINES);
     notify();
 };
 

@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { scanLibrary, applyTags } from './files';
-import { extractTags, getCachedTags } from './tags';
+import { extractTags, getCachedTags, getCachedTagsSync, preloadTagCache } from './tags';
 import { getAlbumFromFolder, getArtistSeparator, playCountKey, baseCountKey } from './storage';
 
 // After an import: a song that was just added replaces an OLDER copy of the same song in the same
@@ -36,8 +36,15 @@ export async function replaceImportedDuplicates(added, hooks) {
     const albumFromFolder = await getAlbumFromFolder();
     const artistSeparator = await getArtistSeparator();
     // The song as the library will see it once its tags are read, so the key is exactly the play count key.
-    const keyOf = async (song) => {
-        try { if ((await getCachedTags(song)) === undefined) { await extractTags(song); await sleep(15); } } catch { }
+    // The new files are checked with the stat-confirmed lookup (they may have just replaced
+    // something); the library's existing songs only need the plain cache read, which does not
+    // touch the file system once per song (that was thousands of one-by-one checks for a big playlist).
+    try { await preloadTagCache(); } catch { }
+    const keyOf = async (song, isNew = false) => {
+        try {
+            const cached = isNew ? await getCachedTags(song) : getCachedTagsSync(song);
+            if (cached === undefined) { await extractTags(song); if (isNew) await sleep(15); }
+        } catch { }
         const resolved = await applyTags(song, albumFromFolder, artistSeparator);
         const key = playCountKey(resolved);
         return { key, resolved, empty: baseCountKey(resolved) === 'pcn:::' };
@@ -46,7 +53,7 @@ export async function replaceImportedDuplicates(added, hooks) {
     // The newest copy wins when several new files share one song.
     const newByGroupKey = new Map();   // `${group}\u0000${key}` -> { song, resolved }
     for (const sg of newSongs) {
-        const k = await keyOf(sg);
+        const k = await keyOf(sg, true);
         if (!k.empty) newByGroupKey.set(`${groupOf(relOf(sg.id))}\u0000${k.key}`, { song: sg, resolved: k.resolved });
     }
     if (!newByGroupKey.size) return { replaced: 0 };
@@ -65,7 +72,8 @@ export async function replaceImportedDuplicates(added, hooks) {
     }
     if (!found.length) return { replaced: 0 };
 
-    try { await hooks?.hold?.(found.map(f => f.old.id)); } catch { }
+    let blockedId = null;   // set when the playing song is one of the old copies (Play is blocked until the swap)
+    try { blockedId = (await hooks?.hold?.(found.map(f => f.old.id))) || null; } catch { }
 
     // One old file per new file gives it its name (the first, by path); other old copies of the same
     // song are just deleted and point at the same final file.
@@ -73,6 +81,7 @@ export async function replaceImportedDuplicates(added, hooks) {
     const pairs = [];
     let replaced = 0;
     found.sort((a, b) => (a.old.id < b.old.id ? -1 : 1));
+    try {
     for (const f of found) {
         try {
             await FileSystem.deleteAsync(f.old.url, { idempotent: true });
@@ -97,5 +106,10 @@ export async function replaceImportedDuplicates(added, hooks) {
         } catch (e) { console.error('replaceImportedDuplicates:', e); }
     }
     try { if (pairs.length) await hooks?.swap?.(pairs); } catch { }
+    } finally {
+        // Play was blocked only because the playing song was about to be replaced. If it was not
+        // (every delete failed, or something threw first), Play must work again.
+        if (blockedId && !pairs.some(p => p.oldId === blockedId)) { try { hooks?.release?.(); } catch { } }
+    }
     return { replaced };
 }

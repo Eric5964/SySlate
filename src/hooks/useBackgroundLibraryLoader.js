@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { AppState, InteractionManager } from 'react-native';
-import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
-import { extractTags, getCachedTags } from '../utils/tags';
+import { extractEmbeddedArt, getCachedArt, listLargeArtCandidates, extractLargeEmbeddedArt } from '../utils/embeddedArt';
+import { waitForBackgroundClear } from '../utils/memoryPressure';
+import { extractTags, getCachedTags, tagReadFailed } from '../utils/tags';
 
 // Was two entirely separate hooks (useBackgroundArtLoader, then
 // useBackgroundTagLoader added alongside it) — each independently scheduling
@@ -21,8 +22,11 @@ const EXTRACTION_STAGGER_MS = 75;
 const BURST_PAUSE_MS = 4000;
 const YIELD_EVERY = 20;
 
-export function useBackgroundLibraryLoader(songs, { art = false, tags = false } = {}) {
+export function useBackgroundLibraryLoader(songs, { art = false, tags = false, onTagsRead = null } = {}) {
     const chainRef = useRef(Promise.resolve());   // runs go one after another; a cancelled one ends quickly
+    const onTagsReadRef = useRef(onTagsRead);
+    const tagsReadRef = useRef(0);   // tags read by runs that were cancelled before they could report them
+    onTagsReadRef.current = onTagsRead;
 
     useEffect(() => {
         if ((!art && !tags) || !songs?.length) return;
@@ -39,8 +43,12 @@ export function useBackgroundLibraryLoader(songs, { art = false, tags = false } 
                         await new Promise(r => setTimeout(r, 2000));
                         continue;
                     }
+                    await waitForBackgroundClear(() => cancelled);   // low on memory, rebuilding the lists, or a finger on the disc: wait
+                    if (cancelled) break;
                     let doneInBurst = 0;
                     while (!cancelled && appActive && idx < songs.length && doneInBurst < BATCH_SIZE) {
+                        if (!cancelled) await waitForBackgroundClear(() => cancelled);
+                        if (cancelled) break;
                         const song = songs[idx++];
                         try {
                             if (art) {
@@ -53,8 +61,9 @@ export function useBackgroundLibraryLoader(songs, { art = false, tags = false } 
                             }
                             if (!cancelled && appActive && tags && doneInBurst < BATCH_SIZE) {
                                 const cachedTags = await getCachedTags(song);
-                                if (cachedTags === undefined) {
+                                if (cachedTags === undefined && !tagReadFailed(song)) {
                                     await extractTags(song);
+                                    if (!tagReadFailed(song)) tagsReadRef.current++;   // only reads that reached the cache count
                                     doneInBurst++;
                                     await new Promise(r => setTimeout(r, EXTRACTION_STAGGER_MS));
                                 }
@@ -68,6 +77,23 @@ export function useBackgroundLibraryLoader(songs, { art = false, tags = false } 
                     if (cancelled) break;
                     if (doneInBurst > 0) await new Promise(r => setTimeout(r, BURST_PAUSE_MS));
                 }
+                // Last: the covers too large for the normal pass (see extractLargeEmbeddedArt), one at a
+                // time. Only once everything else has been looked at, and never while the app is in the
+                // background or the system has said it is low on memory.
+                if (!cancelled && art) {
+                    const large = await listLargeArtCandidates(songs);
+                    for (const song of large) {
+                        if (cancelled) break;
+                        while (!cancelled && !appActive) await new Promise(r => setTimeout(r, 2000));
+                        await waitForBackgroundClear(() => cancelled);
+                        if (cancelled) break;
+                        try { await extractLargeEmbeddedArt(song); } catch { }
+                        await new Promise(r => setTimeout(r, 120));
+                    }
+                }
+                // The tags read here only reach the lists through a new scan (the scan is what
+                // applies them), which used to happen only at the next launch.
+                if (!cancelled && tagsReadRef.current > 0) { const n = tagsReadRef.current; tagsReadRef.current = 0; onTagsReadRef.current?.(n); }
             } catch { }
         };
 

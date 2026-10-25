@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { InteractionManager } from 'react-native';
-import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk, listArtUri } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArtFast, peekCachedArtBulk, listArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
 
 // Returns { songId: uri | null } for whichever songs have resolved so far.
 //
@@ -33,7 +33,7 @@ export function useListArt(songs, enabled) {
     // Starts from everything already known (this session's results plus the
     // on-disk cover cache, read synchronously), so a list's first paint
     // already has its covers instead of filling in over the next second.
-    const [artMap, setArtMap] = useState(() => (enabled ? { ...peekCachedArtBulk(songs), ...SESSION_ART } : {}));
+    const [artMap, setArtMap] = useState(() => (enabled ? { ...SESSION_ART, ...peekCachedArtBulk(songs) } : {}));
     const runIdRef = useRef(0);
 
     useEffect(() => {
@@ -158,7 +158,15 @@ export function useListArt(songs, enabled) {
             });
         }, 6000);
 
-        return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); };
+        // A large cover found at the end of loading: show it on the rows that are open right now.
+        const idsHere = new Set(songs.map(x => x.id));
+        const unsubscribe = subscribeArtUpdates((id, uri) => {
+            if (isStale() || !idsHere.has(id)) return;
+            SESSION_ART[id] = uri;
+            setArtMap(prev => ({ ...prev, [id]: uri }));
+        });
+
+        return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); unsubscribe(); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, songs]);
 

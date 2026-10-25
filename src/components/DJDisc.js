@@ -4,6 +4,7 @@ import { Gesture, GestureDetector, State } from 'react-native-gesture-handler';
 import AudioEngine from '../native/AudioEngine';
 import { subscribeTransportRamp, subscribeSkipPress } from '../utils/transportRamp';
 import { COVER_SHADOW } from '../utils/shadow';
+import { holdBackground } from '../utils/memoryPressure';
 
 // A vinyl record with the song's cover as its label. It spins while the song
 // plays. Dragging it scratches: the song plays at the speed and direction of
@@ -45,6 +46,14 @@ const IDLE_SPAN_MS = 90000;   // length of the straight-line turn used right aft
 // Where the disc was when the Player last closed, so reopening it shows the
 // disc at the same angle (and keeps it turning as if it never stopped).
 let savedDisc = null;
+
+// While a finger is on the disc the background tag/cover loader and library rebuilds wait (the
+// scratch runs on a 20 ms JS timer; heavy JS work next to it made it choppy). Expires on its own.
+let discHold = null;
+const holdForTouch = (on) => {
+    if (on) { if (discHold) discHold(); discHold = holdBackground(20000); }
+    else if (discHold) { discHold(); discHold = null; }
+};
 
 const angleOf = (px, py, c) => (Math.atan2(py - c.y, px - c.x) * 180) / Math.PI;
 const wrap = (d) => (d > 180 ? d - 360 : d < -180 ? d + 360 : d);
@@ -309,6 +318,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         spin.stopAnimation((v) => { lag.stopAnimation((l) => { savedDisc = { spin: v + l, user: userRotVal.current, at: Date.now(), spinning: wasSpinning }; }); });
     }, [spin, lag]);
     useEffect(() => stopSpin, [stopSpin]);
+    useEffect(() => () => holdForTouch(false), []);
 
     // Play / pause ramps announce themselves, so the disc follows them.
     useEffect(() => subscribeTransportRamp(({ type, seconds }) => {
@@ -361,6 +371,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         draggingRef.current = false;
         lastAngle.current = null;
         pendingDeg.current = 0;
+        if (wasDragging) holdForTouch(false);
         if (wasDragging && onTouching) onTouching(false);
         if (!force) {
             if (autoRef.current) { ignoreTouch.current = false; return; }   // already easing back: nothing more to do (and the finger is up, so a new touch is possible once it is done)
@@ -483,7 +494,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         // The idle turn takes over from the same angle at the same speed.
         if (carryOn && L.active && L.spin) releaseSpin(1);
         if (au && au.kind === 'edge') api.current.refreshDim();
-        if (!draggingRef.current) { ignoreTouch.current = false; if (onTouching) onTouching(false); }
+        if (!draggingRef.current) { ignoreTouch.current = false; holdForTouch(false); if (onTouching) onTouching(false); }
     };
     api.current.tick = () => {
         const now = Date.now();
@@ -554,19 +565,24 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         onStartShouldSetPanResponder: (e) => {
             const au = autoRef.current;
             return live.current.touch && live.current.allowed && !skipHold.current && !ignoreTouch.current
-                && !(au && au.kind === 'edge') && (typeof e.nativeEvent.locX === 'number' ? Math.hypot(e.nativeEvent.locX - size / 2, e.nativeEvent.locY - size / 2) <= size / 2 : insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY));
+                && !(au && au.kind === 'edge') && (e.nativeEvent.trusted || insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY));
         },
         onPanResponderGrant: (e) => {
             const au = autoRef.current;
             draggingRef.current = true;
             grantAt.current = Date.now();
             console.log('[DISC] touch down' + (au ? ' (during ' + au.kind + ' ease)' : ''));
+            holdForTouch(true);
             if (onTouching) onTouching(true);
             lastTouch.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
-            lastAngle.current = null;
+            // The disc's centre is already known from the last measurement, so the very first movement counts
+            // (it used to wait for a new measurement, which swallowed the first few degrees of every scratch).
+            lastAngle.current = center.current.valid ? angleOf(lastTouch.current.x, lastTouch.current.y, center.current) : null;
             viewRef.current?.measureInWindow((x, y, w, h) => {
+                const was = center.current;
                 center.current = { x: x + w / 2, y: y + h / 2, valid: w > 0 };
-                if (draggingRef.current) lastAngle.current = angleOf(lastTouch.current.x, lastTouch.current.y, center.current);
+                const moved = !was.valid || Math.hypot(center.current.x - was.x, center.current.y - was.y) > 1;
+                if (draggingRef.current && (lastAngle.current == null || moved)) lastAngle.current = angleOf(lastTouch.current.x, lastTouch.current.y, center.current);
             });
             samples.current = [];
             snapped.current = 0;
@@ -618,40 +634,50 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         onPanResponderTerminate: () => { console.log('[DISC] touch cancelled by the system after ' + (Date.now() - grantAt.current) + 'ms'); finishScratch(); },
     }).current;
 
-    // The finger is followed by a native gesture handler (not the JS touch responder) so the Player's
+    // The finger is followed by native gesture handlers (not the JS touch responder) so the Player's
     // swipe-down-to-close, which is a gesture handler too, can never take the touch away. Two handlers on one
-    // touch are exclusive, so this one claims the touch the instant a finger lands ON THE DISC ITSELF (the round
-    // disc, not the square around it): the handler is activated by hand on touch-down, long before the swipe
-    // needs its 5 px of movement. A finger that lands outside the circle makes this handler give up at once,
-    // so swiping down from the corners still closes the Player.
+    // touch are exclusive, and these activate on the very first movement (minDistance 0), long before the
+    // swipe needs its 5 px. A handler can only cover a rectangle, so the round disc is covered by a stack of thin
+    // strips (each as wide as the circle is at that height): the corners outside the circle belong to nobody, and
+    // swiping down from there still closes the Player. (Activating a handler by hand needs Reanimated, which the
+    // app does not have, so activation is left to the handler itself.)
     const accepted = useRef(false);
     const [gestureOn, setGestureOn] = useState(allowed);
     useEffect(() => { if (!draggingRef.current) setGestureOn(allowed); }, [allowed]);
-    // x/y are measured from the disc's own corner, so "on the disc" never depends on a screen measurement that
-    // could be out of date (the Player is still sliding up when it first opens).
-    const asTouch = (t) => ({ nativeEvent: { pageX: t.absoluteX, pageY: t.absoluteY, locX: t.x, locY: t.y } });
-    const gesture = useMemo(() => Gesture.Pan()
+    const makeGesture = () => Gesture.Pan()
         .enabled(gestureOn)
-        .manualActivation(true)
+        .minDistance(0)
         .shouldCancelWhenOutside(false)
         .runOnJS(true)
-        .onTouchesDown((e, manager) => {
+        .onBegin((e) => {
             if (accepted.current) return;   // a second finger: the first one owns the disc
-            const t = e.changedTouches && e.changedTouches[0];
-            if (!t) { manager.fail(); return; }
-            const te = asTouch(t);
-            if (!panCfg.onStartShouldSetPanResponder(te)) { manager.fail(); return; }
+            const te = { nativeEvent: { pageX: e.absoluteX, pageY: e.absoluteY, trusted: true } };
+            if (!panCfg.onStartShouldSetPanResponder(te)) return;
             accepted.current = true;
-            manager.activate();
             panCfg.onPanResponderGrant(te);
         })
         .onUpdate((e) => { if (accepted.current) panCfg.onPanResponderMove({ nativeEvent: { pageX: e.absoluteX, pageY: e.absoluteY } }); })
         .onFinalize((e) => {
             if (!accepted.current) return;
             accepted.current = false;
-            if (e.state === State.CANCELLED || e.state === State.FAILED) panCfg.onPanResponderTerminate(); else panCfg.onPanResponderRelease();
+            if (e.state === State.CANCELLED) console.log('[DISC] touch cancelled by the system');
+            panCfg.onPanResponderRelease();
             setGestureOn(live.current.allowed);
-        }), [gestureOn]);
+        });
+    const STRIPS = 24;
+    const strips = useMemo(() => {
+        const out = [];
+        const c = size / 2;
+        for (let k = 0; k < STRIPS; k++) {
+            const y0 = (k * size) / STRIPS, y1 = ((k + 1) * size) / STRIPS;
+            const dy = Math.max(Math.abs(y0 - c), Math.abs(y1 - c));   // the edge of the strip farthest from the middle
+            if (dy >= c) continue;
+            const hw = Math.sqrt(c * c - dy * dy);
+            out.push({ key: k, left: c - hw, top: y0, width: 2 * hw, height: y1 - y0, gesture: makeGesture() });
+        }
+        return out;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [gestureOn, size]);
 
 
     const R = size;
@@ -662,7 +688,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const userDeg = useMemo(() => userRot.interpolate({ inputRange: [0, 360], outputRange: ['0deg', '360deg'] }), [userRot]);
 
     return (
-        <GestureDetector gesture={gesture}>
         <View collapsable={false} style={{ width: R, height: R }}>
         <View ref={viewRef} collapsable={false} onLayout={refreshCenter} style={{ width: R, height: R }}>
             <Animated.View style={{ width: R, height: R, opacity: dim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.55] }) }}>
@@ -686,8 +711,12 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
             <Animated.View pointerEvents="none" style={{ position: 'absolute', width: R, height: R, borderRadius: R / 2, borderWidth: 2, borderColor: '#2a2a2a', opacity: dim }} />
             </Animated.View>
         </View>
+        {strips.map(st => (
+            <GestureDetector key={st.key} gesture={st.gesture}>
+                <View collapsable={false} style={{ position: 'absolute', left: st.left, top: st.top, width: st.width, height: st.height }} />
+            </GestureDetector>
+        ))}
         </View>
-        </GestureDetector>
     );
 }
 

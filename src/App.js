@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, Dimensions, Image, AppState, Animated, Alert } from 'react-native';
+import { View, Text, Dimensions, Image, AppState, Animated, Alert, TouchableOpacity } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { autoBackupIfDue, listAutoBackups, restoreAutoBackup } from './utils/storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -50,7 +50,9 @@ import StatsScreen from './screens/StatsScreen';
 import MiniPlayer from './components/MiniPlayer';
 import { PersistentBackgroundImage } from './components/ScreenBackground';
 import { preloadArtCache } from './utils/embeddedArt';
+import { holdBackground, backgroundHeld } from './utils/memoryPressure';
 import { scanLibrary } from './utils/files';
+import { warmTags, listUnreadSongs } from './utils/warmLibrary';
 import { getPlaylistCovers } from './utils/storage';
 import { fillSongDurations } from './utils/durations';
 import { EDGE_SWIPE_WIDTH } from './utils/layout';
@@ -211,9 +213,58 @@ function MainLayout() {
     );
 }
 
+// Full-screen loading card for the moments the lists are being prepared (first launch, an
+// import, a rescan): it blocks touches so nothing is tapped while the lists are half-built.
+function BusyOverlay({ info, onSkip }) {
+    const { theme, base } = useTheme();
+    // Fades in and out like the start screen does, instead of popping on and off.
+    const opacity = useRef(new Animated.Value(0)).current;
+    const [last, setLast] = useState(info);
+    const [mounted, setMounted] = useState(!!info);
+    const active = !!info;
+    useEffect(() => { if (info) setLast(info); }, [info]);
+    useEffect(() => {
+        if (active) {
+            setMounted(true);
+            Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }).start();
+        } else {
+            Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => { if (finished) setMounted(false); });
+        }
+    }, [active, opacity]);
+    const shown = info || last;
+    if (!shown || (!mounted && !active)) return null;
+    const total = shown.total || 0;
+    const frac = total > 0 ? Math.min(1, (shown.done || 0) / total) : 0;
+    return (
+        <Animated.View pointerEvents={active ? 'auto' : 'none'} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: base.bg, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, opacity }}>
+            <Text style={{ color: base.text, fontSize: 18, fontWeight: '700', textAlign: 'center' }}>{shown.title}</Text>
+            {total > 0 ? (
+                <>
+                    <View style={{ width: '100%', maxWidth: 280, height: 6, borderRadius: 3, backgroundColor: base.surface, marginTop: 18, overflow: 'hidden' }}>
+                        <View style={{ width: `${Math.round(frac * 100)}%`, height: '100%', backgroundColor: theme.accent }} />
+                    </View>
+                    <Text style={{ color: base.textDim, fontSize: 13, marginTop: 10 }}>{shown.done} of {total}</Text>
+                </>
+            ) : null}
+            {shown.sub ? <Text style={{ color: base.textDim, fontSize: 13, marginTop: 10, textAlign: 'center' }}>{shown.sub}</Text> : null}
+            {onSkip && active ? (
+                <TouchableOpacity onPress={onSkip} style={{ marginTop: 26, paddingVertical: 8, paddingHorizontal: 18 }}>
+                    <Text style={{ color: base.textDim, fontSize: 13 }}>Skip, finish in the background</Text>
+                </TouchableOpacity>
+            ) : null}
+        </Animated.View>
+    );
+}
+
 function AppInner() {
     const [library, setLibrary] = useState({ playlists: [], allSongs: [], scanPath: '', scanError: null, covers: {} });
     const [playerReady, setPlayerReady] = useState(false);
+    // Loading card: `warm` = reading song info after a scan (shown only if it takes a moment),
+    // `busy` = a long job started from Settings (an import).
+    const [warm, setWarm] = useState(null);
+    const [busy, setBusy] = useState(null);
+    const skipWarmRef = useRef(false);
+    const lastAutoRescanRef = useRef(0);
     // Daily automatic copy of the settings. If the app's own storage was wiped
     // (it has never opened before, but a backup copy exists in Documents), ask
     // once whether to restore it.
@@ -251,7 +302,26 @@ function AppInner() {
     // showSongCovers like art is (title/artist/album feed sorting and
     // search everywhere, not just an optional visual), so the two run under
     // independent conditions even though they share one loop/budget.
-    useBackgroundLibraryLoader(library.allSongs, { art: playerReady && showSongCovers, tags: playerReady });
+    // Not while the up-front reading is running (it is doing the same job faster); when it
+    // finishes work of its own, the lists are rebuilt so the artists/titles it read show up
+    // (before, that only happened at the next launch).
+    // Waits (instead of dropping the request) while it is too soon after the last rebuild, or while
+    // a finger is on the disc / another rebuild is running.
+    const retryRescanRef = useRef(null);
+    const handleTagsRead = useCallback(() => {
+        if (retryRescanRef.current) return;
+        const attempt = () => {
+            retryRescanRef.current = null;
+            const now = Date.now();
+            const wait = Math.max(60000 - (now - lastAutoRescanRef.current), backgroundHeld() ? 3000 : 0);
+            if (wait > 0) { retryRescanRef.current = setTimeout(attempt, wait); return; }
+            lastAutoRescanRef.current = now;
+            reloadRef.current?.();
+        };
+        attempt();
+    }, []);
+    useEffect(() => () => { if (retryRescanRef.current) clearTimeout(retryRescanRef.current); }, []);
+    useBackgroundLibraryLoader(library.allSongs, { art: playerReady && showSongCovers, tags: playerReady && !warm, onTagsRead: handleTagsRead });
     // Song lengths for playlist totals / listening hours: read once, in the background,
     // a few seconds after the library is ready (see utils/durations.js).
     useEffect(() => {
@@ -330,8 +400,12 @@ function AppInner() {
     }, [backgroundImageEnabled, backgroundImageUri, prefetchPlaylistCovers]);
 
     const reloadSeq = useRef(0);
+    const reloadRef = useRef(null);
     const reload = useCallback(async () => {
         const seq = ++reloadSeq.current;
+        // Background tag/cover work stays out of the way until the lists are rebuilt (it used to run
+        // next to the up-front reading, which is the moment memory is tightest).
+        const releaseHold = holdBackground(90000);
         try {
             // The library scan and the cover warm-up do not depend on each
             // other, so they run together (they used to run one after the
@@ -341,11 +415,44 @@ function AppInner() {
             // the whole point is the UI doesn't render until images are
             // already in RN's cache, otherwise this preload step does
             // nothing to prevent the first-render flash it's meant to fix.
-            const [lib, covers] = await Promise.all([scanLibrary(), prefetchPlaylistCovers()]);
+            const [firstLib, covers] = await Promise.all([scanLibrary(), prefetchPlaylistCovers()]);
             if (seq !== reloadSeq.current) return;   // a newer scan was started: its result wins
+            let lib = firstLib;
+            // Songs whose tags were never read still carry the single artist guessed from the file
+            // name. Read them all now (several at once, behind a loading card if it takes more
+            // than a moment), then scan again so the lists are right the first time they show.
+            const unread = await listUnreadSongs(lib.allSongs);
+            if (seq !== reloadSeq.current) return;
+            if (unread.length) {
+                skipWarmRef.current = false;
+                let shown = false;
+                const showTimer = setTimeout(() => { shown = true; setWarm({ title: 'Reading song info', done: 0, total: unread.length, skippable: true }); }, 400);
+                let res;
+                try {
+                    res = await warmTags(lib.allSongs, {
+                        onProgress: (done, total) => { if (shown && seq === reloadSeq.current) setWarm(w => (w ? { ...w, done, total } : w)); },
+                        isCancelled: () => seq !== reloadSeq.current || skipWarmRef.current,
+                    });
+                } finally { clearTimeout(showTimer); }
+                if (seq !== reloadSeq.current) return;
+                if (res && res.done > 0) {
+                    lib = await scanLibrary();
+                    if (seq !== reloadSeq.current) return;
+                }
+            }
             setLibrary({ playlists: lib.playlists, allSongs: lib.allSongs, scanPath: lib.scanPath ?? '', scanError: lib.scanError ?? null, covers: covers ?? {} });
         } catch (e) { console.error('reload:', e); }
+        finally { releaseHold(); if (seq === reloadSeq.current) setWarm(null); }
     }, [prefetchPlaylistCovers]);
+    reloadRef.current = reload;
+
+    // Runs a long job (an import) behind the loading card so nothing can be tapped half-way.
+    // fn(begin): the card appears when fn calls begin() (after a file picker closes), not before.
+    const withBusy = useCallback(async (title, fn) => {
+        const releaseHold = holdBackground(10 * 60000);
+        const begin = () => setBusy({ title, sub: 'This can take a little while.' });
+        try { return await fn(begin); } finally { releaseHold(); setBusy(null); }
+    }, []);
 
     useEffect(() => {
         (async () => {
@@ -403,7 +510,7 @@ function AppInner() {
     // the hook count changes between the "not ready" render and the first
     // "ready" render (this was the "Rendered more hooks than during the
     // previous render" crash on launch).
-    const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists }), [library, reload, reorderPlaylists]);
+    const libraryContextValue = useMemo(() => ({ ...library, reload, reorderPlaylists, withBusy }), [library, reload, reorderPlaylists, withBusy]);
 
     // Loading screen — icon + its own background color, hides launch-time
     // rough edges (the pop, lyrics not positioned yet, etc.) while
@@ -430,14 +537,14 @@ function AppInner() {
     const handleRestored = useCallback(() => setSessionRestored(true), []);
     useEffect(() => { const t = setTimeout(() => setSessionRestored(true), 2500); return () => clearTimeout(t); }, []);
     useEffect(() => {
-        if (!playerReady || !themeReady || !sessionRestored) return;
+        if (!playerReady || !themeReady || !sessionRestored || warm) return;
         const settle = setTimeout(() => {
             Animated.timing(overlayOpacity, { toValue: 0, duration: 160, useNativeDriver: true }).start(() => {
                 setShowOverlay(false);
             });
         }, 250);
         return () => clearTimeout(settle);
-    }, [playerReady, themeReady, sessionRestored]);
+    }, [playerReady, themeReady, sessionRestored, warm]);
 
     return (
         <View style={{ flex: 1 }}>
@@ -527,6 +634,7 @@ function AppInner() {
                     }}
                 />
             )}
+            <BusyOverlay info={warm || busy} onSkip={warm?.skippable ? () => { skipWarmRef.current = true; } : null} />
         </View>
     );
 }

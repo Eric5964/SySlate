@@ -1,19 +1,27 @@
-import React, { useContext, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, StatusBar } from 'react-native';
+import React, { useContext, useEffect, useMemo, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, StatusBar, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { LibraryContext } from '../context/LibraryContext';
 import ScreenBackground from '../components/ScreenBackground';
 import { getListeningStats } from '../utils/storage';
 import { usePreferences } from '../context/PreferencesContext';
+import { useListArt } from '../hooks/useListArt';
+import { squircle } from '../utils/squircle';
 
 // Hoisted out of the screen body: a component defined inside a component is a
 // brand new type on every render, so React tore this row down and remounted it
 // instead of updating it (and it would have lost any state it kept). `s` is
 // passed in instead of closed over.
-const Row = ({ s, i, left, sub, right }) => (
+const COVER = 40;
+const Row = ({ s, i, left, sub, right, cover, coverRadius }) => (
     <View style={s.row}>
         <Text style={s.rank}>{i}</Text>
+        {cover !== undefined && (
+            <View style={[s.thumb, { borderRadius: coverRadius }]}>
+                {cover ? <Image source={{ uri: cover }} style={s.thumbImg} resizeMode="cover" /> : null}
+            </View>
+        )}
         <View style={{ flex: 1 }}>
             <Text style={s.rowTitle} numberOfLines={1}>{left}</Text>
             {!!sub && <Text style={s.rowSub} numberOfLines={1}>{sub}</Text>}
@@ -26,9 +34,17 @@ export default function StatsScreen({ navigation }) {
     const { base, theme } = useTheme();
     const insets = useSafeAreaInsets();
     const { allSongs } = useContext(LibraryContext);
-    const { artistSeparator, artistDisplayJoin } = usePreferences();
+    const { artistSeparator, artistDisplayJoin, showSongCovers, coverShape } = usePreferences();
     const [stats, setStats] = useState(null);
     useEffect(() => { getListeningStats(allSongs || [], artistSeparator, artistDisplayJoin).then(setStats).catch(() => setStats({ totalPlays: 0, hours: 0, played: 0, librarySize: 0, topSongs: [], topArtists: [] })); }, [allSongs, artistSeparator, artistDisplayJoin]);
+    // The library songs behind the top rows, so their covers come from the same place (and the same
+    // cache) as every other list.
+    const topSongObjs = useMemo(() => {
+        if (!stats?.topSongs?.length) return [];
+        const byId = new Map((allSongs || []).map(x => [x.id, x]));
+        return stats.topSongs.map(r => (r.songId ? byId.get(r.songId) : null)).filter(Boolean);
+    }, [stats, allSongs]);
+    const artMap = useListArt(topSongObjs, showSongCovers);
     const s = styles(base, theme);
     return (
         <ScreenBackground ownImage>
@@ -53,7 +69,7 @@ export default function StatsScreen({ navigation }) {
                         <>
                             <Text style={s.sectionLabel}>Most played songs</Text>
                             <View style={s.body}>
-                                {stats.topSongs.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.title} sub={r.artist} right={`${r.n}x`} />)}
+                                {stats.topSongs.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.title} sub={r.artist} right={`${r.n}x`} cover={showSongCovers ? ((r.songId && artMap[r.songId]) || null) : undefined} coverRadius={squircle(COVER, coverShape)} />)}
                             </View>
                             <Text style={s.sectionLabel}>Top artists</Text>
                             <View style={s.body}>
@@ -79,6 +95,8 @@ const styles = (base, theme) => StyleSheet.create({
     body: { backgroundColor: base.surface, borderRadius: 14, marginBottom: 18, overflow: 'hidden' },
     row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, paddingHorizontal: 14 },
     rank: { color: base.textFaint, width: 24, fontSize: 13, fontWeight: '700' },
+    thumb: { width: COVER, height: COVER, marginRight: 12, overflow: 'hidden', backgroundColor: base.bg },
+    thumbImg: { width: '100%', height: '100%' },
     rowTitle: { color: base.text, fontSize: 15, fontWeight: '600' },
     rowSub: { color: base.textFaint, fontSize: 12, marginTop: 1 },
     rowRight: { color: base.textFaint, fontSize: 13, marginLeft: 10 },

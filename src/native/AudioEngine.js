@@ -151,8 +151,12 @@ const AudioEngine = {
     // story).
     setNowPlayingPaused: (paused) => NativeAudioEngine.setNowPlayingPaused(paused),
     makeThumbnail: (src, dest, maxPixel) => NativeAudioEngine.makeThumbnail(src, dest, maxPixel),
+    // Copies `length` bytes of a file, from `offset`, into a new file, in small pieces (resolves false on any problem).
+    copyFileRange: async (src, offset, length, dest) => { try { return !!(await NativeAudioEngine.copyFileRange(src, offset, length, dest)); } catch (e) { return false; } },
     getDurations: (urls) => NativeAudioEngine.getDurations(urls),
     importFolder: () => NativeAudioEngine.importFolder(),
+    pickImportFolder: () => NativeAudioEngine.pickImportFolder(),
+    copyPickedFolder: () => NativeAudioEngine.copyPickedFolder(),
     // Swaps queue entries for a newer copy of the same song (see AudioEngine.swift's replaceTracks).
     replaceTracks: (pairs) => NativeAudioEngine.replaceTracks(pairs),
     getSavedSnapshot: () => NativeAudioEngine.getSavedSnapshot(),

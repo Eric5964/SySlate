@@ -88,8 +88,8 @@ const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 
 export default function SettingsScreen() {
     const navigation = useNavigation();
-    const { changeShuffleMode, eqPresetId, holdPlaybackForReplace, replaceSongsInPlayback } = usePlayback();
-    const { reload, scanPath, scanError } = useLibrary();
+    const { changeShuffleMode, eqPresetId, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback } = usePlayback();
+    const { reload, scanPath, scanError, withBusy } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
     const s = useMemo(() => makeStyles(base), [base]);
     const scrollRef = useRef(null);
@@ -385,25 +385,33 @@ export default function SettingsScreen() {
     // Copies songs picked in the Files app into the app's own Documents folder (see utils/importMusic.js).
     // After an import: newer copies of songs that were already in the same playlist (same title +
     // artist) replace the older ones. Runs in the background after the "Import finished" message.
+    // Runs inside the loading card now (files are deleted and swapped here, so nothing may be tapped).
+    // Returns the sentence for the final message, or '' when nothing was replaced.
     const replaceOlderCopies = async (added) => {
         try {
             clearLyricsCache();
-            if (!added?.length) return;
-            const res = await replaceImportedDuplicates(added, { hold: holdPlaybackForReplace, swap: replaceSongsInPlayback });
+            if (!added?.length) return '';
+            const res = await replaceImportedDuplicates(added, { hold: holdPlaybackForReplace, release: releasePlaybackHold, swap: replaceSongsInPlayback });
             if (res.replaced > 0) {
                 await reload();
-                Alert.alert('Older copies replaced', `${res.replaced} older cop${res.replaced === 1 ? 'y' : 'ies'} of songs you already had (same title and artist, same playlist) ${res.replaced === 1 ? 'was' : 'were'} replaced by the new one.`);
+                return ` ${res.replaced} older cop${res.replaced === 1 ? 'y' : 'ies'} of songs you already had (same title and artist, same playlist) ${res.replaced === 1 ? 'was' : 'were'} replaced by the new one.`;
             }
         } catch (e) { console.error('replaceOlderCopies:', e); }
+        return '';
     };
     const importSongsFlow = () => {
         const run = async (folder) => {
             try {
-                const r = await importSongs(folder);
+                // The loading card covers the copy and the list rebuild, so nothing is tapped while the lists are half-built.
+                const r = await withBusy('Importing songs', async (begin) => {
+                    const got = await importSongs(folder, begin);
+                    if (!got) return null;
+                    await reload();
+                    got.replacedNote = await replaceOlderCopies(got.added);
+                    return got;
+                });
                 if (!r) return;
-                await reload();
-                Alert.alert('Import finished', `${r.copied} song(s) added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
-                replaceOlderCopies(r.added);
+                Alert.alert('Import finished', `${r.copied} song(s) added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not a song).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.prompt('Import Songs', 'Playlist folder to put them in. Leave empty to add them to All Songs only.', [
@@ -415,12 +423,19 @@ export default function SettingsScreen() {
     const importFolderFlow = () => {
         const run = async () => {
             try {
-                const r = await AudioEngine.importFolder();
+                const r = await withBusy('Importing folder', async (begin) => {
+                    // The card only appears once the picker is closed, then covers the copy and the rebuild.
+                    if (!(await AudioEngine.pickImportFolder())) return null;
+                    begin();
+                    const got = await AudioEngine.copyPickedFolder();
+                    if (!got) return null;
+                    await reload();
+                    got.replacedNote = await replaceOlderCopies(got.added);
+                    return got;
+                });
                 if (!r) return;
-                await reload();
                 const names = (r.playlists || []);
-                Alert.alert('Import finished', `${r.copied} song(s) added to ${names.length} playlist(s)${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}`);
-                replaceOlderCopies(r.added);
+                Alert.alert('Import finished', `${r.copied} song(s) added to ${names.length} playlist(s)${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.alert(

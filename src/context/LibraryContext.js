@@ -7,6 +7,7 @@ export const LibraryContext = createContext({
     scanError: null,
     reload: async () => { },
     reorderPlaylists: () => { },
+    withBusy: async (title, fn) => fn(() => { }),
 });
 
 export const useLibrary = () => useContext(LibraryContext);
