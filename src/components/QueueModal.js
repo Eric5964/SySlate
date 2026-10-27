@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, Dimensions, unstable_batchedUpdates } from 'react-native';
+import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, Dimensions, unstable_batchedUpdates, LayoutAnimation } from 'react-native';
 import DimPressable from './DimPressable';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
@@ -74,39 +74,13 @@ const MORE_ROWS = 80;
 // space just appearing) and its own opacity/scale animate together.
 // Existing rows render at full size immediately — only ones QueueModal
 // marks as newly added (via `isNew`) animate.
-function GrowInRow({ isNew, children }) {
-    const opacityScale = useRef(new Animated.Value(isNew ? 0 : 1)).current;
-    // Height can't run on the native driver (it's a layout property, not
-    // transform/opacity) — so it always animates on the JS thread. This
-    // used to run opacityScale on the NATIVE driver instead, since in
-    // isolation that's smoother. But the two are supposed to move together,
-    // and under real JS-thread load (a queue add/remove firing state
-    // updates, list re-renders, and art lookups all at once — exactly when
-    // this animation is running) the native-driven half kept finishing on
-    // schedule while the JS-driven height lagged behind, visibly pulling
-    // apart: content already faded/scaled away, but the space it sat in
-    // hadn't caught up yet, reading as a bare gap sitting there for a beat.
-    // Keeping both on the JS driver means they're subject to the exact same
-    // load and can never visibly desync from each other — worst case the
-    // whole animation is a little less buttery under heavy load, but it
-    // never shows that gap.
-    const heightAnim = useRef(new Animated.Value(isNew ? 0 : 1)).current;
-    useEffect(() => {
-        if (!isNew) return;
-        Animated.parallel([
-            Animated.spring(opacityScale, { toValue: 1, useNativeDriver: false, friction: 8, tension: 60 }),
-            Animated.timing(heightAnim, { toValue: 1, duration: 220, useNativeDriver: false }),
-        ]).start();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-    if (!isNew) return <View>{children}</View>;
-    return (
-        <Animated.View style={{ height: heightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' }}>
-            <Animated.View style={{ opacity: opacityScale, transform: [{ scaleY: opacityScale }] }}>
-                {children}
-            </Animated.View>
-        </Animated.View>
-    );
+// Rows are added and removed with LayoutAnimation (see refresh() and remove()): the system animates
+// the new row in and the rows around it, on the UI thread, so it stays smooth when JS is busy. The
+// old version animated heights from JS every frame, which got choppy, and swapped this wrapper for a
+// different one when the "new" flag cleared, which rebuilt the row (the cover image flashed black).
+// The wrapper is always the same view now, so nothing is rebuilt.
+function GrowInRow({ children }) {
+    return <View>{children}</View>;
 }
 
 // The "Priority" and "Up Next" pills' own fade — opacity only, no height
@@ -122,15 +96,8 @@ function GrowInRow({ isNew, children }) {
 // Playing" instead. Sharing the identical flag makes that desync
 // structurally impossible instead of just less likely — they can only
 // ever start in the same render.
-function FadePill({ isNew, children }) {
-    const opacity = useRef(new Animated.Value(isNew ? 0 : 1)).current;
-    useEffect(() => {
-        if (!isNew) return;
-        Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: false }).start();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-    if (!isNew) return <>{children}</>;
-    return <Animated.View style={{ opacity }}>{children}</Animated.View>;
+function FadePill({ children }) {
+    return <>{children}</>;
 }
 
 // Mirrors GrowInRow — shrinks a row's height AND content out before it's
@@ -144,33 +111,19 @@ function FadePill({ isNew, children }) {
 const REMOVE_COLLAPSE_MS = 260;
 const REMOVE_ANIM_MS = REMOVE_COLLAPSE_MS + 20;
 function ShrinkOutRow({ removing, children }) {
-    const t = useRef(new Animated.Value(1)).current;
+    // The box closes with a system layout animation (configured in remove(), same render as the
+    // `removing` flag), so the gap closing and the rows below gliding up run on the UI thread. Only the
+    // fade is an Animated value, on the native driver too. The same two views are always rendered.
+    const o = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!removing) return;
-        // The gap closes WHILE the row slides off to the left, and the row
-        // itself (its outline included) squishes flat as it goes, so the
-        // rows below glide up with it.
-        Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        Animated.timing(o, { toValue: 0, duration: REMOVE_COLLAPSE_MS * 0.8, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [removing]);
-    // The same two views are rendered whether or not the row is being
-    // removed (only their styles change). Swapping to a different wrapper
-    // when removal began used to remount the whole swipeable row, which
-    // threw away its slide-off and made the row jump back mid-removal.
-    // The inner view keeps the full row height and is squashed with scaleY
-    // (moved up so it stays centered in the shrinking outer box), instead of
-    // the row being cut off by the shrinking box.
     return (
-        <Animated.View style={removing ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), overflow: 'hidden' } : null}>
-            <Animated.View style={removing ? {
-                height: ROW_HEIGHT,
-                opacity: t.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0.85, 1] }),
-                transform: [
-                    { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-ROW_HEIGHT / 2, 0] }) },
-                    { scaleY: t },
-                ],
-            } : null}>{children}</Animated.View>
-        </Animated.View>
+        <View style={removing ? { height: 0, overflow: 'hidden' } : null}>
+            <Animated.View style={removing ? { height: ROW_HEIGHT, opacity: o } : null}>{children}</Animated.View>
+        </View>
     );
 }
 
@@ -178,39 +131,17 @@ function ShrinkOutRow({ removing, children }) {
 // smoothly when the last row under it is being removed: the box shrinks to
 // nothing while its content shrinks and fades, in step with the row's own
 // removal, instead of vanishing at the end.
-function CollapseBlock({ collapsing, growing, estH = 0, children }) {
-    // `growing`: the block is new (the first row of a section was just added).
-    // It opens up the same way it closes: the box grows from nothing while its
-    // content grows and fades in, instead of popping in.
-    const t = useRef(new Animated.Value(growing ? 0 : 1)).current;
-    const natural = useRef(estH);   // measured height while not collapsing (estimate until then)
-    const [grown, setGrown] = useState(!growing);
-    useEffect(() => {
-        if (!growing) return;
-        Animated.timing(t, { toValue: 1, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start(() => setGrown(true));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+function CollapseBlock({ collapsing, children }) {
+    const o = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!collapsing) return;
-        Animated.timing(t, { toValue: 0, duration: REMOVE_COLLAPSE_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+        Animated.timing(o, { toValue: 0, duration: REMOVE_COLLAPSE_MS * 0.8, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [collapsing]);
-    const h = natural.current;
-    const animating = h > 0 && (collapsing || !grown);
     return (
-        <Animated.View style={animating ? { height: t.interpolate({ inputRange: [0, 1], outputRange: [0, h] }), overflow: 'hidden' } : null}>
-            <Animated.View
-                onLayout={(e) => { if (!collapsing && grown) natural.current = e.nativeEvent.layout.height; }}
-                style={animating ? {
-                    opacity: t,
-                    transform: [
-                        { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-h / 2, 0] }) },
-                        { scale: t },
-                    ],
-                    transformOrigin: 'left center',
-                } : null}
-            >{children}</Animated.View>
-        </Animated.View>
+        <View style={collapsing ? { height: 0, overflow: 'hidden' } : null}>
+            <Animated.View style={collapsing ? { opacity: o } : null}>{children}</Animated.View>
+        </View>
     );
 }
 
@@ -403,6 +334,7 @@ export default function QueueModal({ visible, onClose }) {
             // with them (the end of a drag): otherwise the rows were already in
             // their new order while the old "make room" shifts were still on,
             // so everything jumped for a moment and then snapped back.
+            if (justAddedKey) LayoutAnimation.configureNext({ duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY }, update: { type: LayoutAnimation.Types.easeOut } });
             unstable_batchedUpdates(() => {
                 setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
                 setRows(upcoming);
@@ -829,6 +761,9 @@ export default function QueueModal({ visible, onClose }) {
     const remove = async (realIndex, stableKey, qid) => {
         // Let the shrink play out first, then do the real removal + refresh
         // — see ShrinkOutRow above for why.
+        // One system layout animation closes the row (and its Priority label / divider when it was the
+        // last one) and slides everything below up, in the same render as the flag.
+        LayoutAnimation.configureNext({ duration: REMOVE_COLLAPSE_MS, update: { type: LayoutAnimation.Types.easeOut } });
         setRemovingKeys(prev => new Set(prev).add(stableKey));
         await new Promise(r => setTimeout(r, REMOVE_ANIM_MS));
         const next = await removeFromQueue(realIndex, qid);

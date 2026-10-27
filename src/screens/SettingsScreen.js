@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useContext } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useContext, startTransition } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, TextInput,
@@ -85,6 +85,66 @@ const SWATCH_GAP = 12;
 // full-width feel.
 const SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
 const BASE_SWATCH_SIZE = Math.floor((SCREEN_W - 32 - SWATCH_GAP * 4) / 5);
+
+// Most settings live in one shared context, so changing one re-renders every screen and list that
+// reads any setting. That made chips and switches show their new state only after all of it (about
+// a second or more). These two show the new state at once from their own small state, then apply
+// the real change two frames later (after that has been painted) as a low-priority update.
+const applyLater = (fn) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => { startTransition(() => { try { fn(); } catch (e) { console.error('settings apply:', e); } }); }));
+};
+
+function ChipGroup({ items, isOn, onPick, extraStyle, multi, s, theme }) {
+    const [ov, setOv] = useState(null);   // what the chips should look like right now, until the real value catches up
+    const sig = items.map(it => (isOn(it.id) ? 1 : 0)).join('');
+    useEffect(() => {
+        // A one-of-many group is fully replaced by the real value. In a group of independent chips only the
+        // ones that have caught up are dropped, so a second chip pressed while the first is still being
+        // applied keeps its own new look instead of flickering back.
+        if (!multi) { setOv(null); return; }
+        setOv(prev => {
+            if (!prev) return null;
+            const rest = {};
+            for (const it of items) if (it.id in prev && isOn(it.id) !== prev[it.id]) rest[it.id] = prev[it.id];
+            return Object.keys(rest).length ? rest : null;
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sig]);
+    useEffect(() => {
+        if (!ov) return undefined;
+        const id = setTimeout(() => setOv(null), 3000);   // the change was refused or never came: show the truth again
+        return () => clearTimeout(id);
+    }, [ov]);
+    const on = (id) => (ov && id in ov ? ov[id] : isOn(id));
+    const press = (id) => {
+        if (multi && ov && id in ov) return;   // this one is still being applied
+        const next = {};
+        if (multi) next[id] = !on(id);
+        else for (const it of items) next[it.id] = it.id === id;
+        setOv(multi ? { ...(ov || {}), ...next } : next);
+        applyLater(() => onPick(id));
+    };
+    return (
+        <View style={[s.sortRow, extraStyle]}>
+            {items.map(it => (
+                <TouchableOpacity key={String(it.id)} style={[s.sortChip, on(it.id) && { backgroundColor: theme.accent }]} onPress={() => press(it.id)}>
+                    <Text style={[s.sortChipText, on(it.id) && { color: theme.onAccent }]}>{it.label}</Text>
+                </TouchableOpacity>
+            ))}
+        </View>
+    );
+}
+
+function LiveSwitch({ value, onValueChange, ...rest }) {
+    const [local, setLocal] = useState(value);
+    useEffect(() => { setLocal(value); }, [value]);
+    useEffect(() => {
+        if (local === value) return undefined;
+        const id = setTimeout(() => setLocal(value), 3000);
+        return () => clearTimeout(id);
+    }, [local, value]);
+    return <Switch {...rest} value={local} onValueChange={(v) => { setLocal(v); applyLater(() => onValueChange && onValueChange(v)); }} />;
+}
 
 export default function SettingsScreen() {
     const navigation = useNavigation();
@@ -556,7 +616,7 @@ export default function SettingsScreen() {
                 <Text style={s.toggleLabel}>{label}</Text>
                 {!!sub && <Text style={s.toggleSub}>{sub}</Text>}
             </View>
-            <Switch value={value} onValueChange={onChange}
+            <LiveSwitch value={value} onValueChange={onChange}
                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
         </View>
     );
@@ -654,14 +714,8 @@ export default function SettingsScreen() {
         setRamp(sec); setAudioRamp(sec);
         setRampPause(true); setRampOnPause(true);
     };
-    const chipRow = (items, isOn, onPick, extraStyle) => (
-        <View style={[s.sortRow, extraStyle]}>
-            {items.map(it => (
-                <TouchableOpacity key={String(it.id)} style={[s.sortChip, isOn(it.id) && { backgroundColor: theme.accent }]} onPress={() => onPick(it.id)}>
-                    <Text style={[s.sortChipText, isOn(it.id) && { color: theme.onAccent }]}>{it.label}</Text>
-                </TouchableOpacity>
-            ))}
-        </View>
+    const chipRow = (items, isOn, onPick, extraStyle, multi) => (
+        <ChipGroup items={items} isOn={isOn} onPick={onPick} extraStyle={extraStyle} multi={multi} s={s} theme={theme} />
     );
     // Looks: shadows and outlines in one pick. Cover shape is its own toggle.
     const LOOKS = {
@@ -713,7 +767,7 @@ export default function SettingsScreen() {
         </>
     );
     // Multi-select chips: each one is a switch. Lit = on.
-    const chipsFor = (map) => chipRow(map, (id) => map.find(m => m.id === id).on, (id) => map.find(m => m.id === id).set());
+    const chipsFor = (map) => chipRow(map, (id) => map.find(m => m.id === id).on, (id) => map.find(m => m.id === id).set(), undefined, true);
     const uiChip = (id, label) => ({ id, label, on: uiOn(id), set: () => uiPick(id) });
     const noMatch = !!q && !SECTION_TITLES.some(t => sectionMatches(t, q));
 
@@ -845,7 +899,7 @@ export default function SettingsScreen() {
                         </TouchableOpacity>
                         <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
                             <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
-                            <Switch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
+                            <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
                                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                         </View>
                     </View>
@@ -894,7 +948,7 @@ export default function SettingsScreen() {
                                 into two real, separate settings below. */}
                             <Text style={s.toggleSub}>Evens out loud and quiet parts of the same song</Text>
                         </View>
-                        <Switch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
+                        <LiveSwitch value={withinTrackNorm} onValueChange={setWithinTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
@@ -902,7 +956,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Match Volume</Text>
                             <Text style={s.toggleSub}>Keeps different songs at a similar volume</Text>
                         </View>
-                        <Switch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
+                        <LiveSwitch value={betweenTrackNorm} onValueChange={setBetweenTrackNorm}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     {volumeTagToggle}
@@ -926,7 +980,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Crossfade</Text>
                             <Text style={s.toggleSub}>Overlaps songs while transitioning from one to the next</Text>
                         </View>
-                        <Switch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
+                        <LiveSwitch value={crossfadeEnabled} onValueChange={setCrossfadeEnabled}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     {crossfadeEnabled ? (
@@ -1009,7 +1063,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Ramp on Pause</Text>
                             <Text style={s.toggleSub}>Fade out on pause</Text>
                         </View>
-                        <Switch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
+                        <LiveSwitch value={rampPause} onValueChange={v => { setRampPause(v); setRampOnPause(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
@@ -1017,7 +1071,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Trim Silence</Text>
                             <Text style={s.toggleSub}>Skips silence at the start and end of songs</Text>
                         </View>
-                        <Switch value={silenceTrim} onValueChange={setSilenceTrim}
+                        <LiveSwitch value={silenceTrim} onValueChange={setSilenceTrim}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                 </Section>
@@ -1035,7 +1089,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
                             <Text style={s.toggleSub}>Keeps queued songs when you switch playlists</Text>
                         </View>
-                        <Switch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
+                        <LiveSwitch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     </SubGroup>
@@ -1253,7 +1307,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Keep Screen Awake</Text>
                             <Text style={s.toggleSub}>Keeps your screen on while listening</Text>
                         </View>
-                        <Switch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
+                        <LiveSwitch value={keepScreenAwake} onValueChange={setKeepScreenAwake}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     </SubGroup>
@@ -1275,7 +1329,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Light Mode</Text>
                             <Text style={s.toggleSub}>Light background instead of a dark one</Text>
                         </View>
-                        <Switch value={isLight} onValueChange={toggleLightMode}
+                        <LiveSwitch value={isLight} onValueChange={toggleLightMode}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     {/* Real bug found here: this whole grid used to be
@@ -1302,7 +1356,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Use Background Image</Text>
                             <Text style={s.toggleSub}>Background image instead of a solid color</Text>
                         </View>
-                        <Switch value={backgroundImageEnabled} onValueChange={v => {
+                        <LiveSwitch value={backgroundImageEnabled} onValueChange={v => {
                             if (v && !backgroundImageUri) { pickBackgroundImage(); return; }
                             setBackgroundImageEnabled(v);
                         }}
@@ -1419,7 +1473,7 @@ export default function SettingsScreen() {
                             <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
                             <Text style={s.toggleSub}>Instead of the song's Album tag</Text>
                         </View>
-                        <Switch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
+                        <LiveSwitch value={albumFromFolder} onValueChange={v => { setAlbumFromFolderState(v); setAlbumFromFolder(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
                     </SubGroup>

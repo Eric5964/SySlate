@@ -522,6 +522,7 @@ class AudioEngine: RCTEventEmitter {
         // audio) being user-killed from the switcher — a suspended or
         // already-purged app gets no notification whatsoever, nothing to
         // hook for that case.
+        NotificationCenter.default.addObserver(self, selector: #selector(handleMemoryWarning), name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate), name: UIApplication.willTerminateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -556,6 +557,20 @@ class AudioEngine: RCTEventEmitter {
 
     @objc private func handleAppResigned() {
         savePlaybackSnapshot(force: true)
+    }
+
+    // iOS is running low on memory. The biggest thing this module keeps that can simply be
+    // rebuilt is the ready copy of the disc's scratch window (about 10 MB for a normal file,
+    // several times that for hi-res ones): drop it, and stop a load still in flight from
+    // putting it back. A scratch that is under way has its own copy and is not touched.
+    @objc private func handleMemoryWarning() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.scratchPrefetchToken &+= 1
+            self.scratchPrefetching = false
+            self.scratchCache = nil
+            self.debugLog("[MEM] memory warning: released the scratch copy (scratching=\(self.scratchActive))")
+        }
     }
 
     @objc(getSavedSnapshot:rejecter:)
@@ -640,11 +655,26 @@ class AudioEngine: RCTEventEmitter {
     private var interruptionActive = false
 
     @objc private func handleInterruption(_ notification: Notification) {
+        // iOS may post this on a background thread. The queue, the state and the nodes are
+        // only ever touched on the main thread, so hop there first (a call arriving while a
+        // skip or an add was changing the queue could otherwise read it half-changed).
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.handleInterruption(notification) }
+            return
+        }
         guard let info = notification.userInfo,
               let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
         if type == .began {
+            // Reason 1 = "the app was suspended": iOS reports that its session was taken while
+            // the app sat idle in the background. Nothing was playing, nothing was cut off and
+            // no matching "ended" follows, so it must not count as a real interruption (it only
+            // made the next play wait for the hardware, and held the repair paths off).
+            if state != .playing, let reasonValue = info[AVAudioSessionInterruptionReasonKey] as? UInt, reasonValue == 1 {
+                debugLog("[INTERRUPT] ignored 'began' (the app was suspended, nothing was playing)")
+                return
+            }
             // [RAMP-DEBUG] Diagnostic — chasing "the starting glitch also
             // happens after something interrupts playback and you have to
             // start the song again", same bug class as the cold-launch
@@ -663,6 +693,11 @@ class AudioEngine: RCTEventEmitter {
             // pause()/setVolume() itself, same as it does for a manual
             // pause tap.
             interruptionActive = true
+            // The system stops the engine for a call or another app, like it does for a route
+            // change, so the song scheduled on the node may be gone when playback resumes. Load
+            // it again at its position on the next play (see playInternal) instead of risking
+            // "playing" with silence.
+            if state == .playing { markScheduledAudioStale() }
             markOutputCold()
             coldWakeExtra = true   // an ENDED notice may never arrive (the user just switches back), so the first play after this waits for the hardware too
             savePlaybackSnapshot(force: true)
@@ -839,6 +874,11 @@ class AudioEngine: RCTEventEmitter {
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {
+        // Same as handleInterruption: iOS may post this off the main thread.
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.handleRouteChange(notification) }
+            return
+        }
         guard let info = notification.userInfo,
               let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
@@ -2573,7 +2613,12 @@ class AudioEngine: RCTEventEmitter {
     // (volume near 0) is left alone.
     private func playNodeWithMicroFade() {
         let wanted = volume * currentGainCorrection
-        guard !isCrossfading, volume >= 0.02, wanted > 0.02 else { activeNode.play(); return }
+        guard !isCrossfading, volume >= 0.02, wanted > 0.02 else {
+            // A fade-in from JS is coming (volume ~0): the node must never start at a stale level.
+            if !isCrossfading, volume < 0.02 { activeNode.volume = volume * currentGainCorrection }
+            activeNode.play()
+            return
+        }
         activeNode.volume = 0
         activeNode.play()
         // After the output has been asleep (a cold start) with no fade-in from
@@ -2669,7 +2714,10 @@ class AudioEngine: RCTEventEmitter {
         }
         interruptionActive = false   // a play press takes the sound back
         deviceLossFadeToken &+= 1   // a play cancels a device-loss fade-out that is still under way
-        if let base = deviceLossBaseVol { activeNode.volume = base; deviceLossBaseVol = nil }   // and puts the level back
+        // and puts the level back. It is the level JS last asked for, not the level the node had before the
+        // fade: when JS had set 0 for a fade-in, the old value put the node back at full level and the
+        // song started loud, then dropped to 0 when the ramp began a moment later.
+        if deviceLossBaseVol != nil { activeNode.volume = volume * currentGainCorrection; deviceLossBaseVol = nil }
         guard currentIndex != nil else {
             if !queue.isEmpty {
                 currentIndex = 0
@@ -4108,6 +4156,9 @@ class AudioEngine: RCTEventEmitter {
         // still awaiting it doesn't hang.
         cancelActiveRampLocked()
         volume = vol.floatValue
+        if volume >= 0.5, let z = lastZeroVolumeAt, Date().timeIntervalSince(z) < 3, state == .playing {
+            debugLog(String(format: "[VOL] setVolume(%.2f) %.2fs after a 0 while playing (rampTimer=%@, nodeStartPending=%@)", volume, Date().timeIntervalSince(z), rampTimer == nil ? "none" : "running", nodeStartPlannedAt == nil ? "no" : "yes"))
+        }
         if volume < 0.02 {
             lastZeroVolumeAt = Date()
         } else {

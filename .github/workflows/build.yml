@@ -3,13 +3,31 @@ name: Build iOS IPA
 on:
   push:
     branches: [ main, master ]
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 45
     permissions:
       contents: write
+    env:
+      USE_CCACHE: '1'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 1G
+      COCOAPODS_DISABLE_STATS: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
 
     steps:
       - name: Checkout code
@@ -20,8 +38,41 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps --ignore-scripts
+      - name: Restore npm cache
+        id: npm
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      - name: Restore Pods cache
+        id: pods
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ios/Pods
+            ios/Podfile.lock
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'ios/Podfile', 'ios/Podfile.properties.json') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: Install dependencies (ccache installs alongside npm)
+        id: install
+        run: |
+          sudo mdutil -a -i off > /dev/null 2>&1 || true
+          brew install ccache > $RUNNER_TEMP/brew.log 2>&1 &
+          BREW_PID=$!
+          npm install --legacy-peer-deps --ignore-scripts --prefer-offline --no-audit --no-fund
+          wait $BREW_PID || { cat $RUNNER_TEMP/brew.log; exit 1; }
+          ccache --version | head -1
 
       - name: Patch react-native-screens iOS 26
         run: |
@@ -30,14 +81,29 @@ jobs:
             echo "Patched: $f"
           done
 
-      - name: Bundle JavaScript
+      # The JS bundle and pod install do not depend on each other, so they run side by side.
+      - name: Bundle JavaScript + install Pods (parallel)
+        id: podsbundle
         run: |
           NODE_ENV=production node node_modules/.bin/react-native bundle \
             --platform ios \
             --dev false \
             --entry-file index.js \
             --bundle-output ios/SySlate/main.jsbundle \
-            --assets-dest $RUNNER_TEMP/rn-assets
+            --assets-dest $RUNNER_TEMP/rn-assets > $RUNNER_TEMP/bundle.log 2>&1 &
+          BUNDLE_PID=$!
+
+          if ! (cd ios && pod install); then
+            echo "pod install failed, retrying with --repo-update"
+            (cd ios && pod install --repo-update)
+          fi
+
+          if ! wait $BUNDLE_PID; then
+            echo "=== JS bundle FAILED ==="
+            cat $RUNNER_TEMP/bundle.log
+            exit 1
+          fi
+          tail -n 15 $RUNNER_TEMP/bundle.log
 
       - name: Patch bundle for iOS 26
         run: |
@@ -45,12 +111,7 @@ jobs:
           echo "Patch result:"
           grep -n "compatibilityFlags" ios/SySlate/main.jsbundle | head -5
 
-      - name: Install CocoaPods
-        run: |
-          cd ios
-          pod install --repo-update
-
-      - name: Ensure Info.plist file sharing keys
+      - name: Prepare Info.plist, icons and signing settings
         run: |
           /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" ios/SySlate/Info.plist 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Set :UIFileSharingEnabled true" ios/SySlate/Info.plist
@@ -58,8 +119,6 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" ios/SySlate/Info.plist
           echo "Info.plist file sharing keys set"
 
-      - name: Generate app icons
-        run: |
           ICON="$GITHUB_WORKSPACE/icon.jpg"
           ICONSET="$GITHUB_WORKSPACE/ios/SySlate/Images.xcassets/AppIcon.appiconset"
           mkdir -p "$ICONSET"
@@ -94,8 +153,6 @@ jobs:
           EOF
           echo "Icons generated"
 
-      - name: Disable code signing
-        run: |
           cd ios
           sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Developer";/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
           sed -i '' 's/CODE_SIGN_IDENTITY = "iPhone Distribution";/CODE_SIGN_IDENTITY = "";/g' SySlate.xcodeproj/project.pbxproj
@@ -104,13 +161,19 @@ jobs:
 
       - name: Build unsigned IPA
         run: |
+          ccache -z
           cd ios
+          # No "clean": the runner is fresh anyway, and it would throw away what ccache can reuse.
           xcrun xcodebuild \
             -workspace SySlate.xcworkspace \
             -scheme SySlate \
             -configuration Release \
             -destination generic/platform=iOS \
             -archivePath $RUNNER_TEMP/SySlate.xcarchive \
+            -derivedDataPath $RUNNER_TEMP/DerivedData \
+            -showBuildTimingSummary \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -118,24 +181,37 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             GENERATE_INFOPLIST_FILE=NO \
             SKIP_BUNDLING=1 \
-            clean archive
-            
-          echo "=== Copying JS bundle into app ==="
-          cp $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle \
-            $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/main.jsbundle
+            DEBUG_INFORMATION_FORMAT=dwarf \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            GCC_GENERATE_DEBUGGING_SYMBOLS=NO \
+            CLANG_ENABLE_MODULE_DEBUGGING=NO \
+            archive
 
-          echo "=== Verifying ==="
-          ls -la $RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app/main.jsbundle
+          echo "=== Copying JS bundle into app ==="
+          APP=$RUNNER_TEMP/SySlate.xcarchive/Products/Applications/SySlate.app
+          cp $GITHUB_WORKSPACE/ios/SySlate/main.jsbundle $APP/main.jsbundle
+          ls -la $APP/main.jsbundle
 
           cd $RUNNER_TEMP/SySlate.xcarchive/Products
           mv Applications Payload
-          zip -r $RUNNER_TEMP/SySlate.ipa Payload
+          zip -qry $RUNNER_TEMP/SySlate.ipa Payload
+
+      - name: ccache stats
+        id: ccachestat
+        if: ${{ !cancelled() }}
+        run: |
+          ccache -s || true
+          # Skip re-uploading the cache when every compile was a hit (nothing new to store).
+          MISS=$(ccache --print-stats 2>/dev/null | awk '$1=="cache_miss"{print $2}')
+          if [ "$MISS" = "0" ]; then echo "save=false" >> $GITHUB_OUTPUT; else echo "save=true" >> $GITHUB_OUTPUT; fi
 
       - name: Upload IPA as artifact
         uses: actions/upload-artifact@v4
         with:
           name: SySlate-unsigned
           path: ${{ runner.temp }}/SySlate.ipa
+          compression-level: 0
+          retention-days: 14
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -145,3 +221,32 @@ jobs:
           files: ${{ runner.temp }}/SySlate.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Cache saves run last, so the IPA and release are already available while they upload.
+      # ccache is saved even when the build failed; Pods and npm only when their own step succeeded.
+      - name: Save ccache
+        if: ${{ !cancelled() && steps.ccachestat.outputs.save != 'false' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Save Pods cache
+        if: ${{ !cancelled() && steps.podsbundle.outcome == 'success' && steps.pods.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ios/Pods
+            ios/Podfile.lock
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'ios/Podfile', 'ios/Podfile.properties.json') }}
+
+      - name: Save npm cache
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.npm.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json') }}

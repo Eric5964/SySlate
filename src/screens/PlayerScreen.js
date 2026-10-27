@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
@@ -78,6 +78,8 @@ function isNeutralColor(hex) {
     const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
     return Math.max(r, g, b) - Math.min(r, g, b) < 28;
 }
+
+const LYRIC_CARRY_MAX_SEC = 1.0;   // readings come every 0.5 s; never run further than this past one
 
 export default function PlayerScreen() {
     const navigation = useNavigation();
@@ -632,10 +634,24 @@ export default function PlayerScreen() {
     // second late (and only on a poll). While the lyrics are showing and the song is
     // playing, the position is carried forward with the clock between polls and the
     // line is picked from that, so lines change on time, to the millisecond of the file.
-    const lyricSample = useRef({ pos: 0, at: 0 });
+    //
+    // The carried-forward position must never run on stale data. It used to keep counting from the
+    // last reading even while paused, so pressing Play after a pause made the lyrics jump ahead by
+    // the whole pause (a second, or a minute) until the next reading arrived. Now: the sample is
+    // restarted whenever play/pause flips, it only carries forward after a reading that actually
+    // moved since playing began, and it never carries more than LYRIC_CARRY_MAX_SEC past a reading.
+    const lyricSample = useRef({ pos: 0, at: 0, moving: false });
+    const lyricPlayingRef = useRef(isPlaying);
     useEffect(() => {
-        lyricSample.current = { pos: effectiveLyricsProgress.position, at: Date.now() };
-    }, [effectiveLyricsProgress.position, effectiveLyricsProgress.duration, currentTrack?.id]);
+        const prev = lyricSample.current;
+        const flipped = lyricPlayingRef.current !== isPlaying;
+        lyricPlayingRef.current = isPlaying;
+        const pos = effectiveLyricsProgress.position;
+        const moved = !flipped && isPlaying && Math.abs(pos - prev.pos) > 0.001;
+        // Same position as before while playing = no new information: keep the older, honest stamp.
+        if (!flipped && isPlaying && !moved && prev.at > 0) return;
+        lyricSample.current = { pos, at: Date.now(), moving: moved || (isPlaying && prev.moving && !flipped) };
+    }, [effectiveLyricsProgress.position, effectiveLyricsProgress.duration, currentTrack?.id, isPlaying]);
     const [liveLine, setLiveLine] = useState(null);
     const lyricsLive = !!(showingLyrics && isPlaying && lyricsData && effectiveLyricsProgress.duration > 0);
     useEffect(() => {
@@ -643,7 +659,8 @@ export default function PlayerScreen() {
         const rate = playbackRate || 1;
         const tick = () => {
             const smp = lyricSample.current;
-            const pos = smp.pos + ((Date.now() - smp.at) / 1000) * rate;
+            const carry = smp.moving ? Math.min(Math.max(0, (Date.now() - smp.at) / 1000), LYRIC_CARRY_MAX_SEC) : 0;
+            const pos = smp.pos + carry * rate;
             const idx = activeLyricIndex(lyricsData, pos + lyricsOffsetSec);
             setLiveLine(prev => (prev === idx ? prev : idx));
         };
@@ -687,6 +704,7 @@ export default function PlayerScreen() {
     // off only while a finger is on the disc itself (see DJDisc's onTouching).
     const [discHeld, setDiscHeld] = useState(false);
     const discHeldRef = useRef(false);
+    const discHeldTimer = useRef(null);
     const setDiscTouching = useCallback((touching) => {
         discHeldRef.current = !!touching;
         // Straight to the navigator, NOT through a state change and an effect: that route
@@ -695,8 +713,17 @@ export default function PlayerScreen() {
         // Nothing is switched off here any more: the disc follows the finger with a native gesture
         // handler (see DJDisc), which the swipe-down-to-close cannot take a touch from. Switching the
         // navigator at the moment of the touch re-rendered it right when the scratch had to start.
-        setDiscHeld(!!touching);
+        // discHeld only steers the progress bar. Setting it re-renders this whole screen, and doing that at the
+        // moment of the lift landed in the middle of the release ease (the 20 ms timer that drives the sound's
+        // speed and the disc was starved: a small stutter you could hear and see). It is applied a little
+        // later, as a low-priority update, instead.
+        if (discHeldTimer.current) clearTimeout(discHeldTimer.current);
+        discHeldTimer.current = setTimeout(() => {
+            discHeldTimer.current = null;
+            startTransition(() => setDiscHeld(discHeldRef.current));
+        }, touching ? 150 : 500);
     }, [navigation]);
+    useEffect(() => () => { if (discHeldTimer.current) clearTimeout(discHeldTimer.current); }, []);
     useEffect(() => () => navigation.setOptions({ gestureEnabled: true }), [navigation]);
     // While the queue sheet is open, the Player's own swipe-down-to-close must be off:
     // dragging a queue row down (or up and then down) started it, and the whole Player
@@ -837,6 +864,18 @@ export default function PlayerScreen() {
     // genuine active-line advance while already looking at the view still
     // animates normally.
     const wasShowingLyricsRef = useRef(showingLyrics);
+    // The lyrics stay invisible until the view has been put on the right line once. Right after the
+    // Player opens the real position (and the row measurements) can arrive a few frames late, and the
+    // list used to show its top for that moment and then snap down. A short timer shows it anyway if
+    // that placing never happens (a song with no timed line yet, a position that never arrives).
+    const [lyricsPlaced, setLyricsPlaced] = useState(false);
+    const lyricsPlacedRef = useRef(false);
+    const markLyricsPlaced = () => { if (!lyricsPlacedRef.current) { lyricsPlacedRef.current = true; setLyricsPlaced(true); } };
+    useEffect(() => {
+        if (!showingLyrics || lyricsPlaced) return undefined;
+        const id = setTimeout(() => { console.log('[LYRICS] shown without a measured position (timeout)'); markLyricsPlaced(); }, 450);
+        return () => clearTimeout(id);
+    }, [showingLyrics, lyricsPlaced]);
     useEffect(() => {
         if (!showingLyrics) { wasShowingLyricsRef.current = false; return; }
         const justOpened = !wasShowingLyricsRef.current;
@@ -896,6 +935,7 @@ export default function PlayerScreen() {
             if (isRealPosition) {
                 wasShowingLyricsRef.current = true;
                 lyricsJustJumpedRef.current = false;
+                markLyricsPlaced();
             }
             return;
         }
@@ -924,6 +964,7 @@ export default function PlayerScreen() {
         lyricsScrollRef.current?.scrollTo({ y: Math.max(0, y - (width - 56) * 0.5), animated: !skipAnimation });
         wasShowingLyricsRef.current = true;
         lyricsJustJumpedRef.current = false;
+        markLyricsPlaced();
     }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
@@ -1172,7 +1213,7 @@ export default function PlayerScreen() {
                     ? <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                     </TouchableOpacity>
-                    : <View style={s.topBtn} />}
+                    : null}   {/* no empty slot when the arrow is off, so the title centers between the left edge and the icons */}
                 {playerBtns.label
                     ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? (currentPlaylist?.name && (!currentPlaylist.songs || currentPlaylist.songs.some(x => x.id === currentTrack?.id)) ? currentPlaylist.name : null) ?? homePlaylistName ?? 'Now Playing'}</Text>
                     : <View style={{ flex: 1 }} />}
@@ -1301,7 +1342,7 @@ export default function PlayerScreen() {
                                 // cover" — matching the art's own footprint exactly
                                 // (top: 0, height: width-56) instead of guessing at a
                                 // taller offset box fixes both at once.
-                                style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsFade, overflow: 'hidden' }]}
+                                style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsPlaced ? lyricsFade : 0, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <Animated.ScrollView
@@ -1315,6 +1356,11 @@ export default function PlayerScreen() {
                                         { useNativeDriver: true }
                                     )}
                                     scrollEventThrottle={16}
+                                    onContentSizeChange={(_w, h) => {
+                                        // Scrolling before the content has its height is clamped to the top:
+                                        // while the lyrics are still hidden, place again once it is known.
+                                        if (h > 0 && !lyricsPlacedRef.current) setLyricsLayoutVersion(v => v + 1);
+                                    }}
                                     onScrollBeginDrag={() => {
                                         if (lyricsResyncTimer.current) clearTimeout(lyricsResyncTimer.current);
                                         setLyricsManualScroll(true);
@@ -1438,7 +1484,7 @@ export default function PlayerScreen() {
                                     <View style={[s.progressTrack, { backgroundColor: base.border, overflow: 'hidden' }]}>
                                         <Animated.View style={[s.progressFill, { width: barW, backgroundColor: theme.accent, transform: [{ translateX: fillX }] }]} />
                                     </View>
-                                    <Animated.View style={[s.progressThumb, { left: 0, marginLeft: -10, backgroundColor: theme.accent, transform: [{ translateX: thumbX }] }]} />
+                                    <Animated.View style={[s.progressThumb, { left: 0, marginLeft: -8.5, backgroundColor: theme.accent, transform: [{ translateX: thumbX }] }]} />
                                 </View>
                             </PanGestureHandler>
                         </TapGestureHandler>
@@ -1587,7 +1633,7 @@ const s = StyleSheet.create({
     progressTouch: { height: 44, justifyContent: 'center' },
     progressTrack: { height: 4, backgroundColor: '#1a1a1a', borderRadius: 2 },
     progressFill: { height: 4, borderRadius: 2 },
-    progressThumb: { position: 'absolute', width: 20, height: 20, borderRadius: 10, top: 12 },
+    progressThumb: { position: 'absolute', width: 17, height: 17, borderRadius: 8.5, top: 13.5 },
     times: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
     time: { color: '#3a3a3a', fontSize: 12 },
     controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12 },
