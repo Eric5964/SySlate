@@ -500,7 +500,12 @@ class AudioEngine: RCTEventEmitter {
         // after the graph is wired, means it's already running by the time
         // any play() call happens — first tap included — so there's
         // nothing left to cold-start at that critical moment.
-        activateSession()
+        // The audio session is NOT activated at launch any more: claiming it took the
+        // sound from other apps (music, a podcast) the moment SySlate was merely
+        // opened. The first play activates it (playInternal / finishLoadingTrack do),
+        // and, like after an interruption, waits a little longer for the hardware
+        // to wake so the start is clean.
+        coldWakeExtra = true
         // The engine used to be started here and left running, silently,
         // from launch. A running engine makes iOS treat the app as
         // playing, so the lock screen and Control Center showed "playing"
@@ -526,6 +531,12 @@ class AudioEngine: RCTEventEmitter {
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppWillTerminate), name: UIApplication.willTerminateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleAppResigned), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        // The Width/Balance effect is put into the signal path now, while the engine
+        // is idle, and stays there (it passes the sound through untouched at the
+        // default settings). Adding it later, in the middle of a song, did not
+        // take effect until the next pause and play; with it already in place a
+        // slider only changes numbers and works at once.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.installSpatialUnit() }
     }
 
     // MARK: - Playback snapshot (where the user left off)
@@ -3651,7 +3662,7 @@ class AudioEngine: RCTEventEmitter {
     func scratchBegin(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { resolve(false); return }
-            guard !self.scratchActive, !self.scratchLoading, !self.isCrossfading,
+            guard !self.scratchActive, !self.scratchLoading, !self.isCrossfading, self.rampInFlightTarget == nil,
                   let idx = self.currentIndex, idx >= 0, idx < self.queue.count,
                   self.state == .playing || self.state == .paused || self.state == .ready,
                   let file = self.currentFile, self.ensureScratchNode() else {
@@ -4790,8 +4801,8 @@ class AudioEngine: RCTEventEmitter {
     private func verifySpatialUnit() {
         guard let au = spatialUnit else { return }
         // The engine is stopped whenever the song is paused, so there is nothing
-        // to judge yet: look again every 5 s (up to a minute) until it runs.
-        if !engine.isRunning && au.renderCalls == 0 && spatialVerifyWaits < 12 {
+        // to judge yet: look again every 5 s (up to an hour) until it runs.
+        if !engine.isRunning && au.renderCalls == 0 && spatialVerifyWaits < 720 {
             spatialVerifyWaits += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.verifySpatialUnit() }
             return
@@ -5151,6 +5162,12 @@ private final class SpatialAudioUnit: AUAudioUnit {
             let tb = self.targetBalance
             let tgl: Float = tb > 0 ? 1 - tb : 1
             let tgr: Float = tb < 0 ? 1 + tb : 1
+            // Default settings: hand the sound on exactly as it came in.
+            if tw == 1 && tb == 0 && self.curWidth == 1 && self.curGainL == 1 && self.curGainR == 1 {
+                if ol != il { memcpy(ol, il, n * MemoryLayout<Float>.size) }
+                if orr != ir { memcpy(orr, ir, n * MemoryLayout<Float>.size) }
+                return noErr
+            }
             var w = self.curWidth
             var gl = self.curGainL
             var gr = self.curGainR
@@ -5166,6 +5183,11 @@ private final class SpatialAudioUnit: AUAudioUnit {
                 ol[i] = (mid + side) * gl
                 orr[i] = (mid - side) * gr
             }
+            // The smoothing only ever gets close to the target; land on it exactly
+            // so the default settings can use the exact pass-through above.
+            if abs(tw - w) < 0.00002 { w = tw }
+            if abs(tgl - gl) < 0.00002 { gl = tgl }
+            if abs(tgr - gr) < 0.00002 { gr = tgr }
             self.curWidth = w
             self.curGainL = gl
             self.curGainR = gr

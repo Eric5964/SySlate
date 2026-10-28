@@ -98,7 +98,7 @@ const DiscFace = React.memo(function DiscFace({ R, artwork, discType, placeholde
     );
 });
 
-export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', placeholderColor = '#161616', assist = true, spinOn = true, touchOn = true, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
+export default function DJDisc({ size, artwork, accent, shadow = false, outline = false, outlineColor = '#161616', outlineInset = 3, spinDegPerSec = 200, scratchDegPerSec = RPM_DEG_PER_SEC, discType = 'vinyl', placeholderColor = '#161616', assist = true, spinOn = true, touchOn = true, fadeBusy = false, isPlaying, visible, active, position, duration, startGuard = 3, endGuard = 12, onTouching, trackKey }) {
     // Bad numbers (NaN, Infinity, negative) from upstream must never reach the
     // maths below: treat them as "unknown", which keeps the disc locked.
     position = Number.isFinite(position) ? position : 0;
@@ -190,7 +190,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         dim.setValue(touchOn ? 1 : 0);
     }, [trackKey, touchOn, dim]);
     const live = useRef({});
-    live.current = { allowed, windowOk, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist, spin: spinOn, touch: touchOn };
+    live.current = { allowed, windowOk, visible, active, isPlaying, position, duration, startGuard, endGuard, scratchDegPerSec, assist, spin: spinOn, touch: touchOn, fadeBusy };
 
     // Starting and stopping use a quadratic ease over the distance that
     // exactly matches idle speed at the join (distance = half of speed x
@@ -564,7 +564,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     const panCfg = useRef({
         onStartShouldSetPanResponder: (e) => {
             const au = autoRef.current;
-            return live.current.touch && live.current.allowed && !skipHold.current && !ignoreTouch.current
+            return live.current.touch && live.current.allowed && !live.current.fadeBusy && !skipHold.current && !ignoreTouch.current
                 && !(au && au.kind === 'edge') && (e.nativeEvent.trusted || insideDisc(e.nativeEvent.pageX, e.nativeEvent.pageY));
         },
         onPanResponderGrant: (e) => {

@@ -11,9 +11,9 @@ import { extractEmbeddedArt, getCachedArt } from '../utils/embeddedArt';
 // light on its own to keep the combined total reasonable. This exists
 // because a confirmed CPU-limit kill happened earlier from extraction work
 // alone; the goal here is coverage over time, not speed.
-const BATCH_SIZE = 15;
-const EXTRACTION_STAGGER_MS = 75;
-const BURST_PAUSE_MS = 4000;
+const BATCH_SIZE = 25;
+const EXTRACTION_STAGGER_MS = 50;
+const BURST_PAUSE_MS = 2000;
 const YIELD_EVERY = 20;
 
 // Walks the whole library once per app session (once per stable `songs`

@@ -387,11 +387,16 @@ function hashKey(str) {
 // cheaper than the real read+decode extraction does, so callers can keep
 // using this to skip the artificial "don't compete with the ramp" delay
 // for anything that resolves here.
+// MP3 covers were not read before; an old "no cover" answer for an MP3 is looked at again once.
+// Entries written since carry m3: 1.
+const isOldMp3Miss = (song, entry) => !!entry && entry.uri == null && !entry.m3 && /\.mp3$/i.test(String(song?.filename || song?.id || ''));
+
 export async function getCachedArt(song) {
     if (!song?.id) return undefined;
     const cache = await loadCacheMap();
     const entry = cache[song.id];
     if (entry === undefined) return undefined;
+    if (isOldMp3Miss(song, entry)) return undefined;
     const current = await getFingerprint(song.url);
     // current is null only when the stat itself failed (not when it
     // succeeded and simply didn't match) — treat that as "can't verify,
@@ -576,6 +581,68 @@ async function locateFlacPicture(uri, fileSize, noLimit = false) {
     return { found: false, limited: limit < fileSize };
 }
 
+// MP3: the cover is an APIC frame (PIC in ID3v2.2) inside the ID3v2 tag at the front of the file.
+// Frames are walked by their headers; only the first ~1 KB of the picture frame is read to find where the
+// image itself starts. Returns { found: false }, { found: true, mime, start, length }, or null (unsure:
+// unsynchronised or compressed/encrypted frames, a description longer than what was read).
+async function locateMp3Picture(uri, fileSize) {
+    const get = makeWindowReader(uri, 4096);
+    const head = await get(0, 10);
+    if (head.length < 10 || head[0] !== 0x49 || head[1] !== 0x44 || head[2] !== 0x33) return { found: false };
+    const ver = head[3], flags = head[5];
+    if (ver < 2 || ver > 4) return { found: false };
+    if (flags & 0x80) return null;   // whole tag unsynchronised: the image bytes are altered
+    const tagEnd = Math.min(10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f)), fileSize > 0 ? fileSize : Infinity);
+    let offset = 10;
+    if (ver >= 3 && (flags & 0x40)) {   // extended header
+        const eh = await get(10, 4);
+        if (eh.length < 4) return null;
+        offset += ver === 4 ? (((eh[0] & 0x7f) << 21) | ((eh[1] & 0x7f) << 14) | ((eh[2] & 0x7f) << 7) | (eh[3] & 0x7f)) : readU32BE(eh, 0) + 4;
+    }
+    const idLen = ver === 2 ? 3 : 4;
+    const hdrLen = ver === 2 ? 6 : 10;
+    for (let n = 0; n < 2000 && offset + hdrLen <= tagEnd; n++) {
+        const h = await get(offset, hdrLen);
+        if (h.length < hdrLen) return null;
+        if (h[0] === 0) return { found: false };   // padding: no more frames
+        const id = String.fromCharCode(...h.slice(0, idLen));
+        let size;
+        if (ver === 2) size = (h[3] << 16) | (h[4] << 8) | h[5];
+        else if (ver === 3) size = readU32BE(h, 4);
+        else size = ((h[4] & 0x7f) << 21) | ((h[5] & 0x7f) << 14) | ((h[6] & 0x7f) << 7) | (h[7] & 0x7f);
+        const fstart = offset + hdrLen;
+        if (size <= 0 || fstart + size > tagEnd) return null;
+        if ((ver === 2 && id === 'PIC') || (ver >= 3 && id === 'APIC')) {
+            if (ver === 3 && (h[9] & 0xe0)) return null;
+            if (ver === 4 && (h[9] & 0x4f)) return null;
+            const hb = await get(fstart, Math.min(size, 1024));
+            if (hb.length < 6) return null;
+            const enc = hb[0];
+            let p = 1;
+            let mime = '';
+            if (ver === 2) {
+                const fmt = String.fromCharCode(hb[1], hb[2], hb[3]).toUpperCase();
+                mime = fmt === 'PNG' ? 'image/png' : 'image/jpeg';
+                p = 4;
+            } else {
+                while (p < hb.length && hb[p] !== 0) { mime += String.fromCharCode(hb[p]); p++; }
+                if (p >= hb.length) return null;
+                p++;
+            }
+            if (mime === '-->') return { found: false };   // a link, not an embedded image
+            p++;   // picture type
+            if (enc === 1 || enc === 2) { while (p + 1 < hb.length && !(hb[p] === 0 && hb[p + 1] === 0)) p += 2; p += 2; }
+            else { while (p < hb.length && hb[p] !== 0) p++; p++; }
+            if (p >= hb.length && p < size) return null;   // the description is longer than what was read
+            const length = size - p;
+            if (length <= 0 || length > 20 * 1024 * 1024) return { found: false };
+            return { found: true, mime: mime || 'image/jpeg', start: fstart + p, length };
+        }
+        offset = fstart + size;
+    }
+    return { found: false };
+}
+
 // M4A/MP4: hop moov -> udta -> meta -> ilst -> covr -> data. The moov can be anywhere in the
 // file (front, or after the audio), the picture is not read at all while looking for it.
 // Same result as extractPictureFromMp4 / the tail search together, found in a few reads.
@@ -645,7 +712,7 @@ async function extractEmbeddedArtUncached(song) {
         // stat the same file twice in one pass.
         const fp = await getFingerprint(song.url);
         const existing = cache[song.id];
-        if (existing !== undefined && fingerprintsMatch(existing?.fp, fp)) {
+        if (existing !== undefined && fingerprintsMatch(existing?.fp, fp) && !isOldMp3Miss(song, existing)) {
             return existing.uri ?? null;
         }
 
@@ -657,6 +724,7 @@ async function extractEmbeddedArtUncached(song) {
         let located = null;
         if (ext === 'flac') located = await locateFlacPicture(song.url, fp?.size);
         else if (ext === 'm4a' || ext === 'mp4' || ext === 'alac') located = await locateMp4Picture(song.url, fp?.size);
+        else if (ext === 'mp3') located = await locateMp3Picture(song.url, fp?.size);
         if (located?.found) {
             const b64 = await readRangeAsBase64(song.url, located.start, located.length);
             if (b64) picture = { mime: located.mime, b64, length: located.length };
@@ -695,7 +763,7 @@ async function extractEmbeddedArtUncached(song) {
         if (!(picture?.b64 ? picture.length > 0 : picture?.data?.length)) {
             // `bc`: the file was looked through completely (no size limit was hit), so the
             // end-of-loading pass for large covers has nothing to re-check here.
-            await saveCacheEntry(song.id, located && located.found === false && !located.limited ? { uri: null, fp, bc: 1 } : { uri: null, fp });
+            await saveCacheEntry(song.id, { uri: null, fp, ...(located && located.found === false && !located.limited ? { bc: 1 } : {}), ...(ext === 'mp3' ? { m3: 1 } : {}) });
             return null;
         }
 
@@ -726,7 +794,7 @@ async function extractEmbeddedArtUncached(song) {
         if (existing?.uri && existing.uri !== dest) {
             await FileSystem.deleteAsync(existing.uri, { idempotent: true }).catch(() => { });
         }
-        await saveCacheEntry(song.id, { uri: dest, fp });
+        await saveCacheEntry(song.id, { uri: dest, fp, ...(ext === 'mp3' ? { m3: 1 } : {}) });
         return dest;
     } catch (e) {
         console.error('extractEmbeddedArt:', e);

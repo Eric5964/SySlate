@@ -27,6 +27,7 @@ import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
 import { useListArt } from '../hooks/useListArt';
 import { titleKey, compareKeys } from '../utils/sortKey';
+import { vizRowId } from '../utils/vizMatch';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -86,9 +87,12 @@ export default function PlaylistDetailScreen() {
     // while it loads.
     const [cover, setCover] = useState(initialCover ?? null);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, showPlaylistTitles, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, topBarColor, ui, vizMode } = usePreferences();
-    // The visualizer shows on the playing song of THIS playlist only (not on the same song in another playlist).
-    const listIsPlaying = !!currentPlaylist && ((currentPlaylist.path && playlist.path) ? currentPlaylist.path === playlist.path : currentPlaylist.name === playlist.name);
-    const vizId = (vizMode !== 'off' && !performanceMode && listIsPlaying) ? (currentTrack?.id ?? null) : null;
+    // The visualizer shows on the playing song wherever it is listed here, also when the
+    // sound is coming from another playlist or the queue (display only, nothing is re-queued).
+    const vizId = useMemo(
+        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(playlist.songs, currentTrack) : null,
+        [vizMode, performanceMode, playlist.songs, currentTrack]
+    );
     const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 

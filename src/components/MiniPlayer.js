@@ -10,6 +10,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { skipWithRamp, playWithRamp, pauseWithRamp } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons';
 import GradientCap from './GradientCap';
+import SongVisualizer from './SongVisualizer';
 import DimPressable from './DimPressable';
 import { squircle } from '../utils/squircle';
 import { formatArtists } from '../utils/artists';
@@ -24,7 +25,8 @@ export default function MiniPlayer({ withTabBar = true }) {
     const navigation = useNavigation();
     const { currentTrack, playbackRate } = usePlayback();
     const { theme, base } = useTheme();
-    const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin, miniPlayerShadow } = usePreferences();
+    const { coverShape, showSongCovers, artistSeparator, artistDisplayJoin, miniPlayerShadow, vizMode, performanceMode } = usePreferences();
+    const showViz = vizMode !== 'off' && !performanceMode;   // same setting and rules as the song lists
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
     const rawProgress = useProgress(500);
@@ -152,6 +154,7 @@ export default function MiniPlayer({ withTabBar = true }) {
               side. */}
           <View style={[styles.container, { borderColor: theme.accentDim, backgroundColor: base.surface }, !showSongCovers && { paddingLeft: 18 }]}>
             <GradientCap color={theme.accent} height={PILL_H} style={{ opacity: 0.5 }} />
+            {showViz && vizMode === 'pill' ? <SongVisualizer color={theme.accent} mode="pill" radius={16} /> : null}
             <View pointerEvents="none" style={styles.miniProgressTrack}>
                 <MiniProgressFill basis={basisRef.current} isPlaying={isPlaying} playbackRate={playbackRate} trackKey={currentTrack?._qid ?? currentTrack?.id} color={theme.accent} />
             </View>
@@ -165,6 +168,7 @@ export default function MiniPlayer({ withTabBar = true }) {
                         ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                         : null
                     }
+                    {showViz && vizMode === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(ART_SIZE, coverShape)} /> : null}
                 </View>
             )}
             <View style={styles.info}>

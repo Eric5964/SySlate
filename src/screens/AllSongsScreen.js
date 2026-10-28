@@ -16,6 +16,7 @@ import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
 import { getPlaylistSort, setPlaylistSort, playCountKey } from '../utils/storage';
+import { vizRowId } from '../utils/vizMatch';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
@@ -53,7 +54,6 @@ export default function AllSongsScreen() {
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui, vizMode } = usePreferences();
-    const vizId = (vizMode !== 'off' && !performanceMode) ? (currentTrack?.id ?? null) : null;
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE + 52);
 
     const listRef = useRef(null);
@@ -86,6 +86,11 @@ export default function AllSongsScreen() {
         }
         return out;
     }, [allSongs]);
+    // Combined songs keep only their first copy, so the playing one is matched by song, not file.
+    const vizId = useMemo(
+        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(dedupedSongs, currentTrack) : null,
+        [vizMode, performanceMode, dedupedSongs, currentTrack]
+    );
     // Counts shown on rows go up the moment a play is counted; the ORDER only follows
     // the snapshot, which is read again when the app opens, the sort is changed, the
     // songs change, or a different queue is played.

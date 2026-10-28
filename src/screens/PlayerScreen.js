@@ -144,6 +144,11 @@ export default function PlayerScreen() {
     const [showQueue, setShowQueue] = useState(false);
     const [showSleepTimer, setShowSleepTimer] = useState(false);
     const [showSpeed, setShowSpeed] = useState(false);
+    // Two-line titles grow UPWARD from the one-line position, so nothing else
+    // on the Player moves. titleLines/titleLineH come from the title's own
+    // layout and only drive how far the Show Lyrics/Disc button lifts.
+    const [titleLines, setTitleLines] = useState(1);
+    const [titleLineH, setTitleLineH] = useState(27);
     const [showEQ, setShowEQ] = useState(false);
     const [pc, setPc] = useState({ id: null, n: 0 });
     // This used to be its own local `useState(true)`, loaded once on mount
@@ -702,6 +707,12 @@ export default function PlayerScreen() {
     // The Player's swipe-down-to-close works from anywhere above the controls,
     // which would close it whenever the disc is dragged downward. It is turned
     // off only while a finger is on the disc itself (see DJDisc's onTouching).
+    // True while a play/pause fade is running. The disc ignores fingers meanwhile (scratching in the
+    // middle of a fade left the song's volume half-ramped), and the play button ignores presses
+    // while the disc is being scratched.
+    const [fadeBusy, setFadeBusy] = useState(false);
+    const fadeBusyTimer = useRef(null);
+    useEffect(() => () => { if (fadeBusyTimer.current) clearTimeout(fadeBusyTimer.current); }, []);
     const [discHeld, setDiscHeld] = useState(false);
     const discHeldRef = useRef(false);
     const discHeldTimer = useRef(null);
@@ -853,6 +864,10 @@ export default function PlayerScreen() {
         // declaration.
         lyricsJustJumpedRef.current = true;
         lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
+        // A new song hides the lyrics again until they are on the right line, so the top
+        // of the list never shows for a moment and then jumps.
+        lyricsPlacedRef.current = false;
+        setLyricsPlaced(false);
     }, [currentTrack?.id]);
     // "Lyrics should already be at the place in the song before needing to
     // move when the music player is opened" — this effect's scrollTo was
@@ -877,7 +892,12 @@ export default function PlayerScreen() {
         return () => clearTimeout(id);
     }, [showingLyrics, lyricsPlaced]);
     useEffect(() => {
-        if (!showingLyrics) { wasShowingLyricsRef.current = false; return; }
+        if (!showingLyrics) {
+            wasShowingLyricsRef.current = false;
+            // Every time the lyrics view is opened again it starts hidden until placed.
+            if (lyricsPlacedRef.current) { lyricsPlacedRef.current = false; setLyricsPlaced(false); }
+            return;
+        }
         const justOpened = !wasShowingLyricsRef.current;
         // Real gap found here: this used to mark "opened" true on the very
         // first run regardless of activeLine. But activeLine starts at -1
@@ -1209,11 +1229,13 @@ export default function PlayerScreen() {
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>
+                {/* no empty slot when the arrow is off, so the title centers between the left edge and the icons.
+                    (Keep comments on their own line: text after a } on the same line becomes a stray string in the View and crashes.) */}
                 {playerBtns.back
                     ? <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                     </TouchableOpacity>
-                    : null}   {/* no empty slot when the arrow is off, so the title centers between the left edge and the icons */}
+                    : null}
                 {playerBtns.label
                     ? <Text style={[s.topLabel, { color: theme.accent }]} numberOfLines={1}>{(queueSource && currentTrack?.id === queueSource.id ? queueSource.name : null) ?? (currentPlaylist?.name && (!currentPlaylist.songs || currentPlaylist.songs.some(x => x.id === currentTrack?.id)) ? currentPlaylist.name : null) ?? homePlaylistName ?? 'Now Playing'}</Text>
                     : <View style={{ flex: 1 }} />}
@@ -1315,6 +1337,7 @@ export default function PlayerScreen() {
                                     discType={djDiscType}
                                     placeholderColor={base.surface}
                                     assist={djDiscAssist}
+                                    fadeBusy={fadeBusy}
                                     spinOn={djDiscSpin}
                                     touchOn={djDiscTouch}
                                     isPlaying={isPlaying}
@@ -1447,7 +1470,7 @@ export default function PlayerScreen() {
                          controlling their distance is the marginBottom set
                          here directly — no more competing flex gap. */}
                     <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
-                    <View style={[s.lyricsToggleSlot, { marginBottom: 14 }]}>
+                    <View style={[s.lyricsToggleSlot, { marginBottom: 14 }, titleLines > 1 ? { transform: [{ translateY: -titleLineH }] } : null]}>
                         {(hasLyricsView || djDisc) && (
                             <TouchableOpacity onPress={cycleView} style={s.lyricsToggleBtn}>
                                 <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
@@ -1458,7 +1481,25 @@ export default function PlayerScreen() {
                     </View>
                     <View style={s.info}>
                         <View style={{ flex: 1 }}>
-                            <Text style={[s.trackTitle, { color: base.text }]} numberOfLines={2}>{displayTitle}</Text>
+                            {/* The slot is always ONE line tall (the invisible sizer
+                                text), so the group's height never changes. The real
+                                title sits on the slot's bottom edge and, when it
+                                wraps, grows upward out of it. */}
+                            <View style={{ marginBottom: 4 }}>
+                                <Text style={[s.trackTitle, { marginBottom: 0, opacity: 0 }]} numberOfLines={1} accessible={false} importantForAccessibility="no-hide-descendants">{displayTitle}</Text>
+                                <Text
+                                    style={[s.trackTitle, { color: base.text, marginBottom: 0, position: 'absolute', left: 0, right: 0, bottom: 0 }]}
+                                    numberOfLines={2}
+                                    onTextLayout={(e) => {
+                                        const ls = e.nativeEvent.lines;
+                                        if (!ls || !ls.length) return;
+                                        const n = ls.length > 1 ? 2 : 1;
+                                        if (n !== titleLines) setTitleLines(n);
+                                        const h = ls[0].height;
+                                        if (h > 0 && Math.abs(h - titleLineH) > 0.5) setTitleLineH(h);
+                                    }}
+                                >{displayTitle}</Text>
+                            </View>
                             <Text style={[s.trackArtist, { color: theme.accent }]} numberOfLines={1}>{displayArtist}</Text>
                         </View>
                         {showPlayCount && (
@@ -1533,7 +1574,16 @@ export default function PlayerScreen() {
                         <SkipPrevIcon size={38} color={skipIconColor} />
                     </TouchableOpacity>
                     <TouchableOpacity
-                        onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
+                        onPress={() => {
+                            if (discHeldRef.current) return;   // the disc is being scratched: not now
+                            setFadeBusy(true);
+                            if (fadeBusyTimer.current) clearTimeout(fadeBusyTimer.current);
+                            const done = () => {
+                                if (fadeBusyTimer.current) clearTimeout(fadeBusyTimer.current);
+                                fadeBusyTimer.current = setTimeout(() => setFadeBusy(false), 200);
+                            };
+                            Promise.resolve(isPlaying ? pauseWithRamp() : playWithRamp()).then(done, done);
+                        }}
                         style={[s.playBtn, { backgroundColor: theme.accent, shadowColor: theme.accent }]}
                     >
                         {isPlaying ? <PauseIcon size={33} color={theme.onAccent} /> : <PlayIcon size={33} color={theme.onAccent} />}

@@ -1368,7 +1368,7 @@ export default function SettingsScreen() {
                                 {backgroundImageUri ? 'Change Image' : 'Choose Image'}
                             </Text>
                         </TouchableOpacity>
-                        {backgroundImageUri && (
+                        {!!backgroundImageUri && (
                             <TouchableOpacity onPress={() => { setBackgroundImageEnabled(false); deleteStoredImage(backgroundImageUri); setBackgroundImageUri(null); }} style={s.sortChip}>
                                 <Text style={s.sortChipText}>Remove</Text>
                             </TouchableOpacity>
@@ -1544,7 +1544,7 @@ export default function SettingsScreen() {
                             {(scanPath ?? '').replace('file://', '')}
                         </Text>
                         <Text style={s.locNote}>Folders become playlists. Files in the root appear in All Songs.</Text>
-                        {scanError && (
+                        {!!scanError && (
                             <Text style={[s.locNote, { color: '#dc6262', marginTop: 10 }]} selectable>
                                 Scan diagnostic: {scanError}
                             </Text>
