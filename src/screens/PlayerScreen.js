@@ -21,6 +21,7 @@ import GradientCap from '../components/GradientCap';
 import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle, cardRadius } from '../utils/squircle';
+import SongVisualizer from '../components/SongVisualizer';
 import { getPlayCounts, peekPlayCount, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
@@ -161,7 +162,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { playerVizCover, performanceMode, showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     // The count is credited once a song passes half way, so the shown count is read again
     // at that moment (it used to stay stale until the next song). The `cancelled` flag stops a
@@ -807,13 +808,22 @@ export default function PlayerScreen() {
     const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // lyrics layer
     const coverFade = useRef(new Animated.Value(showingLyrics || showingDisc ? 0 : 1)).current; // cover layer
     const viewMounted = useRef(false);
+    const viewAnimRef = useRef(null);
     useEffect(() => {
         if (!viewMounted.current) { viewMounted.current = true; return; }
         const go = (v, on) => on
             ? Animated.sequence([Animated.delay(170), Animated.timing(v, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true })])
             : Animated.timing(v, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true });
         const coverOn = !showingLyrics && !showingDisc;
-        Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)]).start(({ finished }) => {
+        // The previous change-over must be stopped first. Its delayed "fade in" step could still
+        // be waiting (170 ms) when a newer change-over started (a song with lyrics flips the view
+        // twice in a row), and then fired afterwards, overwriting the newer one: the disc ended up
+        // invisible while it was the selected view.
+        if (viewAnimRef.current) viewAnimRef.current.stop();
+        const anim = Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)]);
+        viewAnimRef.current = anim;
+        anim.start(({ finished }) => {
+            if (viewAnimRef.current === anim) viewAnimRef.current = null;
             if (finished && !showingDisc) setDiscActive(false);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1099,17 +1109,26 @@ export default function PlayerScreen() {
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
             let settled = false;
-            const toZero = () => { if (settled || lastSyncedTrackIdRef.current !== trackAtChange) return; settled = true; startRealTimeAnim(0, true); };
-            const fallback = setTimeout(toZero, 250);
-            AudioEngine.getProgress().then(p => {
+            let zeroed = false;
+            // The bar waits at 0 only briefly; the real spot is asked for again every 120 ms
+            // (up to ~1.5 s) so an answer that was not ready yet, or still described the other song,
+            // still lands soon, instead of the bar sitting at 0 and then popping in later.
+            const toZero = () => { if (settled || zeroed || lastSyncedTrackIdRef.current !== trackAtChange) return; zeroed = true; startRealTimeAnim(0, true); };
+            setTimeout(toZero, 250);
+            let attempts = 0;
+            const trySeed = () => {
                 if (settled || lastSyncedTrackIdRef.current !== trackAtChange) return;
-                const usable = p?.duration > 0 && !(idAtChange && p.id && p.id !== idAtChange) && p.position <= p.duration && p.position <= 40;
-                if (!usable) return;   // the fallback (or the next poll) handles it
-                settled = true;
-                clearTimeout(fallback);
-                setSwitchProg({ position: p.position, duration: p.duration });
-                startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
-            }).catch(() => { toZero(); });
+                const retry = () => { if (++attempts < 12) setTimeout(trySeed, 120); else toZero(); };
+                AudioEngine.getProgress().then(p => {
+                    if (settled || lastSyncedTrackIdRef.current !== trackAtChange) return;
+                    const usable = p?.duration > 0 && !(idAtChange && p.id && p.id !== idAtChange) && p.position <= p.duration && p.position <= 40;
+                    if (!usable) { retry(); return; }
+                    settled = true;
+                    setSwitchProg({ position: p.position, duration: p.duration });
+                    startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
+                }).catch(retry);
+            };
+            trySeed();
             return;
         }
         // Drift is judged in SECONDS now. 2% of the song was 3-4 seconds on
@@ -1318,6 +1337,7 @@ export default function PlayerScreen() {
                                         ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                         : null
                                     }
+                                    {playerVizCover && !performanceMode && !showingLyrics ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(width - 56, coverShape)} /> : null}
                                 </Animated.View>
                             </Animated.View>
                         )}

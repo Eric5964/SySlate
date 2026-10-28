@@ -47,20 +47,20 @@ export const BASE_COLORS = {
     // Light's textDim/textFaint are deliberately darker than you might
     // expect a "dim" gray to be, specifically to keep real contrast against
     // a white surface.
-    dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_yellow: { name: 'Yellow', bg: '#241f04', surface: '#332b08', border: '#4a3d10', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_orange: { name: 'Orange', bg: '#291404', surface: '#3a1d09', border: '#522a10', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    dark_red: { name: 'Red', bg: '#270707', surface: '#390d0d', border: '#521212', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_pink: { name: 'Pink', bg: '#22101a', surface: '#301522', border: '#47213a', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_purple: { name: 'Purple', bg: '#120e22', surface: '#191430', border: '#241d47', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_blue: { name: 'Blue', bg: '#0e1626', surface: '#141f33', border: '#1f2d4a', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_teal: { name: 'Teal', bg: '#0a1f22', surface: '#0f2a2e', border: '#163a3f', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_green: { name: 'Green', bg: '#0e2016', surface: '#14301f', border: '#1f4530', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_yellow: { name: 'Yellow', bg: '#241f04', surface: '#332b08', border: '#4a3d10', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_orange: { name: 'Orange', bg: '#291404', surface: '#3a1d09', border: '#522a10', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    dark_red: { name: 'Red', bg: '#270707', surface: '#390d0d', border: '#521212', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
     // Crimson sits between Red and Pink in hue (a bit of magenta mixed into
     // the red, short of Pink's actual magenta) rather than landing on
     // almost the same value as either — that's what made Red/Crimson hard
     // to tell apart before, and briefly during a first pass at this fix.
-    dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
-    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616', text: '#f0f0f0', textDim: '#999', textFaint: '#666' },
+    dark_rose: { name: 'Crimson', bg: '#2a0f14', surface: '#3a151c', border: '#522029', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
+    black: { name: 'Black', bg: '#000000', surface: '#0a0a0a', border: '#161616', text: '#f0f0f0', textDim: '#a3a3a3', textFaint: '#8a8a8a' },
     // Requested: light mode should have a base color PER dark base — "just
     // replace the dark mode colors when light mode is on, match the colors
     // but have them light/pastel" — not one single generic light theme
@@ -81,20 +81,20 @@ export const BASE_COLORS = {
     // and saturation up substantially (was L~97%/low-S pastel, now more a
     // proper visible pastel) while keeping `text` (#161616, unchanged)
     // comfortably high-contrast against all of them.
-    light_pink: { name: 'Pink', bg: '#fbdfe9', surface: '#fdf0f5', border: '#f0b8cd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_purple: { name: 'Purple', bg: '#e7dbf7', surface: '#f2eafb', border: '#c7a8ec', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_blue: { name: 'Blue', bg: '#dbe7fb', surface: '#eaf1fd', border: '#a9cbf5', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_teal: { name: 'Teal', bg: '#d5f0f1', surface: '#e8f7f8', border: '#9fe0e3', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_green: { name: 'Green', bg: '#dcf2e1', surface: '#eaf8ed', border: '#a6e0b6', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_yellow: { name: 'Yellow', bg: '#faf0c4', surface: '#fdf8e0', border: '#ecd97e', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_orange: { name: 'Orange', bg: '#fbe2cd', surface: '#fdf0e4', border: '#f0bb8c', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_red: { name: 'Red', bg: '#fbdada', surface: '#fdeded', border: '#f0aeae', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
-    light_rose: { name: 'Crimson', bg: '#f7d9e0', surface: '#fbebee', border: '#e8a9b7', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_pink: { name: 'Pink', bg: '#fbdfe9', surface: '#fdf0f5', border: '#f0b8cd', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_purple: { name: 'Purple', bg: '#e7dbf7', surface: '#f2eafb', border: '#c7a8ec', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_blue: { name: 'Blue', bg: '#dbe7fb', surface: '#eaf1fd', border: '#a9cbf5', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_teal: { name: 'Teal', bg: '#d5f0f1', surface: '#e8f7f8', border: '#9fe0e3', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_green: { name: 'Green', bg: '#dcf2e1', surface: '#eaf8ed', border: '#a6e0b6', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_yellow: { name: 'Yellow', bg: '#faf0c4', surface: '#fdf8e0', border: '#ecd97e', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_orange: { name: 'Orange', bg: '#fbe2cd', surface: '#fdf0e4', border: '#f0bb8c', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_red: { name: 'Red', bg: '#fbdada', surface: '#fdeded', border: '#f0aeae', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
+    light_rose: { name: 'Crimson', bg: '#f7d9e0', surface: '#fbebee', border: '#e8a9b7', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
     // black has no real "hue" to carry through — this is the neutral pastel
     // (was the old single generic `light` entry, kept as-is and renamed to
     // fit the light_X pattern; see the migration in the useEffect below for
     // installs that still have the literal 'light' stored).
-    light_black: { name: 'Light', bg: '#e7e7ea', surface: '#f2f2f4', border: '#c7c7cd', text: '#161616', textDim: '#54545a', textFaint: '#8a8a90' },
+    light_black: { name: 'Light', bg: '#e7e7ea', surface: '#f2f2f4', border: '#c7c7cd', text: '#161616', textDim: '#46464c', textFaint: '#6c6c72' },
 };
 
 // Whether a given base id is the light one — screens that need to invert
@@ -193,11 +193,13 @@ export function ThemeProvider({ children }) {
     // dark_X (or black) was active, so the hue actually carries through
     // instead of always landing on the same neutral light theme.
     const toggleLightMode = useCallback(async () => {
+        // The same base color, just in its other form: dark_X <-> light_X, black <-> light_black.
+        // Nothing is remembered between the two; the id itself says which color it is.
         if (baseId?.startsWith('light_')) {
-            const prev = (await AsyncStorage.getItem('base_color_id_pre_light')) || 'black';
-            await setBase(BASE_COLORS[prev] ? prev : 'black');
+            const hue = baseId.replace(/^light_/, '');
+            const darkId = hue === 'black' ? 'black' : `dark_${hue}`;
+            await setBase(BASE_COLORS[darkId] ? darkId : 'black');
         } else {
-            await AsyncStorage.setItem('base_color_id_pre_light', baseId);
             const hue = baseId === 'black' ? 'black' : baseId.replace(/^dark_/, '');
             const lightId = `light_${hue}`;
             await setBase(BASE_COLORS[lightId] ? lightId : 'light_black');

@@ -23,6 +23,7 @@ import {
 import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
 import { setProgressSeed } from '../utils/progressSeed';
+import { setVizPending, clearVizPending } from '../utils/vizPending';
 
 const Ctx = createContext(null);
 
@@ -1351,6 +1352,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
     const playPlaylistOrdered = useCallback((playlist, orderedSongs) => runExclusivePlayAction(async () => {
         // See loadPlaylist above for why this retries instead of dropping.
+        if (orderedSongs[0]) setVizPending(orderedSongs[0]);
         if (isTransitionLocked()) { queueAction(() => playPlaylistOrdered(playlist, orderedSongs)); return; }
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
@@ -1370,6 +1372,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const next = queue[0] ?? null;
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
         });
+        clearVizPending();
         // (shuffle MODE is left alone: 'off' is not a mode, it is just the
         // order used for this queue. Setting it here made a later shuffle
         // toggle rebuild the queue with no shuffling at all.)
@@ -1418,6 +1421,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // different playlist while the current one's song is mid-fade
         // (natural end-of-track, or any other transition) used to just
         // silently do nothing.
+        // The tapped song's row takes the visualizer right now, not when the fade-out is over.
+        { const tapped = playlist.songs.find(s => s.id === songId); if (tapped) setVizPending(tapped); }
         if (isTransitionLocked()) { queueAction(() => playSongFromPlaylist(playlist, songId)); return; }
         const songSession = await getSession(playlist.path);
         const mode = await getShuffleMode();
@@ -1494,6 +1499,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // previously it did, and nothing re-fetched it afterward since nothing
         // about the track's id had changed to re-trigger that.
         setCurrentTrack(prev => (prev?.id === song.id && prev.artwork ? { ...song, artwork: prev.artwork } : song));
+        clearVizPending();
         setShuffleModeState(mode);
         setShuffleOn(isOn);
         setEqPresetId(eq);

@@ -28,6 +28,7 @@ import TopBarBack from '../components/TopBarFade';
 import { useListArt } from '../hooks/useListArt';
 import { titleKey, compareKeys } from '../utils/sortKey';
 import { vizRowId } from '../utils/vizMatch';
+import { useVizPending } from '../utils/vizPending';
 
 const SORTS = [
     { id: 'alpha', label: 'A–Z' },
@@ -89,9 +90,10 @@ export default function PlaylistDetailScreen() {
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, showPlaylistTrackCount, showPlaylistTitles, artistDisplayJoin, detailOutline, playlistCoverShadow, performanceMode, topBarColor, ui, vizMode } = usePreferences();
     // The visualizer shows on the playing song wherever it is listed here, also when the
     // sound is coming from another playlist or the queue (display only, nothing is re-queued).
+    const vizPendingSong = useVizPending();
     const vizId = useMemo(
-        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(playlist.songs, currentTrack) : null,
-        [vizMode, performanceMode, playlist.songs, currentTrack]
+        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(playlist.songs, vizPendingSong || currentTrack) : null,
+        [vizMode, performanceMode, playlist.songs, currentTrack, vizPendingSong]
     );
     const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);

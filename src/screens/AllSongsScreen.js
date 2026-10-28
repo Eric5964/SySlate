@@ -17,6 +17,7 @@ import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
 import { getPlaylistSort, setPlaylistSort, playCountKey } from '../utils/storage';
 import { vizRowId } from '../utils/vizMatch';
+import { useVizPending } from '../utils/vizPending';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
 import { useListArt } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
@@ -87,9 +88,10 @@ export default function AllSongsScreen() {
         return out;
     }, [allSongs]);
     // Combined songs keep only their first copy, so the playing one is matched by song, not file.
+    const vizPendingSong = useVizPending();
     const vizId = useMemo(
-        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(dedupedSongs, currentTrack) : null,
-        [vizMode, performanceMode, dedupedSongs, currentTrack]
+        () => (vizMode !== 'off' && !performanceMode) ? vizRowId(dedupedSongs, vizPendingSong || currentTrack) : null,
+        [vizMode, performanceMode, dedupedSongs, currentTrack, vizPendingSong]
     );
     // Counts shown on rows go up the moment a play is counted; the ORDER only follows
     // the snapshot, which is read again when the app opens, the sort is changed, the

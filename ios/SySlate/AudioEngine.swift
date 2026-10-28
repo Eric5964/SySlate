@@ -2414,10 +2414,12 @@ class AudioEngine: RCTEventEmitter {
             // JS already no-ops a same-track re-fire (currentTrackRef check
             // in PlaybackContext.js), so firing it twice here is harmless.
             if currentStep == steps / 2 {
+                // Flag first, event second: JS asks for the position the moment it hears the
+                // event, and must be told about the incoming song, not the outgoing one.
+                self.crossfadeAnnouncedIncoming = true
                 if !self.crossfadeSelfLoop {
                     self.sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": self.liveIndex(for: track, hint: idx)])
                 }
-                self.crossfadeAnnouncedIncoming = true
                 // The lock screen / Bluetooth display switches to the new
                 // song now too (same moment as the in-app display).
                 self.updateNowPlayingInfo()
@@ -3745,17 +3747,20 @@ class AudioEngine: RCTEventEmitter {
                     core.limitHi = totalSec - 4.0   // same backstop as above; the app's own limits are stricter
                     core.limitLo = 1.0
                     core.pos = startPos
-                    core.target = 0
-                    // Like a hand on a turntable: the sound stops the moment the
-                    // disc is touched and only moves when the disc moves.
-                    core.cur = 0
-                    core.target = 0
+                    // A song that is playing carries straight on under the finger at its normal
+                    // speed (the app then slows it to the finger's speed within a few ms), so there
+                    // is no hole of silence at the touch. From pause it starts silent and only
+                    // sounds once the disc moves.
+                    let carrying = self.state == .playing
+                    core.cur = carrying ? 1 : 0
+                    core.target = carrying ? 1 : 0
                     core.gain = 0
                     core.gainTarget = 1
-                    // Comes up from silence over ~20ms (it used to be ~6ms, which
-                    // clicked when starting from pause), and only sounds once the disc moves.
-                    core.gainRate = 0.0012
-                    core.motion = 0
+                    // The disc's sound comes up and the normal player's goes away along
+                    // complementary curves (see below), so the two copies of the song, which are at
+                    // the same spot, always add up to one level.
+                    core.gainRate = 0.0018
+                    core.motion = carrying ? 1 : 0
                     self.scratchForcePlay = false
                     core.level = self.volume * self.currentGainCorrection
                     self.scratchWindowStartSeconds = windowStart
@@ -3775,13 +3780,21 @@ class AudioEngine: RCTEventEmitter {
                     // Silence the normal player over ~15ms (the scratch node
                     // fades in over the same time), so there is no click.
                     let startVol = self.activeNode.volume
-                    for i in 1...8 {
+                    let beginSr = max(8000.0, Double(fmt.sampleRate))
+                    let beginTau = 1.0 / (0.0018 * beginSr)   // same time constant as the disc's rise
+                    let beginT0 = Date()
+                    let beginSteps = 16                         // 64 ms
+                    for i in 1...beginSteps {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
                             guard let self = self, self.scratchActive else { return }
-                            self.activeNode.volume = startVol * Float(8 - i) / 8
+                            // Worked out from the real elapsed time, so a step that runs late
+                            // lands on the right value instead of leaving a dip.
+                            let el = Date().timeIntervalSince(beginT0)
+                            let down: Float = i == beginSteps ? 0 : Float(exp(-el / beginTau))
+                            self.activeNode.volume = startVol * down
                             // Once silent, actually pause the normal player so
                             // nothing of the song can play underneath the scratch.
-                            if i == 8, self.scratchWasPlaying { self.activeNode.pause() }
+                            if i == beginSteps, self.scratchWasPlaying { self.activeNode.pause() }
                         }
                     }
                     self.debugLog(String(format: "[SCRATCH] begin at %.2fs window=%.1f-%.1f wasPlaying=%@", nowAfter, windowStart, windowEnd, self.scratchWasPlaying ? "true" : "false"))
@@ -3928,29 +3941,52 @@ class AudioEngine: RCTEventEmitter {
                 self.lastLivePositionAt = Date()
                 let sr = max(8000.0, Double(self.scratchFormat?.sampleRate ?? 44100))
                 let gr: Float = 0.002
-                core.gainRate = gr
-                core.gainTarget = 0
                 let tau = 1.0 / (Double(gr) * sr)   // time constant of the disc's fade-out, seconds
                 let stepSec = 0.004
                 let steps = 16                         // 64 ms, about 5.6 time constants
-                for i in 1...steps {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(i)) { [weak self] in
-                        guard let self = self, !self.scratchActive else { return }
-                        // Measure how far the player really is from the disc (both are still sounding) and
-                        // correct the lead for the next release.
-                        if i == 12, let nt = self.activeNode.lastRenderTime, let pt = self.activeNode.playerTime(forNodeTime: nt), pt.sampleTime >= 0 {
+                // The normal player needs a moment before it really sounds (it is started, then
+                // the engine takes a few tens of ms). The disc keeps playing at normal speed
+                // until then and only starts to fade once the player is rendering, so the swap
+                // never passes through a hole. After that both are crossed along complementary
+                // curves, worked out from the real elapsed time (a step that runs late lands on
+                // the right value).
+                let waitT0 = Date()
+                var swapT0: Date? = nil
+                var measured = false
+                func tickSwap() {
+                    guard !self.scratchActive else { return }
+                    if swapT0 == nil {
+                        let rendering = self.activeNode.lastRenderTime != nil
+                        if rendering || Date().timeIntervalSince(waitT0) > 0.2 {
+                            swapT0 = Date()
+                            core.gainRate = gr
+                            core.gainTarget = 0
+                        } else {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.002) { tickSwap() }
+                            return
+                        }
+                    }
+                    let el = Date().timeIntervalSince(swapT0!)
+                    // Measure how far the player really is from the disc (both are still sounding) and
+                    // correct the lead for the next release.
+                    if !measured, el >= 0.048 {
+                        measured = true
+                        if let nt = self.activeNode.lastRenderTime, let pt = self.activeNode.playerTime(forNodeTime: nt), pt.sampleTime >= 0 {
                             let sr2 = pt.sampleRate > 0 ? pt.sampleRate : self.currentFileSampleRate
                             let pPlayer = self.segmentStartOffsetSeconds + Double(pt.sampleTime) / sr2
                             let pDisc = core.windowStart + core.pos / fileRate
                             let off = pDisc - pPlayer   // > 0: the player is behind the disc
                             if abs(off) < 0.4 { self.scratchHandoverLead = max(0, min(0.3, self.scratchHandoverLead + 0.6 * off)) }
-                            self.debugLog(String(format: "[SCRATCH] handover: player was %.0f ms behind the disc, lead %.0f ms -> %.0f ms", off * 1000, lead * 1000, self.scratchHandoverLead * 1000))
+                            self.debugLog(String(format: "[SCRATCH] handover: player was %.0f ms behind the disc, lead %.0f ms -> %.0f ms (swap began %.0f ms after the release)", off * 1000, lead * 1000, self.scratchHandoverLead * 1000, swapT0!.timeIntervalSince(waitT0) * 1000))
                         }
-                        let up = i == steps ? Float(1) : Float(1 - exp(-stepSec * Double(i) / tau))
-                        self.activeNode.volume = restoreVol * up
                     }
+                    let done = el >= stepSec * Double(steps)
+                    let up: Float = done ? 1 : Float(1 - exp(-el / tau))
+                    self.activeNode.volume = restoreVol * up
+                    if !done { DispatchQueue.main.asyncAfter(deadline: .now() + stepSec) { tickSwap() } }
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(steps) + 0.2) { [weak self] in
+                tickSwap()
+                DispatchQueue.main.asyncAfter(deadline: .now() + stepSec * Double(steps) + 0.45) { [weak self] in
                     if self?.scratchActive == false { core.release() }
                 }
                 self.debugLog(String(format: "[SCRATCH] end at %.2fs resume=play (handover at rate %.2f)", finalSec, core.cur))

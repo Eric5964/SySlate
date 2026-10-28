@@ -172,6 +172,10 @@ function Tabs() {
                 // false mounts all three together, while AppInner's overlay
                 // still fully covers this — see its own comment.
                 lazy: false,
+                // Tabs you are not looking at are frozen: they stop re-rendering until you go back
+                // to them. Changing a visual setting in Settings used to re-render the song lists
+                // and playlists behind it too, which is where the lag came from.
+                freezeOnBlur: true,
             }}
         >
             <Tab.Screen

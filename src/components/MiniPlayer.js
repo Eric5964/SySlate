@@ -95,16 +95,25 @@ export default function MiniPlayer({ withTabBar = true }) {
                 setProgressSeed(null);
             }
             let settled = seeded;
-            const toZero = () => { if (settled || lastTrackIdRef.current !== trackAtChange) return; settled = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
+            let zeroed = false;
+            // Waits at 0 only briefly; the real spot is asked for again every 120 ms (up to ~1.5 s),
+            // so an answer that was not ready yet still lands soon instead of popping in seconds later.
+            const toZero = () => { if (settled || zeroed || lastTrackIdRef.current !== trackAtChange) return; zeroed = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
             setTimeout(toZero, 250);
-            AudioEngine.getProgress().then(p => {
-                if (settled || lastTrackIdRef.current !== trackAtChange || !(p?.duration > 0)) return;
-                if (idAtChange && p.id && p.id !== idAtChange) return;   // a reading for the other song
-                if (p.position > p.duration || p.position > 40) return;
-                settled = true;
-                basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
-                forceTick(t => t + 1);
-            }).catch(() => { toZero(); });
+            let attempts = 0;
+            const trySeed = () => {
+                if (settled || lastTrackIdRef.current !== trackAtChange) return;
+                const retry = () => { if (++attempts < 12) setTimeout(trySeed, 120); };
+                AudioEngine.getProgress().then(p => {
+                    if (settled || lastTrackIdRef.current !== trackAtChange) return;
+                    const usable = p?.duration > 0 && !(idAtChange && p.id && p.id !== idAtChange) && p.position <= p.duration && p.position <= 40;
+                    if (!usable) { retry(); return; }
+                    settled = true;
+                    basisRef.current = { position: p.position, duration: p.duration, at: Date.now() };
+                    forceTick(t => t + 1);
+                }).catch(retry);
+            };
+            if (!seeded) trySeed();
         } else {
             basisRef.current = { position: progress.position, duration: progress.duration, at: Date.now() };
         }
@@ -176,16 +185,16 @@ export default function MiniPlayer({ withTabBar = true }) {
                 <Text style={[styles.artist, { color: base.textFaint }]} numberOfLines={1}>{artist}</Text>
             </View>
             <TouchableOpacity onPress={() => skipWithRamp('prev')} style={styles.btn} hitSlop={HIT}>
-                <SkipPrevIcon size={20} color={SKIP_ICON_COLOR} />
+                <SkipPrevIcon size={23} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
             <TouchableOpacity
                 onPress={() => isPlaying ? pauseWithRamp() : playWithRamp()}
                 style={styles.btn} hitSlop={HIT}
             >
-                {isPlaying ? <PauseIcon size={20} color={theme.accent} /> : <PlayIcon size={18} color={theme.accent} />}
+                {isPlaying ? <PauseIcon size={23} color={theme.accent} /> : <PlayIcon size={21} color={theme.accent} />}
             </TouchableOpacity>
             <TouchableOpacity onPress={() => skipWithRamp('next')} style={styles.btn} hitSlop={HIT}>
-                <SkipNextIcon size={20} color={SKIP_ICON_COLOR} />
+                <SkipNextIcon size={23} color={SKIP_ICON_COLOR} />
             </TouchableOpacity>
           </View>
         </DimPressable>

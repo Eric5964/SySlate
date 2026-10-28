@@ -34,7 +34,7 @@ const releaseTap = () => {
 // Bars are drawn by scaling (a native transform), not by changing their height, so a reading
 // costs no layout pass; each bar is anchored to the bottom of the box.
 const MIN = 0.06, SPAN = 0.84;
-const BAR_OPACITY = 0.42;   // the same on a pill and on a cover
+const BAR_OPACITY = 0.37;   // the same on a pill and on a cover
 const COVER_DIM = 0.5;      // a cover is darkened under the bars so they show on bright artwork
 
 function Bar({ v, h, color }) {
