@@ -160,6 +160,9 @@ RCT_EXTERN_METHOD(getProgress:(RCTPromiseResolveBlock)resolve
 RCT_EXTERN_METHOD(getState:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(getCrossfadeFirstHalf:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(setRepeatMode:(nonnull NSNumber *)mode
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

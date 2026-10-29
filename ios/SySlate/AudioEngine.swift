@@ -648,6 +648,19 @@ class AudioEngine: RCTEventEmitter {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             NSLog("AudioEngine: failed to activate session: \(error)")
+            // Said in the Debug Log too: a session that would not activate (another app still
+            // holding the sound after an interruption) is a way to end up playing while iOS
+            // shows paused or shows no player at all. One retry shortly after.
+            debugLog("[SESSION] activation failed: \(error.localizedDescription); trying once more shortly")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self = self, self.state == .playing else { return }
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    self.debugLog("[SESSION] second activation worked")
+                } catch {
+                    self.debugLog("[SESSION] second activation failed too: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -704,6 +717,7 @@ class AudioEngine: RCTEventEmitter {
             // pause()/setVolume() itself, same as it does for a manual
             // pause tap.
             interruptionActive = true
+            needsNowPlayingReclaim = true
             // The system stops the engine for a call or another app, like it does for a route
             // change, so the song scheduled on the node may be gone when playback resumes. Load
             // it again at its position on the next play (see playInternal) instead of risking
@@ -719,6 +733,7 @@ class AudioEngine: RCTEventEmitter {
                 shouldResume = AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
             }
             interruptionActive = false
+            needsNowPlayingReclaim = true
             markOutputCold()
             coldWakeExtra = true
             debugLog("[RAMP-DEBUG] interruption ENDED — currentIndex=\(currentIndex.map(String.init) ?? "nil"), state=\(state), shouldResume=\(shouldResume)")
@@ -1117,10 +1132,58 @@ class AudioEngine: RCTEventEmitter {
             reassertPausedToSystem()
             return
         }
+        // iOS says paused but the sound is on (it lost track of us after an interruption or
+        // another app's audio). Starting a play here restarted the fade-in for nothing and
+        // changed nothing on screen, which read as "play does nothing". Instead tell iOS the
+        // truth again, the way a pause does, and leave playback alone. Not while a pause fade
+        // is under way (the held display state is then "paused") - that Play must still go
+        // through to cancel the fade.
+        if wantsPlay, state == .playing, displayedAsPaused != true {
+            debugLog("[NP] remote PLAY while already playing: iOS showed paused, telling it playing again")
+            displayedAsPaused = nil
+            displayedAsPausedAt = nil
+            reclaimNowPlaying()
+            return
+        }
         displayedAsPaused = !wantsPlay
         displayedAsPausedAt = Date()
         optimisticallySetPlaybackRate(wantsPlay ? 1.0 : 0.0)
         sendEvent(withName: wantsPlay ? "RemotePlay" : "RemotePause", body: nil)
+    }
+
+    // Set when something else may have taken the Now Playing spot from us (an interruption
+    // began or ended). The next time playback really starts, Now Playing is claimed afresh.
+    private var needsNowPlayingReclaim = false
+    private var reclaimToken: Int = 0
+
+    // Takes the Now Playing spot back: the session is activated, the entry is cleared and
+    // written again (iOS treats that as a new claim, which is what brings the lock screen
+    // player and Control Center back), and "playing" is repeated a few times because one
+    // write was not trusted to stick (the same reason a pause is repeated).
+    private func reclaimNowPlaying() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.reclaimNowPlaying() }
+            return
+        }
+        needsNowPlayingReclaim = false
+        reclaimToken += 1
+        let token = reclaimToken
+        activateSession()
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        let other = AVAudioSession.sharedInstance().isOtherAudioPlaying
+        debugLog("[NP] reclaiming Now Playing (other audio playing=\(other), engine running=\(engine.isRunning))")
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        updateNowPlayingInfo()
+        MPNowPlayingInfoCenter.default().playbackState = .playing
+        for delay in [0.25, 0.8, 2.0, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, token == self.reclaimToken else { return }
+                guard self.state == .playing, self.displayedAsPaused != true else { return }
+                self.updateNowPlayingInfo()
+                MPNowPlayingInfoCenter.default().playbackState = .playing
+                self.debugLog("[NP] re-sent playing to iOS after \(delay)s")
+            }
+        }
     }
 
     private func optimisticallySetPlaybackRate(_ rate: Double) {
@@ -1374,6 +1437,7 @@ class AudioEngine: RCTEventEmitter {
         displayedAsPausedAt = nil
         sendEvent(withName: "PlaybackState", body: ["state": newState.rawValue])
         updateNowPlayingInfo()
+        if newState == .playing && needsNowPlayingReclaim { reclaimNowPlaying() }
     }
 
     // MARK: - File analysis (silence trim + between-track loudness)
@@ -3013,7 +3077,26 @@ class AudioEngine: RCTEventEmitter {
         // confirmed against a device the way that fix was.
     }
 
+    // A crossfade's first half: the song on screen is still the outgoing one. A skip
+    // here is ignored, not queued, so one tap at the end of a song can never also
+    // skip the next one. Past the halfway point (crossfadeAnnouncedIncoming) skips
+    // queue as before. Covers the short async load before the fade timer starts too.
+    // Every abandon and failure path already resets isCrossfading to false, so this
+    // cannot stay true on its own.
+    private var isCrossfadeFirstHalf: Bool {
+        isCrossfading && !crossfadeAnnouncedIncoming
+    }
+
+    @objc(getCrossfadeFirstHalf:rejecter:)
+    func getCrossfadeFirstHalf(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        resolve(isCrossfadeFirstHalf)
+    }
+
     private func skipToNextInternal() {
+        if isCrossfadeFirstHalf {
+            debugLog("[SKIP] NEXT ignored: first half of a crossfade")
+            return
+        }
         if isCrossfading {
             queuedSkipDirection = 1
             debugLog("[RAMP-DEBUG] skip NEXT arrived mid-crossfade, queued until it finishes")
@@ -3023,6 +3106,10 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private func skipToPreviousInternal() {
+        if isCrossfadeFirstHalf {
+            debugLog("[SKIP] PREVIOUS ignored: first half of a crossfade")
+            return
+        }
         if isCrossfading {
             queuedSkipDirection = -1
             debugLog("[RAMP-DEBUG] skip PREVIOUS arrived mid-crossfade, queued until it finishes")

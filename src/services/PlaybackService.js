@@ -708,6 +708,18 @@ export async function pauseWithRamp() {
 //   not the Skip ramp (skipping while paused isn't really "crossfading"
 //   between two playing songs).
 export async function skipWithRamp(direction = 'next') {
+    // First half of a crossfade (the natural end-of-song one included, which
+    // JS has no lock for): the skip is ignored outright. Not queued, no ramp,
+    // no lock. Otherwise the tap lands on the song after the one that is
+    // already taking over, which read as a double skip. Past the halfway point
+    // the skip goes through as before. The native check is authoritative; if
+    // the query fails, fall through to the normal path.
+    try {
+        if (await AudioEngine.getCrossfadeFirstHalf()) {
+            console.log(`[SKIP] ${direction} ignored: first half of a crossfade`);
+            return;
+        }
+    } catch { }
     // A skip that arrives while the NATURAL end-of-track ramp is
     // running (naturalEndFadeOwner) is dropped entirely, not queued — that
     // fade is already about to move to the next song on its own, so

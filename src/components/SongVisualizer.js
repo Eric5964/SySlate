@@ -14,8 +14,9 @@ const BARS_COVER = 8;
 
 // The audio tap is shared by whichever row shows the visualizer. When the playing song
 // changes (a skip, or the halfway point of a crossfade) one row unmounts and the next
-// mounts at once; the tap is only switched off if nobody has asked for it 0.4 s later,
-// so it is not torn down and rebuilt on every song change.
+// mounts at once; the tap is only switched off if nobody has asked for it 3 s later,
+// so it is not torn down and rebuilt on every song change, or when the Player is closed
+// and opened again a moment later.
 let users = 0;
 let offTimer = null;
 const acquireTap = () => {
@@ -27,7 +28,7 @@ const acquireTap = () => {
 const releaseTap = () => {
     users = Math.max(0, users - 1);
     if (users === 0 && !offTimer) {
-        offTimer = setTimeout(() => { offTimer = null; if (users === 0) AudioEngine.setVisualizerEnabled(false); }, 400);
+        offTimer = setTimeout(() => { offTimer = null; if (users === 0) AudioEngine.setVisualizerEnabled(false); }, 3000);
     }
 };
 
@@ -51,16 +52,19 @@ function Bar({ v, h, color }) {
     );
 }
 
-export default function SongVisualizer({ color, mode, radius = 0 }) {
+export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     const bars = mode === 'cover' ? BARS_COVER : BARS_PILL;
     const vals = useRef(null);
     if (!vals.current || vals.current.length !== bars) vals.current = Array.from({ length: bars }, () => new Animated.Value(MIN));
     const shown = useRef(new Array(bars).fill(0));
     const target = useRef(new Array(8).fill(0));
     const lastEvent = useRef(0);
-    const [h, setH] = useState(0);
+    const [h, setH] = useState(size > 0 ? size : 0);   // known up front: no wait for the first layout pass
     const { state } = usePlaybackState();
     const playing = state === State.Playing;
+    const playingRef = useRef(playing);
+    playingRef.current = playing;
+    const mountedAt = useRef(Date.now());
 
     // Tap + event stream: on while this is mounted. Switched on again whenever playback
     // (re)starts, since the engine may have been rebuilt while paused.
@@ -84,8 +88,18 @@ export default function SongVisualizer({ color, mode, radius = 0 }) {
     // toward its reading, very quick up and slower down; with no readings (paused) fall to rest.
     useEffect(() => {
         let raf = 0;
+        let lastHeal = 0;
         const loop = () => {
-            const live = Date.now() - lastEvent.current < 250;
+            const nowMs = Date.now();
+            const live = nowMs - lastEvent.current < 250;
+            // Playing, yet no readings for a moment: the tap was lost (an interruption, a route
+            // change or a rebuilt engine drops it without telling JS). Put it in again, at most
+            // once every 1.5 s, instead of waiting for the next pause/play to do it.
+            if (playingRef.current && nowMs - Math.max(lastEvent.current, mountedAt.current) > 800 && nowMs - lastHeal > 1500) {
+                lastHeal = nowMs;
+                console.log('[VIZ] no readings while playing, putting the tap in again');
+                AudioEngine.setVisualizerEnabled(true);
+            }
             for (let i = 0; i < bars; i++) {
                 const pos = (i / Math.max(1, bars - 1)) * 7;
                 const a = Math.floor(pos); const b = Math.min(7, a + 1); const f = pos - a;

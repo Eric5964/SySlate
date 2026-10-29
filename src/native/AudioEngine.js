@@ -169,6 +169,8 @@ const AudioEngine = {
     cancelVolumeRamp: () => NativeAudioEngine.cancelVolumeRamp(),
     getProgress: () => NativeAudioEngine.getProgress(),
     getState: () => NativeAudioEngine.getState(),
+    // True only during the first half of a crossfade (see AudioEngine.swift's isCrossfadeFirstHalf).
+    getCrossfadeFirstHalf: () => NativeAudioEngine.getCrossfadeFirstHalf(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
     setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
     setPreAmp: (db) => NativeAudioEngine.setPreAmp(db),

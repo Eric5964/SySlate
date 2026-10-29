@@ -809,6 +809,7 @@ export default function PlayerScreen() {
     const coverFade = useRef(new Animated.Value(showingLyrics || showingDisc ? 0 : 1)).current; // cover layer
     const viewMounted = useRef(false);
     const viewAnimRef = useRef(null);
+    const viewSettleTimer = useRef(null);
     useEffect(() => {
         if (!viewMounted.current) { viewMounted.current = true; return; }
         const go = (v, on) => on
@@ -820,20 +821,50 @@ export default function PlayerScreen() {
         // twice in a row), and then fired afterwards, overwriting the newer one: the disc ended up
         // invisible while it was the selected view.
         if (viewAnimRef.current) viewAnimRef.current.stop();
-        const anim = Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)]);
+        // stopTogether:false is the fix for "disc invisible but still scratchable" and "cover
+        // showing through the lyrics". Animated.parallel stops EVERY animation in the group as
+        // soon as one of them is stopped, and one always was: the lyrics layer's opacity is bound
+        // to lyricsFade only while lyricsPlaced is true, and React Native stops a native-driven
+        // value the moment it loses its view binding. Leaving the lyrics view flips lyricsPlaced
+        // to false, which stopped lyricsFade, which (with the default) stopped the disc's delayed
+        // fade-in and the cover's fade as well, leaving them stuck at whatever they had reached.
+        const anim = Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)], { stopTogether: false });
         viewAnimRef.current = anim;
         anim.start(({ finished }) => {
             if (viewAnimRef.current === anim) viewAnimRef.current = null;
             if (finished && !showingDisc) setDiscActive(false);
         });
+        // Safety net: whatever happened to the animations above (stopped by a detach, replaced by
+        // a quick second press, dropped while the app was busy), once they should have finished
+        // every layer is put at exactly the value its view calls for. A layer that already
+        // reached it does not visibly change.
+        if (viewSettleTimer.current) clearTimeout(viewSettleTimer.current);
+        viewSettleTimer.current = setTimeout(() => {
+            viewSettleTimer.current = null;
+            coverFade.setValue(coverOn ? 1 : 0);
+            lyricsFade.setValue(showingLyrics ? 1 : 0);
+            discFade.setValue(showingDisc ? 1 : 0);
+            if (!showingDisc) setDiscActive(false);
+        }, 700);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showingLyrics, showingDisc]);
+    useEffect(() => () => { if (viewSettleTimer.current) clearTimeout(viewSettleTimer.current); }, []);
 
     const lyricsScrollRef = useRef(null);
     // Drives the per-line opacity fade (Spotify-style — replaces the old
     // box-edge gradient overlay entirely, see the lyrics map() below).
     const lyricsScrollY = useRef(new Animated.Value(0)).current;
     const lyricsRowYRef = useRef(new Map());
+    // Every new lyric set (a different song's lines) gets a new key, so its rows
+    // remount and report their real positions through onLayout.
+    const lyricsSetRef = useRef({ data: undefined, n: 0 });
+    if (lyricsSetRef.current.data !== lyricsData) {
+        lyricsSetRef.current = { data: lyricsData, n: lyricsSetRef.current.n + 1 };
+        // The previous song's positions must not be readable for the new lines: the remount
+        // below makes every row report a fresh one, and until then "not measured" is correct.
+        lyricsRowYRef.current.clear();
+    }
+    const lyricsSetKey = lyricsSetRef.current.n;
     // Bumped every time a row's real Y position lands via onLayout — the
     // scroll-to-line effect below depends on this so it re-runs once the
     // position it needs actually exists, instead of only reacting to
@@ -866,7 +897,12 @@ export default function PlayerScreen() {
     // mode, so a song switch always starts from a clean, unscrolled view
     // instead of wherever the last song's lyrics happened to leave it.
     useEffect(() => {
-        lyricsRowYRef.current.clear();
+        // The row map is NOT cleared here any more. Clearing it, then relying on
+        // onLayout to refill it, failed whenever a new song's line kept the same
+        // index and height: onLayout does not fire again for an unchanged row, so
+        // its Y stayed undefined and the scroll effect returned without scrolling.
+        // Each new set of lines now remounts (lyricsSetKey below), which always
+        // reports a fresh Y, so the stale entries are overwritten.
         setLyricsLayoutVersion(v => v + 1);
         setLyricsManualScroll(false);
         // A track change (skip, crossfade landing, natural advance) is a
@@ -981,7 +1017,10 @@ export default function PlayerScreen() {
         // exactly the same way the activeLine<0 race above did. Returning
         // before consuming either flag means the eventual real positioning
         // still sees them intact.
-        if (y === undefined) return;
+        if (y === undefined) {
+            console.log(`[LYRICS] active line ${activeLine} not measured yet, waiting for its layout`);
+            return;
+        }
         // Was 0.32 (a third of the way down) — with only a few short lines
         // around the active one (typical for this box's height), anchoring
         // near the top third left most of the box empty below it, since
@@ -1337,7 +1376,7 @@ export default function PlayerScreen() {
                                         ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                         : null
                                     }
-                                    {playerVizCover && !performanceMode && !showingLyrics ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(width - 56, coverShape)} /> : null}
+                                    {playerVizCover && !performanceMode && !showingLyrics ? <SongVisualizer color={theme.accent} mode="cover" size={width - 56} radius={squircle(width - 56, coverShape)} /> : null}
                                 </Animated.View>
                             </Animated.View>
                         )}
@@ -1423,7 +1462,7 @@ export default function PlayerScreen() {
                                         and a RNGH-composed ScrollView generally yields
                                         to a surrounding pan gesture at its own scroll
                                         bounds anyway. */}
-                                    {lyricsData.map((line, i) => {
+                                    <React.Fragment key={lyricsSetKey}>{lyricsData.map((line, i) => {
                                         // Requested Spotify-style: fade the LINES
                                         // themselves near the top/bottom edges, not a
                                         // dark box sitting over them (removed the two
@@ -1463,7 +1502,7 @@ export default function PlayerScreen() {
                                                 {line.text || '\u2026'}
                                             </Animated.Text>
                                         );
-                                    })}
+                                    })}</React.Fragment>
                                 </Animated.ScrollView>
                             </Animated.View>
                         )}
