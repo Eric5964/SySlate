@@ -645,7 +645,15 @@ export default function PlayerScreen() {
     // Prefer useProgress's own live value once it's actually populated;
     // otherwise (paused, or playing but not populated yet) fall back to the
     // one-shot read above.
-    const effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgress;
+    // The fallback reading comes straight from native, so it can still describe the song that was
+    // playing before (right after a crossfade changes songs, native keeps answering for the old one
+    // for a moment): it is matched to the song shown like `progress` is. Unmatched, the new song's
+    // lyrics were placed on the old song's position (near the end), then slid back to the top.
+    const lyricsProgressMatched = useMemo(
+        () => matchProgress(lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id),
+        [lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
+    );
+    const effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgressMatched;
 
     // Same "is progress real yet" gate used elsewhere in this file (pct,
     // animPct, etc.) — position:0/duration:0 before the first real poll
@@ -688,13 +696,15 @@ export default function PlayerScreen() {
             const carry = smp.moving ? Math.min(Math.max(0, (Date.now() - smp.at) / 1000), LYRIC_CARRY_MAX_SEC) : 0;
             const pos = smp.pos + carry * rate;
             const idx = activeLyricIndex(lyricsData, pos + lyricsOffsetSec);
-            setLiveLine(prev => (prev === idx ? prev : idx));
+            setLiveLine(prev => ((prev && prev.d === lyricsData && prev.i === idx) ? prev : { d: lyricsData, i: idx }));
         };
         tick();
         const id = setInterval(tick, 60);
         return () => clearInterval(id);
     }, [lyricsLive, lyricsData, lyricsOffsetSec, playbackRate]);
-    const activeLine = (lyricsLive && liveLine !== null) ? liveLine : baseActiveLine;
+    // The live line only counts for the lyrics it was worked out on: right after a song change it
+    // still held the old song's line number for a moment, which was then used on the new lyrics.
+    const activeLine = (lyricsLive && liveLine && liveLine.d === lyricsData) ? liveLine.i : baseActiveLine;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -899,6 +909,18 @@ export default function PlayerScreen() {
         lyricsLinesRef.current.clear();
     }
     const lyricsSetKey = lyricsSetRef.current.n;
+    // Every line's opacity is worked out from lyricsScrollY, the list's scroll offset, which is
+    // only ever updated by scroll events. A new set of lines (a new song, or lyrics appearing where
+    // there were none, which builds a fresh list) starts at offset 0 WITHOUT any scroll event, so
+    // lyricsScrollY kept the previous song's offset (say 1500): every line then counted as far
+    // outside the box and was fully faded out. The lyrics stayed invisible until the list happened
+    // to scroll, which a first line does not do (it sits where the list already is): "lyrics don't
+    // show up until the second line", sometimes for 30 s. The value is now put back to 0 together
+    // with the list whenever the set of lines changes.
+    useEffect(() => {
+        lyricsScrollY.setValue(0);
+        lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
+    }, [lyricsSetKey]);
     // Bumped every time a row's real Y position lands via onLayout — the
     // scroll-to-line effect below depends on this so it re-runs once the
     // position it needs actually exists, instead of only reacting to
@@ -912,6 +934,16 @@ export default function PlayerScreen() {
     // That's the reported "doesn't jump to the line until the next line
     // change" — not a timing/animation issue, a dropped retry.
     const [lyricsLayoutVersion, setLyricsLayoutVersion] = useState(0);
+    // Every row reports its layout on its own; each report used to re-render this whole screen
+    // (20+ times when a song's lyrics appeared, which also held up the first placing). The
+    // reports of one moment are now folded into a single re-render.
+    const layoutBumpPending = useRef(false);
+    const bumpLyricsLayout = () => {
+        if (layoutBumpPending.current) return;
+        layoutBumpPending.current = true;
+        requestAnimationFrame(() => { layoutBumpPending.current = false; setLyricsLayoutVersion(v => v + 1); });
+    };
+    const linesBumpPending = useRef(false);
     // Manual scroll support: dragging the lyrics view pauses auto-sync;
     // after `lyricsResyncSec` idle seconds (Settings → Lyrics), it resumes
     // and snaps back to the currently-playing line.
@@ -947,6 +979,7 @@ export default function PlayerScreen() {
         // A new song hides the lyrics again until they are on the right line, so the top
         // of the list never shows for a moment and then jumps.
         lyricsPlacedRef.current = false;
+        lyricsWaitSince.current = Date.now();
         setLyricsPlaced(false);
     }, [currentTrack?.id]);
     // "Lyrics should already be at the place in the song before needing to
@@ -965,7 +998,15 @@ export default function PlayerScreen() {
     // that placing never happens (a song with no timed line yet, a position that never arrives).
     const [lyricsPlaced, setLyricsPlaced] = useState(false);
     const lyricsPlacedRef = useRef(false);
-    const markLyricsPlaced = () => { if (!lyricsPlacedRef.current) { lyricsPlacedRef.current = true; setLyricsPlaced(true); } };
+    const lyricsWaitSince = useRef(Date.now());
+    const markLyricsPlaced = () => {
+        if (!lyricsPlacedRef.current) {
+            lyricsPlacedRef.current = true;
+            setLyricsPlaced(true);
+            const waited = Date.now() - lyricsWaitSince.current;
+            if (waited > 700) console.log(`[LYRICS] put on its line after ${waited} ms`);
+        }
+    };
     useEffect(() => { lyricsShown.setValue(lyricsPlaced || !showingLyrics ? 1 : 0); }, [lyricsPlaced, showingLyrics, lyricsShown]);
     useEffect(() => {
         if (!showingLyrics || lyricsPlaced) return undefined;
@@ -977,6 +1018,7 @@ export default function PlayerScreen() {
             wasShowingLyricsRef.current = false;
             // Every time the lyrics view is opened again it starts hidden until placed.
             if (lyricsPlacedRef.current) { lyricsPlacedRef.current = false; setLyricsPlaced(false); }
+            lyricsWaitSince.current = Date.now();
             return;
         }
         const justOpened = !wasShowingLyricsRef.current;
@@ -1522,7 +1564,7 @@ export default function PlayerScreen() {
                                             outputRange: [0, 1, 1, 0],
                                             extrapolate: 'clamp',
                                         }));
-                                        const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); };
+                                        const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); bumpLyricsLayout(); };
                                         const textColor = i === activeLine ? lyricActiveColor : lyricIdleColor;
                                         const shadow = { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 };
                                         const rows = lyricsLinesRef.current.get(i);
@@ -1553,7 +1595,10 @@ export default function PlayerScreen() {
                                                     const texts = ls.map(l => String(l.text || '').replace(/\s+$/, ''));
                                                     if (texts.some(t => !t)) return;
                                                     lyricsLinesRef.current.set(i, texts);
-                                                    setLyricsLinesVersion(v => v + 1);
+                                                    if (!linesBumpPending.current) {
+                                                        linesBumpPending.current = true;
+                                                        requestAnimationFrame(() => { linesBumpPending.current = false; setLyricsLinesVersion(v => v + 1); });
+                                                    }
                                                 }}
                                                 style={[s.lyricLine, shadow, { color: textColor, opacity: fadeAt(lineY + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
                                             >
