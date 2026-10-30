@@ -33,7 +33,9 @@ const ARTIST_SEPARATORS = [
     // Two literal backslashes, not one — that's what Mp3tag and MusicBee
     // actually write for multi-artist tags ("Artist A\\Artist B"), a
     // single '\' isn't a real-world convention either of those uses.
-    { id: '\\\\', label: '\\' },
+    // The label now shows both, to match what is actually split on (artists.js
+    // still also accepts a single one, so nothing that split before stops splitting).
+    { id: '\\\\', label: '\\\\' },
     { id: '&', label: '&' },
     { id: 'none', label: 'None' },
 ];
@@ -248,6 +250,13 @@ export default function SettingsScreen() {
     // AsyncStorage and crossed the native bridge, not just the one value on
     // release. Same local-mirror pattern as lyricsResyncLocal/lyricsOffsetLocal above.
     const [crossfadeDurationLocal, setCrossfadeDurationLocal] = useState(crossfadeDuration);
+    // Output devices (car, headphones) seen so far, for the "No Autoplay on Connect" switches.
+    const [autoplayDevices, setAutoplayDevices] = useState([]);
+    useEffect(() => {
+        let alive = true;
+        AudioEngine.getAutoplayDevices().then(d => { if (alive) setAutoplayDevices(d); });
+        return () => { alive = false; };
+    }, []);
     const [preAmpLocal, setPreAmpLocal] = useState(preAmp);
     // Real bug found here — this is "pre-amp doesn't stay between
     // sessions": preAmpLocal only ever took preAmp's value at this
@@ -1092,6 +1101,26 @@ export default function SettingsScreen() {
                         <LiveSwitch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                     </View>
+                    </SubGroup>
+                </Section>
+
+                <Section title="Connected Devices">
+                    <SubGroup title="No Autoplay on Connect" first>
+                    {autoplayDevices.length === 0 ? (
+                        <View style={[s.toggleRow, { borderTopWidth: 0 }]}>
+                            <Text style={[s.toggleSub, { flex: 1, marginTop: 0 }]}>Connect your car or headphones once and they will show up here.</Text>
+                        </View>
+                    ) : autoplayDevices.map((d, i) => (
+                        <View key={d.name} style={[s.toggleRow, i === 0 && { borderTopWidth: 0 }]}>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.toggleLabel}>{d.name}</Text>
+                                <Text style={s.toggleSub}>Ignores the Play it sends when it connects. Press Play again to start.</Text>
+                            </View>
+                            <LiveSwitch value={!!d.blocked}
+                                onValueChange={v => { setAutoplayDevices(list => list.map(x => (x.name === d.name ? { ...x, blocked: v } : x))); AudioEngine.setAutoplayBlocked(d.name, v); }}
+                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                        </View>
+                    ))}
                     </SubGroup>
                 </Section>
 

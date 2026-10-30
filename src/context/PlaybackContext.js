@@ -9,7 +9,7 @@ import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { useLibrary } from './LibraryContext';
-import { getPlayCounts } from '../utils/storage';
+import { getPlayCounts, playCountKeyN } from '../utils/storage';
 import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
 import { emitSkipPress } from '../utils/transportRamp';
 import { withTimeout } from '../utils/withTimeout';
@@ -29,12 +29,17 @@ const Ctx = createContext(null);
 
 // Smart shuffle needs each song's play count to weight the order, and that
 // lives in async storage, so every queue build goes through this.
-const buildQueueAsync = async (tracks, mode) => {
+//
+// `prevTrack` is the song that plays right before this list starts (the last song of the
+// round before, or the song playing now). Whatever the mode, the list is arranged so the same
+// song (same title + artist, also across two files) never plays twice in a row.
+const buildQueueAsync = async (tracks, mode, prevTrack) => {
+    const opts = { keyOf: playCountKeyN, prevKey: prevTrack ? playCountKeyN(prevTrack) : undefined };
     if (modeNeedsCounts(mode)) {
         const counts = await getPlayCounts(tracks).catch(() => ({}));
-        return buildQueue(tracks, mode, counts);
+        return buildQueue(tracks, mode, counts, opts);
     }
-    return buildQueue(tracks, mode);
+    return buildQueue(tracks, mode, {}, opts);
 };
 
 
@@ -1160,7 +1165,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (!pl?.songs?.length) return;
                 const passMode = pend ? (pend.shuffled ? pend.mode : 'off') : (shuffleOnRef.current ? shuffleModeRef.current : 'off');
                 console.log(`[LOOP] playlist finished a round: next round is ${passMode !== 'off' ? 'shuffled (' + passMode + ')' : 'in order'}`);
-                const nextPass = await buildQueueAsync(pl.songs, passMode);
+                const nextPass = await buildQueueAsync(pl.songs, passMode, logicalQueueRef.current[logicalQueueRef.current.length - 1]);
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
             const currentIndex = await AudioEngine.getCurrentTrack();
@@ -1464,7 +1469,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // reshuffleUpcoming) already goes through this. Tapping a song
             // with shuffle on handed you a plain Fisher-Yates order instead.
             // `mode` was already being read here; it just wasn't used.
-            rest = await buildQueueAsync(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)), mode);
+            rest = await buildQueueAsync(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)), mode, playlist.songs.find(s => s.id === songId));
         } else {
             // Continue through the list in order starting right AFTER the
             // tapped song, wrapping back around — not just "everything else
@@ -1703,7 +1708,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     rest = wrapped.filter(s => !usedIds.has(s.id));
                 }
             } else {
-                rest = await buildQueueAsync(rest, mode);
+                rest = await buildQueueAsync(rest, mode, queue[keepEnd - 1]);   // the song right before the new order: the last priority song, else the current one
             }
 
             // One bulk removal instead of removing up to ~50 loaded tracks

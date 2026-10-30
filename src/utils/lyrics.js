@@ -61,7 +61,8 @@ export function peekLyrics(songId) {
 }
 
 // Returns a sorted array of { time (seconds), text } entries, or null if
-// there's no matching .lrc file (or it has no parseable timed lines).
+// there's no matching .lrc file (or it has no parseable timed lines), or undefined if reading
+// the file failed (worth trying again).
 // Looks for a sibling file with the same name, .lrc extension, next to the
 // audio file — song.url already has whatever URI-encoding the audio file
 // itself needed (see files.js's encodeFileUrl), so deriving from it rather
@@ -87,7 +88,9 @@ export async function getLyrics(song) {
         // had finished appearing) permanent for the rest of the session, so
         // the same file was never looked at again. Only the confirmed-absent
         // path above caches null.
-        return null;
+        // Returns undefined (not null) so a caller can tell "the read failed, try again" from
+        // "this song has no lyrics".
+        return undefined;
     }
 }
 

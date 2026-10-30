@@ -83,13 +83,62 @@ export const MODE_PARTS = {
 export const modeId = (weight, order) => Object.keys(MODE_PARTS).find(k => MODE_PARTS[k].weight === weight && MODE_PARTS[k].order === order) || 'full_cycle';
 export const modeNeedsCounts = (mode) => (MODE_PARTS[mode]?.weight ?? 'normal') !== 'normal';
 
-export function buildQueue(tracks, mode, counts = {}) {
+// Moves songs so the same song never plays twice in a row. `keyOf` says what counts as the
+// same song (title + artist, so two files of one song count too), `prevKey` is the song that
+// plays right before the first one (the last song of the round before, or the current song).
+// A song that clashes is swapped with the nearest later one that fits; if nothing fits (a
+// playlist of one song, or only copies of it) the order is left alone.
+export function separateRepeats(list, keyOf, prevKey) {
+  const out = [...list];
+  const n = out.length;
+  if (n < 2 && prevKey == null) return out;
+  const keys = out.map(keyOf);
+  const clash = (i) => i >= 0 && i < n && (i === 0 ? (prevKey != null && keys[0] === prevKey) : keys[i] === keys[i - 1]);
+  for (let i = 0; i < n; i++) {
+    if (!clash(i)) continue;
+    for (let k = i + 1; k < n; k++) {
+      if (keys[k] === keys[i]) continue;
+      [out[i], out[k]] = [out[k], out[i]];
+      [keys[i], keys[k]] = [keys[k], keys[i]];
+      if (!clash(i) && !clash(i + 1) && !clash(k) && !clash(k + 1)) break;
+      [out[i], out[k]] = [out[k], out[i]];
+      [keys[i], keys[k]] = [keys[k], keys[i]];
+    }
+  }
+  if (!out.some((_, i) => clash(i))) return out;
+  // Swaps alone could not untangle it (several copies of one song close together). Rebuild
+  // the order by always taking the next song of whichever song has the most copies left that
+  // is not the one just played; a song with copies left but no other choice goes last.
+  const groups = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!groups.has(keys[i])) groups.set(keys[i], []);
+    groups.get(keys[i]).push(out[i]);
+  }
+  const res = [];
+  let prev = prevKey;
+  for (let i = 0; i < n; i++) {
+    let best = null;
+    for (const [k, arr] of groups) {
+      if (!arr.length || k === prev) continue;
+      if (best === null || arr.length > groups.get(best).length || (arr.length === groups.get(best).length && Math.random() < 0.5)) best = k;
+    }
+    if (best === null) { for (const [k, arr] of groups) if (arr.length) { best = k; break; } }
+    res.push(groups.get(best).shift());
+    prev = best;
+  }
+  return res;
+}
+
+// opts.keyOf: what makes two songs "the same" (default: same id). opts.prevKey: key of the song
+// that plays just before this list starts, so the first song cannot repeat it.
+export function buildQueue(tracks, mode, counts = {}, opts = {}) {
   if (mode === 'off') return [...tracks];
   const m = MODE_PARTS[mode] || MODE_PARTS.full_cycle;
   const c = (t) => Math.max(0, counts[t.id] || 0);
   const weightOf = m.weight === 'smart' ? (t => 1 / Math.pow(1 + c(t), 0.4))
     : m.weight === 'dumb' ? (t => Math.pow(1 + c(t), 0.4))
     : (() => 1);
-  if (m.order === 'random') return weightedPicks(tracks, weightOf);
-  return m.weight === 'normal' ? shuffleArray(tracks) : weightedOrder(tracks, weightOf);
+  const built = m.order === 'random' ? weightedPicks(tracks, weightOf)
+    : m.weight === 'normal' ? shuffleArray(tracks) : weightedOrder(tracks, weightOf);
+  return separateRepeats(built, opts.keyOf || (t => t.id), opts.prevKey);
 }

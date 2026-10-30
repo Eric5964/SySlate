@@ -22,6 +22,7 @@ import DJDisc from '../components/DJDisc';
 import PlaybackSpeedSheet, { formatSpeed } from '../components/PlaybackSpeedSheet';
 import { squircle, cardRadius } from '../utils/squircle';
 import SongVisualizer from '../components/SongVisualizer';
+import { mixHex } from '../utils/color';
 import { getPlayCounts, peekPlayCount, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
@@ -91,6 +92,10 @@ export default function PlayerScreen() {
     const lyricNeutral = isNeutralColor(theme.accent);
     const lyricActiveColor = lyricNeutral ? base.text : theme.accent;
     const lyricIdleColor = lyricNeutral ? base.textFaint : base.textDim;
+    // Turned-off buttons (shuffle, loop, sleep timer, speed at 1x) get their own color, clearly
+    // further from the "on" color than the artist / small text gray (base.textFaint), which stays
+    // as it is. Dark themes: darker than that gray. Light themes: lighter.
+    const offColor = mixHex(base.textFaint, base.bg, 0.5);
 
     const {
         currentPlaylist, queueSource, playbackRate, currentTrack, shuffleOn, singleLoop,
@@ -558,12 +563,27 @@ export default function PlayerScreen() {
             return;
         }
         let cancelled = false;
-        getLyrics(currentTrack).then(data => {
-            if (cancelled) return;
-            setLyricsData(data);
-            setShowingLyrics(autoShowLyrics && !!data);
-        });
-        return () => { cancelled = true; };
+        let retryTimer = null;
+        const startedAt = Date.now();
+        // A read that fails (the disk busy with a library scan or cover work, a file still being
+        // written) used to leave this song without lyrics until the next song. It is now tried
+        // again every 1.5 s, up to 20 times. A slow lookup is written to the Debug Log.
+        const attempt = (n) => {
+            getLyrics(currentTrack).then(data => {
+                if (cancelled) return;
+                if (data === undefined && n < 20) {
+                    console.log(`[LYRICS] reading the lyrics file failed (try ${n + 1}), trying again`);
+                    retryTimer = setTimeout(() => attempt(n + 1), 1500);
+                    return;
+                }
+                const took = Date.now() - startedAt;
+                if (took > 1000) console.log(`[LYRICS] lyrics lookup took ${took} ms (${n} retries)`);
+                setLyricsData(data || null);
+                setShowingLyrics(autoShowLyrics && !!data);
+            });
+        };
+        attempt(0);
+        return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
     }, [currentTrack?.id, autoShowLyrics, lyricsMode]);
 
     // Only polls directly when useProgress doesn't yet have real data to
@@ -807,6 +827,14 @@ export default function PlayerScreen() {
     // transparent on top of each other (the old cover-peeking-through).
     const lyricsFade = useRef(new Animated.Value(showingLyrics ? 1 : 0)).current; // lyrics layer
     const coverFade = useRef(new Animated.Value(showingLyrics || showingDisc ? 0 : 1)).current; // cover layer
+    // The lyrics layer's opacity is lyricsFade x lyricsShown, both ALWAYS attached to the view.
+    // It used to be `lyricsPlaced ? lyricsFade : 0`, which attached and detached lyricsFade every
+    // time the lyrics view was left or opened. A detached native-driven value keeps running (or
+    // stops) out of sight and is out of step when it is attached again, so pressing the view
+    // button repeatedly could bring the lyrics in at full strength on top of the fading cover.
+    // lyricsShown is 0 only while the lyrics view is open but not yet put on its line.
+    const lyricsShown = useRef(new Animated.Value(0)).current;
+    const lyricsOpacity = useRef(Animated.multiply(lyricsFade, lyricsShown)).current;
     const viewMounted = useRef(false);
     const viewAnimRef = useRef(null);
     const viewSettleTimer = useRef(null);
@@ -855,6 +883,11 @@ export default function PlayerScreen() {
     // box-edge gradient overlay entirely, see the lyrics map() below).
     const lyricsScrollY = useRef(new Animated.Value(0)).current;
     const lyricsRowYRef = useRef(new Map());
+    // For a line that wraps onto several rows of text: the text of each visual row, from
+    // onTextLayout. Each visual row then fades on its own at the top and bottom edge, so a long
+    // line fades smoothly instead of as one flat block.
+    const lyricsLinesRef = useRef(new Map());
+    const [, setLyricsLinesVersion] = useState(0);
     // Every new lyric set (a different song's lines) gets a new key, so its rows
     // remount and report their real positions through onLayout.
     const lyricsSetRef = useRef({ data: undefined, n: 0 });
@@ -863,6 +896,7 @@ export default function PlayerScreen() {
         // The previous song's positions must not be readable for the new lines: the remount
         // below makes every row report a fresh one, and until then "not measured" is correct.
         lyricsRowYRef.current.clear();
+        lyricsLinesRef.current.clear();
     }
     const lyricsSetKey = lyricsSetRef.current.n;
     // Bumped every time a row's real Y position lands via onLayout — the
@@ -932,6 +966,7 @@ export default function PlayerScreen() {
     const [lyricsPlaced, setLyricsPlaced] = useState(false);
     const lyricsPlacedRef = useRef(false);
     const markLyricsPlaced = () => { if (!lyricsPlacedRef.current) { lyricsPlacedRef.current = true; setLyricsPlaced(true); } };
+    useEffect(() => { lyricsShown.setValue(lyricsPlaced || !showingLyrics ? 1 : 0); }, [lyricsPlaced, showingLyrics, lyricsShown]);
     useEffect(() => {
         if (!showingLyrics || lyricsPlaced) return undefined;
         const id = setTimeout(() => { console.log('[LYRICS] shown without a measured position (timeout)'); markLyricsPlaced(); }, 450);
@@ -997,7 +1032,14 @@ export default function PlayerScreen() {
             // consuming the flags once duration>0 confirms this -1 is the
             // real, stable answer (not a placeholder) closes that gap.
             const isRealPosition = effectiveLyricsProgress.duration > 0;
-            lyricsScrollRef.current?.scrollTo({ y: 0, animated: !skipAnimation });
+            // Before the first line: sit exactly where the first line will sit once it is the
+            // active one, so when it lights up nothing has to move. (Used to scroll to 0, which
+            // is only the same spot when the first row happens to be near the top.) The first
+            // row not being measured yet: wait for its layout rather than guess.
+            const firstY = lyricsRowYRef.current.get(0);
+            if (firstY === undefined && lyricsData?.length) return;
+            const preRollY = firstY === undefined ? 0 : Math.max(0, firstY - (width - 56) * 0.5);
+            lyricsScrollRef.current?.scrollTo({ y: preRollY, animated: !skipAnimation });
             if (isRealPosition) {
                 wasShowingLyricsRef.current = true;
                 lyricsJustJumpedRef.current = false;
@@ -1262,8 +1304,8 @@ export default function PlayerScreen() {
     // Also follows changes that come from somewhere else (restoring a session).
     useEffect(() => { animateSideBtn(shuffleAnim, shuffleTargetRef, shuffleOn ? 1 : 0); }, [shuffleOn]);
     useEffect(() => { animateSideBtn(loopAnim, loopTargetRef, singleLoop ? 1 : 0); }, [singleLoop]);
-    const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
-    const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: [base.textFaint, theme.accent] });
+    const shuffleColor = shuffleAnim.interpolate({ inputRange: [0, 1], outputRange: [offColor, theme.accent] });
+    const loopColor = loopAnim.interpolate({ inputRange: [0, 1], outputRange: [offColor, theme.accent] });
 
     const lastTapRef = useRef({ shuffle: 0, loop: 0 });
     const onPressShuffle = () => {
@@ -1305,10 +1347,10 @@ export default function PlayerScreen() {
                         (which DOES support EQ) several rounds ago and this
                         was never un-hidden. */}
                     {playerBtns.sleep && <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
-                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : base.textFaint} />
+                        <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : offColor} />
                     </TouchableOpacity>}
                     {playerBtns.speed && <TouchableOpacity onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
-                        <Text style={[s.eqTag, { color: Math.abs(playbackRate - 1) > 0.001 ? theme.accent : base.textFaint }]}>{formatSpeed(playbackRate)}</Text>
+                        <Text style={[s.eqTag, { color: Math.abs(playbackRate - 1) > 0.001 ? theme.accent : offColor }]}>{formatSpeed(playbackRate)}</Text>
                     </TouchableOpacity>}
                     {playerBtns.eq && <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
@@ -1424,7 +1466,7 @@ export default function PlayerScreen() {
                                 // cover" — matching the art's own footprint exactly
                                 // (top: 0, height: width-56) instead of guessing at a
                                 // taller offset box fixes both at once.
-                                style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsPlaced ? lyricsFade : 0, overflow: 'hidden' }]}
+                                style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsOpacity, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
                                 <Animated.ScrollView
@@ -1463,41 +1505,57 @@ export default function PlayerScreen() {
                                         to a surrounding pan gesture at its own scroll
                                         bounds anyway. */}
                                     <React.Fragment key={lyricsSetKey}>{lyricsData.map((line, i) => {
-                                        // Requested Spotify-style: fade the LINES
-                                        // themselves near the top/bottom edges, not a
-                                        // dark box sitting over them (removed the two
-                                        // GradientCap overlays below). A line's own Y
-                                        // (lyricsRowYRef, only known after its own
-                                        // onLayout) minus the live scroll offset is its
-                                        // position within the visible box; interpolating
-                                        // THAT against a fixed [0, FADE, boxH-FADE, boxH]
-                                        // shape gives each line an independent fade as it
-                                        // crosses the edges, driven by the same shared
-                                        // scrollY value. Before the first layout pass,
-                                        // lineY is unknown — render fully opaque rather
-                                        // than guessing, onLayout + lyricsLayoutVersion
-                                        // corrects it within a frame.
+                                        // Spotify-style: the lines themselves fade out toward the top
+                                        // and bottom edge of the box (no dark box over them). A row's
+                                        // Y comes from its onLayout; minus the live scroll offset it is
+                                        // the position inside the box, and the opacity is interpolated
+                                        // from the CENTER of each visual row of text, so every row of
+                                        // text gets its own step of the fade and a line that wraps onto
+                                        // two or three rows fades as a gradient, not as one flat block.
+                                        // Before the first layout the Y is unknown: fully visible.
                                         const lineY = lyricsRowYRef.current.get(i);
                                         const boxH = width - 56;
-                                        const FADE = 60;
-                                        const opacityStyle = lineY === undefined ? 1 : lyricsScrollY.interpolate({
-                                            inputRange: [lineY - boxH, lineY - boxH + FADE, lineY - FADE, lineY],
+                                        const FADE = 72;
+                                        const ROW_H = 34; // s.lyricLine's lineHeight
+                                        const fadeAt = (centerY) => (lineY === undefined ? 1 : lyricsScrollY.interpolate({
+                                            inputRange: [centerY - boxH, centerY - boxH + FADE, centerY - FADE, centerY],
                                             outputRange: [0, 1, 1, 0],
                                             extrapolate: 'clamp',
-                                        });
+                                        }));
+                                        const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); };
+                                        const textColor = i === activeLine ? lyricActiveColor : lyricIdleColor;
+                                        const shadow = { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 };
+                                        const rows = lyricsLinesRef.current.get(i);
+                                        if (rows && rows.length > 1 && lineY !== undefined) {
+                                            return (
+                                                <View key={i} onLayout={onRowLayout} style={{ marginVertical: 7 }}>
+                                                    {rows.map((rowText, k) => (
+                                                        <Animated.Text
+                                                            key={k}
+                                                            style={[s.lyricLine, shadow, { marginVertical: 0, color: textColor, opacity: fadeAt(lineY + k * ROW_H + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
+                                                        >
+                                                            {rowText}
+                                                        </Animated.Text>
+                                                    ))}
+                                                </View>
+                                            );
+                                        }
                                         return (
                                             <Animated.Text
                                                 key={i}
-                                                onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); setLyricsLayoutVersion(v => v + 1); }}
-                                                // "Doesn't pop enough when it's their turn" — only
-                                                // the active line gets heavier/larger here (idle
-                                                // lines keep s.lyricLine's normal 700/24 untouched,
-                                                // so nothing about the resting state changes). iOS's
-                                                // system font renders 700 and 900 as genuinely
-                                                // distinct weights (not synthesized), so this reads
-                                                // as a real emphasis jump rather than a same-weight
-                                                // color change.
-                                                style={[s.lyricLine, { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 }, { color: i === activeLine ? lyricActiveColor : lyricIdleColor, opacity: opacityStyle }, i === activeLine && s.lyricLineActive]}
+                                                onLayout={onRowLayout}
+                                                onTextLayout={(e) => {
+                                                    // Wrapped line: remember what each visual row says, then draw
+                                                    // the row as separate pieces (above). Same width and line
+                                                    // height as before, so nothing moves.
+                                                    const ls = e.nativeEvent?.lines;
+                                                    if (!ls || ls.length < 2 || lyricsLinesRef.current.has(i)) return;
+                                                    const texts = ls.map(l => String(l.text || '').replace(/\s+$/, ''));
+                                                    if (texts.some(t => !t)) return;
+                                                    lyricsLinesRef.current.set(i, texts);
+                                                    setLyricsLinesVersion(v => v + 1);
+                                                }}
+                                                style={[s.lyricLine, shadow, { color: textColor, opacity: fadeAt(lineY + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
                                             >
                                                 {line.text || '\u2026'}
                                             </Animated.Text>

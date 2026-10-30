@@ -518,6 +518,7 @@ class AudioEngine: RCTEventEmitter {
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+        _ = newOutputAppearedSinceLastLook()   // remember which outputs exist now
         NotificationCenter.default.addObserver(self, selector: #selector(handleEngineConfigChange(_:)), name: .AVAudioEngineConfigurationChange, object: engine)
         // Requested: ramp out briefly (not an instant cut) specifically when
         // the app is force-quit from the app switcher — background play via
@@ -755,6 +756,55 @@ class AudioEngine: RCTEventEmitter {
     // command arriving right after is the device resuming on its own, not the
     // user, and is ignored (see handleRemotePlayPause).
     private var lastDeviceConnectAt: Date? = nil
+    // When a Play right after a device connected was last ignored. A second Play a moment later is the person pressing, not the device, and goes through.
+    private var lastIgnoredRemotePlayAt: Date? = nil
+    // The output devices (by id) as of the last look. A device that connected while the app was
+    // asleep sends no route-change notification until later (or never), so the app only finds out
+    // when something else wakes it, such as the car's automatic Play. Comparing against this
+    // tells it a new output appeared.
+    private var knownOutputUIDs: Set<String>? = nil
+    private func newOutputAppearedSinceLastLook() -> Bool {
+        let cur = Set(AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.uid })
+        defer { knownOutputUIDs = cur }
+        guard let known = knownOutputUIDs else { return false }
+        return !cur.subtracting(known).isEmpty
+    }
+
+    // MARK: - Devices that must not start playing on their own
+    // A car (or speaker) that sends Play the moment it connects is told apart from a person
+    // pressing Play on headphones by a per-device switch in Settings, not by guessing from
+    // timing: only a device switched on there has its automatic Play ignored.
+    private let blockedDevicesKey = "blockAutoplayDevices"
+    private let knownDevicesKey = "knownOutputDevices"
+    private func blockedDeviceNames() -> [String] { UserDefaults.standard.stringArray(forKey: blockedDevicesKey) ?? [] }
+    private func currentExternalOutputName() -> String? {
+        AVAudioSession.sharedInstance().currentRoute.outputs
+            .first(where: { $0.portType != .builtInSpeaker && $0.portType != .builtInReceiver })?.portName
+    }
+    private func rememberCurrentDevice() {
+        guard let name = currentExternalOutputName(), !name.isEmpty else { return }
+        var known = UserDefaults.standard.stringArray(forKey: knownDevicesKey) ?? []
+        known.removeAll { $0 == name }
+        known.insert(name, at: 0)
+        UserDefaults.standard.set(Array(known.prefix(12)), forKey: knownDevicesKey)
+    }
+
+    @objc(getAutoplayDevices:rejecter:)
+    func getAutoplayDevices(_ resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        rememberCurrentDevice()
+        let blocked = blockedDeviceNames()
+        let known = UserDefaults.standard.stringArray(forKey: knownDevicesKey) ?? []
+        resolve(known.map { ["name": $0, "blocked": blocked.contains($0)] as [String: Any] })
+    }
+
+    @objc(setAutoplayBlocked:blocked:resolver:rejecter:)
+    func setAutoplayBlocked(_ name: String, blocked: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        var list = blockedDeviceNames()
+        list.removeAll { $0 == name }
+        if blocked.boolValue { list.append(name) }
+        UserDefaults.standard.set(list, forKey: blockedDevicesKey)
+        resolve(nil)
+    }
 
     // MARK: - Click guards around route and engine changes
     // A device disconnecting used to cut the sound off in one step (a click on
@@ -909,6 +959,13 @@ class AudioEngine: RCTEventEmitter {
               let reasonValue = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
+        // A new output appeared under any route-change reason (a car often reports something other
+        // than "new device"): it counts as a device connecting, so its automatic Play is ignored.
+        if newOutputAppearedSinceLastLook(), reason != .newDeviceAvailable {
+            lastDeviceConnectAt = Date()
+            lastIgnoredRemotePlayAt = nil
+        }
+        rememberCurrentDevice()
         markOutputCold()
         coldWakeExtra = true
         markScheduledAudioStale()
@@ -916,6 +973,7 @@ class AudioEngine: RCTEventEmitter {
         debugLog("[POP] route change: reason=\(reasonValue) state=\(state) engineRunning=\(engine.isRunning) mixerVol=\(engine.mainMixerNode.outputVolume)")
         if reason == .newDeviceAvailable {
             lastDeviceConnectAt = Date()
+            lastIgnoredRemotePlayAt = nil
             // The output hardware is switching while sound is playing: keep the
             // mixer quiet through the switch and the engine reconfiguring.
             DispatchQueue.main.async { [weak self] in
@@ -1123,7 +1181,26 @@ class AudioEngine: RCTEventEmitter {
         // playback silently (no volume). Nothing starts on connect now: a Play
         // that arrives within a few seconds of a device connecting while paused
         // is ignored, and the system keeps showing paused. Press Play again.
-        if wantsPlay, state != .playing, let at = lastDeviceConnectAt, Date().timeIntervalSince(at) < 6.0 {
+        // The window is 8 s for a device switched on in Settings, and a second Play more than 0.7 s after the ignored one is let
+        // through: a person pressing Play on the headphones soon after connecting used to be ignored too.
+        // A device that connected while the app was asleep: find out now, and prepare the output
+        // for the new route (the song then plays against it instead of progressing silently).
+        // That Play counts as the device's own and is ignored below; pressing Play again plays.
+        if wantsPlay, state != .playing, newOutputAppearedSinceLastLook() {
+            debugLog("[NP] a new output device appeared while the app was asleep")
+            markOutputCold()
+            coldWakeExtra = true
+            markScheduledAudioStale()
+            lastDeviceConnectAt = Date()
+            lastIgnoredRemotePlayAt = nil
+        }
+        // Only a device switched on in Settings (Connected Devices) has its Play ignored; anything
+        // else, such as headphones, plays at once.
+        rememberCurrentDevice()
+        let blockedNow = currentExternalOutputName().map { blockedDeviceNames().contains($0) } ?? false
+        let secondPress = lastIgnoredRemotePlayAt.map { Date().timeIntervalSince($0) > 0.7 } ?? false
+        if wantsPlay, state != .playing, blockedNow, !secondPress, let at = lastDeviceConnectAt, Date().timeIntervalSince(at) < 8.0 {
+            lastIgnoredRemotePlayAt = Date()
             debugLog("[NP] ignored remote PLAY right after a device connected (no auto play on connect)")
             displayedAsPaused = nil
             displayedAsPausedAt = nil

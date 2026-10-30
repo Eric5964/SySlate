@@ -22,3 +22,14 @@ export function gradientBands(hex, opacities = [0.55, 0.4, 0.26, 0.14, 0.06, 0])
     const { r, g, b } = hexToRgb(hex);
     return opacities.map(a => `rgba(${r},${g},${b},${a})`);
 }
+
+// Blend two #rrggbb colors: t = 0 gives `a`, t = 1 gives `b`. Anything that is not a plain
+// hex color comes back as `a` untouched.
+export function mixHex(a, b, t) {
+    try {
+        if (!/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(a) || !/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(b)) return a;
+        const x = hexToRgb(a), y = hexToRgb(b);
+        const ch = (p, q) => Math.round(p + (q - p) * t).toString(16).padStart(2, '0');
+        return `#${ch(x.r, y.r)}${ch(x.g, y.g)}${ch(x.b, y.b)}`;
+    } catch { return a; }
+}

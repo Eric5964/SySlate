@@ -182,6 +182,9 @@ const AudioEngine = {
     setWithinTrackNormEnabled: (enabled) => NativeAudioEngine.setWithinTrackNormEnabled(enabled),
     setBetweenTrackNormEnabled: (enabled) => NativeAudioEngine.setBetweenTrackNormEnabled(enabled),
     setSilenceTrimEnabled: (enabled) => NativeAudioEngine.setSilenceTrimEnabled(enabled),
+    // Output devices seen so far, each { name, blocked }; blocked = its automatic Play on connect is ignored.
+    getAutoplayDevices: async () => { try { return (await NativeAudioEngine.getAutoplayDevices()) || []; } catch (e) { return []; } },
+    setAutoplayBlocked: async (name, blocked) => { try { await NativeAudioEngine.setAutoplayBlocked(name, blocked); } catch (e) {} },
     setCrossfadeEnabled: (enabled) => NativeAudioEngine.setCrossfadeEnabled(enabled),
     // Kept name — this is now specifically the "on skip" duration (see
     // AudioEngine.swift), the JS-facing name stays the same for backward
