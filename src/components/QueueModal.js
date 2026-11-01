@@ -464,6 +464,12 @@ export default function QueueModal({ visible, onClose }) {
     const [editMode, setEditMode] = useState(false);
     const [dragKey, setDragKey] = useState(null);     // the row being held
     const [dragTo, setDragTo] = useState(null);       // the slot it is over (index in `rows`)
+    // A song held from Up Next that is over the END of Priority (the lower half of the last Priority
+    // row, or the gap with the Up Next label): its slot is index `dragTo` (the first Up Next row) like
+    // a drop at the top of Up Next, but it is going into Priority, below the last Priority row. The
+    // list alone cannot say which of the two a drop on that slot means, so this says it.
+    const endPriRef = useRef(false);
+    const [dragEndPri, setDragEndPri] = useState(false);
     const editRef = useRef(false);
     const holdTimer = useRef(null);
     const armedKey = useRef(null);
@@ -528,7 +534,7 @@ export default function QueueModal({ visible, onClose }) {
             stopAutoScroll();
             dragging.current = false; armedKey.current = null; editRef.current = false;
             draggedListIndex = -1;
-            setDragKey(null); setDragTo(null); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
             dragY.setValue(0);
             return;
         }
@@ -556,7 +562,22 @@ export default function QueueModal({ visible, onClose }) {
                 if (l && pos >= l.y && pos < l.y + l.height) { best = j; break; }
             }
         }
-        if (best !== toIdx.current) { toIdx.current = best; setDragTo(best); }
+        // A song held from Up Next over the end of Priority: see endPriRef.
+        let endPri = false;
+        const heldRow = list[si];
+        const pc = list.filter(r => r.isPriority).length;
+        if (heldRow && !heldRow.isPriority && pc > 0 && pc < list.length) {
+            const lastP = layoutOfRow(pc - 1), firstU = layoutOfRow(pc);
+            if (lastP && firstU) {
+                const gapMid = (lastP.y + lastP.height + firstU.y) / 2;
+                if (pos >= lastP.y + lastP.height / 2 && pos < gapMid) { endPri = true; best = pc; }
+                else if (pos >= gapMid && pos < firstU.y + firstU.height / 2) best = pc;
+            }
+        }
+        if (best !== toIdx.current || endPri !== endPriRef.current) {
+            toIdx.current = best; endPriRef.current = endPri;
+            setDragTo(best); setDragEndPri(endPri);
+        }
     };
     refreshDragRef.current = refreshDrag;
 
@@ -573,7 +594,7 @@ export default function QueueModal({ visible, onClose }) {
         dragging.current = false;
         editRef.current = false;
         draggedListIndex = -1;
-        setEditMode(false); setDragKey(null); setDragTo(null);
+        setEditMode(false); setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false);
         dragY.setValue(0);
     }, [dragY]);
     useEffect(() => { if (!visible) exitEdit(); }, [visible, exitEdit]);
@@ -584,6 +605,7 @@ export default function QueueModal({ visible, onClose }) {
         armedKey.current = key;
         suppressPress.current = true;        // letting go after the hold must not play the song
         startIdx.current = idx; toIdx.current = idx;
+        endPriRef.current = false; setDragEndPri(false);
         dragY.setValue(0);
         editRef.current = true;
         if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
@@ -613,7 +635,7 @@ export default function QueueModal({ visible, onClose }) {
         // (no separate "editing" state is left behind).
         if (armedKey.current && !dragging.current) {
             armedKey.current = null; editRef.current = false; draggedListIndex = -1;
-            setDragKey(null); setDragTo(null); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
         }
     }, []);
 
@@ -624,6 +646,7 @@ export default function QueueModal({ visible, onClose }) {
         const list = rowsRef.current;
         const heldIdx = list.findIndex(r => r.stableKey === armedKey.current);
         const from = heldIdx >= 0 ? heldIdx : startIdx.current, to = Math.min(toIdx.current, list.length - 1);
+        const endPri = endPriRef.current;
         armedKey.current = null;
         const fromL = layoutOfRow(from), toL = layoutOfRow(to);
         // Moving a row is not a mode: once it is dropped everything is back to
@@ -632,14 +655,23 @@ export default function QueueModal({ visible, onClose }) {
         const clear = () => {
             draggedListIndex = -1;
             editRef.current = false;
-            setDragKey(null); setDragTo(null); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
             dragY.setValue(0);
         };
         try {
-            if (from !== to && list[from] && list[to] && fromL && toL) {
-                // Settle the held row into its slot, then do the real move.
-                Animated.timing(dragY, { toValue: toL.y - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-                const next = await moveInQueue(list[from].realIndex, list[to].realIndex);
+            if ((from !== to || endPri) && list[from] && list[to] && fromL && toL) {
+                // Settle the held row into its slot, then do the real move. A drop at the end of
+                // Priority settles just below the last Priority row, which is where the row will
+                // be (not at the first Up Next row's place, which is below the label and the line:
+                // settling there and then jumping up was the jump at the end of Priority).
+                let settleY = toL.y;
+                if (endPri) {
+                    const pcNow = list.filter(r => r.isPriority).length;
+                    const lp = layoutOfRow(pcNow - 1);
+                    if (lp) settleY = lp.y + lp.height;
+                }
+                Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri);
                 await refresh(next, undefined, clear);
             }
         } catch (e) { console.log('[QUEUE] move failed: ' + e); }
@@ -899,7 +931,13 @@ export default function QueueModal({ visible, onClose }) {
     const itemShift = (index) => {
         if (dragKey == null || toEff == null) return 0;
         const src = rowListIdx.current[startIdx.current];
-        const tgt = rowListIdx.current[toEff];
+        let tgt = rowListIdx.current[toEff];
+        if (dragEndPri) {
+            // Over the end of Priority: the label and the line below the last Priority row move
+            // down to make room, so the slot opens above them.
+            const lp = rowListIdx.current[rows.filter(r => r.isPriority).length - 1];
+            if (lp != null) tgt = lp + 1;
+        }
         if (src == null || tgt == null || src === tgt) return 0;
         const h = layoutOfRow(startIdx.current)?.height ?? ROW_HEIGHT;
         if (src < tgt && index > src && index <= tgt) return -h;

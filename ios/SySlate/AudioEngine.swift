@@ -1230,7 +1230,11 @@ class AudioEngine: RCTEventEmitter {
 
     // Set when something else may have taken the Now Playing spot from us (an interruption
     // began or ended). The next time playback really starts, Now Playing is claimed afresh.
-    private var needsNowPlayingReclaim = false
+    // Starts true: the first play after launch claims Now Playing afresh. At launch the restored song
+    // is written to iOS as paused before the audio session is active, and a later reset clears it
+    // (nil + stopped); the next play then wrote a new entry that iOS sometimes never picked up, so
+    // the lock screen, Control Center and the car showed no player at all.
+    private var needsNowPlayingReclaim = true
     private var reclaimToken: Int = 0
 
     // Takes the Now Playing spot back: the session is activated, the entry is cleared and
@@ -3454,6 +3458,9 @@ class AudioEngine: RCTEventEmitter {
         queue.removeAll()
         currentIndex = nil
         activeNodeTrack = nil
+        // A reset clears the Now Playing entry (nil + stopped) and iOS can drop us as the player;
+        // the play that follows (a new song or playlist started) claims it afresh.
+        needsNowPlayingReclaim = true
         sendEvent(withName: "PlaybackTrackChanged", body: ["nextTrack": NSNull()])
         resolve(nil)
     }

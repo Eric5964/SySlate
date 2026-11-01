@@ -75,10 +75,13 @@ export function ShuffleIcon({ size = 22, color = '#333', style }) {
     // which is why the two bars weren't crossing exactly at center (visibly
     // lopsided/"not smooth" up close).
     const bar = size * 0.72;
+    // The same line weight as LoopIcon's ring (they sit side by side in the Player): was a fixed 2,
+    // the ring is size x 0.11 (about 4 at the Player's size).
+    const bw = Math.max(2, size * 0.11);
     return (
         <View style={[{ width: size, height: size }, style]}>
-            <Animated.View style={{ position: 'absolute', top: size / 2 - 1, left: (size - bar) / 2, width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '22deg' }] }} />
-            <Animated.View style={{ position: 'absolute', top: size / 2 - 1, left: (size - bar) / 2, width: bar, height: 2, backgroundColor: color, borderRadius: 1, transform: [{ rotate: '-22deg' }] }} />
+            <Animated.View style={{ position: 'absolute', top: size / 2 - bw / 2, left: (size - bar) / 2, width: bar, height: bw, backgroundColor: color, borderRadius: bw / 2, transform: [{ rotate: '22deg' }] }} />
+            <Animated.View style={{ position: 'absolute', top: size / 2 - bw / 2, left: (size - bar) / 2, width: bar, height: bw, backgroundColor: color, borderRadius: bw / 2, transform: [{ rotate: '-22deg' }] }} />
         </View>
     );
 }

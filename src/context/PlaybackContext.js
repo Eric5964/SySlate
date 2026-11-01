@@ -748,11 +748,11 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // `toReal` is the slot it should end up in. Which zone (Priority or Up
     // Next) it lands in follows from where it is dropped: inside the
     // priority rows it becomes priority, after them it becomes Up Next.
-    const moveInQueue = useCallback((fromReal, toReal) => serialQueue(async () => {
+    const moveInQueue = useCallback((fromReal, toReal, endOfPriority = false) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-            if (fromReal === toReal || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
+            if ((fromReal === toReal && !endOfPriority) || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
             const queue = await AudioEngine.getQueue();
             const track = queue[fromReal];
             if (!track) return priorityRef.current;
@@ -761,7 +761,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const wasPriority = fromReal < pStart + pc;
             const pcWithout = wasPriority ? pc - 1 : pc;
             const ins = toReal - pStart;   // its place among the upcoming songs without itself
-            const becomesPriority = ins < pcWithout || (ins === pcWithout && wasPriority);
+            // endOfPriority: a song from Up Next dropped below the last Priority row (the slot is the same
+            // as the top of Up Next, so the list alone cannot tell the two apart).
+            const becomesPriority = ins < pcWithout || (ins === pcWithout && (wasPriority || endOfPriority));
             const pcNew = pcWithout + (becomesPriority ? 1 : 0);
             await AudioEngine.remove(fromReal);
             await AudioEngine.add(track, toReal);
@@ -1261,9 +1263,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         try {
             if (!playlist?.songs?.length) return { ok: false, reason: 'empty' };
             const mode = await getShuffleMode();
-            const rest = shuffled
-                ? await buildQueueAsync(playlist.songs, mode)
-                : [...(orderedSongs?.length ? orderedSongs : playlist.songs)];
             // The song can end (or a transition can run) while we read the queue, which
             // would make the index and the priority slice wrong. Read, then confirm
             // nothing moved just before replacing; wait out a running transition; retry.
@@ -1277,8 +1276,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (idx2 === idx && !isTransitionLocked()) { currentIndex = idx; queue = q; break; }
             }
             if (currentIndex === null) return { ok: false, reason: 'busy' };
-            const keepEnd = currentIndex + 1 + priorityRef.current.length;
+            // "Keep Priority Queue When Switching Playlists" decides whether the priority songs
+            // survive; when it is off, only the playing song is kept.
+            const keepPriority = await getKeepPriorityOnPlaylistSwitch();
+            const keepEnd = currentIndex + 1 + (keepPriority ? priorityRef.current.length : 0);
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
+            // Shuffled: arranged so its first song is not the one that plays right before it.
+            const rest = shuffled
+                ? await buildQueueAsync(playlist.songs, mode, queue[keepEnd - 1])
+                : [...(orderedSongs?.length ? orderedSongs : playlist.songs)];
+            if (!keepPriority && priorityRef.current.length) { priorityRef.current = []; setPriorityQueue([]); }
             // Same bulk replace as a shuffle change (reshuffleUpcoming).
             await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
             if (priorityTracks.length) await withTimeout(AudioEngine.add(priorityTracks), 4000);
