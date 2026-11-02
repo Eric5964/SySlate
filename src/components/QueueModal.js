@@ -257,6 +257,14 @@ export default function QueueModal({ visible, onClose }) {
     // only wanted once the list is scrolled down. At the very top it made the
     // list jump to the newly added row instead of staying at the top.
     const [anchorOn, setAnchorOn] = useState(false);
+    // The list keeps what is on screen in place when rows change above it (maintainVisibleContentPosition
+    // below). That is wrong at the moment a dragged row is dropped: the rows between the slot and the
+    // place the row came from were only MOVED ON SCREEN (a transform; their real position did not
+    // change) while the row was held. The list measures from the real positions, so when the order is
+    // applied and the transforms are cleared it scrolled by the height of one row to "keep" a row that
+    // had been shifted: the whole list snapped up by a row on release. It is switched off from the
+    // moment a row is picked up until just after the drop has been applied.
+    const [anchorBlocked, setAnchorBlocked] = useState(false);
     const anchorRef = useRef(false);
 
     // remove()/promote() already call refresh() explicitly, right after
@@ -470,6 +478,11 @@ export default function QueueModal({ visible, onClose }) {
     // list alone cannot say which of the two a drop on that slot means, so this says it.
     const endPriRef = useRef(false);
     const [dragEndPri, setDragEndPri] = useState(false);
+    useEffect(() => {
+        if (dragKey != null) { setAnchorBlocked(true); return undefined; }
+        const t = setTimeout(() => setAnchorBlocked(false), 450);
+        return () => clearTimeout(t);
+    }, [dragKey]);
     const editRef = useRef(false);
     const holdTimer = useRef(null);
     const armedKey = useRef(null);
@@ -1036,7 +1049,7 @@ export default function QueueModal({ visible, onClose }) {
                     // keeps whatever's currently on screen anchored in place
                     // when a promote/remove changes content above it,
                     // instead of the view visually jumping.
-                    maintainVisibleContentPosition={anchorOn ? { minIndexForVisible: 0 } : undefined}
+                    maintainVisibleContentPosition={anchorOn && !anchorBlocked ? { minIndexForVisible: 0 } : undefined}
                     // renderItem above is a fresh closure every render (it
                     // closes over artMap/playCounts/newKeys/removingKeys,
                     // all of which live outside `listData`) — extraData

@@ -1066,10 +1066,12 @@ class AudioEngine: RCTEventEmitter {
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
+            self?.debugLog("[NP] remote NEXT command received")
             self?.sendEvent(withName: "RemoteNext", body: nil)
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
+            self?.debugLog("[NP] remote PREVIOUS command received")
             self?.sendEvent(withName: "RemotePrevious", body: nil)
             return .success
         }
@@ -2035,6 +2037,7 @@ class AudioEngine: RCTEventEmitter {
     }
 
     private var leadDeferCount = 0
+    private var prematureCompletionTimes: [Date] = []
     private func fireCrossfadeLeadIn() {
         crossfadeLeadTimer = nil
         // Conditions may have changed since this was armed (paused,
@@ -2098,6 +2101,33 @@ class AudioEngine: RCTEventEmitter {
             debugLog("[RAMP-DEBUG] handlePlaybackCompleted: STALE token (\(token) != current \(playbackToken)) — ignored, this segment's completion is being dropped")
         }
         guard token == playbackToken else { return }
+
+        // "The song finished" can also arrive when it did not: a read of the file failing (the
+        // phone busy writing a download), or the engine or node being reset by the system. That
+        // used to be taken as a natural end, so the queue moved on by itself, sometimes several
+        // songs in a row (log Nov 1: a crossfade 3 minutes before the armed time, then five within
+        // 4 seconds, nobody touching the phone). A completion while the song is still well short of
+        // its end is now put back at the place it had reached instead. Three in 15 seconds mean the
+        // file really cannot be played from there, and then it moves on as before.
+        if state == .playing, !scratchActive, !isCrossfading, let file = currentFile, currentFileSampleRate > 0 {
+            let audibleEnd = Double(file.length) / currentFileSampleRate - max(0, currentTrailingCutSeconds)
+            let pos = currentPositionSeconds()
+            let remaining = (audibleEnd - pos) / Double(max(0.25, playbackRate))
+            if remaining > 4.0 {
+                let now = Date()
+                prematureCompletionTimes = prematureCompletionTimes.filter { now.timeIntervalSince($0) < 15 }
+                prematureCompletionTimes.append(now)
+                debugLog(String(format: "[XFADE] song-finished signal at %.1fs of %.1fs (%.1fs early; engine running=%@, queue index %@): %@",
+                                pos, audibleEnd, remaining, engine.isRunning ? "true" : "false",
+                                currentIndex.map(String.init) ?? "nil",
+                                prematureCompletionTimes.count >= 3 ? "third one in 15 s, moving on" : "not the end, putting it back at that place"))
+                if prematureCompletionTimes.count < 3 {
+                    loadAndScheduleCurrentTrack(startAtSeconds: pos, autoPlay: true, announceChange: false)
+                    return
+                }
+                prematureCompletionTimes.removeAll()
+            }
+        }
 
         if repeatMode == .track {
             // RNTP doesn't fire PlaybackTrackChanged for a same-track
@@ -2889,6 +2919,12 @@ class AudioEngine: RCTEventEmitter {
         if state != .playing, !isCrossfading, let stale = staleScheduleToken, stale == playbackToken {
             staleScheduleToken = nil
             let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
+            // This restart of the output (session on again, engine started, song loaded again) went
+            // without the cold-start mute the normal play path has, so the restart could be heard as a
+            // pop: a Play from Control Center after the output had gone away (car, headphones) popped,
+            // then the fade-in began from silence. The mute lets go by itself (fallback timer, or the
+            // ramp's own release).
+            _ = beginColdStartMuteIfNeeded()
             activateSession()
             if !engine.isRunning { try? engine.start() }
             loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
