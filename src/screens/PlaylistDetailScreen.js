@@ -310,7 +310,7 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={base.surface} badgeTextColor={theme.accent}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} badgeColor={base.surface} badgeTextColor={theme.accent}>
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 <PlayIcon size={16} color={theme.onAccent} />
                                 <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
@@ -318,9 +318,9 @@ export default function PlaylistDetailScreen() {
                             </SwipeQueueButton>
                             )}
                             {ui.pd_shuffle !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} edgeExclude={EDGE_SWIPE_WIDTH} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
                             <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
-                                <ShuffleIcon size={16} color={theme.accent} />
+                                <ShuffleIcon size={24} color={theme.accent} style={{ marginVertical: -4 }} />
                                 <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
                             </TouchableOpacity>
                             </SwipeQueueButton>

@@ -342,7 +342,11 @@ export default function QueueModal({ visible, onClose }) {
             // with them (the end of a drag): otherwise the rows were already in
             // their new order while the old "make room" shifts were still on,
             // so everything jumped for a moment and then snapped back.
-            if (justAddedKey) LayoutAnimation.configureNext({ duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY }, update: { type: LayoutAnimation.Types.easeOut } });
+            // When the list is scrolled down it keeps the visible rows in place by itself (maintainVisibleContentPosition),
+            // so the rows must NOT also be animated to their new places: the two fought and the whole list slid up and back.
+            if (justAddedKey) LayoutAnimation.configureNext(anchorRef.current
+                ? { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY } }
+                : { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY }, update: { type: LayoutAnimation.Types.easeOut } });
             unstable_batchedUpdates(() => {
                 setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
                 setRows(upcoming);

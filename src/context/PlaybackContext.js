@@ -1259,7 +1259,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // current playlist and keeps going until something else is played.
     // `orderedSongs` is the order Play would use (the playlist's sort).
     // Resolves { ok, reason }.
-    const queuePlaylistNext = useCallback(async (playlist, shuffled, orderedSongs) => {
+    const queuePlaylistNext = useCallback((playlist, shuffled, orderedSongs) => serialQueue(async () => {
         try {
             if (!playlist?.songs?.length) return { ok: false, reason: 'empty' };
             const mode = await getShuffleMode();
@@ -1297,7 +1297,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             pendingNextPlaylistRef.current = { playlist, queue: newLogical, shuffled: !!shuffled, mode, qids: new Set(batch.map(t => t._qid)) };
             return { ok: true };
         } catch (e) { console.error('queuePlaylistNext:', e); return { ok: false, reason: 'error' }; }
-    }, []);
+    }), []);
 
     const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
         // Previously just silently dropped the whole action if a transition

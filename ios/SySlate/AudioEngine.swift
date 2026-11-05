@@ -889,6 +889,22 @@ class AudioEngine: RCTEventEmitter {
             self.debugLog("[POP] engine configuration change: state=\(self.state) engineRunning=\(self.engine.isRunning)")
             self.markScheduledAudioStale()
             self.repairPlaybackAfterEngineStop("engine config change")
+            // The stop this notice reports may already have been undone by somebody else's engine
+            // restart (a watchdog, a play press) before the notice got here. The restart does not bring
+            // back the song that was scheduled, so the engine runs with nothing to play: silence, with
+            // the app showing "playing". If the song was loaded before this stop (more than half a second
+            // ago) and nothing has repaired it since, load it again at its current position.
+            let sinceLoad = self.lastScheduleAt.map { Date().timeIntervalSince($0) } ?? 100
+            let sinceRepair = self.lastEngineRepairAt.map { Date().timeIntervalSince($0) } ?? 100
+            if self.state == .playing, self.engine.isRunning, !self.isCrossfading, !self.scratchActive,
+               !self.interruptionActive, self.currentIndex != nil, sinceLoad > 0.5, sinceRepair > 2 {
+                self.debugLog("[REPAIR] engine config change, engine already running again: reloading the song so it is not silent")
+                self.lastEngineRepairAt = Date()
+                self.staleScheduleToken = nil
+                let resumeAt = max(0, self.frozenPositionSeconds ?? self.currentPositionSeconds())
+                self.loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
+                self.scheduleSilenceWatchdog()
+            }
         }
     }
 
@@ -898,6 +914,7 @@ class AudioEngine: RCTEventEmitter {
     private func repairPlaybackAfterEngineStop(_ why: String) {
         guard state == .playing, !isCrossfading, !scratchActive, !interruptionActive, !engine.isRunning, currentIndex != nil else { return }
         debugLog("[REPAIR] engine was stopped while playing (\(why)): restarting the song at its current position")
+        lastEngineRepairAt = Date()
         staleScheduleToken = nil
         let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
         activateSession()
@@ -911,6 +928,8 @@ class AudioEngine: RCTEventEmitter {
     // latest play (and only while still playing, no crossfade, no scratch)
     // is checked; a pause, stop or newer play cancels it.
     private var silenceWatchdogToken: UInt64 = 0
+    private var lastEngineRepairAt: Date? = nil
+    private var lastScheduleAt: Date? = nil
     private func scheduleSilenceWatchdog() {
         silenceWatchdogToken &+= 1
         let t = silenceWatchdogToken
@@ -920,6 +939,17 @@ class AudioEngine: RCTEventEmitter {
                       self.state == .playing, !self.isCrossfading, !self.scratchActive, !self.interruptionActive else { return }
                 var repaired = false
                 if !self.engine.isRunning {
+                    if self.currentIndex != nil, self.lastEngineRepairAt.map({ Date().timeIntervalSince($0) > 3 }) ?? true {
+                        // Starting the engine alone is not enough: when iOS stops it (a Bluetooth device
+                        // connecting, an output change) the song that was scheduled on the player is thrown
+                        // away, so a plain restart plays silence. This watchdog used to do exactly that and,
+                        // by restarting the engine first, also made the proper repair (which only acts on a
+                        // stopped engine) skip itself when the config-change notice arrived a moment later.
+                        // So: load the song again at its current position, like the route-change repair does.
+                        self.repairPlaybackAfterEngineStop("watchdog, \(delay)s after play")
+                        self.debugLog("[WATCHDOG] repaired a silent play (after \(delay)s): engine was stopped, song reloaded")
+                        return
+                    }
                     self.softMute(holdFor: 0.12)
                     self.activateSession()
                     try? self.engine.start()
@@ -1836,6 +1866,17 @@ class AudioEngine: RCTEventEmitter {
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return }
                     NSLog("AudioEngine: failed to load track \(track.url): \(error)")
+                    // A file that cannot be opened (deleted, damaged, not downloaded) used to stop the whole
+                    // queue dead. While playing, move on to the next song instead; after 5 failures in a
+                    // row (or at the end of the queue) it stops as before so it can never spin.
+                    self.consecutiveLoadFailures += 1
+                    let hasNext = (self.currentIndex ?? -1) + 1 < self.queue.count || self.repeatMode == .queue
+                    if autoPlay, hasNext, self.consecutiveLoadFailures <= min(5, max(1, self.queue.count)) {
+                        self.debugLog("[LOAD] could not open \(track.url.lastPathComponent) (\(error.localizedDescription)): skipping to the next song")
+                        self.advance(direction: 1, wrap: self.repeatMode == .queue, autoPlay: true, isManualSkip: false)
+                        return
+                    }
+                    self.consecutiveLoadFailures = 0
                     self.setState(.stopped)
                 }
             }
@@ -1844,6 +1885,8 @@ class AudioEngine: RCTEventEmitter {
 
     private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64, precomputedAnalysis: FileAnalysis?) {
         do {
+            consecutiveLoadFailures = 0   // this one opened fine
+            lastScheduleAt = Date()
             currentFile = file
             activeNodeTrack = track
             currentFileSampleRate = file.processingFormat.sampleRate
@@ -1948,7 +1991,10 @@ class AudioEngine: RCTEventEmitter {
             if autoPlay, !engine.isRunning {   // a song loaded paused no longer wakes the output hardware just to pause it again
                 try engine.start()
             }
-            activateSession()
+            // Only a load that is going to play takes the sound from other apps. A song loaded
+            // paused (the one restored when the app opens, or a skip while paused) used to claim
+            // the session here too, which silenced other apps' audio the moment SySlate opened.
+            if autoPlay { activateSession() }
             // [RAMP-DEBUG] — this line sets activeNode.volume directly,
             // unconditionally, every load — including a fresh ramp-in JS
             // just set to 0 a moment ago via setVolume(0) before calling
@@ -2038,6 +2084,7 @@ class AudioEngine: RCTEventEmitter {
 
     private var leadDeferCount = 0
     private var prematureCompletionTimes: [Date] = []
+    private var consecutiveLoadFailures = 0
     private func fireCrossfadeLeadIn() {
         crossfadeLeadTimer = nil
         // Conditions may have changed since this was armed (paused,
@@ -3108,6 +3155,10 @@ class AudioEngine: RCTEventEmitter {
             isCrossfading = false
             crossfadeIncomingNode = nil
             crossfadeAnnouncedIncoming = false
+            // The incoming song was still being opened, so nothing has changed audibly: the song on the
+            // player is still the old one. currentIndex had already moved on to the next slot, which made
+            // the queue skip a song after a pause/resume in this moment. Point it back at what is playing.
+            if let t = activeNodeTrack { currentIndex = liveIndex(for: t, hint: currentIndex ?? 0) }
             return
         }
         let incomingNode = idleNode
@@ -5319,6 +5370,87 @@ final class ScratchCore {
 private var spatialUnitRegistered = false
 private let spatialErrUninitialized: OSStatus = -10867   // kAudioUnitErr_Uninitialized
 
+// Peak limiter that sits at the very end of the signal path (inside the spatial unit, right before
+// the main mixer). The EQ bands plus the pre-amp can push loud songs far past full scale, and
+// nothing downstream of them held the level, so the output was hard-clipped (flat-topped waves,
+// heard as loud crackly distortion). This looks 64 samples (1.4 ms) ahead, so the gain is already
+// down when a peak arrives, and lets go slowly (about 45 ms) so bass notes do not pump. Below the
+// ceiling (-1 dBFS) it changes nothing but delays the sound by 1.4 ms.
+private final class LookaheadLimiter {
+    private let size = 128            // ring size, a power of two
+    private let mask = 127
+    private let look = 64             // look-ahead and attack window, in samples
+    private let ceiling: Float = 0.891
+    private let release: Float = 0.0005
+    private let delL: UnsafeMutablePointer<Float>
+    private let delR: UnsafeMutablePointer<Float>
+    private let needHist: UnsafeMutablePointer<Float>
+    private let minHist: UnsafeMutablePointer<Float>
+    private var idx = 0
+    private var gain: Float = 1
+    private var quietRun = 1000       // samples in a row that needed no reduction
+
+    init() {
+        delL = UnsafeMutablePointer<Float>.allocate(capacity: 128)
+        delR = UnsafeMutablePointer<Float>.allocate(capacity: 128)
+        needHist = UnsafeMutablePointer<Float>.allocate(capacity: 128)
+        minHist = UnsafeMutablePointer<Float>.allocate(capacity: 128)
+        reset()
+    }
+
+    deinit {
+        delL.deallocate(); delR.deallocate(); needHist.deallocate(); minHist.deallocate()
+    }
+
+    func reset() {
+        for i in 0..<size { delL[i] = 0; delR[i] = 0; needHist[i] = 1; minHist[i] = 1 }
+        idx = 0
+        gain = 1
+        quietRun = 1000
+    }
+
+    func process(_ l: UnsafeMutablePointer<Float>, _ r: UnsafeMutablePointer<Float>, frames: Int) {
+        let look = self.look
+        let mask = self.mask
+        for i in 0..<frames {
+            let x = l[i]
+            let y = r[i]
+            let p = max(abs(x), abs(y))
+            let need: Float = p > ceiling ? ceiling / p : 1
+            idx = (idx + 1) & mask
+            delL[idx] = x
+            delR[idx] = y
+            needHist[idx] = need
+            if need < 1 { quietRun = 0 } else if quietRun < 100000 { quietRun += 1 }
+            if quietRun >= 2 * look && gain >= 1 {
+                // Nothing to limit now or in the last 128 samples: just the delay.
+                minHist[idx] = 1
+            } else {
+                var m: Float = 1
+                for j in 0..<look {
+                    let v = needHist[(idx - j) & mask]
+                    if v < m { m = v }
+                }
+                minHist[idx] = m
+                var sum: Float = 0
+                for j in 0..<look { sum += minHist[(idx - j) & mask] }
+                let g = sum / Float(look)
+                if g < gain { gain = g } else {
+                    gain += (g - gain) * release
+                    if gain > 0.99999 { gain = 1 }
+                }
+            }
+            let d = (idx - (look - 1)) & mask
+            var outL = delL[d] * gain
+            var outR = delR[d] * gain
+            if outL > 0.9999 { outL = 0.9999 } else if outL < -0.9999 { outL = -0.9999 }
+            if outR > 0.9999 { outR = 0.9999 } else if outR < -0.9999 { outR = -0.9999 }
+            l[i] = outL
+            r[i] = outR
+        }
+    }
+}
+
 // Mid/side width plus left-right balance, in place on the stereo signal.
 // Width scales the side (L minus R) part: 0 = mono, 1 = unchanged, 2 = twice as
 // wide. Balance turns one side down: negative = left, positive = right. Both
@@ -5329,6 +5461,7 @@ private final class SpatialAudioUnit: AUAudioUnit {
     private var inputBusArray: AUAudioUnitBusArray!
     private var outputBusArray: AUAudioUnitBusArray!
     private var inputBuffer: AVAudioPCMBuffer?
+    private let limiter = LookaheadLimiter()
     var targetWidth: Float = 1
     var targetBalance: Float = 0
     private var curWidth: Float = 1
@@ -5356,6 +5489,7 @@ private final class SpatialAudioUnit: AUAudioUnit {
     override func allocateRenderResources() throws {
         try super.allocateRenderResources()
         inputBuffer = AVAudioPCMBuffer(pcmFormat: inputBusses[0].format, frameCapacity: maximumFramesToRender)
+        limiter.reset()
     }
 
     override func deallocateRenderResources() {
@@ -5409,6 +5543,7 @@ private final class SpatialAudioUnit: AUAudioUnit {
             if tw == 1 && tb == 0 && self.curWidth == 1 && self.curGainL == 1 && self.curGainR == 1 {
                 if ol != il { memcpy(ol, il, n * MemoryLayout<Float>.size) }
                 if orr != ir { memcpy(orr, ir, n * MemoryLayout<Float>.size) }
+                self.limiter.process(ol, orr, frames: n)
                 return noErr
             }
             var w = self.curWidth
@@ -5434,6 +5569,7 @@ private final class SpatialAudioUnit: AUAudioUnit {
             self.curWidth = w
             self.curGainL = gl
             self.curGainR = gr
+            self.limiter.process(ol, orr, frames: n)
             return noErr
         }
     }
