@@ -24,6 +24,7 @@ import { squircle, cardRadius } from '../utils/squircle';
 import SongVisualizer from '../components/SongVisualizer';
 import { mixHex } from '../utils/color';
 import { getPlayCounts, peekPlayCount, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
+import { TOP_PAD } from '../utils/layout';
 
 const { width } = Dimensions.get('window');
 
@@ -98,7 +99,7 @@ export default function PlayerScreen() {
     const offColor = mixHex(base.textFaint, base.bg, 0.5);
 
     const {
-        currentPlaylist, queueSource, playbackRate, currentTrack, shuffleOn, singleLoop,
+        currentPlaylist, queueSource, playbackRate, currentTrack, shuffleOn, singleLoop, libraryFor,
         loadPlaylist, toggleShuffle, toggleSingleLoop,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
@@ -167,26 +168,42 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { playerVizCover, performanceMode, showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { playerVizCover, playerVizBehind, performanceMode, showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     // The count is credited once a song passes half way, so the shown count is read again
     // at that moment (it used to stay stale until the next song). The `cancelled` flag stops a
     // slow read for the previous song from landing on the new one after a quick skip.
     const pastHalf = progress.duration > 0 && progress.position / progress.duration >= 0.5;
+    // Where the visualizer behind the controls starts: halfway between the bottom of the cover and the top of the title.
+    // The cover, the title group and the title row each report their own position inside their parent;
+    // the pieces are added up here once all four are known.
+    const [vizTop, setVizTop] = useState(null);
+    const vizLay = useRef({ artBottom: null, wrapY: null, groupY: null, infoY: null });
+    const recomputeVizTop = () => {
+        const l = vizLay.current;
+        if (l.artBottom == null || l.wrapY == null || l.groupY == null || l.infoY == null) return;
+        const titleTop = l.wrapY + l.groupY + l.infoY;
+        const top = Math.max(0, Math.round((l.artBottom + titleTop) / 2));
+        setVizTop(prev => (prev === top ? prev : top));
+    };
     useEffect(() => {
         if (!currentTrack?.id) { setPc({ id: null, n: 0 }); return; }
         let cancelled = false;
         const id = currentTrack.id;
         const t = setTimeout(() => {
-            getPlayCounts([currentTrack]).then(counts => { if (!cancelled) setPc({ id, n: counts[id] ?? 0 }); });
+            // Looked up with the library's copy of the song, the same one the lists use, so the number here
+            // and the number in the list are always the same one.
+            const lib = (libraryFor && libraryFor(currentTrack)) || currentTrack;
+            getPlayCounts([lib]).then(counts => { if (!cancelled) setPc({ id, n: counts[lib.id] ?? 0 }); });
         }, pastHalf ? 400 : 0);
         return () => { cancelled = true; clearTimeout(t); };
-    }, [currentTrack?.id, pastHalf]);
+    }, [currentTrack?.id, pastHalf, libraryFor]);
 
     // Show the new count the moment this song's play is counted.
     useEffect(() => subscribePlayCount(({ key, n }) => {
-        if (currentTrack?.id && (playCountKey(currentTrack) === key || playCountKeyN(currentTrack) === key)) setPc({ id: currentTrack.id, n });
-    }), [currentTrack]);
+        const lib = (libraryFor && libraryFor(currentTrack)) || currentTrack;
+        if (currentTrack?.id && (playCountKey(lib) === key || playCountKeyN(lib) === key)) setPc({ id: currentTrack.id, n });
+    }), [currentTrack, libraryFor]);
 
     const shownCount = pc.id === currentTrack?.id ? pc.n : (peekPlayCount(currentTrack?.id) ?? 0);
     const progressRef = useRef(null);
@@ -704,7 +721,10 @@ export default function PlayerScreen() {
     }, [lyricsLive, lyricsData, lyricsOffsetSec, playbackRate]);
     // The live line only counts for the lyrics it was worked out on: right after a song change it
     // still held the old song's line number for a moment, which was then used on the new lyrics.
-    const activeLine = (lyricsLive && liveLine && liveLine.d === lyricsData) ? liveLine.i : baseActiveLine;
+    const rawActiveLine = (lyricsLive && liveLine && liveLine.d === lyricsData) ? liveLine.i : baseActiveLine;
+    // A timestamp with no words (an instrumental stretch) is not shown at all and lights nothing up: while the
+    // song is in one, no line is active (-3) and the lyrics sit halfway between the line before and the line after.
+    const activeLine = (rawActiveLine >= 0 && lyricsData && !lyricsData[rawActiveLine]?.text) ? -3 : rawActiveLine;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -1054,6 +1074,28 @@ export default function PlayerScreen() {
         // scroll-up-to-the-top by the user doesn't immediately get
         // overridden by the very next tick before the position has
         // actually caught up.
+        if (activeLine === -3) {
+            if (lyricsManualScroll) return;
+            const arr = lyricsData || [];
+            let prev = rawActiveLine - 1; while (prev >= 0 && !arr[prev]?.text) prev--;
+            let next = rawActiveLine + 1; while (next < arr.length && !arr[next]?.text) next++;
+            const hasPrev = prev >= 0, hasNext = next < arr.length;
+            const yPrev = hasPrev ? lyricsRowYRef.current.get(prev) : undefined;
+            const yNext = hasNext ? lyricsRowYRef.current.get(next) : undefined;
+            if ((hasPrev && yPrev === undefined) || (hasNext && yNext === undefined)) return;   // wait for the rows to be measured
+            let target;
+            if (hasPrev && hasNext) target = (yPrev + yNext) / 2;
+            else if (hasPrev) target = yPrev;
+            else if (hasNext) target = yNext;
+            else return;
+            lyricsScrollRef.current?.scrollTo({ y: Math.max(0, target - (width - 56) * 0.5), animated: !skipAnimation });
+            if (effectiveLyricsProgress.duration > 0) {
+                wasShowingLyricsRef.current = true;
+                lyricsJustJumpedRef.current = false;
+                markLyricsPlaced();
+            }
+            return;
+        }
         if (activeLine < 0) {
             if (lyricsManualScroll) return;
             // Real gap in the fix above (the y===undefined guard's twin
@@ -1078,7 +1120,8 @@ export default function PlayerScreen() {
             // active one, so when it lights up nothing has to move. (Used to scroll to 0, which
             // is only the same spot when the first row happens to be near the top.) The first
             // row not being measured yet: wait for its layout rather than guess.
-            const firstY = lyricsRowYRef.current.get(0);
+            const firstIdx = Math.max(0, (lyricsData || []).findIndex(l => l.text));   // an empty first timestamp has no row
+            const firstY = lyricsRowYRef.current.get(firstIdx);
             if (firstY === undefined && lyricsData?.length) return;
             const preRollY = firstY === undefined ? 0 : Math.max(0, firstY - (width - 56) * 0.5);
             lyricsScrollRef.current?.scrollTo({ y: preRollY, animated: !skipAnimation });
@@ -1118,7 +1161,7 @@ export default function PlayerScreen() {
         wasShowingLyricsRef.current = true;
         lyricsJustJumpedRef.current = false;
         markLyricsPlaced();
-    }, [activeLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
+    }, [activeLine, rawActiveLine, showingLyrics, lyricsManualScroll, lyricsLayoutVersion]);
 
     // Re-sync only when needed: on mount, on play/pause toggling, on a track
     // switch, or if the running animation has drifted noticeably from what
@@ -1366,8 +1409,9 @@ export default function PlayerScreen() {
         toggleSingleLoop();   // one cheap call: applied right at the tap
     };
 
+    // The top edge is TOP_PAD, the same as the other screens' bars. It used the phone's status bar height + 6, which sat a few points lower on some phones.
     return (
-        <ScreenBackground ownImage style={[s.container, { paddingTop: insets.top + 6 }]}>
+        <ScreenBackground ownImage style={[s.container, { paddingTop: TOP_PAD }]}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>
@@ -1407,6 +1451,13 @@ export default function PlayerScreen() {
                 evenly spaced across whatever room is left so nothing bunches
                 up on a taller screen, instead of one big empty gap. */}
             <View style={s.middle}>
+                {/* The visualizer behind the controls: from halfway between the bottom of the cover and the top of
+                    the title, across the whole screen, down to the bottom. Drawn first, so everything else sits on it. */}
+                {playerVizBehind && !performanceMode && vizTop != null ? (
+                    <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: vizTop, bottom: 0 }}>
+                        <SongVisualizer color={theme.accent} mode="pill" radius={0} />
+                    </View>
+                ) : null}
                 {/* Cover and lyrics are now separate boxes sharing the same
                      slot (absolute-positioned over each other), not the
                      lyrics view nested inside the cover's own box —
@@ -1415,7 +1466,7 @@ export default function PlayerScreen() {
                      read as a raised card of art), which looked wrong for
                      plain text. Lyrics use the screen's own background
                      instead, no shadow. */}
-                <View style={[s.artWrap, { paddingTop: 20 }]}>
+                <View style={[s.artWrap, { paddingTop: 20 }]} onLayout={(e) => { vizLay.current.artBottom = e.nativeEvent.layout.y + e.nativeEvent.layout.height; recomputeVizTop(); }}>
                     <View style={{ width: width - 56, height: width - 56 }}>
                         <Animated.View style={[StyleSheet.absoluteFill, { opacity: coverFade }]} pointerEvents={showingDisc || showingLyrics ? 'none' : 'auto'}>
                         <View style={{ flex: 1 }}>
@@ -1547,6 +1598,7 @@ export default function PlayerScreen() {
                                         to a surrounding pan gesture at its own scroll
                                         bounds anyway. */}
                                     <React.Fragment key={lyricsSetKey}>{lyricsData.map((line, i) => {
+                                        if (!line.text) return null;   // an empty timestamp: nothing is drawn (no "...")
                                         // Spotify-style: the lines themselves fade out toward the top
                                         // and bottom edge of the box (no dark box over them). A row's
                                         // Y comes from its onLayout; minus the live scroll offset it is
@@ -1602,7 +1654,7 @@ export default function PlayerScreen() {
                                                 }}
                                                 style={[s.lyricLine, shadow, { color: textColor, opacity: fadeAt(lineY + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
                                             >
-                                                {line.text || '\u2026'}
+                                                {line.text}
                                             </Animated.Text>
                                         );
                                     })}</React.Fragment>
@@ -1618,7 +1670,7 @@ export default function PlayerScreen() {
                      lyrics loads, visibly shifting the title down (or up)
                      depending on whether this song happens to have an .lrc
                      file. The slot's height is fixed regardless. */}
-                <View>
+                <View onLayout={(e) => { vizLay.current.wrapY = e.nativeEvent.layout.y; recomputeVizTop(); }}>
                     {/* Real cause of the toggle looking untouched by the
                          earlier margin tweak: it was a SEPARATE sibling of
                          trackInfoGroup, both direct children of `middle`,
@@ -1631,7 +1683,7 @@ export default function PlayerScreen() {
                          single flex item as the title, so the only thing
                          controlling their distance is the marginBottom set
                          here directly — no more competing flex gap. */}
-                    <View style={[s.trackInfoGroup, { marginTop: 16 }]}>
+                    <View style={[s.trackInfoGroup, { marginTop: 16 }]} onLayout={(e) => { vizLay.current.groupY = e.nativeEvent.layout.y; recomputeVizTop(); }}>
                     <View style={[s.lyricsToggleSlot, { marginBottom: 14 }, titleLines > 1 ? { transform: [{ translateY: -titleLineH }] } : null]}>
                         {(hasLyricsView || djDisc) && (
                             <TouchableOpacity onPress={cycleView} style={s.lyricsToggleBtn}>
@@ -1641,7 +1693,7 @@ export default function PlayerScreen() {
                             </TouchableOpacity>
                         )}
                     </View>
-                    <View style={s.info}>
+                    <View style={s.info} onLayout={(e) => { vizLay.current.infoY = e.nativeEvent.layout.y; recomputeVizTop(); }}>
                         <View style={{ flex: 1 }}>
                             {/* The slot is always ONE line tall (the invisible sizer
                                 text), so the group's height never changes. The real

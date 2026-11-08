@@ -23,6 +23,7 @@ import { noteScroll } from '../utils/scrollGuard';
 import { TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay, EQ_MIN, EQ_MAX } from '../utils/eq';
 import { applyEQPreset } from '../context/PlaybackContext';
+import EQAdvancedRows from '../components/CustomEQ';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
 // in storage.js for the default-';' reasoning).
@@ -196,7 +197,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, playerVizBehind, setPlayerVizBehind, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
@@ -928,6 +929,10 @@ export default function SettingsScreen() {
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
                 </Section>
 
+                <Section title="Custom EQ, Import & Export">
+                    <EQAdvancedRows s={s} onPresetsChanged={async () => { setCP(await getCustomPresets()); setEO(await getEQOverrides()); }} />
+                </Section>
+
                 <Section title="Spatial">
                     <Text style={s.sliderSub}>Width</Text>
                     <Text style={s.sliderNote}>How wide the stereo sound is. 100% is the song as it was recorded</Text>
@@ -1210,7 +1215,7 @@ export default function SettingsScreen() {
                     </View>
                     {chipRow([{ id: 'off', label: 'Off' }, { id: 'cover', label: 'Cover' }, { id: 'pill', label: 'Whole row' }], (id) => vizMode === id, setVizMode)}
                     <Text style={s.chipNote}>Cover shows it on the song's cover only, Whole row across the entire row. It shows on the song that is playing wherever it is listed, and on the mini player.</Text>
-                    {chipsFor([{ id: 'player_cover_viz', label: 'On the player cover', on: !!playerVizCover, set: () => setPlayerVizCover(!playerVizCover) }])}
+                    {chipsFor([{ id: 'player_cover_viz', label: 'On the player cover', on: !!playerVizCover, set: () => setPlayerVizCover(!playerVizCover) }, { id: 'player_behind_viz', label: 'Behind the player controls', on: !!playerVizBehind, set: () => setPlayerVizBehind(!playerVizBehind) }])}
                     <Text style={s.chipNote}>Shows the visualizer on the cover in the main player. Separate from the setting above.</Text>
                 </Section>
 
@@ -1679,7 +1684,7 @@ export default function SettingsScreen() {
                 showNewEQ to true, but the sheet it's supposed to open was
                 dead code, so nothing ever appeared. That's the actual
                 "adding a custom preset doesn't work" bug. */}
-            <BottomSheet visible={showNewEQ} onClose={closeEQSheet} header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>{editingId ? 'Edit EQ Preset' : 'New EQ Preset'}</Text>}>
+            <BottomSheet visible={showNewEQ} onClose={closeEQSheet} expandable header={<Text style={[s.sheetTitle, { paddingHorizontal: 24 }]}>{editingId ? 'Edit EQ Preset' : 'New EQ Preset'}</Text>}>
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1, paddingHorizontal: 20 }}>
                     {editingIsBuiltIn ? (
                         // Built-in presets keep their fixed name — editing
@@ -1777,6 +1782,7 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 // Words each Section answers to in the search box (besides its title).
 const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone',
+    'Custom EQ, Import & Export': 'equalizer eq custom parametric graphic q factor frequency band import export autoeq apo preset share',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
     'Shuffle': 'shuffle random smart dumb cycle order playback',

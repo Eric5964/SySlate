@@ -79,8 +79,26 @@ const MORE_ROWS = 80;
 // old version animated heights from JS every frame, which got choppy, and swapped this wrapper for a
 // different one when the "new" flag cleared, which rebuilt the row (the cover image flashed black).
 // The wrapper is always the same view now, so nothing is rebuilt.
-function GrowInRow({ children }) {
-    return <View>{children}</View>;
+// While the list is scrolled down the system animation cannot be used for the rows around the new one (see
+// refresh): the list holds the visible rows in place by itself and the two fight. There the new row itself
+// grows from nothing to its full height (and fades in), one view doing it, so the space opens smoothly
+// instead of just appearing. At the top the system animation does it, as before.
+let GROW_BY_HEIGHT = false;
+function GrowInRow({ children, isNew }) {
+    const g = useRef(new Animated.Value(1)).current;
+    const [growing, setGrowing] = useState(false);
+    useEffect(() => {
+        if (!isNew || !GROW_BY_HEIGHT) return;
+        setGrowing(true);
+        g.setValue(0);
+        Animated.timing(g, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start(() => setGrowing(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isNew]);
+    return (
+        <Animated.View style={growing ? { height: g.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), opacity: g, overflow: 'hidden' } : null}>
+            {children}
+        </Animated.View>
+    );
 }
 
 // The "Priority" and "Up Next" pills' own fade — opacity only, no height
@@ -194,6 +212,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
                     onSwipeRight={editing ? undefined : () => (isPriority ? actions.addCopy(song) : actions.promote(realIndex, song._qid))}
                     rightColor={theme.accent}
                     leftColor="#dc2626"
+                    dimColor={base.border}
                 >
                     <DimPressable disabledDim={dragging} style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => actions.jump(realIndex)} onPressIn={(e) => actions.pressIn(stableKey, e && e.nativeEvent ? e.nativeEvent.identifier : null)} onPressOut={() => actions.pressOut()}>
                         {showSongCovers && (
@@ -230,7 +249,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue, libraryFor } = usePlayback();
     const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow, vizMode, performanceMode } = usePreferences();
     const showViz = vizMode !== 'off' && !performanceMode;   // the visualizer on the Now Playing row, as on the song lists
     // allRows is the whole upcoming queue; only the first `visibleCount` are
@@ -344,6 +363,7 @@ export default function QueueModal({ visible, onClose }) {
             // so everything jumped for a moment and then snapped back.
             // When the list is scrolled down it keeps the visible rows in place by itself (maintainVisibleContentPosition),
             // so the rows must NOT also be animated to their new places: the two fought and the whole list slid up and back.
+            GROW_BY_HEIGHT = !!anchorRef.current;
             if (justAddedKey) LayoutAnimation.configureNext(anchorRef.current
                 ? { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY } }
                 : { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY }, update: { type: LayoutAnimation.Types.easeOut } });
@@ -466,8 +486,14 @@ export default function QueueModal({ visible, onClose }) {
         // adding it to the list below.
         if (!showPlayCount || (!songsForArt.length && !currentTrack)) return;
         const toFetch = currentTrack ? [currentTrack, ...songsForArt] : songsForArt;
-        getPlayCounts(toFetch).then(setPlayCounts);
-    }, [songsForArt, showPlayCount, currentTrack]);
+        // Counted by the library's copy of each song (see libraryFor), so two entries of one song show one count.
+        const pairs = toFetch.map(sg => [sg, libraryFor ? (libraryFor(sg) || sg) : sg]);
+        getPlayCounts(pairs.map(p => p[1])).then(c => {
+            const out = {};
+            pairs.forEach(([orig, lib]) => { out[orig.id] = c[lib.id]; });
+            setPlayCounts(out);
+        });
+    }, [songsForArt, showPlayCount, currentTrack, libraryFor]);
 
     // ---- Moving rows (hold to pick up, drag, let go) ---------------------
     // Works like moving playlists: same hold times, the list scrolls by
@@ -482,6 +508,12 @@ export default function QueueModal({ visible, onClose }) {
     // list alone cannot say which of the two a drop on that slot means, so this says it.
     const endPriRef = useRef(false);
     const [dragEndPri, setDragEndPri] = useState(false);
+    // A song held from Priority over the top of Up Next (the gap with the label, or the upper part of the first
+    // Up Next row): dropped there it becomes the FIRST Up Next song. The slot below the last Priority row is the
+    // same index as the top of Up Next, so, like endPri, the list alone cannot tell "stay last in Priority" from
+    // "leave Priority at the top of Up Next".
+    const [dragTopUN, setDragTopUN] = useState(false);
+    const topUNRef = useRef(false);
     useEffect(() => {
         if (dragKey != null) { setAnchorBlocked(true); return undefined; }
         const t = setTimeout(() => setAnchorBlocked(false), 450);
@@ -502,12 +534,13 @@ export default function QueueModal({ visible, onClose }) {
     useEffect(() => subscribePlayCount(({ key, n }) => setPlayCounts(prev => {
         let next = null;
         const consider = (song) => {
-            if (song && (playCountKey(song) === key || playCountKeyN(song) === key) && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
+            const lib = song ? (libraryFor ? (libraryFor(song) || song) : song) : null;
+            if (song && (playCountKey(lib) === key || playCountKeyN(lib) === key) && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
         };
         rowsRef.current.forEach(r => consider(r.song));
         consider(currentTrack);
         return next || prev;
-    })), [currentTrack]);
+    })), [currentTrack, libraryFor]);
     const totalRowsRef = useRef(0);
     totalRowsRef.current = allRows.length;
     const visibleRef = useRef(0);
@@ -551,7 +584,7 @@ export default function QueueModal({ visible, onClose }) {
             stopAutoScroll();
             dragging.current = false; armedKey.current = null; editRef.current = false;
             draggedListIndex = -1;
-            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false); setEditMode(false);
             dragY.setValue(0);
             return;
         }
@@ -591,9 +624,19 @@ export default function QueueModal({ visible, onClose }) {
                 else if (pos >= gapMid && pos < firstU.y + firstU.height / 2) best = pc;
             }
         }
-        if (best !== toIdx.current || endPri !== endPriRef.current) {
-            toIdx.current = best; endPriRef.current = endPri;
-            setDragTo(best); setDragEndPri(endPri);
+        let topUN = false;
+        if (heldRow && heldRow.isPriority && pc > 0 && pc < list.length) {
+            const lastP = layoutOfRow(pc - 1), firstU = layoutOfRow(pc);
+            if (lastP && firstU) {
+                const gapMid = (lastP.y + lastP.height + firstU.y) / 2;
+                // from the middle of the gap to the upper third of the first Up Next row: the top of Up Next.
+                // Its slot is the last Priority row's (index pc - 1); topUN says it is not "stay in Priority".
+                if (pos >= gapMid && pos < firstU.y + firstU.height * 0.35) { topUN = true; best = pc - 1; }
+            }
+        }
+        if (best !== toIdx.current || endPri !== endPriRef.current || topUN !== topUNRef.current) {
+            toIdx.current = best; endPriRef.current = endPri; topUNRef.current = topUN;
+            setDragTo(best); setDragEndPri(endPri); setDragTopUN(topUN);
         }
     };
     refreshDragRef.current = refreshDrag;
@@ -611,7 +654,7 @@ export default function QueueModal({ visible, onClose }) {
         dragging.current = false;
         editRef.current = false;
         draggedListIndex = -1;
-        setEditMode(false); setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false);
+        setEditMode(false); setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false);
         dragY.setValue(0);
     }, [dragY]);
     useEffect(() => { if (!visible) exitEdit(); }, [visible, exitEdit]);
@@ -622,7 +665,7 @@ export default function QueueModal({ visible, onClose }) {
         armedKey.current = key;
         suppressPress.current = true;        // letting go after the hold must not play the song
         startIdx.current = idx; toIdx.current = idx;
-        endPriRef.current = false; setDragEndPri(false);
+        endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false);
         dragY.setValue(0);
         editRef.current = true;
         if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
@@ -652,7 +695,7 @@ export default function QueueModal({ visible, onClose }) {
         // (no separate "editing" state is left behind).
         if (armedKey.current && !dragging.current) {
             armedKey.current = null; editRef.current = false; draggedListIndex = -1;
-            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false); setEditMode(false);
         }
     }, []);
 
@@ -664,6 +707,7 @@ export default function QueueModal({ visible, onClose }) {
         const heldIdx = list.findIndex(r => r.stableKey === armedKey.current);
         const from = heldIdx >= 0 ? heldIdx : startIdx.current, to = Math.min(toIdx.current, list.length - 1);
         const endPri = endPriRef.current;
+        const topUN = topUNRef.current;
         armedKey.current = null;
         const fromL = layoutOfRow(from), toL = layoutOfRow(to);
         // Moving a row is not a mode: once it is dropped everything is back to
@@ -672,11 +716,11 @@ export default function QueueModal({ visible, onClose }) {
         const clear = () => {
             draggedListIndex = -1;
             editRef.current = false;
-            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); setEditMode(false);
+            setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false); setEditMode(false);
             dragY.setValue(0);
         };
         try {
-            if ((from !== to || endPri) && list[from] && list[to] && fromL && toL) {
+            if ((from !== to || endPri || topUN) && list[from] && list[to] && fromL && toL) {
                 // Settle the held row into its slot, then do the real move. A drop at the end of
                 // Priority settles just below the last Priority row, which is where the row will
                 // be (not at the first Up Next row's place, which is below the label and the line:
@@ -687,8 +731,13 @@ export default function QueueModal({ visible, onClose }) {
                     const lp = layoutOfRow(pcNow - 1);
                     if (lp) settleY = lp.y + lp.height;
                 }
+                if (topUN) {
+                    const pcNow = list.filter(r => r.isPriority).length;
+                    const lu = layoutOfRow(pcNow);
+                    if (lu) settleY = lu.y - (fromL.height || 0) * 0;   // settles where the first Up Next row is now
+                }
                 Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-                const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri);
+                const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
                 await refresh(next, undefined, clear);
             }
         } catch (e) { console.log('[QUEUE] move failed: ' + e); }
@@ -955,6 +1004,12 @@ export default function QueueModal({ visible, onClose }) {
             const lp = rowListIdx.current[rows.filter(r => r.isPriority).length - 1];
             if (lp != null) tgt = lp + 1;
         }
+        if (dragTopUN) {
+            // Over the top of Up Next: the rest of Priority, the label and the line move up; the slot opens
+            // just above the first Up Next row.
+            const fu = rowListIdx.current[rows.filter(r => r.isPriority).length];
+            if (fu != null) tgt = fu - 1;
+        }
         if (src == null || tgt == null || src === tgt) return 0;
         const h = layoutOfRow(startIdx.current)?.height ?? ROW_HEIGHT;
         if (src < tgt && index > src && index <= tgt) return -h;
@@ -980,7 +1035,7 @@ export default function QueueModal({ visible, onClose }) {
                                 setTimeout(() => listRef.current?.scrollToOffset({ offset: 0, animated: false }), 80);
                             }
                         })();
-                    }} rightColor={theme.accent}>
+                    }} rightColor={theme.accent} dimColor={base.border}>
                         <View style={[s.qRow, { backgroundColor: base.border }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]}>
                             {showViz && vizMode === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                             {showSongCovers && (
@@ -1063,7 +1118,7 @@ export default function QueueModal({ visible, onClose }) {
                     // grow-shrink updates could land in state but not
                     // actually repaint an already-mounted, off-window-edge
                     // row.
-                    extraData={{ artMap, playCounts, newKeys, removingKeys, editMode, dragKey, dragTo }}
+                    extraData={{ artMap, playCounts, newKeys, removingKeys, editMode, dragKey, dragTo, dragEndPri, dragTopUN }}
                     // Row height is a known constant (see ROW_HEIGHT above)
                     // for ordinary rows — pill/divider/now-playing rows are
                     // shorter, so this is deliberately just an estimate

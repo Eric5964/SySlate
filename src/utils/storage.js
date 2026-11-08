@@ -3,6 +3,7 @@ import { splitArtists, formatArtists } from './artists';
 import * as FileSystem from 'expo-file-system';
 import { EQ_MIN, EQ_MAX, BAND_COUNT, clampEQBand } from './eq';
 import AudioEngine from '../native/AudioEngine';
+import { sanitizeCustomEQ } from './customEQ';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
@@ -189,6 +190,24 @@ export const getEQOverrides = () => safe(async () => {
 export const setEQOverrides = (o) => safe(async () => {
     await AsyncStorage.setItem('eq_preset_overrides', JSON.stringify(o));
     await writeBackup({ eq_preset_overrides: o });
+}, null);
+// Custom (parametric) EQ: { enabled, bands: [{ f, g, q, t }] x10 }. See customEQ.js. Same backup-file
+// fallback as the preset lists above: it is hand-tuned data that cannot be regenerated.
+export const getCustomEQ = () => safe(async () => {
+    const v = await AsyncStorage.getItem('custom_eq');
+    if (v) return sanitizeCustomEQ(JSON.parse(v));
+    const backup = await readBackup();
+    if (backup?.custom_eq) {
+        const c = sanitizeCustomEQ(backup.custom_eq);
+        if (c) { await AsyncStorage.setItem('custom_eq', JSON.stringify(c)); return c; }
+    }
+    return null;
+}, null);
+export const setCustomEQ = (c) => safe(async () => {
+    const clean = sanitizeCustomEQ(c);
+    if (!clean) return;
+    await AsyncStorage.setItem('custom_eq', JSON.stringify(clean));
+    await writeBackup({ custom_eq: clean });
 }, null);
 export const getLastSession = () => safe(() => AsyncStorage.getItem('last_session').then(v => v ? JSON.parse(v) : null), null);
 export const setLastSession = (d) => safe(() => AsyncStorage.setItem('last_session', JSON.stringify(d)), null);
@@ -441,6 +460,9 @@ export const getVizMode = () => safe(async () => {
 export const setVizMode = (v) => safe(() => AsyncStorage.setItem('viz_mode', v), null);
 export const getPlayerVizCover = () => safe(() => AsyncStorage.getItem('player_viz_cover').then(v => v === 'true'), false);
 export const setPlayerVizCover = (v) => safe(() => AsyncStorage.setItem('player_viz_cover', String(v)), null);
+// The visualizer behind the Player's controls (from halfway between the cover and the title, down to the bottom).
+export const getPlayerVizBehind = () => safe(() => AsyncStorage.getItem('player_viz_behind').then(v => v === 'true'), false);
+export const setPlayerVizBehind = (v) => safe(() => AsyncStorage.setItem('player_viz_behind', String(v)), null);
 // Disc spinning (idle turning) and disc touch (moving / scratching it with a
 // finger) are separate switches. Both default on.
 export const getDjDiscSpin = () => safe(() => AsyncStorage.getItem('dj_disc_spin').then(v => v !== 'false'), true);
@@ -785,7 +807,7 @@ const normKey = (title, artist, album) => {
     const alb = alnum(album);
     return `pcx:${t}::${a}${alb ? '::' + alb : ''}`;
 };
-const baseCountKeyN = (song) => normKey(song?.ourTitle ?? song?.title, song?.ourArtist ?? song?.artist, '');
+export const baseCountKeyN = (song) => normKey(song?.ourTitle ?? song?.title, song?.ourArtist ?? song?.artist, '');
 export const playCountKeyN = (song) => normKey(song?.ourTitle ?? song?.title, song?.ourArtist ?? song?.artist, albumOf(song));
 const fileNameParts = (song) => {
     const f = song?.filename;
@@ -805,6 +827,81 @@ const fallbackKeys = (song) => {
     if (f) out.push(`pcn:${f.t.toLowerCase()}::${f.a.toLowerCase()}`, normKey(f.t, f.a, ''));
     const prim = new Set(primaryKeys(song));
     return [...new Set(out)].filter(k => !prim.has(k));
+};
+
+// Artists of a song as a set of smoothed names (see normKey), and whether two such sets share one.
+const artistSet = (a) => new Set(String(a ?? '').split(ARTIST_SPLIT).map(alnum).filter(Boolean));
+const artistsOverlap = (x, y) => {
+    if (!x.size || !y.size) return true;
+    for (const v of x) if (y.has(v)) return true;
+    return false;
+};
+
+// Counts filed under a file's path ('pci:<id>', and the older 'pc:<id>'). A song's id is its file path, which
+// contains the app's own folder, and that folder is different after the app is installed again (a new IPA in
+// LiveContainer): every song that only had a count under its old path looked as if it had never been played.
+// The paths are matched here by where they are inside Documents (toStablePath), which stays the same.
+let idCountIndex = null;
+const stableForms = (id) => {
+    const a = toStablePath(String(id ?? ''));
+    let b = a; try { b = decodeURI(a); } catch { }
+    return a === b ? [a] : [a, b];
+};
+const loadIdCountIndex = async () => {
+    if (idCountIndex) return idCountIndex;
+    const m = new Map();
+    try {
+        const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pci:') || k.startsWith('pc:'));
+        const rows = await AsyncStorage.multiGet(keys);
+        for (const [k, v] of rows) {
+            const n = parseInt(v); if (!(n > 0)) continue;
+            const id = k.startsWith('pci:') ? k.slice(4) : k.slice(3);
+            for (const f of stableForms(id)) if ((m.get(f) ?? 0) < n) m.set(f, n);
+        }
+    } catch { }
+    idCountIndex = m;
+    return m;
+};
+const idCountFor = (index, song) => {
+    let best = 0;
+    for (const f of stableForms(song?.id)) best = Math.max(best, index.get(f) ?? 0);
+    return best;
+};
+
+// Every count that is stored, grouped by smoothed title, so a song whose count was filed under a slightly
+// different artist spelling (tags changed, files replaced) can still find it. Only used for a song that has
+// no count under its own keys. Rebuilt after any play is counted.
+let looseIndex = null;
+const loadLooseIndex = async () => {
+    if (looseIndex) return looseIndex;
+    const m = new Map();
+    try {
+        const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith('pcn:') || k.startsWith('pcx:'));
+        const rows = await AsyncStorage.multiGet(keys);
+        for (const [k, v] of rows) {
+            const n = parseInt(v); if (!(n > 0)) continue;
+            const [t, a, alb] = k.slice(4).split('::');
+            const tn = alnum(t) || String(t ?? '').trim().toLowerCase();
+            const artists = k.startsWith('pcx:') ? new Set(String(a ?? '').split('|').filter(Boolean)) : artistSet(a);
+            const e = { artists, album: alnum(alb), n };
+            const l = m.get(tn); if (l) l.push(e); else m.set(tn, [e]);
+        }
+    } catch { }
+    looseIndex = m;
+    return m;
+};
+const looseCountFor = (index, song) => {
+    const l = index.get(alnum(song?.ourTitle ?? song?.title) || String(song?.ourTitle ?? song?.title ?? '').trim().toLowerCase());
+    if (!l) return 0;
+    const mine = artistSet(song?.ourArtist ?? song?.artist);
+    const alb = alnum(albumOf(song));
+    let best = 0;
+    for (const e of l) {
+        if (!artistsOverlap(mine, e.artists)) continue;
+        if (alb && e.album && alb !== e.album) continue;
+        if (e.n > best) best = e.n;
+    }
+    return best;
 };
 
 // Screens that show play counts listen here, so a count changes on screen the moment
@@ -839,7 +936,15 @@ export const incrementPlayCount = async (song, durationSec, libSong) => {
         // album-less count (if any) is carried over.
         const migrating = hasAlbum && ownBase === 0;
         const base = migrating ? Math.max(0, ...keys.map(x => val[x] || 0)) : Math.max(ownBase, hasAlbum ? 0 : Math.max(0, ...fb.map(x => val[x] || 0)));
-        const n = base + 1;
+        // A song whose count is only known under another spelling continues from that count
+        // (the same lookup the lists use), instead of starting again from 1.
+        let looseBase = 0;
+        if (base === 0) {
+            const lidx = await loadLooseIndex();
+            const iidx = await loadIdCountIndex();
+            looseBase = Math.max(looseCountFor(lidx, main), libSong ? looseCountFor(lidx, song) : 0, idCountFor(iidx, main), libSong ? idCountFor(iidx, song) : 0);
+        }
+        const n = Math.max(base, looseBase) + 1;
         const k = playCountKey(main);
         const writes = [[k, String(n)], [playCountKeyN(main), String(n)], [idKey, String(n)]];
         if (libSong && libSong.id !== song.id) writes.push([`pci:${libSong.id}`, String(n)]);
@@ -851,6 +956,7 @@ export const incrementPlayCount = async (song, durationSec, libSong) => {
         // is remembered here for the "hours" figure in Listening Stats.
         if (durationSec > 5 && durationSec < 7200) await AsyncStorage.setItem(`pdur:${k.slice(4)}`, String(Math.round(durationSec)));
         playCountCache.clear();
+        looseIndex = null;
         // The screens match on the spelling THEY hold, so tell them under all of them.
         const notify = (key) => playCountListeners.forEach(fn => { try { fn({ key, n }); } catch { } });
         [...new Set([...mine, ...others])].forEach(notify);
@@ -887,6 +993,25 @@ export const getPlayCounts = async (songs) => {
         // A song with an album tag uses its own count; only without one is the album-less
         // (older) count read, so two albums never share a count.
         const base = songs.map((s, i) => { const own = ownOf(s, i); return own > 0 ? own : fallOf(i); });
+        // A song with no count under its title + artist: the count it was given under its old file path
+        // (see idCountIndex), found again by where the file is inside Documents. It is saved under the
+        // title + artist keys right away, so it no longer depends on the path.
+        if (base.some(b => !b)) {
+            const ids = await loadIdCountIndex();
+            const toWrite = [];
+            songs.forEach((sg, i) => {
+                if (base[i]) return;
+                const n = idCountFor(ids, sg);
+                if (n > 0) { base[i] = n; toWrite.push([playCountKey(sg), String(n)], [playCountKeyN(sg), String(n)]); }
+            });
+            if (toWrite.length) { AsyncStorage.multiSet(toWrite).catch(() => { }); }
+        }
+        // A song nothing is filed for under its own spelling: look for the same title with an artist in
+        // common (the artist tag was changed a little, or the file was replaced).
+        if (base.some(b => !b)) {
+            const idx = await loadLooseIndex();
+            songs.forEach((s, i) => { if (!base[i]) base[i] = looseCountFor(idx, s); });
+        }
         // Old per-file counts ('pc:<path>') from before counts were shared by title + artist:
         // only looked at for a song nothing else knows, summed over every copy of it.
         const needLegacy = new Set();
@@ -1076,8 +1201,37 @@ export const getListeningStats = async (songs, separators, joinId) => {
         const gk = normKey(gt, ga, galb);
         if (!groups[gk] || n > groups[gk].n) groups[gk] = { k, n };
     }
+    // A count whose spelling no longer matches the song exactly (the artist tag was changed a little, the
+    // file was replaced) is still matched to the song it belongs to: the same spelling smoothed out
+    // (case, punctuation, artist order), then the same title with an artist in common. This is what
+    // gives such a row its cover back, and makes its old and new counts one song instead of two rows.
+    const byNorm = {}, byNormBase = {}, byTitle = new Map();
+    for (const sg of songs) {
+        const nk = playCountKeyN(sg); if (!byNorm[nk]) byNorm[nk] = sg;
+        const nb = baseCountKeyN(sg); if (!byNormBase[nb]) byNormBase[nb] = sg;
+        const tn = alnum(sg.ourTitle ?? sg.title) || String(sg.ourTitle ?? sg.title ?? '').trim().toLowerCase();
+        const l = byTitle.get(tn); if (l) l.push(sg); else byTitle.set(tn, [sg]);
+    }
+    const looseSong = (t, a, alb) => {
+        const cands = byTitle.get(alnum(t) || String(t ?? '').trim().toLowerCase());
+        if (!cands) return null;
+        const mine = artistSet(a);
+        for (const sg of cands) {
+            if (!artistsOverlap(mine, artistSet(sg.ourArtist ?? sg.artist))) continue;
+            const ga = alnum(albumOf(sg));
+            if (alb && ga && alb !== ga) continue;
+            return sg;
+        }
+        return null;
+    };
+    const merged = {};
     for (const { k, n } of Object.values(groups)) {
-        const song = byKey[k] || byBase[k];
+        const [mt, ma, malb] = k.slice(4).split('::');
+        const song = byKey[k] || byBase[k] || byNorm[normKey(mt, ma, malb)] || byNormBase[normKey(mt, ma, '')] || looseSong(mt, ma, alnum(malb));
+        const mk = song ? 's:' + song.id : 'k:' + k;
+        if (!merged[mk] || n > merged[mk].n) merged[mk] = { k, n, song };
+    }
+    for (const { k, n, song } of Object.values(merged)) {
         totalPlays += n;
         const [t, a] = k.slice(4).split('::');
         const title = song ? (song.ourTitle ?? song.title) : t;
@@ -1123,7 +1277,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'custom_eq', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1259,6 +1413,8 @@ export const importAllSettings = async (jsonString) => {
             if (Number.isFinite(n) && n >= min && n <= max) toWrite.push([key, String(n)]);
         } else if (key === 'custom_eq_presets') {
             try { if (isValidEqPresets(JSON.parse(value))) toWrite.push([key, value]); } catch { }
+        } else if (key === 'custom_eq') {
+            try { const c = sanitizeCustomEQ(JSON.parse(value)); if (c) toWrite.push([key, JSON.stringify(c)]); } catch { }
         } else if (key === 'artist_separator') {
             // Now an array (Multiple Artists supports selecting more than
             // one separator at once) — accepts a legacy plain-string value
@@ -1373,7 +1529,7 @@ export const importAllSettings = async (jsonString) => {
     // actually accepted, in the same shape writeBackup stores.
     const BACKUP_MIRRORED = {
         custom_eq_presets: JSON.parse, hidden_eq_presets: JSON.parse,
-        eq_preset_overrides: JSON.parse, playlist_sort_orders: JSON.parse,
+        eq_preset_overrides: JSON.parse, custom_eq: JSON.parse, playlist_sort_orders: JSON.parse,
         playlist_order: JSON.parse, settings_hidden_groups: JSON.parse,
         my_look: JSON.parse,
         playlist_view_format: (v) => v,

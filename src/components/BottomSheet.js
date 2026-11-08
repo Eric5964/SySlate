@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { View, Animated, StyleSheet, Dimensions, Modal } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 
 const { height: SCREEN_H } = Dimensions.get('window');
@@ -22,16 +23,40 @@ export const SHEET_HEIGHT = Math.round(SCREEN_H * (2 / 3));
 // property from the gesture path, so there's nothing to mix.
 const CLOSE_COMMIT_DISTANCE = 70; // lower = easier to trigger = "less resistance"
 const CLOSE_VELOCITY = 1.1;
+// `expandable` sheets: swiping UP on the handle makes the sheet full screen, swiping DOWN on a full
+// screen sheet brings it back to normal size, and swiping down again closes it. The sheet is always
+// laid out full screen and slid down by (screen - normal height) while normal, so the whole
+// animation stays on `transform` (native driver); the content padding that keeps the buttons above the
+// visible edge is a separate, JS-driven value on its own wrapper view (never mixed into one style).
+const EXPAND_COMMIT_DISTANCE = 50;
+const EXPAND_VELOCITY = 0.9;
 
-export default function BottomSheet({ visible, onClose, header, children, height = SHEET_HEIGHT }) {
+export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false }) {
     const { base } = useTheme();
+    const insets = useSafeAreaInsets();
+    const height = expandable ? SCREEN_H : normalHeight;            // laid-out height
+    const collapsedOffset = expandable ? Math.max(0, SCREEN_H - normalHeight) : 0;
     const backdropOpacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(height)).current;
+    const expandNative = useRef(new Animated.Value(collapsedOffset)).current;   // transform
+    const contentPad = useRef(new Animated.Value(collapsedOffset)).current;     // JS driven
+    const topPad = useRef(new Animated.Value(0)).current;                       // JS driven
+    const expandedRef = useRef(false);
+    const api = useRef({});
+    api.current.setExpanded = (flag) => {
+        expandedRef.current = flag;
+        Animated.parallel([
+            Animated.timing(expandNative, { toValue: flag ? 0 : collapsedOffset, duration: 260, useNativeDriver: true }),
+            Animated.timing(contentPad, { toValue: flag ? 0 : collapsedOffset, duration: 260, useNativeDriver: false }),
+            Animated.timing(topPad, { toValue: flag ? insets.top : 0, duration: 260, useNativeDriver: false }),
+        ]).start();
+    };
+    api.current.expandable = expandable;
     // How far the finger has pulled the sheet down. Pulling up does nothing (the
     // sheet used to lift off its bottom edge when dragged upward).
     const dragY = useRef(new Animated.Value(0)).current;
     const dragDown = dragY.interpolate({ inputRange: [0, 1000], outputRange: [0, 1000], extrapolate: 'clamp' });
-    const sheetY = useRef(Animated.add(translateY, dragDown)).current;
+    const sheetY = useRef(Animated.add(Animated.add(translateY, dragDown), expandNative)).current;
     const [mounted, setMounted] = useState(visible);
     const backdropStart = useRef({ x: 0, y: 0 });
     const onCloseRef = useRef(onClose);
@@ -42,6 +67,10 @@ export default function BottomSheet({ visible, onClose, header, children, height
             setMounted(true);
             translateY.setValue(height);
             dragY.setValue(0);
+            expandedRef.current = false;
+            expandNative.setValue(collapsedOffset);
+            contentPad.setValue(collapsedOffset);
+            topPad.setValue(0);
             backdropOpacity.setValue(0);
             Animated.parallel([
                 Animated.timing(backdropOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
@@ -69,6 +98,18 @@ export default function BottomSheet({ visible, onClose, header, children, height
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
         const dy = e.nativeEvent.translationY;
         const vy = e.nativeEvent.velocityY;
+        if (api.current.expandable) {
+            if ((dy < -EXPAND_COMMIT_DISTANCE || vy < -EXPAND_VELOCITY * 1000) && !expandedRef.current) {
+                api.current.setExpanded(true);
+                Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
+                return;
+            }
+            if ((dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) && expandedRef.current) {
+                api.current.setExpanded(false);   // back to normal size; another swipe down closes
+                Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
+                return;
+            }
+        }
         if (dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) {
             // Same "fade the background, slide up/down the sheet" language as
             // the open/close effect and the Player modal's own swipe-to-
@@ -98,20 +139,22 @@ export default function BottomSheet({ visible, onClose, header, children, height
                 }}
             />
             <Animated.View style={[s.sheet, { height, backgroundColor: base.surface, transform: [{ translateY: sheetY }] }]}>
-                <PanGestureHandler
-                    onGestureEvent={onHandleGestureEvent}
-                    onHandlerStateChange={onHandleStateChange}
-                    activeOffsetY={[-1000, 12]}
-                    failOffsetX={[-20, 20]}
-                >
-                    <Animated.View style={s.handleZone}>
-                        <View style={[s.handleBar, { backgroundColor: base.border }]} />
-                        <View style={s.headerZone}>{header}</View>
-                    </Animated.View>
-                </PanGestureHandler>
-                <View style={{ flex: 1 }}>
+                <Animated.View style={{ paddingTop: topPad }}>
+                    <PanGestureHandler
+                        onGestureEvent={onHandleGestureEvent}
+                        onHandlerStateChange={onHandleStateChange}
+                        activeOffsetY={expandable ? [-12, 12] : [-1000, 12]}
+                        failOffsetX={[-20, 20]}
+                    >
+                        <Animated.View style={s.handleZone}>
+                            <View style={[s.handleBar, { backgroundColor: base.border }]} />
+                            <View style={s.headerZone}>{header}</View>
+                        </Animated.View>
+                    </PanGestureHandler>
+                </Animated.View>
+                <Animated.View style={{ flex: 1, paddingBottom: contentPad }}>
                     {children}
-                </View>
+                </Animated.View>
             </Animated.View>
         </Modal>
     );

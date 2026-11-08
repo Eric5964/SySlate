@@ -28,6 +28,9 @@ export default function SwipeableRow({
     // default; PlaylistDetailScreen passes the same width as its navigator's
     // gestureResponseDistance.
     edgeExclude = 0,
+    // The row's own background color. While "Added" shows, a layer of this color is put over the text near the
+    // badge (and to its right), so the badge stands out without the title having to be cut short all the time.
+    dimColor,
 }) {
     const translateX = useRef(new Animated.Value(0)).current;
     // Post-commit feedback — a soft accent-colored GLOW (border + shadow),
@@ -212,6 +215,13 @@ export default function SwipeableRow({
                     {onSwipeLeft && (
                         <Animated.View pointerEvents="none" style={[styles.glow, glowBox, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
                     )}
+                    {onSwipeRight && dimColor ? (
+                        <Animated.View pointerEvents="none" style={[styles.addedDim, {
+                            right: insetX, top: insetY, bottom: insetY, backgroundColor: dimColor,
+                            borderTopRightRadius: radius, borderBottomRightRadius: radius,
+                            opacity: addedTextOpacity.interpolate({ inputRange: [0, 1], outputRange: [0, 0.62] }),
+                        }]} />
+                    ) : null}
                     {onSwipeRight && (
                         <Animated.View pointerEvents="none" style={[styles.addedBadgeZone, { right: 80 + insetX - 14, opacity: addedTextOpacity }]}>
                             <View style={[styles.addedBadge, { backgroundColor: rightColor }]}>
@@ -258,5 +268,7 @@ const styles = StyleSheet.create({
     addedBadge: {
         paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
     },
+    // About where the title used to be cut off for the badge, and everything to the right of it.
+    addedDim: { position: 'absolute', width: 130 },
     addedText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 });

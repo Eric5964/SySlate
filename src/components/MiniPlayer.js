@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listArtUri } from '../utils/embeddedArt';
 import AudioEngine, { usePlaybackState, State, useProgress, matchProgress } from '../native/AudioEngine';
@@ -210,6 +210,21 @@ function MiniProgressFill({ basis, isPlaying, playbackRate, trackKey, color }) {
     const [w, setW] = useState(0);
     const pctVal = useRef(new Animated.Value(0)).current;
     const run = useRef(null);   // { anim, from, at, rate, duration, trackKey }
+    // While the screen is off the native animation stops moving, but the clock the check below uses keeps
+    // going, so on waking it found the bar "on track" and left a stale fill on screen for a long time. On
+    // every wake the running animation is dropped and started again from the real position (once at once,
+    // once more a moment later when the fresh reading has arrived).
+    const [wake, setWake] = useState(0);
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (st) => {
+            if (st !== 'active') return;
+            run.current?.anim?.stop();
+            run.current = null;
+            setWake(x => x + 1);
+            setTimeout(() => { run.current?.anim?.stop(); run.current = null; setWake(x => x + 1); }, 450);
+        });
+        return () => sub.remove();
+    }, []);
     useEffect(() => {
         if (w <= 0) return;
         const duration = basis.duration;
@@ -233,7 +248,7 @@ function MiniProgressFill({ basis, isPlaying, playbackRate, trackKey, color }) {
         const anim = Animated.timing(pctVal, { toValue: 1, duration: ((1 - pct) * duration * 1000) / rate, easing: Easing.linear, useNativeDriver: true });
         run.current = { anim, playing: true, from: pct, at: Date.now(), rate, duration, trackKey, startedAt: fresh ? Date.now() : (r.startedAt || Date.now()) };
         anim.start();
-    }, [basis.at, basis.position, basis.duration, isPlaying, playbackRate, trackKey, w, pctVal]);
+    }, [basis.at, basis.position, basis.duration, isPlaying, playbackRate, trackKey, w, pctVal, wake]);
     useEffect(() => () => { run.current?.anim?.stop(); }, []);
     return (
         <View style={{ height: 6, overflow: 'hidden' }} onLayout={(e) => setW(e.nativeEvent.layout.width)}>

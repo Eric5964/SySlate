@@ -4,13 +4,17 @@ import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
-import { getCustomPresets, getEQOverrides } from '../utils/storage';
+import { getCustomPresets, getEQOverrides, getCustomEQ } from '../utils/storage';
+import { toNativeArrays } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { useLibrary } from './LibraryContext';
-import { getPlayCounts, playCountKeyN } from '../utils/storage';
-import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction } from '../services/PlaybackService';
+import { getPlayCounts, playCountKeyN, baseCountKeyN } from '../utils/storage';
+import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction, preemptForNewAction, waitForPreempt, setActionEpoch, getPreemptEpoch, isActionPreempted, releaseFadeById, restoreAfterPreemptIfSilenced } from '../services/PlaybackService';
+
+// Thrown inside a Play/Shuffle/tap action that a newer one has replaced. Not an error.
+const ACTION_SUPERSEDED = { superseded: true };
 import { emitSkipPress } from '../utils/transportRamp';
 import { withTimeout } from '../utils/withTimeout';
 import {
@@ -71,6 +75,13 @@ const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` 
 // next time a preset gets selected.
 export async function applyEQPreset(id) {
     try {
+        // The custom (parametric) EQ, when switched on, replaces whichever preset is picked.
+        const customEQ = await getCustomEQ();
+        if (customEQ?.enabled) {
+            const n = toNativeArrays(customEQ);
+            await AudioEngine.setEQParametric(n.freqs, n.gains, n.bws, n.types);
+            return;
+        }
         const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
         const preset = getPresetById(id, custom, overrides);
         // Clamped here — the one place EVERY band value actually reaches
@@ -99,11 +110,25 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // same count the lists show.
     const { allSongs: libraryAllSongs } = useLibrary();
     const librarySongsRef = useRef(new Map());
+    const librarySongsByKeyRef = useRef(new Map());
     useEffect(() => {
         const m = new Map();
-        for (const sg of (libraryAllSongs || [])) { if (sg?.id) m.set(sg.id, sg); }
+        const byKey = new Map();
+        for (const sg of (libraryAllSongs || [])) {
+            if (!sg?.id) continue;
+            m.set(sg.id, sg);
+            // The first copy with an album tag wins, so a song's count is filed under one key.
+            const k = baseCountKeyN(sg);
+            const cur = byKey.get(k);
+            if (!cur || (!cur.tagAlbum && sg.tagAlbum)) byKey.set(k, sg);
+        }
         librarySongsRef.current = m;
+        librarySongsByKeyRef.current = byKey;
     }, [libraryAllSongs]);
+    // The library's copy of a queue entry: by id, or else the same title + artist. A song can sit in the queue twice
+    // as two different objects (one with the album tag, one without, or with another file path); both are the
+    // same song and must be counted, and shown, as one.
+    const libraryFor = useCallback((track) => (track ? (librarySongsRef.current.get(track.id) || librarySongsByKeyRef.current.get(baseCountKeyN(track)) || null) : null), []);
     const queueSourceRef = useRef({});
     const [queueSource, setQueueSource] = useState(null); // { id, name }
     // Playback speed (pitch is kept). Saved, so it survives relaunches and
@@ -380,17 +405,19 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         } catch { }
     }), []);
 
-    // "Only count a play after playing half of the song continuously without
-    // skipping" — credited the moment real playback position crosses 50% of
-    // duration, not on track start. Skipping away before that point means it
-    // never crosses the threshold, so it's simply never credited; skipping
-    // away AFTER crossing it still counts, same as most players' semantics.
-    // Driven by real progress updates (not wall-clock time) so pausing
-    // doesn't disqualify a track and seeking backward can't un-qualify one
-    // that already crossed the mark. `credited` guards against double-firing
-    // if position hovers right at the boundary or the user seeks back and
-    // forth across it.
-    const playCreditedRef = useRef({ trackId: null, credited: false });
+    // A play is counted once half of the song has actually been PLAYED. Not "the position passed 50%":
+    // jumping to 60% with the bar played nothing. What is added up is the stretch of the song that went
+    // by between two progress readings, so it does not matter how the song moved on:
+    //  - speed: at 2x or 0.5x a second of song is a second of song, so half the song is half the song;
+    //  - the disc: its scratching moves the position forwards (and back) through the same readings;
+    //    going forward counts as played, going back does not, holding it still adds nothing;
+    //  - seeking and skipping around: a forward jump bigger than playing (or the disc at its fastest) could
+    //    have covered since the last reading is a jump, not listening, and adds nothing.
+    // Pausing adds nothing (no readings come), and playing the song again from the start after it was
+    // counted (or looping it) starts a new round that needs its own half.
+    const playCreditedRef = useRef({ trackId: null, credited: false, listened: 0, lastPos: null, lastAt: 0 });
+    const playbackRateRef = useRef(1);
+    useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration, id }) => {
             const track = currentTrackRef.current;
@@ -398,13 +425,29 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // A reading that describes another song (e.g. the outgoing one right after a
             // skip, or during a crossfade) must not be credited to the current song.
             if (id && id !== track.id) return;
-            if (playCreditedRef.current.trackId !== track.id) {
-                playCreditedRef.current = { trackId: track.id, credited: false };
+            const now = Date.now();
+            let pc = playCreditedRef.current;
+            if (pc.trackId !== track.id) {
+                pc = playCreditedRef.current = { trackId: track.id, credited: false, listened: 0, lastPos: position, lastAt: now };
             }
-            if (playCreditedRef.current.credited && position < 3) playCreditedRef.current.credited = false;
-            if (!playCreditedRef.current.credited && position / duration >= 0.5) {
-                playCreditedRef.current.credited = true;
-                incrementPlayCount(track, duration, librarySongsRef.current.get(track.id));
+            // The song came round again (looped, or restarted from the start): a new round.
+            if (position < 3 && pc.lastPos != null && (pc.credited || pc.lastPos > duration - 4)) {
+                pc.credited = false;
+                pc.listened = 0;
+            }
+            if (pc.lastPos != null) {
+                const d = position - pc.lastPos;
+                const gapSec = Math.min(120, Math.max(0, (now - pc.lastAt) / 1000));
+                // The most song that can go by per second: the playing speed, or the disc's top speed (3x).
+                const fastest = Math.max(playbackRateRef.current || 1, 3);
+                const allowed = fastest * 1.3 * gapSec + 0.4;
+                if (d > 0 && d <= allowed) pc.listened += d;
+            }
+            pc.lastPos = position;
+            pc.lastAt = now;
+            if (!pc.credited && pc.listened >= duration * 0.5) {
+                pc.credited = true;
+                incrementPlayCount(track, duration, libraryFor(track));
             }
         });
         return () => sub.remove();
@@ -748,11 +791,11 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // `toReal` is the slot it should end up in. Which zone (Priority or Up
     // Next) it lands in follows from where it is dropped: inside the
     // priority rows it becomes priority, after them it becomes Up Next.
-    const moveInQueue = useCallback((fromReal, toReal, endOfPriority = false) => serialQueue(async () => {
+    const moveInQueue = useCallback((fromReal, toReal, endOfPriority = false, topOfUpNext = false) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-            if ((fromReal === toReal && !endOfPriority) || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
+            if ((fromReal === toReal && !endOfPriority && !topOfUpNext) || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
             const queue = await AudioEngine.getQueue();
             const track = queue[fromReal];
             if (!track) return priorityRef.current;
@@ -763,7 +806,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const ins = toReal - pStart;   // its place among the upcoming songs without itself
             // endOfPriority: a song from Up Next dropped below the last Priority row (the slot is the same
             // as the top of Up Next, so the list alone cannot tell the two apart).
-            const becomesPriority = ins < pcWithout || (ins === pcWithout && (wasPriority || endOfPriority));
+            // topOfUpNext: a Priority song dropped at the top of Up Next leaves Priority (without it, a song from
+            // Priority dropped on that same slot always stayed last in Priority, so nothing could be moved there).
+            const becomesPriority = ins < pcWithout || (ins === pcWithout && (wasPriority ? !topOfUpNext : endOfPriority));
             const pcNew = pcWithout + (becomesPriority ? 1 : 0);
             await AudioEngine.remove(fromReal);
             await AudioEngine.add(track, toReal);
@@ -1015,6 +1060,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
         if (!crossfadeReady) {
             await fadeOutCurrentIfPlaying(rampDuration);
+            // A newer action replaced this one while it was ramping out: stop here and leave the volume
+            // alone (that action is already ramping out and will load its own song).
+            if (isActionPreempted()) throw ACTION_SUPERSEDED;
             forceReleaseFade();
             const preClaimedId = preClaimFadeForFreshStart();
             // Real bug found here: this branch claimed the fade lock and then
@@ -1031,6 +1079,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 forceReleaseFade();
                 throw e;
             }
+            if (isActionPreempted()) { releaseFadeById(preClaimedId); throw ACTION_SUPERSEDED; }
             return { preClaimedId, crossfaded: false };
         }
 
@@ -1112,16 +1161,24 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // queue instead of the latest tap just taking over.
     const playActionLockRef = useRef(Promise.resolve());
     const latestPendingRef = useRef(null);
+    const actionRunningRef = useRef(false);
     const runExclusivePlayAction = (fn) => {
         const entry = {};
         latestPendingRef.current = entry;
+        // An earlier action is still running (ramping out, loading or ramping in): ramp out right now and
+        // let this one, the newest, be the only one that ramps in.
+        if (actionRunningRef.current) preemptForNewAction();
         const run = async () => {
             if (latestPendingRef.current !== entry) return; // superseded before it got a turn
             latestPendingRef.current = null;
             setPlayBlocked(false);   // starting a song lifts the block after a replaced song
+            actionRunningRef.current = true;
             try {
+                await waitForPreempt();
+                setActionEpoch(getPreemptEpoch());
                 await fn();
             } catch (e) {
+                if (e === ACTION_SUPERSEDED) return;
                 // This chain has no other catch anywhere in it — an
                 // uncaught error here previously just became a silently
                 // swallowed rejection (Play/Shuffle doing visibly nothing,
@@ -1129,6 +1186,10 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // that show up somewhere instead of just looking like
                 // nothing happened.
                 console.error('runExclusivePlayAction:', e);
+            } finally {
+                actionRunningRef.current = false;
+                // Only the newest action restores the sound if it ended without starting a song.
+                if (latestPendingRef.current === null) restoreAfterPreemptIfSilenced();
             }
         };
         const chained = playActionLockRef.current.then(run, run);
@@ -2004,13 +2065,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

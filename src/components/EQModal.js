@@ -21,7 +21,7 @@ export default function EQModal({ visible, onClose, playlistPath }) {
     }, [visible]);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>EQ Preset</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} expandable header={<Text style={[s.sheetTitle, { color: base.text }]}>EQ Preset</Text>}>
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {eqPresets.length === 0
                     ? <Text style={[s.empty, { color: base.textFaint }]}>No presets visible — manage in Settings</Text>

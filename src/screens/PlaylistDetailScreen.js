@@ -76,7 +76,13 @@ export default function PlaylistDetailScreen() {
     }, [playlist.songs]);
     // Shown counts go up at once; the order only follows the snapshot, which is read
     // again when the screen opens, the sort is changed, or a different queue is played.
-    useEffect(() => { refreshSort(); }, [playlist.songs, sortId, queueEpoch, refreshSort]);
+    // Starting a song from this list changes the queue, which used to read a new order and make the list
+    // jump. Now the order stays put while the screen is open (numbers still go up), and opening the list
+    // again keeps the order it had, unless another playlist was played in between.
+    const playingSrc = currentPlaylist?.path ?? currentPlaylist?.name ?? null;
+    const playingSrcRef = useRef(playingSrc);
+    playingSrcRef.current = playingSrc;
+    useEffect(() => { refreshSort({ cacheKey: playlist.path, source: playingSrcRef.current }); }, [playlist.songs, refreshSort]);
     const [showSort, setShowSort] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
@@ -343,7 +349,7 @@ export default function PlaylistDetailScreen() {
                                     <TouchableOpacity
                                         key={opt.id}
                                         style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                        onPress={() => { setSortId(opt.id); if (playlist.path) setPlaylistSort(playlist.path, opt.id); setShowSort(false); }}
+                                        onPress={() => { setSortId(opt.id); if (playlist.path) setPlaylistSort(playlist.path, opt.id); refreshSort({ cacheKey: playlist.path, source: playingSrcRef.current, force: true }); setShowSort(false); }}
                                     >
                                         <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                             {opt.label}
@@ -388,7 +394,7 @@ const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
     const { songPillShadow } = usePreferences();
     return (
-        <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH}>
+        <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH} dimColor={base.surface}>
             <DimPressable style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
                 {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                 {showSongCovers && (

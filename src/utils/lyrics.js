@@ -72,7 +72,14 @@ export async function getLyrics(song) {
     if (memCache.has(song.id)) return memCache.get(song.id);
     try {
         const lrcUrl = song.url.replace(/\.[a-zA-Z0-9]+$/, '.lrc');
-        const info = await FileSystem.getInfoAsync(lrcUrl);
+        let info = await FileSystem.getInfoAsync(lrcUrl);
+        // Just after the app opens the files can still be busy with the library scan or cover work, and a lookup
+        // that comes back "not there" at that moment was remembered as "no lyrics" for the rest of the session.
+        // A negative answer is checked once more a moment later before it is believed.
+        if (!info.exists) {
+            await new Promise(r => setTimeout(r, 700));
+            info = await FileSystem.getInfoAsync(lrcUrl);
+        }
         if (!info.exists) {
             memCache.set(song.id, null);
             return null;

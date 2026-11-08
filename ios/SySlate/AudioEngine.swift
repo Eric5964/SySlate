@@ -202,6 +202,7 @@ class AudioEngine: RCTEventEmitter {
     // and finish it — these used to be purely local to runCrossfade, which
     // meant nothing outside that one method's closures could ever
     // intervene in an in-progress crossfade. See settleCrossfadeToIncoming.
+    private var crossfadeOwnerToken: UInt64 = 0
     private var crossfadeFadeTimer: Timer?
     private var crossfadeIncomingFile: AVAudioFile?
     private var crossfadeIncomingSampleRate: Double = 0
@@ -638,15 +639,48 @@ class AudioEngine: RCTEventEmitter {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .default, options: [])
+            // At launch the category is set so that other apps keep playing. A plain .playback
+            // category (the kind that stops other apps) takes effect the moment it is applied to the
+            // session the app starts with, which silenced whatever you were listening to as soon as
+            // SySlate opened, before any song was played. The exclusive kind is applied in
+            // activateSession(), right before a song actually starts.
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            debugLog("[SESSION] launch: category set to mix with other apps, other audio playing=\(session.isOtherAudioPlaying)")
         } catch {
             NSLog("AudioEngine: failed to set audio session category: \(error)")
         }
     }
 
+    // The effect units (EQ, time-stretch, normalizer) keep a little of the sound that was passing
+    // through them when iOS stopped the engine (an interruption by another app, a route change).
+    // When the engine starts again they let that old sound out together with the new one: a burst
+    // of the music from before the stop at the moment of Play, which then goes quiet before the
+    // fade-in. They are cleared here, every time the engine is started from a stopped state.
+    private func resetEffectStates() {
+        guard !engine.isRunning else { return }
+        timePitchNode.auAudioUnit.reset()
+        eqNode.auAudioUnit.reset()
+        normalizerNode.auAudioUnit.reset()
+        spatialAV?.auAudioUnit.reset()
+    }
+
+    private func startEngineFresh() throws {
+        let wasRunning = engine.isRunning
+        resetEffectStates()
+        try engine.start()
+        if !wasRunning {
+            debugLog(String(format: "[POP] engine started after a stop, effect units cleared (mixerVol=%.2f nodeVol=%.3f muteHeld=%@)", engine.mainMixerNode.outputVolume, activeNode.volume, coldMuteHeld ? "true" : "false"))
+        }
+    }
+
     private func activateSession() {
         do {
-            try AVAudioSession.sharedInstance().setActive(true)
+            let session = AVAudioSession.sharedInstance()
+            if session.categoryOptions.contains(.mixWithOthers) {
+                try session.setCategory(.playback, mode: .default, options: [])
+                debugLog("[SESSION] a song is starting: taking the sound from other apps now")
+            }
+            try session.setActive(true)
         } catch {
             NSLog("AudioEngine: failed to activate session: \(error)")
             // Said in the Debug Log too: a session that would not activate (another app still
@@ -918,7 +952,7 @@ class AudioEngine: RCTEventEmitter {
         staleScheduleToken = nil
         let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
         activateSession()
-        try? engine.start()
+        try? startEngineFresh()
         loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
         scheduleSilenceWatchdog()
     }
@@ -952,7 +986,7 @@ class AudioEngine: RCTEventEmitter {
                     }
                     self.softMute(holdFor: 0.12)
                     self.activateSession()
-                    try? self.engine.start()
+                    try? self.startEngineFresh()
                     repaired = true
                 }
                 if self.engine.isRunning, !self.activeNode.isPlaying {
@@ -999,6 +1033,10 @@ class AudioEngine: RCTEventEmitter {
         markOutputCold()
         coldWakeExtra = true
         markScheduledAudioStale()
+        // A new or lost output (a car, headphones) can make iOS forget which app is Now Playing, which
+        // showed as the lock screen player vanishing and Control Center / the car stuck at a few seconds.
+        // The next play claims it afresh.
+        needsNowPlayingReclaim = true
         savePlaybackSnapshot(force: true)
         debugLog("[POP] route change: reason=\(reasonValue) state=\(state) engineRunning=\(engine.isRunning) mixerVol=\(engine.mainMixerNode.outputVolume)")
         if reason == .newDeviceAvailable {
@@ -1056,7 +1094,7 @@ class AudioEngine: RCTEventEmitter {
                     guard let self = self, self.state == .playing else { return }
                     self.engine.pause()
                     do {
-                        try self.engine.start()
+                        try self.startEngineFresh()
                     } catch {
                         NSLog("AudioEngine: failed to restart engine after route change: \(error)")
                     }
@@ -1582,7 +1620,7 @@ class AudioEngine: RCTEventEmitter {
         // whichever files hit that bug) trailingCutSeconds — file size
         // alone as a cache key can't tell the two apart, so the only safe
         // option is to stop reading the old entries at all.
-        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCacheV3"),
+        guard let data = UserDefaults.standard.data(forKey: "SySlateFileAnalysisCacheV4"),
               let decoded = try? JSONDecoder().decode([String: FileAnalysis].self, from: data) else { return [:] }
         return decoded
     }()
@@ -1596,7 +1634,7 @@ class AudioEngine: RCTEventEmitter {
         AudioEngine.analysisLock.unlock()
         DispatchQueue.global(qos: .utility).async {
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCacheV3")
+            UserDefaults.standard.set(data, forKey: "SySlateFileAnalysisCacheV4")
         }
     }
     // Rough reference level the gain-correction estimate below aims for —
@@ -1607,7 +1645,7 @@ class AudioEngine: RCTEventEmitter {
     // Volume Match from the song's own tag: linear gain, kept in a safe range.
     private func tagGain(for track: Track) -> Float? {
         guard let db = track.replayGainDb, db.isFinite else { return nil }
-        return Float(min(2.0, max(0.25, pow(10.0, db / 20.0))))
+        return Float(min(2.5, max(0.12, pow(10.0, db / 20.0))))
     }
 
     private func analyzeFile(_ file: AVAudioFile, path: String) -> FileAnalysis {
@@ -1724,19 +1762,37 @@ class AudioEngine: RCTEventEmitter {
             // a trivial extra cost (still only reading a small fraction of
             // the file — 30 * 16384 frames is ~11s of audio out of a whole
             // song, and read/decoded, not the whole file).
-            let sampleCount = 30
+            // Loudness of the song while it is really playing, one number per song:
+            //  - 48 readings of 16384 frames (0.37 s each) spread over the whole song;
+            //  - readings that are near silence (an intro, a gap, the tail) are left out;
+            //  - the MEDIAN of the rest is used, not the mean: a few very loud hits or one quiet bridge
+            //    barely move it, where the mean of the readings followed every outlier;
+            //  - then the readings far below that median (a breakdown that is almost silent) are dropped
+            //    and the median is taken again over what is left.
+            // Before, 30 readings were averaged and the correction was kept between 0.4 and 2.5: a loud
+            // master that needed 0.2 got 0.4, so loud songs stayed louder than the rest. The correction may
+            // now go down to 0.12 (the limiter at the end of the signal path takes care of boosted peaks).
+            let sampleCount = 48
             let sampleChunkFrames: AVAudioFrameCount = 16384
-            var rmsSum: Float = 0
-            var rmsSamples = 0
+            var readings: [Float] = []
             for i in 0..<sampleCount {
                 let framePos = AVAudioFramePosition(Double(totalFrames) * (Double(i) + 0.5) / Double(sampleCount))
-                if let r = rms(atFrame: framePos, chunkFrames: sampleChunkFrames), r > 0.0005 { // skip near-silent chunks so they don't drag the average down
-                    rmsSum += r
-                    rmsSamples += 1
+                if let r = rms(atFrame: framePos, chunkFrames: sampleChunkFrames), r > 0.003 { // under about -50 dBFS is not music
+                    readings.append(r)
                 }
             }
-            let measured = rmsSamples > 0 ? rmsSum / Float(rmsSamples) : targetSampleRms
-            gain = min(max(targetSampleRms / max(measured, 0.0005), 0.4), 2.5) // keep corrections modest — rough estimate, not exact
+            func median(_ values: [Float]) -> Float {
+                let v = values.sorted()
+                guard !v.isEmpty else { return 0 }
+                return v.count % 2 == 1 ? v[v.count / 2] : (v[v.count / 2 - 1] + v[v.count / 2]) / 2
+            }
+            var measured = targetSampleRms
+            if !readings.isEmpty {
+                let first = median(readings)
+                let active = readings.filter { $0 >= first * 0.35 }   // within about 9 dB of the middle
+                measured = median(active.isEmpty ? readings : active)
+            }
+            gain = min(max(targetSampleRms / max(measured, 0.0005), 0.12), 2.5)
         }
 
         let result = FileAnalysis(
@@ -1823,6 +1879,7 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer = nil
         playbackToken &+= 1
         let token = playbackToken
+        loadPendingToken = token   // a ramp-in must not start running before this song is actually loaded (see rampVolume)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let debugT0 = Date()
@@ -1865,6 +1922,7 @@ class AudioEngine: RCTEventEmitter {
             } catch {
                 DispatchQueue.main.async {
                     guard let self = self, token == self.playbackToken else { return }
+                    self.loadPendingToken = nil
                     NSLog("AudioEngine: failed to load track \(track.url): \(error)")
                     // A file that cannot be opened (deleted, damaged, not downloaded) used to stop the whole
                     // queue dead. While playing, move on to the next song instead; after 5 failures in a
@@ -1883,7 +1941,14 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // The token of a song load that has not finished yet (file opening + analysis run off the main thread).
+    // It counts as pending only while it is still the current token, so a seek, stop or crossfade that
+    // supersedes it can never leave a ramp waiting.
+    private var loadPendingToken: UInt64? = nil
+    private var loadIsPending: Bool { loadPendingToken != nil && loadPendingToken == playbackToken }
+
     private func finishLoadingTrack(file: AVAudioFile, track: Track, idx: Int, startAtSeconds: Double, autoPlay: Bool, announceChange: Bool, token: UInt64, precomputedAnalysis: FileAnalysis?) {
+        loadPendingToken = nil
         do {
             consecutiveLoadFailures = 0   // this one opened fine
             lastScheduleAt = Date()
@@ -1989,7 +2054,8 @@ class AudioEngine: RCTEventEmitter {
             let coldStart = autoPlay ? beginColdStartMuteIfNeeded() : false
             let engineWasRunning = engine.isRunning
             if autoPlay, !engine.isRunning {   // a song loaded paused no longer wakes the output hardware just to pause it again
-                try engine.start()
+                activateSession()
+                try startEngineFresh()
             }
             // Only a load that is going to play takes the sound from other apps. A song loaded
             // paused (the one restored when the app opens, or a skip while paused) used to claim
@@ -2040,7 +2106,29 @@ class AudioEngine: RCTEventEmitter {
     // crossfade already does (that one overlaps correctly because the
     // outgoing track is still actually playing when advance() runs for a
     // skip — this gives natural completion that same real head start).
+    // The next song's analysis (silence trim, match volume) used to run only when that song was loaded,
+    // 0.3 to 2 s of work for a file not seen before (every file after the V4 cache bump). A crossfade
+    // then started that much late and the outgoing song ran out partway down its fade; a plain skip or
+    // natural advance started late. Measuring it ahead, while the current song plays, avoids both.
+    private var prewarmedPaths = Set<String>()
+    private func prewarmAnalysisForNextTrack() {
+        guard silenceTrimEnabled || betweenTrackNormEnabled, let idx = currentIndex else { return }
+        let next = idx + 1
+        guard next >= 0, next < queue.count else { return }
+        let track = queue[next]
+        guard silenceTrimEnabled || track.replayGainDb == nil else { return }
+        let path = track.url.path
+        if prewarmedPaths.contains(path) { return }
+        if prewarmedPaths.count > 400 { prewarmedPaths.removeAll() }
+        prewarmedPaths.insert(path)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self, let file = try? AVAudioFile(forReading: track.url) else { return }
+            _ = self.analyzeFile(file, path: path)
+        }
+    }
+
     private func scheduleCrossfadeLeadIn() {
+        prewarmAnalysisForNextTrack()
         leadDeferCount = 0
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
@@ -2446,6 +2534,7 @@ class AudioEngine: RCTEventEmitter {
 
         playbackToken &+= 1
         let token = playbackToken
+        crossfadeOwnerToken = token
         isCrossfading = true
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -2481,7 +2570,9 @@ class AudioEngine: RCTEventEmitter {
                         // rescheduling here risks fighting whatever that is
                         // instead. Confirm from this log first.
                         self?.debugLog("[RAMP-DEBUG] startCrossfade: ABANDONED — token changed during async load/analysis (superseded, or the exact stuck-forever bug)")
-                        self?.isCrossfading = false
+                        // Only clear the flag if no newer crossfade has taken it over meanwhile: a stale
+                        // completion used to switch a NEWER, running crossfade's flag off (skip storms).
+                        if let me = self, me.crossfadeOwnerToken == token { me.isCrossfading = false }
                         return
                     }
                     // Real bug found here (Eric: songs needing Silence Trim
@@ -2502,7 +2593,7 @@ class AudioEngine: RCTEventEmitter {
             } catch {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
-                    self.isCrossfading = false
+                    if self.crossfadeOwnerToken == token { self.isCrossfading = false }
                     NSLog("AudioEngine: crossfade load failed for \(track.url): \(error)")
                     // Falls back to a plain load so playback doesn't just
                     // silently stop because specifically the crossfade
@@ -2531,7 +2622,7 @@ class AudioEngine: RCTEventEmitter {
         }
         incomingNode.volume = 0
         if !engine.isRunning {
-            try? engine.start()
+            try? startEngineFresh()
         }
         activateSession()
         // Same stale-level race as the first-play pop: the node's volume was
@@ -2545,7 +2636,7 @@ class AudioEngine: RCTEventEmitter {
         debugLog(String(format: "[POP] crossfade arm: duration=%.1fs leadIn=%.2fs incomingVol=%.3f outgoingVol=%.3f mixerVol=%.3f", duration, leadInSeconds, incomingNode.volume, outgoingNode.volume, engine.mainMixerNode.outputVolume))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             guard let self = self, token == self.playbackToken, self.isCrossfading, self.state == .playing else { return }
-            if !self.engine.isRunning { try? self.engine.start() }
+            if !self.engine.isRunning { try? self.startEngineFresh() }
             incomingNode.play()
             // Tell iOS about the incoming song's position straight away (it
             // extrapolates from there), instead of waiting for the next
@@ -2559,6 +2650,8 @@ class AudioEngine: RCTEventEmitter {
         let steps = max(10, Int(duration * 25))
         let stepInterval = duration / Double(steps)
         var currentStep = 0
+        var midpointSent = false
+        let fadeStartedAt = Date()
         // Same between-track gain correction as the plain-load path
         // (finishLoadingTrack) — otherwise a track that needed a gain
         // correction would fade in at the wrong final volume specifically
@@ -2601,7 +2694,11 @@ class AudioEngine: RCTEventEmitter {
         // step, which bridge round-trip latency can't guarantee.
         let fadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
             guard let self = self, token == self.playbackToken else { timer.invalidate(); return }
-            currentStep += 1
+            // Follow the clock, not the tick count: when the main thread is busy the timer fires late, and
+            // counting ticks stretched the crossfade, so the outgoing song could run out of audio while
+            // still partway down (an abrupt cut). Never fewer than one step per tick.
+            let clockStep = Int(Date().timeIntervalSince(fadeStartedAt) / stepInterval)
+            currentStep = min(steps, max(currentStep + 1, clockStep))
             let t = Float(currentStep) / Float(steps)
             // Requested: smoother, sin-wave crossfade instead of linear.
             // Equal-power curve — outgoing follows cos(t·π/2), incoming
@@ -2635,7 +2732,8 @@ class AudioEngine: RCTEventEmitter {
             // own position from this exact moment instead.
             // JS already no-ops a same-track re-fire (currentTrackRef check
             // in PlaybackContext.js), so firing it twice here is harmless.
-            if currentStep == steps / 2 {
+            if !midpointSent, currentStep >= steps / 2 {
+                midpointSent = true
                 // Flag first, event second: JS asks for the position the moment it hears the
                 // event, and must be told about the incoming song, not the outgoing one.
                 self.crossfadeAnnouncedIncoming = true
@@ -2948,6 +3046,9 @@ class AudioEngine: RCTEventEmitter {
             return
         }
         interruptionActive = false   // a play press takes the sound back
+        // After a long pause (hours) iOS may have dropped the Now Playing entry, and a plain write then is
+        // not picked up: no lock screen player, Control Center and the car frozen. Claim it afresh.
+        if state != .playing, let last = lastAudibleAt, Date().timeIntervalSince(last) > 120 { needsNowPlayingReclaim = true }
         deviceLossFadeToken &+= 1   // a play cancels a device-loss fade-out that is still under way
         // and puts the level back. It is the level JS last asked for, not the level the node had before the
         // fade: when JS had set 0 for a fade-in, the old value put the node back at full level and the
@@ -2973,7 +3074,7 @@ class AudioEngine: RCTEventEmitter {
             // ramp's own release).
             _ = beginColdStartMuteIfNeeded()
             activateSession()
-            if !engine.isRunning { try? engine.start() }
+            if !engine.isRunning { try? startEngineFresh() }
             loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
             scheduleSilenceWatchdog()
             return
@@ -2997,7 +3098,7 @@ class AudioEngine: RCTEventEmitter {
         // fading finishes" exactly: any pause→play cycle after that silent
         // failure hits this same path, fade timing or not.
         if !engine.isRunning {
-            try? engine.start()
+            try? startEngineFresh()
         }
         pauseReassertToken += 1
         lastAudibleAt = Date()
@@ -3177,7 +3278,7 @@ class AudioEngine: RCTEventEmitter {
         // the track with nothing left to finish it. Started here if it is
         // still idle (a no-op in the normal case, where it is already playing).
         if state == .playing, !incomingNode.isPlaying {
-            if !engine.isRunning { try? engine.start() }
+            if !engine.isRunning { try? startEngineFresh() }
             incomingNode.play()
         }
         // Same fix as runCrossfade's own handoff — keeps the INCOMING
@@ -4028,7 +4129,7 @@ class AudioEngine: RCTEventEmitter {
                     self.crossfadeLeadTimer = nil
                     if !self.engine.isRunning {
                         self.activateSession()
-                        try? self.engine.start()
+                        try? self.startEngineFresh()
                     }
                     self.scratchActive = true
                     self.scratchTotalSeconds = totalSec
@@ -4378,7 +4479,7 @@ class AudioEngine: RCTEventEmitter {
 
         if autoPlay {
             if !engine.isRunning {
-                try? engine.start()
+                try? startEngineFresh()
             }
             activeNode.play()
             setState(.playing)
@@ -4543,7 +4644,10 @@ class AudioEngine: RCTEventEmitter {
             // fade-out just starts from where JS said.)
             let incomingStarted = crossfadeIncomingNode != nil && crossfadeIncomingFile != nil
             let liveLevel = (crossfadeIncomingNode?.volume ?? 0) / max(crossfadeIncomingGainCorrection, 0.0001)
-            settleCrossfadeToIncoming(snapToFull: false)
+            // fadeOutOutgoing: the outgoing song used to be stopped dead here (an audible cut) while the
+            // incoming one was caught partway. Now the outgoing one fades away on its own and the incoming
+            // one ramps down from where the crossfade had it.
+            settleCrossfadeToIncoming(snapToFull: false, fadeOutOutgoing: true)
             if incomingStarted { fromVal = min(fromVal, max(0.0, liveLevel)) }
         }
         cancelActiveRampLocked()
@@ -4571,12 +4675,26 @@ class AudioEngine: RCTEventEmitter {
         let myGeneration = rampGeneration
         pendingRampResolve = resolve
         rampInFlightTarget = toVal
-        let start = Date().addingTimeInterval(rampStartDelay)
+        var start = Date().addingTimeInterval(rampStartDelay)
+        let rampCreatedAt = Date()
         // 1/60s tick — smooth without being any more bridge/CPU traffic
         // than a single scheduled Timer regardless of interval; the actual
         // volume math is trivial.
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
             guard let self = self, self.rampGeneration == myGeneration else { t.invalidate(); return }
+            // A skip while playing asks for the fade-in as soon as JS thinks the song has changed, but the
+            // new song is still being opened and analysed (a first-time analysis takes a while). The ramp
+            // used to run in that gap, so the song then came in partway up the ramp instead of from
+            // silence. Now the ramp stays at its start level until the song is loaded and its own start
+            // (gain settle, cold wake) has happened. Capped at 6 s so it can never hang.
+            if self.loadIsPending, Date().timeIntervalSince(rampCreatedAt) < 6 {
+                start = Date().addingTimeInterval(0.2)
+                return
+            }
+            if let planned = self.nodeStartPlannedAt {
+                let earliest = planned.addingTimeInterval(0.06)
+                if start < earliest { start = earliest }
+            }
             let elapsed = Date().timeIntervalSince(start)
             let progress = max(0.0, min(1.0, dur > 0 ? elapsed / dur : 1.0))
             let eased = Float((1 - cos(progress * Double.pi)) / 2)
@@ -4898,8 +5016,38 @@ class AudioEngine: RCTEventEmitter {
     // a no-op at that point.
     @objc(setEQBands:resolver:rejecter:)
     func setEQBands(_ bands: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        // Coming back from the custom (parametric) EQ: put every band back on its fixed frequency,
+        // width and filter type first, because the custom EQ may have moved them.
+        if eqCustomActive {
+            eqCustomActive = false
+            let eqFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+            for (i, freq) in eqFrequencies.enumerated() where i < eqNode.bands.count {
+                eqNode.bands[i].filterType = .parametric
+                eqNode.bands[i].frequency = freq
+                eqNode.bands[i].bandwidth = 1.0
+                eqNode.bands[i].bypass = false
+            }
+        }
         for (i, gain) in bands.enumerated() where i < eqNode.bands.count {
             eqNode.bands[i].gain = gain.floatValue
+        }
+        resolve(nil)
+    }
+
+    // Custom (parametric) EQ: every band gets its own frequency (Hz), gain (dB), bandwidth (octaves,
+    // JS converts Q to this) and filter type (0 = peak, 1 = low shelf, 2 = high shelf).
+    private var eqCustomActive = false
+    @objc(setEQParametric:gains:bandwidths:types:resolver:rejecter:)
+    func setEQParametric(_ freqs: [NSNumber], gains: [NSNumber], bandwidths: [NSNumber], types: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        eqCustomActive = true
+        for i in 0..<eqNode.bands.count where i < freqs.count && i < gains.count && i < bandwidths.count {
+            let band = eqNode.bands[i]
+            let t = i < types.count ? types[i].intValue : 0
+            band.filterType = t == 1 ? .lowShelf : (t == 2 ? .highShelf : .parametric)
+            band.frequency = min(20000, max(20, freqs[i].floatValue))
+            band.bandwidth = min(5, max(0.05, bandwidths[i].floatValue))
+            band.gain = min(24, max(-24, gains[i].floatValue))
+            band.bypass = false
         }
         resolve(nil)
     }
@@ -5462,6 +5610,11 @@ private final class SpatialAudioUnit: AUAudioUnit {
     private var outputBusArray: AUAudioUnitBusArray!
     private var inputBuffer: AVAudioPCMBuffer?
     private let limiter = LookaheadLimiter()
+
+    override func reset() {
+        limiter.reset()
+        super.reset()
+    }
     var targetWidth: Float = 1
     var targetBalance: Float = 0
     private var curWidth: Float = 1

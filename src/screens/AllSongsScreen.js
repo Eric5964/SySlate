@@ -46,7 +46,7 @@ const ALL_SONGS_KEY = '__all__';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
-    const { playSongFromPlaylist, addToQueue, queueEpoch, currentTrack } = usePlayback();
+    const { playSongFromPlaylist, addToQueue, queueEpoch, currentTrack, currentPlaylist } = usePlayback();
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
@@ -98,7 +98,12 @@ export default function AllSongsScreen() {
     // songs change, or a different queue is played.
     const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(dedupedSongs);
     const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
-    useEffect(() => { refreshSort(); }, [dedupedSongs, sortId, queueEpoch, refreshSort]);
+    // Same rule as a playlist: starting a song does not re-sort the list under you, and opening it again
+    // keeps its order unless another playlist was played in between.
+    const playingSrcA = currentPlaylist?.path ?? currentPlaylist?.name ?? null;
+    const playingSrcARef = useRef(playingSrcA);
+    playingSrcARef.current = playingSrcA;
+    useEffect(() => { refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current }); }, [dedupedSongs, refreshSort]);
 
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
     // Precomputed once per song instead of inside the sort comparator —
@@ -212,7 +217,7 @@ export default function AllSongsScreen() {
                             <TouchableOpacity
                                 key={opt.id}
                                 style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                onPress={() => { setSortId(opt.id); setPlaylistSort(ALL_SONGS_KEY, opt.id); setShowSort(false); }}
+                                onPress={() => { setSortId(opt.id); setPlaylistSort(ALL_SONGS_KEY, opt.id); refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current, force: true }); setShowSort(false); }}
                             >
                                 <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                     {opt.label}
@@ -281,7 +286,7 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
     const { songPillShadow } = usePreferences();
     return (
-        <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent}>
+        <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} dimColor={base.surface}>
             <DimPressable style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
                 {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                 {showSongCovers && (

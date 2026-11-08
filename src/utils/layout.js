@@ -32,14 +32,11 @@ export const pillPad = (hasCover) => ({
     paddingRight: 16,
 });
 
-// Song rows that can be swiped right show an "Added" badge about 80 from the
-// row's right edge (about 55 wide). The title block gets this much extra
-// room on its right so a long title is cut off before it could run under the
-// badge. `count` is the play count shown at the right end (0 if none).
-export const addedClearance = (count) => {
-    const countW = count > 0 ? (String(count).length + 1) * 7 + 8 : 0;
-    return Math.max(0, 113 - countW);
-};
+// The "Added" badge shows near the right end of a swiped row. The title block used to reserve room for it
+// (cutting long titles off early, on every row, all the time). It no longer does: titles use the whole row,
+// and while "Added" shows, SwipeableRow dims the text under and near the badge instead (see its dimColor).
+// Kept as a function so every row that calls it stays as it is.
+export const addedClearance = () => 0;
 
 // Transparent top bar: the header floats over the screen (so a list can scroll
 // behind it) and the list starts lower by the header's own height, so at the

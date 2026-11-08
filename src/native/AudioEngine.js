@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
 let useVolumeTags = true;
+let lastPlaybackRate = 1;
 
 export const Event = {
     PlaybackState: 'PlaybackState',
@@ -133,7 +134,9 @@ const AudioEngine = {
     stop: () => NativeAudioEngine.stop(),
     seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
     // DJ disc: begin resolves true once scratch audio is ready.
-    setPlaybackRate: (rate) => NativeAudioEngine.setPlaybackRate(rate),
+    // The last speed JS asked for. The fade code needs it: track positions are in song seconds, fades run in real seconds.
+    setPlaybackRate: (rate) => { const r = Number(rate); if (Number.isFinite(r) && r > 0) lastPlaybackRate = r; return NativeAudioEngine.setPlaybackRate(rate); },
+    getLastPlaybackRate: () => lastPlaybackRate,
     scratchBegin: () => NativeAudioEngine.scratchBegin(),
     scratchSetRate: (rate) => NativeAudioEngine.scratchSetRate(rate),
     scratchResumePlay: () => { try { NativeAudioEngine.scratchResumePlay(); } catch (e) { } },
@@ -173,6 +176,8 @@ const AudioEngine = {
     getCrossfadeFirstHalf: () => NativeAudioEngine.getCrossfadeFirstHalf(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
     setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
+    // Custom parametric EQ. A build without the native method just ignores it.
+    setEQParametric: (freqs, gains, bws, types) => (NativeAudioEngine.setEQParametric ? NativeAudioEngine.setEQParametric(freqs, gains, bws, types) : Promise.resolve()),
     setPreAmp: (db) => NativeAudioEngine.setPreAmp(db),
     // Split from one "Volume Normalization" toggle into two distinct
     // features: setWithinTrackNormEnabled is the original per-track

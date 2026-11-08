@@ -171,6 +171,13 @@ RCT_EXTERN_METHOD(setEQBands:(NSArray *)bands
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(setEQParametric:(NSArray *)freqs
+                  gains:(NSArray *)gains
+                  bandwidths:(NSArray *)bandwidths
+                  types:(NSArray *)types
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(setPreAmp:(nonnull NSNumber *)db
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)

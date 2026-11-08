@@ -67,6 +67,57 @@ export function preClaimFadeForFreshStart() {
 // Exposed so the UI layer (song taps, queue taps, playlist Play/Shuffle) can
 // ignore input for the brief window a fade/ramp is in flight, instead of
 // racing it.
+export function releaseFadeById(id) { releaseFade(id); }
+
+// "Last action wins". A new Play / Shuffle / song tap that arrives while an earlier one is still running
+// (its ramp-out, loading, or ramp-in) used to wait for the whole earlier transition and then do its own
+// ramp-out and ramp-in: both songs started one after the other. Now the new action calls
+// preemptForNewAction() the moment it arrives: the sound ramps out from wherever it is right now, the
+// earlier action sees isActionPreempted() and stops at its next checkpoint, and only the newest action
+// loads and ramps in.
+let preemptEpoch = 0;
+let actionEpoch = 0;
+let silencedByPreempt = false;
+let preemptDone = Promise.resolve();
+export const getPreemptEpoch = () => preemptEpoch;
+export const setActionEpoch = (e) => { actionEpoch = e; };
+export const isActionPreempted = () => preemptEpoch !== actionEpoch;
+export const waitForPreempt = () => preemptDone;
+
+export function preemptForNewAction() {
+    preemptDone = preemptDone.then(async () => {
+        try {
+            const playing = (await AudioEngine.getState()) === State.Playing;
+            // The new action will crossfade from what is playing: leave the volume alone, as before.
+            if (playing && (await getCrossfadeEnabled()) && (await getCrossfadeDurationSkip()) > 0.05) return;
+            preemptEpoch++;
+            if (!playing) return;
+            let cur = 1;
+            try { const v = Number(await AudioEngine.getVolume()); if (Number.isFinite(v)) cur = v; } catch { }
+            if (!(cur > 0.03)) return;   // already silent
+            const ramp = await getAudioRamp();
+            const id = claimFade();
+            try {
+                if (ramp > 0.05) await AudioEngine.rampVolume(cur, 0, Math.max(0.15, ramp * cur));
+                else await AudioEngine.setVolume(0);
+            } finally {
+                releaseFade(id);
+            }
+        } catch { }
+    });
+    return preemptDone;
+}
+
+// If the newest action ended without starting a song (nothing found to play), a ramp-in that was skipped
+// for it must not leave the current sound silent.
+export async function restoreAfterPreemptIfSilenced() {
+    if (!silencedByPreempt) return;
+    silencedByPreempt = false;
+    try {
+        if ((await AudioEngine.getState()) === State.Playing && activeFadeId === null) await AudioEngine.setVolume(1);
+    } catch { }
+}
+
 export function isTransitionLocked() {
     return activeFadeId !== null || skipLock || rampLock;
 }
@@ -159,7 +210,12 @@ async function isTooShortToRamp(rampSeconds) {
 // then on — not a per-step JS check anymore, since there are no more
 // per-step round trips to check between.
 async function fadeVol(from, to, sec, ownerId) {
-    if (!isFadeOwner(ownerId)) return;
+    if (!isFadeOwner(ownerId)) {
+        // A fade-in that lost its claim with nobody else taking over used to leave the song playing at
+        // volume 0 (silent, or stuck partway). If no other fade owns the volume, put the level back.
+        if (to > from && activeFadeId === null) { try { await AudioEngine.setVolume(to); } catch { } }
+        return;
+    }
     try {
         await AudioEngine.rampVolume(from, to, Math.max(0, sec));
     } catch { }
@@ -290,8 +346,10 @@ async function checkRampWindow(position, duration) {
         // then read as "too short" — it was never short, it just started 3
         // seconds later than it should have.
         if (naturalEndFadeOwner !== null && activeFadeId === naturalEndFadeOwner) {
-            const remaining = duration ? duration - position : Infinity;
-            if (ramp <= 0 || !duration || remaining > ramp + 0.5) {
+            const remaining = duration ? (duration - position) / (AudioEngine.getLastPlaybackRate() || 1) : Infinity;
+            // position < 1: a very short song (shorter than the ramp) never satisfies "remaining > ramp + 0.5",
+            // which left the new song at volume 0 with the fade lock held for its whole length.
+            if (ramp <= 0 || !duration || remaining > ramp + 0.5 || position < 1) {
                 const id = naturalEndFadeOwner;
                 naturalEndFadeOwner = null;
                 releaseFade(id);
@@ -347,7 +405,9 @@ async function checkRampWindow(position, duration) {
         currentTransitionCrossfading = crossfading;
         if (crossfading) return; // native crossfade owns this transition instead
         if (ramp <= 0 || !duration || duration < 1) return;
-        const remaining = duration - position;
+        // Position and duration are in song seconds; the fade runs in real seconds. At 1.5x the song ends
+        // in two thirds of the time, so the fade-out used to be cut off by the end of the song, still audible.
+        const remaining = (duration - position) / (AudioEngine.getLastPlaybackRate() || 1);
         if (remaining > 0.15 && remaining <= ramp) {
             const id = claimFade();
             naturalEndFadeOwner = id;
@@ -437,11 +497,21 @@ export async function fadeOutCurrentIfPlaying(dur) {
     try {
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
         if (!wasPlaying) return;
+        // Already silent (an earlier action's ramp-out finished): nothing to fade. Without this the volume
+        // was set back to 1 and faded out a second time.
+        let cur = 1;
+        try { const v = Number(await AudioEngine.getVolume()); if (Number.isFinite(v)) cur = v; } catch { }
+        if (cur < 0.03) return;
         const id = claimFade();
         try {
             if (dur > 0.05 && !(await isTooShortToRamp(dur))) {
-                try { await AudioEngine.setVolume(1); } catch { }
-                await fadeVol(1, 0, dur, id);
+                if (cur >= 0.95) {
+                    try { await AudioEngine.setVolume(1); } catch { }
+                    await fadeVol(1, 0, dur, id);
+                } else {
+                    // Partway up or down already: fade from the real level, no jump back to full.
+                    await fadeVol(cur, 0, Math.max(0.15, dur * cur), id);
+                }
             }
         } finally {
             releaseFade(id);
@@ -491,6 +561,7 @@ export async function playWithRamp(preClaimedId, startActionArg) {
             // this flag too, and needs it true for the full duration this
             // ramp-in is actually committed, not just once fadeVol starts.
             rampInActive = true;
+            silencedByPreempt = false;
             // Temporary diagnostic logging — tagged [RAMP-DEBUG], not a
             // fix. Four investigation passes on "ramp doesn't engage for
             // silence-trimmed tracks" haven't found a root cause by reading
@@ -573,10 +644,17 @@ export async function playWithRamp(preClaimedId, startActionArg) {
                     // apply to — sounding exactly like no ramp happened.
                     if (!announcedEarly) emitTransportRamp('play', ramp + PLAY_SETTLE_MS / 1000);
                     await sleep(PLAY_SETTLE_MS);
-                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: settle done, calling fadeVol(0,1,${ramp})`);
-                    await fadeVol(0, 1, ramp, id);
-                    console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: fadeVol resolved — ramp should be fully audible now`);
-                    releaseFade(id);
+                    if (isActionPreempted()) {
+                        // A newer Play/Shuffle/tap arrived: this song is about to be replaced, so it does
+                        // not ramp in. It stays silent and the newest action takes over.
+                        silencedByPreempt = true;
+                        releaseFade(id);
+                    } else {
+                        console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: settle done, calling fadeVol(0,1,${ramp})`);
+                        await fadeVol(0, 1, ramp, id);
+                        console.log(`[RAMP-DEBUG] t+${Date.now() - rampDebugT0}ms: fadeVol resolved — ramp should be fully audible now`);
+                        releaseFade(id);
+                    }
                 }
             } finally {
                 rampInActive = false;

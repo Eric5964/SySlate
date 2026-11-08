@@ -11,6 +11,7 @@ import {
     getAutoShow, setAutoShow as persistAutoShow,
     getVizMode, setVizMode as persistVizMode,
     getPlayerVizCover, setPlayerVizCover as persistPlayerVizCover,
+    getPlayerVizBehind, setPlayerVizBehind as persistPlayerVizBehind,
     getDjDiscSpin, setDjDiscSpin as persistDjDiscSpin,
     getDjDiscTouch, setDjDiscTouch as persistDjDiscTouch,
     getMiniPlayerShadow, setMiniPlayerShadow as persistMiniPlayerShadow,
@@ -75,6 +76,7 @@ const Ctx = createContext({
     autoShow: 'cover', setAutoShow: () => { },
     vizMode: 'off', setVizMode: () => { },
     playerVizCover: false, setPlayerVizCover: () => { },
+    playerVizBehind: false, setPlayerVizBehind: () => { },
     djDiscSpin: true, setDjDiscSpin: () => { },
     djDiscTouch: true, setDjDiscTouch: () => { },
     autoShowLyrics: false, autoShowDisc: false,
@@ -135,6 +137,8 @@ export function PreferencesProvider({ children }) {
     const setVizMode = useCallback((v) => { setVizModeState(v); persistVizMode(v); }, []);
     const [playerVizCover, setPlayerVizCoverState] = useState(false);
     const setPlayerVizCover = useCallback((v) => { setPlayerVizCoverState(v); persistPlayerVizCover(v); }, []);
+    const [playerVizBehind, setPlayerVizBehindState] = useState(false);
+    const setPlayerVizBehind = useCallback((v) => { setPlayerVizBehindState(v); persistPlayerVizBehind(v); }, []);
     const [djDiscSpin, setDjDiscSpinState] = useState(true);
     const [djDiscTouch, setDjDiscTouchState] = useState(true);
     const [djDisc, setDjDiscState] = useState(false);
@@ -209,6 +213,7 @@ export function PreferencesProvider({ children }) {
         getAutoShow().then(setAutoShowState);
         getVizMode().then(setVizModeState);
         getPlayerVizCover().then(setPlayerVizCoverState);
+        getPlayerVizBehind().then(setPlayerVizBehindState);
         getDjDiscSpin().then(setDjDiscSpinState);
         getDjDiscTouch().then(setDjDiscTouchState);
         getDjDisc().then(setDjDiscState);
@@ -451,7 +456,7 @@ export function PreferencesProvider({ children }) {
         showPlayCount, setShowPlayCount,
         showSongCovers, setShowSongCovers,
         artistSeparator, setArtistSeparator,
-        lyricsMode, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, autoShowLyrics, autoShowDisc,
+        lyricsMode, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, playerVizBehind, setPlayerVizBehind, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, autoShowLyrics, autoShowDisc,
         miniPlayerShadow: performanceMode ? false : miniPlayerShadow, setMiniPlayerShadow,
         performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags,
         shadowsRaw: { coverShadow, playlistCoverShadow, songPillShadow, miniPlayerShadow },
@@ -487,7 +492,7 @@ export function PreferencesProvider({ children }) {
         playlistArrow, setPlaylistArrow,
         ui, setUiShown,
     }), [
-        showPlayCount, showSongCovers, artistSeparator, lyricsMode, lyricsOn, djDisc, autoShow, vizMode, playerVizCover, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
+        showPlayCount, showSongCovers, artistSeparator, lyricsMode, lyricsOn, djDisc, autoShow, vizMode, playerVizCover, playerVizBehind, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, spatialWidth, spatialBalance, betweenTrackNorm, silenceTrim,
