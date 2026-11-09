@@ -203,6 +203,7 @@ export const getCustomEQ = () => safe(async () => {
     }
     return null;
 }, null);
+export const clearCustomEQ = () => safe(async () => { await AsyncStorage.removeItem('custom_eq'); }, null);
 export const setCustomEQ = (c) => safe(async () => {
     const clean = sanitizeCustomEQ(c);
     if (!clean) return;
@@ -682,6 +683,13 @@ export const setLyricsResyncSec = (v) => safe(() => AsyncStorage.setItem('lyrics
 // matching against the timestamps), negative = later.
 export const getLyricsOffsetSec = () => safe(() => AsyncStorage.getItem('lyrics_offset_sec').then(v => v !== null ? parseFloat(v) : 0), 0);
 export const setLyricsOffsetSec = (v) => safe(() => AsyncStorage.setItem('lyrics_offset_sec', String(v)), null);
+// A stretch of this many seconds with no words (a blank lyric line, not necessarily silence) gets its own
+// empty line of space. 0 = off.
+export const getLyricsGapSec = () => safe(() => AsyncStorage.getItem('lyrics_gap_sec').then(v => v !== null ? parseFloat(v) : 0), 0);
+export const setLyricsGapSec = (v) => safe(() => AsyncStorage.setItem('lyrics_gap_sec', String(v)), null);
+// Small arrows at the left and right edge showing which line the lyrics are on.
+export const getLyricsArrows = () => safe(() => AsyncStorage.getItem('lyrics_arrows').then(v => v === '1'), false);
+export const setLyricsArrows = (v) => safe(() => AsyncStorage.setItem('lyrics_arrows', v ? '1' : '0'), null);
 
 // Remembers each playlist's chosen sort (A-Z / Z-A / Most Played / etc.)
 // separately, persisted across app restarts.

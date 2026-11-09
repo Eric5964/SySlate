@@ -31,7 +31,7 @@ const CLOSE_VELOCITY = 1.1;
 const EXPAND_COMMIT_DISTANCE = 50;
 const EXPAND_VELOCITY = 0.9;
 
-export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false }) {
+export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false, footer = null }) {
     const { base } = useTheme();
     const insets = useSafeAreaInsets();
     const height = expandable ? SCREEN_H : normalHeight;            // laid-out height
@@ -42,6 +42,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
     const contentPad = useRef(new Animated.Value(collapsedOffset)).current;     // JS driven
     const topPad = useRef(new Animated.Value(0)).current;                       // JS driven
     const expandedRef = useRef(false);
+    const [footerH, setFooterH] = useState(0);
     const api = useRef({});
     api.current.setExpanded = (flag) => {
         expandedRef.current = flag;
@@ -57,6 +58,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
     const dragY = useRef(new Animated.Value(0)).current;
     const dragDown = dragY.interpolate({ inputRange: [0, 1000], outputRange: [0, 1000], extrapolate: 'clamp' });
     const sheetY = useRef(Animated.add(Animated.add(translateY, dragDown), expandNative)).current;
+    const footerOpacity = useRef(Animated.add(translateY, dragDown).interpolate({ inputRange: [0, 140], outputRange: [1, 0], extrapolate: 'clamp' })).current;
     const [mounted, setMounted] = useState(visible);
     const backdropStart = useRef({ x: 0, y: 0 });
     const onCloseRef = useRef(onClose);
@@ -138,7 +140,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                     if (dx < 10 && dy < 10) onClose();
                 }}
             />
-            <Animated.View style={[s.sheet, { height, backgroundColor: base.surface, transform: [{ translateY: sheetY }] }]}>
+            <Animated.View style={[s.sheet, { height, paddingBottom: footer ? 0 : 34, backgroundColor: base.surface, transform: [{ translateY: sheetY }] }]}>
                 <Animated.View style={{ paddingTop: topPad }}>
                     <PanGestureHandler
                         onGestureEvent={onHandleGestureEvent}
@@ -153,9 +155,21 @@ export default function BottomSheet({ visible, onClose, header, children, height
                     </PanGestureHandler>
                 </Animated.View>
                 <Animated.View style={{ flex: 1, paddingBottom: contentPad }}>
-                    {children}
+                    <View style={{ flex: 1, paddingBottom: footer ? footerH : 0 }}>
+                        {children}
+                    </View>
                 </Animated.View>
             </Animated.View>
+            {footer ? (
+                // Pinned to the bottom of the SCREEN, not part of the moving sheet: it stays put while the
+                // sheet is dragged or expanded and only fades as the sheet leaves (or arrives).
+                <Animated.View
+                    onLayout={(e) => setFooterH(e.nativeEvent.layout.height)}
+                    style={[s.footer, { backgroundColor: base.surface, borderTopColor: base.border, paddingBottom: Math.max(insets.bottom, 12) + 6, opacity: footerOpacity }]}
+                >
+                    {footer}
+                </Animated.View>
+            ) : null}
         </Modal>
     );
 }
@@ -165,5 +179,6 @@ const s = StyleSheet.create({
     sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#0f0f0f', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingBottom: 34, overflow: 'hidden' },
     handleZone: { width: '100%', alignItems: 'center', paddingTop: 12, paddingBottom: 14, gap: 8 },
     headerZone: { width: '100%', alignItems: 'flex-start' },
+    footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 20, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth },
     handleBar: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#333' },
 });

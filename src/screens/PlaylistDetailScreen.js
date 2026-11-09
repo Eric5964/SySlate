@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
-    StyleSheet, TextInput, StatusBar, Image, Alert,
+    StyleSheet, TextInput, StatusBar, Image, Alert, Animated,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -229,7 +229,7 @@ export default function PlaylistDetailScreen() {
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
-            <BackSwipeZone onBack={() => navigation.goBack()} style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
+            <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pd_back !== false ? (
                     <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
@@ -288,14 +288,14 @@ export default function PlaylistDetailScreen() {
                 windowSize={performanceMode ? 5 : 15}
                 maxToRenderPerBatch={performanceMode ? 4 : 10}
                 updateCellsBatchingPeriod={performanceMode ? 90 : 50}
-                ListFooterComponent={<BackSwipeZone onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
+                ListFooterComponent={<BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
                 ListHeaderComponent={
                     <View>
                         {/* The space under the top bar. It used to be padding on the
                             list; as a real view a right swipe on it can go back. */}
-                        <BackSwipeZone onBack={() => navigation.goBack()} style={{ height: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH }} />
+                        <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ height: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH }} />
                         {ui.pd_cover !== false && (
-                        <BackSwipeZone onBack={() => navigation.goBack()} style={s.coverWrap}>
+                        <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={s.coverWrap}>
                             {/* Card-style outline, same look as the cards on the Playlists screen. */}
                             {detailOutline && (
                                 <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: -3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
@@ -316,25 +316,40 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(false)} badgeColor={base.surface} badgeTextColor={theme.accent}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(false)}>
+                            {(added) => (
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
-                                <PlayIcon size={16} color={theme.onAccent} />
-                                <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
+                                {/* The label swaps for "Added" inside the same pill: same size, same colours. */}
+                                <Animated.View style={[s.btnInner, { opacity: added.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}>
+                                    <PlayIcon size={16} color={theme.onAccent} />
+                                    <Text style={[s.playBtnText, { color: theme.onAccent }]}>Play</Text>
+                                </Animated.View>
+                                <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.btnAdded, { opacity: added }]}>
+                                    <Text style={[s.playBtnText, { color: theme.onAccent }]}>Added</Text>
+                                </Animated.View>
                             </TouchableOpacity>
+                            )}
                             </SwipeQueueButton>
                             )}
                             {ui.pd_shuffle !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(true)} badgeColor={theme.accent} badgeTextColor={theme.onAccent}>
+                            <SwipeQueueButton onSwipe={() => swipeQueue(true)}>
+                            {(added) => (
                             <TouchableOpacity style={[s.shuffleBtn, { borderColor: theme.accentDim }]} onPress={handleShuffle}>
-                                <ShuffleIcon size={24} color={theme.accent} style={{ marginVertical: -4 }} />
-                                <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
+                                <Animated.View style={[s.btnInner, { opacity: added.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}>
+                                    <ShuffleIcon size={24} color={theme.accent} style={{ marginVertical: -4 }} />
+                                    <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Shuffle</Text>
+                                </Animated.View>
+                                <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, s.btnAdded, { opacity: added }]}>
+                                    <Text style={[s.shuffleBtnText, { color: theme.accent }]}>Added</Text>
+                                </Animated.View>
                             </TouchableOpacity>
+                            )}
                             </SwipeQueueButton>
                             )}
                         </View>
 
                         <View style={s.titleRow}>
-                            <BackSwipeZone onBack={() => navigation.goBack()} style={{ flex: 1 }}>
+                            <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
                                 {(showPlaylistTrackCount !== false || (ui.pd_hours !== false && totalLenText)) && <Text style={[s.subtitle, { color: base.textFaint }]}>{[showPlaylistTrackCount !== false ? `${playlist.songs.length} ${playlist.songs.length === 1 ? 'track' : 'tracks'}` : null, ui.pd_hours !== false ? totalLenText : null].filter(Boolean).join(' · ')}</Text>}
                             </BackSwipeZone>
@@ -432,6 +447,8 @@ const s = StyleSheet.create({
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
+    btnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    btnAdded: { alignItems: 'center', justifyContent: 'center' },
     playBtnText: { fontSize: 15, fontWeight: '700' },
     shuffleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 24, borderWidth: 1.5 },
     shuffleBtnText: { fontSize: 15, fontWeight: '700' },

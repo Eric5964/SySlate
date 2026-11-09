@@ -4,8 +4,8 @@ import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
-import { getCustomPresets, getEQOverrides, getCustomEQ } from '../utils/storage';
-import { toNativeArrays } from '../utils/customEQ';
+import { getCustomPresets, getEQOverrides } from '../utils/storage';
+import { toNativeArrays, presetParamBands } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
@@ -75,15 +75,15 @@ const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` 
 // next time a preset gets selected.
 export async function applyEQPreset(id) {
     try {
-        // The custom (parametric) EQ, when switched on, replaces whichever preset is picked.
-        const customEQ = await getCustomEQ();
-        if (customEQ?.enabled) {
-            const n = toNativeArrays(customEQ);
+        const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+        const preset = getPresetById(id, custom, overrides);
+        // A saved parametric preset (own frequency / gain / Q per band) goes through the parametric path.
+        const param = presetParamBands(preset);
+        if (param) {
+            const n = toNativeArrays({ bands: param });
             await AudioEngine.setEQParametric(n.freqs, n.gains, n.bws, n.types);
             return;
         }
-        const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
-        const preset = getPresetById(id, custom, overrides);
         // Clamped here — the one place EVERY band value actually reaches
         // the native EQ unit, regardless of where it came from (a built-in,
         // a custom preset, an override) — so a value saved back when the

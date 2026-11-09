@@ -58,6 +58,15 @@ export const bandsFromPreset = (gains) => DEFAULT_FREQS.map((f, i) => ({
     f, g: round(clamp(Number(gains?.[i]) || 0, GAIN_MIN, GAIN_MAX), 2), q: DEFAULT_Q, t: 'peak',
 }));
 
+// A saved parametric EQ lives in the normal custom preset list: { id, name, bands, param }.
+// `bands` is the 10 gains clamped to the fixed presets' +-6 dB range (what an older build or the preset
+// validators see), `param` is the full set of { f, g, q, t } bands the engine actually uses.
+export function makeParamPreset(id, name, bands) {
+    const clean = (sanitizeCustomEQ({ bands }) || defaultCustomEQ()).bands;
+    return { id, name, bands: clean.map(b => round(clamp(b.g, -6, 6), 2)), param: clean };
+}
+export const presetParamBands = (preset) => (preset && Array.isArray(preset.param) ? (sanitizeCustomEQ({ bands: preset.param }) || null)?.bands ?? null : null);
+
 // Slider mapping: frequency and Q move on a log scale (0..1 on the slider).
 export const freqToPos = (f) => Math.log(clamp(f, FREQ_MIN, FREQ_MAX) / FREQ_MIN) / Math.log(FREQ_MAX / FREQ_MIN);
 export const posToFreq = (p) => round(FREQ_MIN * Math.pow(FREQ_MAX / FREQ_MIN, clamp(p, 0, 1)), 1);
@@ -115,8 +124,8 @@ export function exportParametricEQ(bands, preAmpDb = 0) {
     return `# SySlate EQ (Equalizer APO parametric)\nPreamp: ${num(preAmpDb, 1)} dB\n${lines.join('\n')}\n`;
 }
 
-export function exportSySlateEQ({ customPresets = [], overrides = {}, custom = null, preAmp = 0 }) {
-    return JSON.stringify({ syslateEQ: 1, preAmp, customPresets, overrides, customEQ: custom }, null, 2);
+export function exportSySlateEQ({ customPresets = [], overrides = {}, preAmp = 0 }) {
+    return JSON.stringify({ syslateEQ: 1, preAmp, customPresets, overrides }, null, 2);
 }
 
 // ---- Import ----
@@ -151,7 +160,12 @@ export function parseEQText(text) {
         if (!obj || obj.syslateEQ !== 1) return { kind: 'error', message: 'That JSON is not a SySlate EQ export.' };
         const customPresets = Array.isArray(obj.customPresets)
             ? obj.customPresets.filter(p => p && typeof p.name === 'string' && p.name.length <= 80 && Array.isArray(p.bands) && p.bands.length === 10 && p.bands.every(v => Number.isFinite(v))).slice(0, 100)
-                .map(p => ({ id: String(p.id || ''), name: p.name, bands: p.bands.map(v => clamp(v, -6, 6)) }))
+                .map(p => {
+                    const param = Array.isArray(p.param) ? sanitizeCustomEQ({ bands: p.param })?.bands : null;
+                    const out = { id: String(p.id || ''), name: p.name, bands: p.bands.map(v => clamp(v, -6, 6)) };
+                    if (param) out.param = param;
+                    return out;
+                })
             : [];
         const overrides = {};
         if (obj.overrides && typeof obj.overrides === 'object') {
@@ -172,15 +186,20 @@ export function parseEQText(text) {
         return { kind: 'graphic', bands, preAmp, points: points.length };
     }
 
-    const filterRe = /Filter\s*\d*\s*:\s*(ON|OFF)\s+([A-Za-z]+)\s+Fc\s+([\d.]+)\s*(?:Hz)?(?:\s+Gain\s+(-?[\d.]+)\s*(?:dB)?)?(?:\s+Q\s+([\d.]+))?/gi;
+    // Equalizer APO / Peace / AutoEq filter lines. Tolerates a decimal comma ("Fc 1000,5 Hz"), a missing
+    // index, and a width given as "BW Oct 0.5" (octaves) instead of Q.
+    const filterRe = /Filter\s*\d*\s*:\s*(ON|OFF)\s+([A-Za-z]+)\s+Fc\s+([\d.,]+)\s*(?:Hz)?(?:\s+Gain\s+(-?[\d.,]+)\s*(?:dB)?)?(?:\s+Q\s+([\d.,]+))?(?:\s+BW\s+Oct\s+([\d.,]+))?/gi;
+    const nf = (x) => parseFloat(String(x).replace(',', '.'));
     const found = [];
     let skipped = 0, m;
     while ((m = filterRe.exec(t)) !== null) {
         if (m[1].toUpperCase() !== 'ON') continue;
         const kind = m[2].toUpperCase();
-        const ft = kind === 'PK' || kind === 'PEQ' ? 'peak' : /^LS/.test(kind) ? 'lowshelf' : /^HS/.test(kind) ? 'highshelf' : null;
+        const ft = kind === 'PK' || kind === 'PEQ' || kind === 'MODAL' ? 'peak' : /^LS/.test(kind) ? 'lowshelf' : /^HS/.test(kind) ? 'highshelf' : null;
         if (!ft) { skipped++; continue; }
-        found.push({ f: round(clamp(parseFloat(m[3]), FREQ_MIN, FREQ_MAX), 1), g: round(clamp(parseFloat(m[4] ?? '0') || 0, GAIN_MIN, GAIN_MAX), 2), q: round(clamp(parseFloat(m[5] ?? '0.707') || 0.707, Q_MIN, Q_MAX), 3), t: ft });
+        let q = m[5] != null ? nf(m[5]) : 0.707;
+        if (m[5] == null && m[6] != null) { const bw = nf(m[6]); if (bw > 0) q = 1 / (2 * Math.sinh((Math.LN2 / 2) * bw)); }
+        found.push({ f: round(clamp(nf(m[3]), FREQ_MIN, FREQ_MAX), 1), g: round(clamp(nf(m[4] ?? '0') || 0, GAIN_MIN, GAIN_MAX), 2), q: round(clamp(q || 0.707, Q_MIN, Q_MAX), 3), t: ft });
     }
     if (found.length) {
         const extra = Math.max(0, found.length - CUSTOM_BAND_COUNT);
@@ -189,5 +208,19 @@ export function parseEQText(text) {
         const bands = [...chosen, ...defaults.slice(chosen.length)];
         return { kind: 'parametric', bands, preAmp, skipped: skipped + extra, count: chosen.length };
     }
-    return { kind: 'error', message: 'Not recognised. Paste a SySlate EQ export, an Equalizer APO GraphicEQ line, or APO "Filter 1: ON PK Fc ..." lines.' };
+
+    // Generic tables: "freq gain" per line (REW, Poweramp, spreadsheets; space, tab, comma or semicolon).
+    const rows = t.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^[#*;/]/.test(l)).map(l => l.split(/[\s,;\t]+/).map(Number));
+    const pairs = rows.filter(r => r.length === 2 && r.every(Number.isFinite) && r[0] >= 10 && r[0] <= 40000);
+    if (pairs.length >= 3 && pairs.length >= rows.length - 2) {
+        const points = pairs.sort((a, b) => a[0] - b[0]);
+        const bands = DEFAULT_FREQS.map(f => ({ f, g: round(clamp(interpGraphic(points, f), GAIN_MIN, GAIN_MAX), 2), q: DEFAULT_Q, t: 'peak' }));
+        return { kind: 'graphic', bands, preAmp, points: points.length };
+    }
+    // Just ten gains (one per band), as a list: "[1, 2, 0, ...]" or ten numbers separated by anything.
+    const nums = (t.match(/-?\d+(?:[.,]\d+)?/g) || []).map(nf);
+    if (nums.length === 10 && !/[A-DF-Za-df-z]/.test(t.replace(/[eE]\d/g, ''))) {
+        return { kind: 'graphic', bands: bandsFromPreset(nums), preAmp, points: 10 };
+    }
+    return { kind: 'error', message: 'Not recognised. Paste a SySlate EQ export, a GraphicEQ line, APO / AutoEq "Filter 1: ON PK Fc ..." lines, a "frequency gain" table, or ten band gains.' };
 }

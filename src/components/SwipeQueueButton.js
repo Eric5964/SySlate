@@ -13,7 +13,8 @@ const REVEAL_DEADZONE = 10;
 // drag is left to the screen's scrolling. `edgeExclude` leaves a strip at the
 // left edge to the screen's own swipe-back. On a swipe the button's face is
 // briefly covered by an "Added" label that fades in and out like the one on
-// song rows.
+// song rows. `children` may also be a function that receives the "added" opacity (0 to 1), so the button can
+// swap its own label for "Added" in place (what the Play and Shuffle buttons do).
 export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor = '#7c3aed', badgeTextColor = '#fff', radius = 24, children }) {
     const x = useRef(new Animated.Value(0)).current;
     const addedOpacity = useRef(new Animated.Value(0)).current;
@@ -33,9 +34,9 @@ export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor 
     const showAdded = () => {
         addedOpacity.setValue(0);
         Animated.sequence([
-            Animated.timing(addedOpacity, { toValue: 1, duration: 120, useNativeDriver: true }),
-            Animated.delay(500),
-            Animated.timing(addedOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+            Animated.timing(addedOpacity, { toValue: 1, duration: 160, useNativeDriver: true }),
+            Animated.delay(650),
+            Animated.timing(addedOpacity, { toValue: 0, duration: 260, useNativeDriver: true }),
         ]).start();
     };
     const onStateChange = useRef((e) => {
@@ -58,10 +59,14 @@ export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor 
             hitSlop={edgeExclude ? { left: -edgeExclude } : undefined}
         >
             <Animated.View style={{ transform: [{ translateX: shift }] }}>
-                {children}
-                <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.badge, { backgroundColor: badgeColor, borderRadius: radius, opacity: addedOpacity }]}>
-                    <Text style={[styles.badgeText, { color: badgeTextColor }]}>Added</Text>
-                </Animated.View>
+                {typeof children === 'function' ? children(addedOpacity) : (
+                    <>
+                        {children}
+                        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.badge, { backgroundColor: badgeColor, borderRadius: radius, opacity: addedOpacity }]}>
+                            <Text style={[styles.badgeText, { color: badgeTextColor }]}>Added</Text>
+                        </Animated.View>
+                    </>
+                )}
             </Animated.View>
         </PanGestureHandler>
     );

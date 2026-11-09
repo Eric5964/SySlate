@@ -28,7 +28,12 @@ export default function PlaybackSpeedSheet({ visible, onClose }) {
     const isPreset = PRESETS.some(p => Math.abs(p - playbackRate) < 0.001);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Playback Speed</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Playback Speed</Text>}
+            footer={customOpen ? (
+                <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setPlaybackRate(Math.round(custom * 100) / 100); onClose(); }}>
+                    <Text style={[s.startText, { color: theme.onAccent }]}>Set speed</Text>
+                </TouchableOpacity>
+            ) : null}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             {PRESETS.map(p => {
                 const on = Math.abs(p - playbackRate) < 0.001;
@@ -53,9 +58,6 @@ export default function PlaybackSpeedSheet({ visible, onClose }) {
                         onValueChange={setCustom}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.customEnds}><Text style={[s.customEnd, { color: base.textFaint }]}>{MIN_SPEED}×</Text><Text style={[s.customEnd, { color: base.textFaint }]}>{MAX_SPEED}×</Text></View>
-                    <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setPlaybackRate(Math.round(custom * 100) / 100); onClose(); }}>
-                        <Text style={[s.startText, { color: theme.onAccent }]}>Set speed</Text>
-                    </TouchableOpacity>
                 </View>
             )}
             </ScrollView>

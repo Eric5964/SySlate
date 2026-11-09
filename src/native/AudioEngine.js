@@ -23,6 +23,7 @@ export const Event = {
     PlaybackState: 'PlaybackState',
     PlaybackTrackChanged: 'PlaybackTrackChanged',
     PlaybackProgressUpdated: 'PlaybackProgressUpdated',
+    EndFadeStarted: 'EndFadeStarted',
     RemotePlay: 'RemotePlay',
     RemotePause: 'RemotePause',
     RemoteStop: 'RemoteStop',
@@ -176,6 +177,9 @@ const AudioEngine = {
     getCrossfadeFirstHalf: () => NativeAudioEngine.getCrossfadeFirstHalf(),
     setRepeatMode: (mode) => NativeAudioEngine.setRepeatMode(mode),
     setEQBands: (bands) => NativeAudioEngine.setEQBands(bands),
+    // The end-of-song fade-out is timed natively (on the audio clock). hasNativeEndFade() is false on an older build.
+    setEndFade: (sec) => (NativeAudioEngine.setEndFade ? NativeAudioEngine.setEndFade(sec) : Promise.resolve()),
+    hasNativeEndFade: () => !!NativeAudioEngine.setEndFade,
     // Custom parametric EQ. A build without the native method just ignores it.
     setEQParametric: (freqs, gains, bws, types) => (NativeAudioEngine.setEQParametric ? NativeAudioEngine.setEQParametric(freqs, gains, bws, types) : Promise.resolve()),
     setPreAmp: (db) => NativeAudioEngine.setPreAmp(db),

@@ -291,9 +291,20 @@ async function waitForPlaying(timeoutMs = 4000) {
 let progressSub = null;
 let fallbackTimer = null;
 
+let pushedEndFade = null;
+let endFadeSub = null;
+
 async function checkRampWindow(position, duration) {
     try {
         const ramp = await getEndOfTrackRamp();
+        // The fade-out itself is timed natively; native only needs the length (and ignores it while a crossfade owns the transition).
+        if (AudioEngine.hasNativeEndFade() && pushedEndFade !== ramp) { pushedEndFade = ramp; AudioEngine.setEndFade(ramp).catch(() => { pushedEndFade = null; }); }
+        if (!endFadeSub) {
+            endFadeSub = AudioEngine.addEventListener(Event.EndFadeStarted, () => {
+                // Native began the fade-out: take the claim, so the next song's ramp-in logic runs as it did when JS started the fade.
+                if (activeFadeId === null) { const id = claimFade(); naturalEndFadeOwner = id; }
+            });
+        }
         // When crossfade is on, the native side handles the ENTIRE
         // transition itself (both tracks' volumes, in lockstep, on the
         // actual overlapping audio) for a genuine track-to-track advance —
@@ -409,6 +420,7 @@ async function checkRampWindow(position, duration) {
         // in two thirds of the time, so the fade-out used to be cut off by the end of the song, still audible.
         const remaining = (duration - position) / (AudioEngine.getLastPlaybackRate() || 1);
         if (remaining > 0.15 && remaining <= ramp) {
+            if (AudioEngine.hasNativeEndFade()) return;   // native times and starts this fade
             const id = claimFade();
             naturalEndFadeOwner = id;
             // Real bug found here (direct feedback: "songs sometimes cut

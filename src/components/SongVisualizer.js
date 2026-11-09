@@ -57,7 +57,8 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     const vals = useRef(null);
     if (!vals.current || vals.current.length !== bars) vals.current = Array.from({ length: bars }, () => new Animated.Value(MIN));
     const shown = useRef(new Array(bars).fill(0));
-    const target = useRef(new Array(8).fill(0));
+    const target = useRef(new Array(16).fill(0));
+    const bandCount = useRef(10);   // how many bands the engine sends (the EQ's ten)
     const lastEvent = useRef(0);
     const [h, setH] = useState(size > 0 ? size : 0);   // known up front: no wait for the first layout pass
     const { state } = usePlaybackState();
@@ -71,8 +72,10 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.VizLevels, (e) => {
             const l = e && e.l;
-            if (!l || l.length < 8) return;
-            for (let i = 0; i < 8; i++) target.current[i] = l[i];
+            if (!l || l.length < 2) return;
+            const nb = Math.min(16, l.length);
+            bandCount.current = nb;
+            for (let i = 0; i < nb; i++) target.current[i] = l[i];
             lastEvent.current = Date.now();
         });
         acquireTap();
@@ -89,8 +92,16 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     useEffect(() => {
         let raf = 0;
         let lastHeal = 0;
+        let lastT = Date.now();
         const loop = () => {
             const nowMs = Date.now();
+            // Time based smoothing (it was a fixed amount per frame, so it looked different at 60 and 120 Hz and
+            // jumped when a frame was late): quick to rise, slower to fall.
+            const dt = Math.min(0.1, Math.max(0.001, (nowMs - lastT) / 1000));
+            lastT = nowMs;
+            const kUp = 1 - Math.exp(-dt / 0.03);
+            const kDown = 1 - Math.exp(-dt / 0.16);
+            const nb = bandCount.current;
             const live = nowMs - lastEvent.current < 250;
             // Playing, yet no readings for a moment: the tap was lost (an interruption, a route
             // change or a rebuilt engine drops it without telling JS). Put it in again, at most
@@ -101,12 +112,12 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
                 AudioEngine.setVisualizerEnabled(true);
             }
             for (let i = 0; i < bars; i++) {
-                const pos = (i / Math.max(1, bars - 1)) * 7;
-                const a = Math.floor(pos); const b = Math.min(7, a + 1); const f = pos - a;
+                const pos = (i / Math.max(1, bars - 1)) * (nb - 1);
+                const a = Math.floor(pos); const b = Math.min(nb - 1, a + 1); const f = pos - a;
                 const want = live ? target.current[a] * (1 - f) + target.current[b] * f : 0;
                 const prev = shown.current[i];
-                const next = want > prev ? prev + (want - prev) * 0.85 : prev + (want - prev) * 0.22;
-                if (Math.abs(next - prev) > 0.004) { shown.current[i] = next; vals.current[i].setValue(MIN + next * SPAN); }
+                const next = want > prev ? prev + (want - prev) * kUp : prev + (want - prev) * kDown;
+                if (Math.abs(next - prev) > 0.002) { shown.current[i] = next; vals.current[i].setValue(MIN + next * SPAN); }
             }
             raf = requestAnimationFrame(loop);
         };

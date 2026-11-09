@@ -45,7 +45,12 @@ export default function SleepTimerSheet({ visible, onClose }) {
     const active = !!sleepTimerEndAt || sleepAtTrackEnd;
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}>
+        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}
+            footer={customOpen ? (
+                <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setSleepTimer(customMin); onClose(); }}>
+                    <Text style={[s.startText, { color: theme.onAccent }]}>Start</Text>
+                </TouchableOpacity>
+            ) : null}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             {active && (
                 <View style={[s.activeRow, { borderBottomColor: base.border }]}>
@@ -74,9 +79,6 @@ export default function SleepTimerSheet({ visible, onClose }) {
                         onValueChange={setCustomMin}
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.customEnds}><Text style={[s.customEnd, { color: base.textFaint }]}>1 min</Text><Text style={[s.customEnd, { color: base.textFaint }]}>3 h</Text></View>
-                    <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setSleepTimer(customMin); onClose(); }}>
-                        <Text style={[s.startText, { color: theme.onAccent }]}>Start</Text>
-                    </TouchableOpacity>
                 </View>
             )}
             <TouchableOpacity style={[s.row, { borderBottomColor: base.border }]}

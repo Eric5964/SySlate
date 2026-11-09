@@ -439,7 +439,9 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     };
     // Degrees the disc has turned `u` (0 to 1) of the way through an ease: the
     // sound's speed goes from `from` to `to` along a smoothstep.
-    api.current.autoDeg = (au, u) => au.degPerSec * (au.ms / 1000) * (au.from * u + (au.to - au.from) * (u * u * u - (u * u * u * u) / 2));
+    // A release picks the sound up fast (ease-out): the old smoothstep from a held disc sat near zero speed
+    // for the first ~120 ms, heard as the music pausing before it got back on track. An edge ease is unchanged.
+    api.current.autoDeg = (au, u) => au.degPerSec * (au.ms / 1000) * (au.from * u + (au.to - au.from) * (au.kind === 'release' ? (u * u - (u * u * u) / 3) : (u * u * u - (u * u * u * u) / 2)));
     // Stops the native disc motion where it is and records the angle.
     api.current.settleAutoAngle = () => {
         const au = autoRef.current;
@@ -505,7 +507,7 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
         const au = autoRef.current;
         if (au) {
             const u = Math.min(1, (now - au.t0) / au.ms);
-            const e = u * u * (3 - 2 * u);
+            const e = au.kind === 'release' ? (2 * u - u * u) : (u * u * (3 - 2 * u));
             const rate = au.from + (au.to - au.from) * e;
             sentRate.current = rate;
             if (scratchingRef.current) AudioEngine.scratchSetRate(rate);

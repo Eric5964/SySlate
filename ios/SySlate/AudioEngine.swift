@@ -360,6 +360,7 @@ class AudioEngine: RCTEventEmitter {
             "PlaybackState",
             "PlaybackTrackChanged",
             "PlaybackProgressUpdated",
+            "EndFadeStarted",
             "VizLevels",
             "RemotePlay",
             "RemotePause",
@@ -866,12 +867,13 @@ class AudioEngine: RCTEventEmitter {
         let t = deviceLossFadeToken
         let startVol = deviceLossBaseVol ?? activeNode.volume
         deviceLossBaseVol = startVol
-        let steps = 6
-        debugLog("[POP] output device gone: fading out over \(steps * 12) ms before pausing (nodeVol=\(startVol))")
+        let steps = 24
+        debugLog("[POP] output device gone: fading out over \(steps * 4) ms before pausing (nodeVol=\(startVol))")
         for i in 1...steps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012 * Double(i)) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self] in
                 guard let self = self, t == self.deviceLossFadeToken else { return }
-                self.activeNode.volume = startVol * Float(steps - i) / Float(steps)
+                let remain = Float(steps - i) / Float(steps)
+                self.activeNode.volume = startVol * remain * remain
                 if i == steps {
                     self.pauseInternal()
                     // Paused and silent: put the level back as it was before, so
@@ -894,9 +896,9 @@ class AudioEngine: RCTEventEmitter {
         if engine.isRunning, mixerNow > 0.02 {
             // Down in a few short steps (about 25 ms) rather than one jump, which is a
             // click whenever sound is passing through at that moment.
-            let downSteps = 5
+            let downSteps = 12
             for i in 1...downSteps {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.005 * Double(i)) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.0025 * Double(i)) { [weak self] in
                     guard let self = self, t == self.softMuteToken, !self.coldMuteHeld else { return }
                     self.engine.mainMixerNode.outputVolume = mixerNow * Float(downSteps - i) / Float(downSteps)
                 }
@@ -907,9 +909,9 @@ class AudioEngine: RCTEventEmitter {
         debugLog("[POP] soft mute for \(hold)s (state=\(state), engineRunning=\(engine.isRunning))")
         DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
             guard let self = self, t == self.softMuteToken else { return }
-            let steps = 8
+            let steps = 16
             for i in 1...steps {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01 * Double(i)) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.005 * Double(i)) { [weak self] in
                     guard let self = self, t == self.softMuteToken, !self.coldMuteHeld else { return }
                     self.engine.mainMixerNode.outputVolume = Float(i) / Float(steps)
                 }
@@ -2127,7 +2129,65 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
+    // ---- End-of-song fade-out, timed here on the audio clock ----
+    // JS used to time this from progress events, which can reach it a second late when the JS thread is
+    // busy, so the song often ended with the fade still 15 to 35 percent up (heard as "cuts early at the
+    // very bottom"). Here the fade starts exactly `endFadeSeconds` (minus a small margin for the output
+    // delay) before the real end of the audible audio, whatever JS is doing. JS only sets the length and
+    // is told with EndFadeStarted so it can ramp the next song in.
+    private var endFadeSeconds: Double = 0
+    private var endFadeTimer: Timer?
+    private let endFadeMargin: TimeInterval = 0.3
+
+    @objc(setEndFade:resolver:rejecter:)
+    func setEndFade(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
+        let v = max(0, min(30, seconds.doubleValue))
+        let changed = abs(v - endFadeSeconds) > 0.001
+        endFadeSeconds = v
+        if changed { scheduleEndFade() }
+        resolve(nil)
+    }
+
+    private func endFadeRemainingWall() -> Double {
+        let speed = Double(max(0.25, playbackRate))
+        return (currentDurationSeconds() - currentPositionSeconds()) / speed
+    }
+
+    private func scheduleEndFade() {
+        endFadeTimer?.invalidate()
+        endFadeTimer = nil
+        guard endFadeSeconds > 0.05, !isCrossfading, !scratchActive,
+              let idx = currentIndex, idx >= 0, idx < queue.count else { return }
+        if crossfadeEnabled && crossfadeDurationEndOfTrackSeconds > 0.05 { return }   // the crossfade owns this transition
+        let remaining = endFadeRemainingWall()
+        guard remaining > 0.5 else { return }
+        let d = min(endFadeSeconds, remaining - endFadeMargin)
+        guard d >= 0.2 else { return }
+        let fireIn = max(0.02, remaining - endFadeMargin - d)
+        let token = playbackToken
+        debugLog(String(format: "[FADE] end fade armed: starts in %.2fs, lasts %.2fs", fireIn, d))
+        let timer = Timer.scheduledTimer(withTimeInterval: fireIn, repeats: false) { [weak self] _ in
+            self?.fireEndFade(token: token)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        endFadeTimer = timer
+    }
+
+    private func fireEndFade(token: UInt64) {
+        endFadeTimer = nil
+        guard state == .playing, !isCrossfading, !scratchActive, token == playbackToken else { return }
+        let remaining = endFadeRemainingWall()
+        // Paused, resumed or sought since it was armed: arm again from the real position.
+        if remaining - endFadeMargin > endFadeSeconds + 0.4 { scheduleEndFade(); return }
+        let d = max(0.2, min(endFadeSeconds, remaining - endFadeMargin))
+        guard remaining > 0.35 else { return }
+        debugLog(String(format: "[FADE] end fade starting now: %.2fs left, fading over %.2fs from %.3f", remaining, d, volume))
+        sendEvent(withName: "EndFadeStarted", body: nil)
+        rampVolume(NSNumber(value: volume), to: NSNumber(value: 0), duration: NSNumber(value: d), resolver: { _ in }, rejecter: { _, _, _ in })
+    }
+
     private func scheduleCrossfadeLeadIn() {
+        scheduleEndFade()
         prewarmAnalysisForNextTrack()
         leadDeferCount = 0
         crossfadeLeadTimer?.invalidate()
@@ -2835,7 +2895,7 @@ class AudioEngine: RCTEventEmitter {
         var tickCount = 0
         progressTimer = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] _ in
             guard let self = self, self.state == .playing else { return }
-            let position = self.currentPositionSeconds()
+            let position = max(0, self.currentPositionSeconds())
             // Now shares getProgress's currentDurationSeconds() helper —
             // includes the crossfade-mid-announcement branch too, see its
             // comment.
@@ -2958,8 +3018,9 @@ class AudioEngine: RCTEventEmitter {
         // JS, the song comes up over ~250ms instead of ~30ms, so it never
         // arrives at full level in one step.
         let cold = coldMuteHeld
-        let steps = cold ? 25 : 8
-        let stepSec = cold ? 0.01 : 0.004
+        // Many small steps: a handful of big ones is a staircase, and every stair is a click.
+        let steps = cold ? 50 : 32
+        let stepSec = cold ? 0.005 : 0.002
         // The level this fade was armed for. Each step used to recompute its
         // target from whatever self.volume was AT THAT MOMENT, so anything
         // that wrote the volume while the steps were still running (JS
@@ -2990,8 +3051,8 @@ class AudioEngine: RCTEventEmitter {
 
     // The mute lifts in a few short steps (was 8 x 15 ms) and a fade-in waits for
     // the whole lift to finish before it starts, so the ramp is heard in full.
-    private let coldLiftSteps = 6
-    private let coldLiftStepSec: TimeInterval = 0.010
+    private let coldLiftSteps = 24
+    private let coldLiftStepSec: TimeInterval = 0.0025
     private let coldLiftDelay: TimeInterval = 0.05
 
     private func releaseColdStartMute(after delay: TimeInterval) {
@@ -4680,7 +4741,7 @@ class AudioEngine: RCTEventEmitter {
         // 1/60s tick — smooth without being any more bridge/CPU traffic
         // than a single scheduled Timer regardless of interval; the actual
         // volume math is trivial.
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] t in
             guard let self = self, self.rampGeneration == myGeneration else { t.invalidate(); return }
             // A skip while playing asks for the fade-in as soon as JS thinks the song has changed, but the
             // new song is still being opened and analysed (a first-time analysis takes a while). The ramp
@@ -4697,8 +4758,14 @@ class AudioEngine: RCTEventEmitter {
             }
             let elapsed = Date().timeIntervalSince(start)
             let progress = max(0.0, min(1.0, dur > 0 ? elapsed / dur : 1.0))
-            let eased = Float((1 - cos(progress * Double.pi)) / 2)
-            let v = fromVal + (toVal - fromVal) * eased
+            // Loudness is not linear: the old raised-cosine curve spent its last 15 percent or so below
+            // what the ear can hear, so every fade-out seemed to end early, and the start of a fade-in
+            // seemed to jump. A power curve (the way down is the way up, played backwards) keeps the
+            // change even from start to end. Both ends still land exactly on the target.
+            let shaped: Float = toVal >= fromVal
+                ? Float(pow(progress, 1.8))
+                : Float(1 - pow(1 - progress, 1.8))
+            let v = fromVal + (toVal - fromVal) * shaped
             self.volume = v
             self.activeNode.volume = v * self.currentGainCorrection
             if progress >= 1.0 {
@@ -5087,7 +5154,16 @@ class AudioEngine: RCTEventEmitter {
     private var vizOn = false
     private var vizLastSent: TimeInterval = 0
     private var vizWin: [Double] = []
-    private let vizFreqs: [Double] = [60, 120, 250, 500, 1000, 2000, 4000, 8000]
+    // The same ten octave bands the EQ uses (32 Hz to 16 kHz), so the visualizer and the EQ speak the same
+    // scale: log frequency across, dB (log amplitude) up.
+    private let vizFreqs: [Double] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    // 4096 samples (about 93 ms) per reading. The old 1024-sample window (23 ms) could not resolve the low
+    // bands at all (its bins were 43 Hz wide), so bass was smeared and unreliable. A ring buffer keeps the
+    // last 4096 samples and a new reading is made on every tap callback.
+    private let vizWinSize = 4096
+    private var vizRing = [Float](repeating: 0, count: 4096)
+    private var vizRingPos = 0
+    private var vizFilled = 0
 
     @objc(setVisualizerEnabled:)
     func setVisualizerEnabled(_ on: NSNumber) {
@@ -5104,20 +5180,26 @@ class AudioEngine: RCTEventEmitter {
         }
     }
 
-    // Runs on the audio tap's own thread. A Goertzel filter per band (cheap: 8 x 1024
-    // multiply-adds per call), with a Hann window to keep the bands apart.
     private func vizProcess(_ buffer: AVAudioPCMBuffer) {
-        let now = ProcessInfo.processInfo.systemUptime
-        if now - vizLastSent < 0.022 { return }
         guard let ch = buffer.floatChannelData else { return }
         let n = Int(buffer.frameLength)
         if n < 64 { return }
-        if vizWin.count != n {
-            vizWin = (0..<n).map { 0.5 - 0.5 * cos(2.0 * Double.pi * Double($0) / Double(n - 1)) }
+        let N = vizWinSize
+        if vizWin.count != N {
+            vizWin = (0..<N).map { 0.5 - 0.5 * cos(2.0 * Double.pi * Double($0) / Double(N - 1)) }
         }
-        let sr = buffer.format.sampleRate
         let left = ch[0]
         let right: UnsafeMutablePointer<Float>? = buffer.format.channelCount > 1 ? ch[1] : nil
+        for i in 0..<n {
+            var v = left[i]
+            if let r = right { v = 0.5 * (v + r[i]) }
+            vizRing[vizRingPos] = v
+            vizRingPos = (vizRingPos + 1) & (N - 1)
+        }
+        vizFilled = min(N, vizFilled + n)
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - vizLastSent < 0.02 || vizFilled < N { return }
+        let sr = buffer.format.sampleRate
         var levels = [Double]()
         levels.reserveCapacity(vizFreqs.count)
         for (bandIndex, f) in vizFreqs.enumerated() {
@@ -5125,16 +5207,18 @@ class AudioEngine: RCTEventEmitter {
             let coeff = 2.0 * cos(w)
             var s1 = 0.0
             var s2 = 0.0
-            for i in 0..<n {
-                var v = Double(left[i])
-                if let r = right { v = 0.5 * (v + Double(r[i])) }
-                let s0 = v * vizWin[i] + coeff * s1 - s2
+            var idx = vizRingPos   // the oldest sample
+            for i in 0..<N {
+                let s0 = Double(vizRing[idx]) * vizWin[i] + coeff * s1 - s2
                 s2 = s1
                 s1 = s0
+                idx = (idx + 1) & (N - 1)
             }
             let power = s1 * s1 + s2 * s2 - coeff * s1 * s2
-            let amp = 4.0 / Double(n) * sqrt(max(0.0, power))   // x2 for the window, x2 for one-sided
-            let db = 20.0 * log10(amp + 1e-7) + 2.5 * Double(bandIndex)   // highs carry less energy: small tilt
+            let amp = 4.0 / Double(N) * sqrt(max(0.0, power))   // x2 for the window, x2 for one-sided
+            // Music carries about 3 dB less per bin for every octave up, so a 3 dB per octave tilt makes a
+            // typical song read level across the bands instead of sloping off to the right.
+            let db = 20.0 * log10(amp + 1e-7) + 3.0 * Double(bandIndex)
             levels.append(min(1.0, max(0.0, (db + 66.0) / 54.0)))
         }
         vizLastSent = now

@@ -59,7 +59,8 @@ const LiveTime = React.memo(function LiveTime({ position, duration, playing, rat
 });
 
 function fmt(sec) {
-    if (!sec || isNaN(sec)) return '0:00';
+    // A position a hair below zero (a song just starting) used to print as "-1:-1".
+    if (!sec || isNaN(sec) || sec < 0) return '0:00';
     return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 }
 
@@ -168,7 +169,7 @@ export default function PlayerScreen() {
     // Player tends to stay mounted for the whole session, this is likely
     // why play count looked "off" here even after confirming the actual
     // preference was on.
-    const { playerVizCover, playerVizBehind, performanceMode, showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
+    const { playerVizCover, playerVizBehind, performanceMode, showPlayCount, artistSeparator, lyricsResyncSec, lyricsOffsetSec, lyricsGapSec, lyricsArrows, coverShape, showPlayerCover, coverShadow, lyricsScrollLocked, artistDisplayJoin, lyricsMode, djDisc, djDiscType, djDiscAssist, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, discRpmValue, playerOutline, playerBtns, crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack } = usePreferences();
 
     // The count is credited once a song passes half way, so the shown count is read again
     // at that moment (it used to stay stale until the next song). The `cancelled` flag stops a
@@ -724,7 +725,11 @@ export default function PlayerScreen() {
     const rawActiveLine = (lyricsLive && liveLine && liveLine.d === lyricsData) ? liveLine.i : baseActiveLine;
     // A timestamp with no words (an instrumental stretch) is not shown at all and lights nothing up: while the
     // song is in one, no line is active (-3) and the lyrics sit halfway between the line before and the line after.
-    const activeLine = (rawActiveLine >= 0 && lyricsData && !lyricsData[rawActiveLine]?.text) ? -3 : rawActiveLine;
+    // With a Blank Line Gap set, a wordless stretch at least that long keeps its own empty line of space (and can be the
+    // active line, so the lyrics rest on it); shorter ones stay invisible as before.
+    const isGapLine = (i) => lyricsGapSec > 0 && !!lyricsData && !!lyricsData[i] && !lyricsData[i].text
+        && !!lyricsData[i + 1] && (lyricsData[i + 1].time - lyricsData[i].time) >= lyricsGapSec;
+    const activeLine = (rawActiveLine >= 0 && lyricsData && !lyricsData[rawActiveLine]?.text && !isGapLine(rawActiveLine)) ? -3 : rawActiveLine;
 
     // Seeded from the same initial guess as showingLyrics above (not always
     // 0/cover) so a cache-hit mount goes straight to lyrics without playing
@@ -1598,7 +1603,10 @@ export default function PlayerScreen() {
                                         to a surrounding pan gesture at its own scroll
                                         bounds anyway. */}
                                     <React.Fragment key={lyricsSetKey}>{lyricsData.map((line, i) => {
-                                        if (!line.text) return null;   // an empty timestamp: nothing is drawn (no "...")
+                                        if (!line.text) {
+                                            if (!isGapLine(i)) return null;   // an empty timestamp: nothing is drawn (no "...")
+                                            return <View key={i} onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); bumpLyricsLayout(); }} style={{ height: 34, marginVertical: 7 }} />;
+                                        }
                                         // Spotify-style: the lines themselves fade out toward the top
                                         // and bottom edge of the box (no dark box over them). A row's
                                         // Y comes from its onLayout; minus the live scroll offset it is
@@ -1659,6 +1667,31 @@ export default function PlayerScreen() {
                                         );
                                     })}</React.Fragment>
                                 </Animated.ScrollView>
+                                {(() => {
+                                    // Small arrows at the left and right edge, on the line the lyrics are at. They
+                                    // ride the scroll position, so they stay with the line while it scrolls. Accent
+                                    // coloured while words are playing, dim while the line is blank.
+                                    if (!lyricsArrows || !showingLyrics || !lyricsData || rawActiveLine < 0) return null;
+                                    const ys = lyricsRowYRef.current;
+                                    let cy = null;
+                                    if (activeLine >= 0) { const y = ys.get(activeLine); if (y !== undefined) cy = y + 17; }
+                                    else {
+                                        let p = rawActiveLine, n = rawActiveLine + 1;
+                                        while (p >= 0 && !lyricsData[p]?.text) p--;
+                                        while (n < lyricsData.length && !lyricsData[n]?.text) n++;
+                                        const yp = ys.get(p), yn = ys.get(n);
+                                        if (yp !== undefined && yn !== undefined) cy = (yp + 34 + yn) / 2;
+                                    }
+                                    if (cy === null) return null;
+                                    const color = (activeLine >= 0 && lyricsData[activeLine]?.text) ? lyricActiveColor : lyricIdleColor;
+                                    const ty = lyricsScrollY.interpolate({ inputRange: [0, 1], outputRange: [cy - 9, cy - 10] });
+                                    return (
+                                        <>
+                                            <Animated.Text pointerEvents="none" style={[s.lyricArrow, { left: 5, color, transform: [{ translateY: ty }] }]}>{'\u25B8'}</Animated.Text>
+                                            <Animated.Text pointerEvents="none" style={[s.lyricArrow, { right: 5, color, transform: [{ translateY: ty }] }]}>{'\u25C2'}</Animated.Text>
+                                        </>
+                                    );
+                                })()}
                             </Animated.View>
                         )}
                     </View>
@@ -1873,6 +1906,7 @@ const s = StyleSheet.create({
     // same 800 weight always; active vs inactive is still clearly
     // distinguished by color/opacity alone (see the color/opacity props
     // where this style gets applied), just without the reflow.
+    lyricArrow: { position: 'absolute', top: 0, fontSize: 13, lineHeight: 18, fontWeight: '700' },
     lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '800', textAlign: 'center', marginVertical: 7 },
     // Two fixes here per direct feedback:
     // 1. "too bolded, just a normal bold ideally, noticeable but not over

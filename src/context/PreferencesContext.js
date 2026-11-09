@@ -26,6 +26,8 @@ import {
     getPlayerBtn, setPlayerBtn,
     getLyricsResyncSec, setLyricsResyncSec as persistLyricsResyncSec,
     getLyricsOffsetSec, setLyricsOffsetSec as persistLyricsOffsetSec,
+    getLyricsGapSec, setLyricsGapSec as persistLyricsGapSec,
+    getLyricsArrows, setLyricsArrows as persistLyricsArrows,
     getKeepScreenAwake, setKeepScreenAwake as persistKeepScreenAwake,
     getCoverShape, setCoverShape as persistCoverShape,
     getShowPlayerCover, setShowPlayerCover as persistShowPlayerCover,
@@ -93,6 +95,8 @@ const Ctx = createContext({
     playerBtns: { sleep: true, speed: true, eq: true, queue: true, label: true, back: true }, setPlayerBtnShown: () => { },
     lyricsResyncSec: 2, setLyricsResyncSec: () => { },
     lyricsOffsetSec: 0, setLyricsOffsetSec: () => { },
+    lyricsGapSec: 0, setLyricsGapSec: () => { },
+    lyricsArrows: false, setLyricsArrows: () => { },
     keepScreenAwake: false, setKeepScreenAwake: () => { },
     coverShape: 'rounded', setCoverShape: () => { },
     showPlayerCover: true, setShowPlayerCover: () => { },
@@ -164,6 +168,8 @@ export function PreferencesProvider({ children }) {
     }, []);
     const [lyricsResyncSec, setLyricsResyncSecState] = useState(2);
     const [lyricsOffsetSec, setLyricsOffsetSecState] = useState(0);
+    const [lyricsGapSec, setLyricsGapSecState] = useState(0);
+    const [lyricsArrows, setLyricsArrowsState] = useState(false);
     const [keepScreenAwake, setKeepScreenAwakeState] = useState(false);
     const [coverShape, setCoverShapeState] = useState('rounded');
     const [showPlayerCover, setShowPlayerCoverState] = useState(true);
@@ -229,6 +235,8 @@ export function PreferencesProvider({ children }) {
         ['sleep', 'speed', 'eq', 'queue', 'label', 'back'].forEach(n => getPlayerBtn(n).then(v => setPlayerBtns(prev => ({ ...prev, [n]: v }))));
         getLyricsResyncSec().then(setLyricsResyncSecState);
         getLyricsOffsetSec().then(setLyricsOffsetSecState);
+        getLyricsGapSec().then(setLyricsGapSecState);
+        getLyricsArrows().then(setLyricsArrowsState);
         getKeepScreenAwake().then(setKeepScreenAwakeState);
         getCoverShape().then(setCoverShapeState);
         getShowPlayerCover().then(setShowPlayerCoverState);
@@ -348,6 +356,8 @@ export function PreferencesProvider({ children }) {
         setLyricsResyncSecState(v);
         persistLyricsResyncSec(v);
     }, []);
+    const setLyricsGapSec = useCallback((v) => { setLyricsGapSecState(v); persistLyricsGapSec(v); }, []);
+    const setLyricsArrows = useCallback((v) => { setLyricsArrowsState(v); persistLyricsArrows(v); }, []);
     const setLyricsOffsetSec = useCallback((v) => {
         setLyricsOffsetSecState(v);
         persistLyricsOffsetSec(v);
@@ -466,6 +476,8 @@ export function PreferencesProvider({ children }) {
         playerBtns, setPlayerBtnShown,
         lyricsResyncSec, setLyricsResyncSec,
         lyricsOffsetSec, setLyricsOffsetSec,
+        lyricsGapSec, setLyricsGapSec,
+        lyricsArrows, setLyricsArrows,
         keepScreenAwake, setKeepScreenAwake,
         coverShape, setCoverShape,
         showPlayerCover, setShowPlayerCover,
@@ -493,7 +505,7 @@ export function PreferencesProvider({ children }) {
         ui, setUiShown,
     }), [
         showPlayCount, showSongCovers, artistSeparator, lyricsMode, lyricsOn, djDisc, autoShow, vizMode, playerVizCover, playerVizBehind, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
-        lyricsResyncSec, lyricsOffsetSec, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
+        lyricsResyncSec, lyricsOffsetSec, lyricsGapSec, lyricsArrows, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
         crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, spatialWidth, spatialBalance, betweenTrackNorm, silenceTrim,
         showPlaylistTrackCount, showPlaylistTitles, lyricsScrollLocked, artistDisplayJoin,

@@ -171,6 +171,10 @@ RCT_EXTERN_METHOD(setEQBands:(NSArray *)bands
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(setEndFade:(nonnull NSNumber *)seconds
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(setEQParametric:(NSArray *)freqs
                   gains:(NSArray *)gains
                   bandwidths:(NSArray *)bandwidths
