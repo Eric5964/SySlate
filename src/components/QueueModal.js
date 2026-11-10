@@ -734,7 +734,10 @@ export default function QueueModal({ visible, onClose }) {
                 if (topUN) {
                     const pcNow = list.filter(r => r.isPriority).length;
                     const lu = layoutOfRow(pcNow);
-                    if (lu) settleY = lu.y - (fromL.height || 0) * 0;   // settles where the first Up Next row is now
+                    // The slot that opened while hovering is the held row's height directly ABOVE the first Up Next
+                    // row (the label and the line moved up to make it). Settling AT that row, as this used to,
+                    // put the dropped row on top of it, so it looked second for a moment and then jumped to first.
+                    if (lu) settleY = lu.y - (fromL.height || 0);
                 }
                 Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
                 const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);

@@ -5083,17 +5083,17 @@ class AudioEngine: RCTEventEmitter {
     // a no-op at that point.
     @objc(setEQBands:resolver:rejecter:)
     func setEQBands(_ bands: [NSNumber], resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
-        // Coming back from the custom (parametric) EQ: put every band back on its fixed frequency,
-        // width and filter type first, because the custom EQ may have moved them.
-        if eqCustomActive {
-            eqCustomActive = false
-            let eqFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-            for (i, freq) in eqFrequencies.enumerated() where i < eqNode.bands.count {
-                eqNode.bands[i].filterType = .parametric
-                eqNode.bands[i].frequency = freq
-                eqNode.bands[i].bandwidth = 1.0
-                eqNode.bands[i].bypass = false
-            }
+        // Every call puts each band back on its fixed frequency, width and filter type before setting the gain.
+        // This used to happen only when the custom EQ had been used, tracked by a flag; if that flag was ever
+        // out of step (an engine rebuild, a route change) a normal preset could be left on the custom EQ's
+        // frequencies. Doing it every time is cheap and cannot get out of step.
+        eqCustomActive = false
+        let eqFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        for (i, freq) in eqFrequencies.enumerated() where i < eqNode.bands.count {
+            eqNode.bands[i].filterType = .parametric
+            eqNode.bands[i].frequency = freq
+            eqNode.bands[i].bandwidth = 1.0
+            eqNode.bands[i].bypass = false
         }
         for (i, gain) in bands.enumerated() where i < eqNode.bands.count {
             eqNode.bands[i].gain = gain.floatValue

@@ -4,7 +4,7 @@ import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
-import { getCustomPresets, getEQOverrides } from '../utils/storage';
+import { getCustomPresets, getEQOverrides, getPreAmp } from '../utils/storage';
 import { toNativeArrays, presetParamBands } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
@@ -82,6 +82,7 @@ export async function applyEQPreset(id) {
         if (param) {
             const n = toNativeArrays({ bands: param });
             await AudioEngine.setEQParametric(n.freqs, n.gains, n.bws, n.types);
+            AudioEngine.setPreAmp(await getPreAmp()).catch(() => { });   // the pre-amp rides on the same EQ unit: keep it as saved
             return;
         }
         // Clamped here — the one place EVERY band value actually reaches
@@ -90,6 +91,7 @@ export async function applyEQPreset(id) {
         // range was ±12 can't hand the native side something outside what
         // it's now meant to support.
         await AudioEngine.setEQBands(preset.bands.map(clampEQBand));
+        AudioEngine.setPreAmp(await getPreAmp()).catch(() => { });
     } catch { }
 }
 const stampQids = (tracks) => tracks.map(stampQid);
