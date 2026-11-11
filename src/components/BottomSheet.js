@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { View, Animated, StyleSheet, Dimensions, Modal } from 'react-native';
+import { View, Animated, StyleSheet, Dimensions, Modal, PanResponder } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
@@ -23,15 +23,27 @@ export const SHEET_HEIGHT = Math.round(SCREEN_H * (2 / 3));
 // property from the gesture path, so there's nothing to mix.
 const CLOSE_COMMIT_DISTANCE = 70; // lower = easier to trigger = "less resistance"
 const CLOSE_VELOCITY = 1.1;
-// `expandable` sheets: swiping UP on the handle makes the sheet full screen, swiping DOWN on a full
-// screen sheet brings it back to normal size, and swiping down again closes it. The sheet is always
-// laid out full screen and slid down by (screen - normal height) while normal, so the whole
-// animation stays on `transform` (native driver); the content padding that keeps the buttons above the
-// visible edge is a separate, JS-driven value on its own wrapper view (never mixed into one style).
+// `expandable` sheets have three resting places: full screen, normal and closed. The sheet follows the finger
+// continuously (up and down) and, on release, lands on one of them by distance and speed, so it feels like one
+// object instead of jumping between states. It is always laid out full screen and slid down by (screen - normal
+// height) while normal, so the movement stays on `transform` (native driver); the content padding that keeps the
+// buttons above the visible edge is a separate, JS-driven value on its own wrapper view (never mixed into one style).
 const EXPAND_COMMIT_DISTANCE = 50;
 const EXPAND_VELOCITY = 0.9;
 
-export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false, footer = null }) {
+// For sheets whose content scrolls: the parent makes a guard, passes it as `guard`, and its scroll view reports
+// `guard.current.atTop` (offset <= 2) and uses `contentDragging` for `scrollEnabled={!contentDragging}`. With that, a
+// downward drag that starts on the content while the list is at the top moves the sheet (swipe away from anywhere,
+// not only the handle); anywhere else the list scrolls as usual. `guard.current.isBlocked` can veto it (the queue
+// uses that while a row is being picked up).
+export function useSheetGuard() {
+    const guard = useRef({ atTop: true, isBlocked: null, onContentDrag: null });
+    const [contentDragging, setContentDragging] = useState(false);
+    guard.current.onContentDrag = setContentDragging;
+    return { guard, contentDragging };
+}
+
+export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false, footer = null, guard = null }) {
     const { base } = useTheme();
     const insets = useSafeAreaInsets();
     const height = expandable ? SCREEN_H : normalHeight;            // laid-out height
@@ -44,21 +56,26 @@ export default function BottomSheet({ visible, onClose, header, children, height
     const expandedRef = useRef(false);
     const [footerH, setFooterH] = useState(0);
     const api = useRef({});
-    api.current.setExpanded = (flag) => {
+    api.current.setExpanded = (flag, velocity = 0) => {
         expandedRef.current = flag;
         Animated.parallel([
-            Animated.timing(expandNative, { toValue: flag ? 0 : collapsedOffset, duration: 260, useNativeDriver: true }),
+            Animated.spring(expandNative, { toValue: flag ? 0 : collapsedOffset, velocity, useNativeDriver: true, friction: 11, tension: 90 }),
             Animated.timing(contentPad, { toValue: flag ? 0 : collapsedOffset, duration: 260, useNativeDriver: false }),
             Animated.timing(topPad, { toValue: flag ? insets.top : 0, duration: 260, useNativeDriver: false }),
         ]).start();
     };
     api.current.expandable = expandable;
-    // How far the finger has pulled the sheet down. Pulling up does nothing (the
-    // sheet used to lift off its bottom edge when dragged upward).
+    // How far the finger has dragged the sheet from where it rests. Up is allowed only for expandable sheets
+    // (limited to the full-screen position); for the others pulling up does nothing.
     const dragY = useRef(new Animated.Value(0)).current;
-    const dragDown = dragY.interpolate({ inputRange: [0, 1000], outputRange: [0, 1000], extrapolate: 'clamp' });
-    const sheetY = useRef(Animated.add(Animated.add(translateY, dragDown), expandNative)).current;
-    const footerOpacity = useRef(Animated.add(translateY, dragDown).interpolate({ inputRange: [0, 140], outputRange: [1, 0], extrapolate: 'clamp' })).current;
+    const dragFree = useRef(dragY.interpolate(collapsedOffset > 0
+        ? { inputRange: [-collapsedOffset, 0, 1000], outputRange: [-collapsedOffset, 0, 1000], extrapolate: 'clamp' }
+        : { inputRange: [0, 1000], outputRange: [0, 1000], extrapolate: 'clamp' })).current;
+    const offsetTotal = useRef(Animated.add(expandNative, dragFree).interpolate({ inputRange: [0, 4000], outputRange: [0, 4000], extrapolateLeft: 'clamp' })).current;
+    const sheetY = useRef(Animated.add(translateY, offsetTotal)).current;
+    // The pinned footer fades only when the sheet is on its way out (below its normal place), not while it grows.
+    const belowNormal = useRef(Animated.add(offsetTotal, -collapsedOffset).interpolate({ inputRange: [0, 4000], outputRange: [0, 4000], extrapolateLeft: 'clamp' })).current;
+    const footerOpacity = useRef(Animated.add(translateY, belowNormal).interpolate({ inputRange: [0, 140], outputRange: [1, 0], extrapolate: 'clamp' })).current;
     const [mounted, setMounted] = useState(visible);
     const backdropStart = useRef({ x: 0, y: 0 });
     const onCloseRef = useRef(onClose);
@@ -89,6 +106,37 @@ export default function BottomSheet({ visible, onClose, header, children, height
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible]);
 
+    // One release routine for the handle and for a drag that started on the content. dy: pixels moved (down is
+    // positive), vy: pixels per second.
+    api.current.release = (dy, vy) => {
+        const base0 = api.current.expandable && !expandedRef.current ? collapsedOffset : 0;
+        const y = Math.max(0, base0 + dy);                  // where the sheet is right now (0 = full screen)
+        // Hand the finger's position over to the resting value, so nothing jumps.
+        expandNative.setValue(y);
+        dragY.setValue(0);
+        const closeIt = () => {
+            Animated.parallel([
+                Animated.timing(backdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+                Animated.timing(translateY, { toValue: height, duration: 200, useNativeDriver: true }),
+            ]).start(() => { setMounted(false); onCloseRef.current?.(); });
+        };
+        const fromFull = api.current.expandable && expandedRef.current;
+        if (api.current.expandable) {
+            if (fromFull) {
+                if (dy > collapsedOffset + CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 2500) { closeIt(); return; }
+                if (dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) { api.current.setExpanded(false, vy / 1000); return; }
+                api.current.setExpanded(true, vy / 1000);
+                return;
+            }
+            if (dy < -EXPAND_COMMIT_DISTANCE || vy < -EXPAND_VELOCITY * 1000) { api.current.setExpanded(true, vy / 1000); return; }
+            if (dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) { closeIt(); return; }
+            api.current.setExpanded(false, vy / 1000);
+            return;
+        }
+        if (dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) { closeIt(); return; }
+        Animated.spring(expandNative, { toValue: 0, velocity: vy / 1000, useNativeDriver: true, friction: 9, tension: 80 }).start();
+    };
+
     const onHandleGestureEvent = useRef(
         Animated.event(
             [{ nativeEvent: { translationY: dragY } }],
@@ -98,33 +146,24 @@ export default function BottomSheet({ visible, onClose, header, children, height
 
     const onHandleStateChange = useRef((e) => {
         if (e.nativeEvent.oldState !== State.ACTIVE) return;
-        const dy = e.nativeEvent.translationY;
-        const vy = e.nativeEvent.velocityY;
-        if (api.current.expandable) {
-            if ((dy < -EXPAND_COMMIT_DISTANCE || vy < -EXPAND_VELOCITY * 1000) && !expandedRef.current) {
-                api.current.setExpanded(true);
-                Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
-                return;
-            }
-            if ((dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) && expandedRef.current) {
-                api.current.setExpanded(false);   // back to normal size; another swipe down closes
-                Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
-                return;
-            }
-        }
-        if (dy > CLOSE_COMMIT_DISTANCE || vy > CLOSE_VELOCITY * 1000) {
-            // Same "fade the background, slide up/down the sheet" language as
-            // the open/close effect and the Player modal's own swipe-to-
-            // dismiss, just triggered from the drag instead of the visible
-            // prop flipping first.
-            Animated.parallel([
-                Animated.timing(backdropOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
-                Animated.timing(translateY, { toValue: height, duration: 200, useNativeDriver: true }),
-            ]).start(() => { setMounted(false); onCloseRef.current?.(); });
-            return;
-        }
-        Animated.spring(dragY, { toValue: 0, useNativeDriver: true, friction: 9, tension: 80 }).start();
+        api.current.release(e.nativeEvent.translationY, e.nativeEvent.velocityY);
     }).current;
+
+    // A downward drag that starts on the content while its list is at the top moves the sheet.
+    const contentPan = useRef(PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponderCapture: (_e, g) => {
+            const gd = guard?.current;
+            if (!gd || !gd.atTop) return false;
+            if (gd.isBlocked && gd.isBlocked()) return false;
+            return g.dy > 8 && g.dy > Math.abs(g.dx) * 1.6;
+        },
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => { guard?.current?.onContentDrag?.(true); },
+        onPanResponderMove: (_e, g) => { dragY.setValue(g.dy - 8); },
+        onPanResponderRelease: (_e, g) => { guard?.current?.onContentDrag?.(false); api.current.release(g.dy - 8, g.vy * 1000); },
+        onPanResponderTerminate: (_e, g) => { guard?.current?.onContentDrag?.(false); api.current.release(g.dy - 8, g.vy * 1000); },
+    })).current;
 
     if (!mounted) return null;
 
@@ -145,7 +184,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                     <PanGestureHandler
                         onGestureEvent={onHandleGestureEvent}
                         onHandlerStateChange={onHandleStateChange}
-                        activeOffsetY={expandable ? [-12, 12] : [-1000, 12]}
+                        activeOffsetY={expandable ? [-8, 8] : [-1000, 8]}
                         failOffsetX={[-20, 20]}
                     >
                         <Animated.View style={s.handleZone}>
@@ -154,7 +193,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                         </Animated.View>
                     </PanGestureHandler>
                 </Animated.View>
-                <Animated.View style={{ flex: 1, paddingBottom: contentPad }}>
+                <Animated.View style={{ flex: 1, paddingBottom: contentPad }} {...(guard ? contentPan.panHandlers : {})}>
                     <View style={{ flex: 1, paddingBottom: footer ? footerH : 0 }}>
                         {children}
                     </View>

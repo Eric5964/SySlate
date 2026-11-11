@@ -958,6 +958,45 @@ const looseCountFor = (index, song) => {
 const playCountListeners = new Set();
 export const subscribePlayCount = (fn) => { playCountListeners.add(fn); return () => { playCountListeners.delete(fn); }; };
 
+// Reset all play counts and listening time. A copy of everything removed is written to a file first, so the
+// reset can be undone from Settings (Restore Play Counts); an exported settings file made earlier also still
+// holds the counts and brings them back through Import Settings.
+const PLAYCOUNT_UNDO_PATH = FileSystem.documentDirectory + '.syslate_playcounts_undo.json';
+const PLAY_COUNT_KEY_RE = /^(pc|pci|pcn|pcx|plis|plisb):/;
+export const resetPlayCounts = () => safe(async () => {
+    const keys = (await AsyncStorage.getAllKeys()).filter(k => PLAY_COUNT_KEY_RE.test(k));
+    if (!keys.length) return 0;
+    const entries = {};
+    (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { if (v != null) entries[k] = v; });
+    // Written BEFORE anything is removed; if the copy cannot be written, nothing is removed.
+    await FileSystem.writeAsStringAsync(PLAYCOUNT_UNDO_PATH, JSON.stringify({ at: Date.now(), entries }));
+    await AsyncStorage.multiRemove(keys);
+    playCountCache.clear();
+    looseIndex = null;
+    keys.forEach(key => playCountListeners.forEach(fn => { try { fn({ key, n: 0 }); } catch { } }));
+    return keys.length;
+}, 0);
+export const getPlayCountUndoInfo = () => safe(async () => {
+    try {
+        const o = JSON.parse(await FileSystem.readAsStringAsync(PLAYCOUNT_UNDO_PATH));
+        const n = Object.keys(o?.entries || {}).filter(k => k.startsWith('pcn:')).length;
+        return o && o.entries ? { at: o.at || 0, songs: n } : null;
+    } catch { return null; }
+}, null);
+export const restorePlayCounts = () => safe(async () => {
+    const o = JSON.parse(await FileSystem.readAsStringAsync(PLAYCOUNT_UNDO_PATH));
+    const entries = Object.entries(o?.entries || {}).filter(([k, v]) => PLAY_COUNT_KEY_RE.test(k) && typeof v === 'string');
+    if (!entries.length) return 0;
+    // Counts played since the reset are kept: the higher number wins per key.
+    const have = Object.fromEntries(await AsyncStorage.multiGet(entries.map(([k]) => k)));
+    const toWrite = entries.filter(([k, v]) => (parseFloat(v) || 0) > (parseFloat(have[k]) || 0));
+    if (toWrite.length) await AsyncStorage.multiSet(toWrite);
+    playCountCache.clear();
+    looseIndex = null;
+    toWrite.forEach(([key, v]) => playCountListeners.forEach(fn => { try { fn({ key, n: parseInt(v) || 0 }); } catch { } }));
+    return toWrite.length;
+}, 0);
+
 // A song's count is kept under its title + artist (shared by copies of the same song)
 // AND under its own file (`pci:<path>`, never shared). A list reads the larger of the two,
 // so a song whose title/artist spelling differs between two lists (one scanned before its

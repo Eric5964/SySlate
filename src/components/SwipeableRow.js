@@ -7,7 +7,12 @@ const COMMIT_DISTANCE = 72;
 const MAX_REVEAL = 108;
 
 // Strength of each strip of the soft fade behind the Added badge (smoothstep from 0 to 0.62).
-const DIM_ALPHA = Array.from({ length: 16 }, (_, k) => { const t = (k + 1) / 16; return 0.62 * (t * t * (3 - 2 * t)); });
+// Radial fade behind the Added badge: stacked ellipses, each a little bigger than the last, all centred on the badge,
+// so it is strongest at the centre and fades evenly to every side (it used to be strips that only reached left).
+const DIM_LAYERS = 14;
+const DIM_RADIUS_X = 86;       // half the width of the biggest ellipse
+const DIM_LAYER_ALPHA = 0.07;  // 14 layers stack up to about 0.64 at the centre
+const BADGE_CENTER_FROM_BADGE_RIGHT = 26;
 
 export default function SwipeableRow({
     children,
@@ -219,12 +224,13 @@ export default function SwipeableRow({
                         <Animated.View pointerEvents="none" style={[styles.glow, glowBox, { borderColor: leftColor, shadowColor: leftColor, opacity: leftGlowOpacity }]} />
                     )}
                     {onSwipeRight && dimColor ? (
-                        // A soft fade (many thin strips, smoothly stronger toward the badge) instead of a solid block
-                        // with a hard edge: it is shorter, ends at the badge, and leaves the play count alone.
                         <Animated.View pointerEvents="none" style={[styles.addedDim, {
-                            right: 80 + insetX - 14, top: insetY, bottom: insetY, opacity: addedTextOpacity,
+                            right: 80 + insetX - 14 + BADGE_CENTER_FROM_BADGE_RIGHT - DIM_RADIUS_X, top: insetY, bottom: insetY, opacity: addedTextOpacity,
                         }]}>
-                            {DIM_ALPHA.map((a, k) => <View key={k} style={{ flex: 1, backgroundColor: dimColor, opacity: a }} />)}
+                            {Array.from({ length: DIM_LAYERS }, (_, k) => {
+                                const f = (k + 1) / DIM_LAYERS;
+                                return <View key={k} style={{ position: 'absolute', width: 2 * DIM_RADIUS_X * f, height: `${Math.round(170 * f)}%`, borderRadius: 999, backgroundColor: dimColor, opacity: DIM_LAYER_ALPHA }} />;
+                            })}
                         </Animated.View>
                     ) : null}
                     {onSwipeRight && (
@@ -274,6 +280,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
     },
     // About where the title used to be cut off for the badge, and everything to the right of it.
-    addedDim: { position: 'absolute', width: 92, flexDirection: 'row' },
+    addedDim: { position: 'absolute', width: 2 * DIM_RADIUS_X, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
     addedText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 });

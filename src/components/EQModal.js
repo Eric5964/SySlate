@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Text, TouchableOpacity, StyleSheet, ScrollView, View } from 'react-native';
+import { Text, TouchableOpacity, StyleSheet, ScrollView, View, Alert } from 'react-native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { BUILT_IN_PRESETS } from '../utils/eq';
-import { getCustomPresets, getHiddenPresets, setEQLayering, toStablePath } from '../utils/storage';
-import BottomSheet from './BottomSheet';
+import { getCustomPresets, getHiddenPresets, toStablePath } from '../utils/storage';
+import BottomSheet, { useSheetGuard } from './BottomSheet';
 
 // Picking a preset changes your CURRENT EQ (the one that plays unless a song or playlist has its own).
 // With "EQ per playlist and song" on, the footer also lets you give a preset to this playlist or to songs;
@@ -14,6 +14,7 @@ import BottomSheet from './BottomSheet';
 export default function EQModal({ visible, onClose, playlistPath, pickMode = false, onPick, onAssign }) {
     const { theme, base } = useTheme();
     const { eqPresetId, changeEQPreset, eqLayer, eqOverride, playlistEQMap, assignPlaylistEQ, assignSongEQ, currentTrack, currentPlaylist } = usePlayback();
+    const { guard, contentDragging } = useSheetGuard();
     const [eqPresets, setEqPresets] = useState(BUILT_IN_PRESETS);
     const [allPresets, setAllPresets] = useState(BUILT_IN_PRESETS);
 
@@ -34,15 +35,24 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
     const showLayers = !pickMode && eqLayer;
     const showPlaylistBtn = showLayers && !!plKey;
     // Only what is playing can be overridden: say so, so a pick that has no audible effect is not a mystery.
+    // Giving a playlist its own EQ changes what every song in it sounds like, so say so first.
+    const togglePlaylistEQ = () => {
+        if (plEQ) { assignPlaylistEQ(playlistPath, null); return; }
+        Alert.alert(
+            `Use ${nameOf(eqPresetId)} for this playlist?`,
+            'Every song in this playlist will play with it. Songs you gave their own EQ keep theirs. Your regular EQ stays as it is for everything else.',
+            [{ text: 'Cancel', style: 'cancel' }, { text: 'Use it', onPress: () => assignPlaylistEQ(playlistPath, eqPresetId) }]
+        );
+    };
     const overrideText = showLayers && eqOverride
         ? (eqOverride.source === 'song' ? `This song plays with its own EQ (${nameOf(eqOverride.id)}).` : `This playlist plays with its own EQ (${nameOf(eqOverride.id)}).`)
         : null;
 
-    const footer = pickMode ? null : (showLayers ? (
+    // Only on a playlist's own screen (it passes playlistPath / onAssign); the player and All Songs have no buttons.
+    const footer = (!pickMode && showLayers && (showPlaylistBtn || onAssign)) ? (
         <View style={{ gap: 8 }}>
             {showPlaylistBtn ? (
-                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]}
-                    onPress={() => assignPlaylistEQ(playlistPath, plEQ ? null : eqPresetId)}>
+                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={togglePlaylistEQ}>
                     <Text style={[s.assignText, { color: theme.accent }]} numberOfLines={1}>
                         {plEQ ? `Stop using ${nameOf(plEQ)} for this playlist` : `Use ${nameOf(eqPresetId)} for this playlist`}
                     </Text>
@@ -54,29 +64,26 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
                 </TouchableOpacity>
             ) : null}
         </View>
-    ) : (
-        <TouchableOpacity style={s.offBtn} onPress={() => setEQLayering(true)}>
-            <Text style={[s.offText, { color: base.textFaint }]}>Want a different EQ per playlist or song? Turn it on</Text>
-        </TouchableOpacity>
-    ));
+    ) : null;
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} expandable footer={footer}
+        <BottomSheet visible={visible} onClose={onClose} expandable footer={footer} guard={guard}
             header={<View>
                 <Text style={[s.sheetTitle, { color: base.text }]}>{pickMode ? 'Assign which EQ?' : 'EQ Preset'}</Text>
                 {overrideText ? (
                     <View style={s.overrideRow}>
                         <Text style={[s.overrideText, { color: base.textFaint }]}>{overrideText}</Text>
-                        <TouchableOpacity onPress={() => {
+                        {playlistPath ? <TouchableOpacity onPress={() => {
                             if (eqOverride.source === 'song') assignSongEQ([currentTrack], null);
                             else assignPlaylistEQ(currentPlaylist?.path, null);
                         }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                             <Text style={[s.overrideText, { color: theme.accent, fontWeight: '700' }]}>Remove</Text>
-                        </TouchableOpacity>
+                        </TouchableOpacity> : null}
                     </View>
                 ) : null}
             </View>}>
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} scrollEventThrottle={16} scrollEnabled={!contentDragging}
+                onScroll={(e) => { guard.current.atTop = e.nativeEvent.contentOffset.y <= 2; }}>
                 {eqPresets.length === 0
                     ? <Text style={[s.empty, { color: base.textFaint }]}>No presets visible — manage in Settings</Text>
                     : eqPresets.map(p => (
@@ -106,7 +113,5 @@ const s = StyleSheet.create({
     presetName: { fontSize: 17 },
     assignBtn: { borderWidth: 1.5, borderRadius: 14, paddingVertical: 13, alignItems: 'center', paddingHorizontal: 12 },
     assignText: { fontSize: 15, fontWeight: '700' },
-    offBtn: { paddingVertical: 12, alignItems: 'center' },
-    offText: { fontSize: 13 },
     empty: { fontSize: 14, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 24 },
 });

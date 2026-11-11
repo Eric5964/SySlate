@@ -9,7 +9,7 @@ import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
 import { pillPad, PILL_COVER, addedClearance } from '../utils/layout';
 import SwipeableRow from './SwipeableRow';
-import BottomSheet from './BottomSheet';
+import BottomSheet, { useSheetGuard } from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { listArtUri } from '../utils/embeddedArt';
 import { perf } from '../utils/perf';
@@ -285,6 +285,9 @@ export default function QueueModal({ visible, onClose }) {
     // moment a row is picked up until just after the drop has been applied.
     const [anchorBlocked, setAnchorBlocked] = useState(false);
     const anchorRef = useRef(false);
+    const { guard: sheetGuard, contentDragging } = useSheetGuard();
+    // A row that is picked up or being dragged belongs to the list, not to the sheet.
+    sheetGuard.current.isBlocked = () => armedKey.current != null || dragging.current;
 
     // remove()/promote() already call refresh() explicitly, right after
     // their own native change, with the correct priorityOverride for that
@@ -740,27 +743,42 @@ export default function QueueModal({ visible, onClose }) {
                     // put the dropped row on top of it, so it looked second for a moment and then jumped to first.
                     if (lu) settleY = lu.y - (fromL.height || 0);
                 }
-                Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
                 // The last Priority song dropped into Up Next: the whole Priority block (label, slot, line) goes away.
-                // It used to vanish in one frame, with the dropped row sitting on top of the first Up Next row for a
-                // moment first. Now the rows close the gap with the system animation, and the dropped row keeps the
-                // spot it was settled at (dragY) and glides to its real place at the same speed.
-                const closesPriority = !endPri && !topUN && !anchorRef.current && !!list[from].isPriority && !list[to].isPriority
-                    && list.filter(r => r.isPriority).length === 1;
-                const settledDy = settleY - fromL.y;
-                const clearGlide = () => {
+                // The real move takes a moment (the native queue is rewritten first), and the block used to sit there
+                // empty until it was done and then vanish in one frame. Now the new order is shown AT ONCE: the rows
+                // close the gap with the system animation while the dropped row keeps the spot where the finger let go
+                // (dragY) and glides to its real place at the same speed. The real move follows and replaces the rows
+                // with identical ones.
+                const pcNow = list.filter(r => r.isPriority).length;
+                const closesPriority = !endPri && !anchorRef.current && !!list[from].isPriority && pcNow === 1
+                    && (topUN || !list[to].isPriority);
+                if (closesPriority) {
+                    const held = list[from];
+                    const optimistic = list.slice();
+                    optimistic.splice(from, 1);
+                    optimistic.splice(topUN ? from : to, 0, { ...held, isPriority: false });
+                    let releasedDy = 0;
+                    try { releasedDy = dragY.__getValue(); } catch { }
                     LayoutAnimation.configureNext({
-                        duration: 280,
+                        duration: 300,
                         update: { type: LayoutAnimation.Types.easeOut },
                         delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity },
                     });
-                    clear();
-                    dragY.setValue(settledDy);
-                    Animated.timing(dragY, { toValue: 0, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-                };
-                const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
-                await refresh(next, undefined, closesPriority ? clearGlide : clear);
-                glided = closesPriority;
+                    unstable_batchedUpdates(() => {
+                        setRows(optimistic);
+                        setDragKey(null); setDragTo(null); setDragEndPri(false); setDragTopUN(false); setEditMode(false);
+                        dragY.setValue(releasedDy);
+                    });
+                    draggedListIndex = -1; editRef.current = false; endPriRef.current = false; topUNRef.current = false;
+                    Animated.timing(dragY, { toValue: 0, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+                    glided = true;
+                    const next = await moveInQueue(held.realIndex, list[to].realIndex, endPri, topUN);
+                    await refresh(next);
+                } else {
+                    Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                    const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
+                    await refresh(next, undefined, clear);
+                }
             }
         } catch (e) { console.log('[QUEUE] move failed: ' + e); }
         if (!glided) clear();
@@ -1091,7 +1109,7 @@ export default function QueueModal({ visible, onClose }) {
     };
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={
+        <BottomSheet visible={visible} onClose={onClose} guard={sheetGuard} header={
             <View style={s.headerRow}>
                 <Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>
             </View>
@@ -1115,12 +1133,13 @@ export default function QueueModal({ visible, onClose }) {
                     onScroll={(e) => {
                         const y = e.nativeEvent.contentOffset.y;
                         scrollY.current = y;
+                        sheetGuard.current.atTop = y <= 2;
                         const on = y > 8;
                         if (on !== anchorRef.current) { anchorRef.current = on; setAnchorOn(on); }
                     }}
                     onContentSizeChange={(w, h) => { contentH.current = h; }}
                     data={listData}
-                    scrollEnabled={dragKey == null}
+                    scrollEnabled={dragKey == null && !contentDragging}
                     CellRendererComponent={Cell}
                     keyExtractor={item => item.key}
                     renderItem={renderItem}

@@ -232,20 +232,34 @@ try {
 // the readings are accepted. (Before, a restored app could ignore every reading
 // for good: the time stayed at 0:00 and the bar did not move.)
 let otherSong = { key: '', since: 0 };
+// When each song was first expected on screen. During the first half of a crossfade the native reading still
+// describes the OUTGOING song (the incoming one is only announced at the halfway point), so a song that was just
+// tapped showed a frozen 0:00 for about half the crossfade. For that window the position is worked out from the
+// clock instead; the real reading takes over at the halfway point.
+let expectedSince = { id: '', at: 0 };
+const CROSSFADE_ESTIMATE_MAX_MS = 6000;
 export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
+    const nowMs = Date.now();
+    if (expectId && expectedSince.id !== expectId) expectedSince = { id: expectId, at: nowMs };
     if (!p) return { position: 0, duration: fallbackDuration || 0, buffered: 0 };
     let stale = false;
     if (p.id && expectId) stale = p.id !== expectId;
     else if (expectQid && p.qid) stale = p.qid !== expectQid;
     if (stale) {
         const key = `${p.id || ''}|${p.qid || ''}`;
-        const now = Date.now();
+        const now = nowMs;
         if (otherSong.key !== key) otherSong = { key, since: now };
         else if (now - otherSong.since > 2500) stale = false;
     } else {
         otherSong.key = '';
     }
-    if (stale) return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
+    if (stale) {
+        const el = nowMs - expectedSince.at;
+        if (expectId && fallbackDuration > 0 && lastPlaybackState === State.Playing && el >= 0 && el < CROSSFADE_ESTIMATE_MAX_MS) {
+            return { position: Math.min(fallbackDuration, el / 1000), duration: fallbackDuration, buffered: 0, stale: true, estimated: true };
+        }
+        return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
+    }
     return p;
 }
 

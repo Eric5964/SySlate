@@ -430,7 +430,7 @@ export default function PlaylistDetailScreen() {
                 setAssign({ presetId: id, name: getPresetById(id, cp, ov).name, selected: {} });
             }} />
             {assign ? (
-                <View pointerEvents="box-none" style={s.assignBar}>
+                <View pointerEvents="box-none" style={[s.assignBar, { bottom: currentTrack ? 150 : 96 }]}>
                     <View style={[s.assignCard, { backgroundColor: base.surface, borderColor: base.border }]}>
                         <Text style={{ color: base.text, fontSize: 13, fontWeight: '700', marginBottom: 8 }} numberOfLines={1}>
                             {Object.keys(assign.selected).length === 0 ? `Tap songs to give them ${assign.name}` : `${assign.name} for ${Object.keys(assign.selected).length} song${Object.keys(assign.selected).length === 1 ? '' : 's'}`}
@@ -481,11 +481,13 @@ const SongRow = React.memo(function SongRow({ assigning, checked, onToggle, eqNa
                 )}
                 <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>
                     <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}{eqName ? `  \u00B7  EQ: ${eqName}` : ''}</Text>
+                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}</Text>
                 </View>
                 {showPlayCount && count > 0 && (
                     <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
                 )}
+                {/* The name of this song's own EQ, small, in the top right corner (the play count does not move). */}
+                {eqName ? <Text pointerEvents="none" numberOfLines={1} style={[s.eqName, { color: base.textFaint }]}>{eqName}</Text> : null}
             </DimPressable>
         </SwipeableRow>
     );
@@ -505,7 +507,8 @@ const s = StyleSheet.create({
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
-    assignBar: { position: 'absolute', left: 12, right: 12, bottom: 150 },
+    assignBar: { position: 'absolute', left: 12, right: 12 },
+    eqName: { position: 'absolute', top: 5, right: 12, maxWidth: 110, fontSize: 10, opacity: 0.85 },
     assignCard: { borderWidth: 1, borderRadius: 16, padding: 12 },
     assignPill: { flex: 1, borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
     assignPillText: { fontSize: 14, fontWeight: '700' },

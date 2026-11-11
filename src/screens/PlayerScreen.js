@@ -118,12 +118,22 @@ export default function PlayerScreen() {
         return null;
     }, [curId, libraryPlaylists]);
 
+    // The length of the song as remembered from an earlier reading, shown while the player has not reported one yet
+    // (right after a tap the time used to read 0:00 / 0:00 for about a second).
+    const [knownDur, setKnownDur] = useState(0);
+    useEffect(() => {
+        let c = false;
+        setKnownDur(0);
+        if (!currentTrack) return undefined;
+        AsyncStorage.getItem('pdur:' + playCountKey(currentTrack).slice(4)).then(v => { if (!c) setKnownDur(parseFloat(v) || 0); }).catch(() => { });
+        return () => { c = true; };
+    }, [currentTrack?.id]);
     const rawProgress = useProgress(500);
     // Only readings that belong to the song being shown count (a late reading
     // from before a skip used to drag the bar to the old song's spot).
     const progress = useMemo(
-        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id),
-        [rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
+        () => matchProgress(rawProgress, currentTrack?._qid, currentTrack?.duration || knownDur, currentTrack?.id),
+        [rawProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id, knownDur]
     );
     // Only true right after the CURRENTLY-PLAYING track actually changes —
     // not on every mount. Before, this effect fired on mount regardless of
@@ -539,16 +549,6 @@ export default function PlayerScreen() {
         }
     }, []);
 
-    // The length of the song as remembered from an earlier reading, shown while the player has not reported one yet
-    // (right after a tap the time used to read 0:00 / 0:00 for about a second).
-    const [knownDur, setKnownDur] = useState(0);
-    useEffect(() => {
-        let c = false;
-        setKnownDur(0);
-        if (!currentTrack) return undefined;
-        AsyncStorage.getItem('pdur:' + playCountKey(currentTrack).slice(4)).then(v => { if (!c) setKnownDur(parseFloat(v) || 0); }).catch(() => { });
-        return () => { c = true; };
-    }, [currentTrack?.id]);
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = formatArtists(currentTrack?.ourArtist ?? currentTrack?.artist ?? '', artistSeparator, artistDisplayJoin);
     // No per-song embedded-artwork (ID3/FLAC picture tag) extraction exists
@@ -582,6 +582,24 @@ export default function PlayerScreen() {
     const showingLyrics = showingRaw.id === nowId ? showingRaw.on : (autoShowLyrics && !!peekLyrics(nowId));
     const setLyricsData = useCallback((data) => setLyricsRaw({ id: nowIdRef.current, data }), []);
     const setShowingLyrics = useCallback((on) => setShowingRaw({ id: nowIdRef.current, on }), []);
+    // Reading the next songs' lyrics ahead of time (the .lrc files are tiny): a skip or a crossfade to a song with
+    // lyrics then finds them already read, so the lyrics are there the moment the title switches instead of the
+    // cover showing for a split second first.
+    useEffect(() => {
+        if (!currentTrack?.id) return undefined;
+        let cancelled = false;
+        (async () => {
+            try {
+                const [q, idx] = await Promise.all([AudioEngine.getQueue(), AudioEngine.getCurrentTrack()]);
+                if (cancelled || !Array.isArray(q) || typeof idx !== 'number') return;
+                for (const t of q.slice(idx + 1, idx + 4)) {
+                    if (cancelled) return;
+                    if (t?.id && peekLyrics(t.id) === undefined) await getLyrics(t);
+                }
+            } catch { }
+        })();
+        return () => { cancelled = true; };
+    }, [currentTrack?.id]);
     useEffect(() => {
         if (!currentTrack?.id || lyricsMode === 'off') {
             setLyricsData(null);
@@ -689,7 +707,7 @@ export default function PlayerScreen() {
     // for a moment): it is matched to the song shown like `progress` is. Unmatched, the new song's
     // lyrics were placed on the old song's position (near the end), then slid back to the top.
     const lyricsProgressMatched = useMemo(
-        () => matchProgress(lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id),
+        () => matchProgress(lyricsProgress, currentTrack?._qid, currentTrack?.duration || knownDur, currentTrack?.id),
         [lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
     );
     const effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgressMatched;
@@ -1872,7 +1890,7 @@ export default function PlayerScreen() {
                 </View>
             </View>
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={currentPlaylist?.path} />
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} />
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
             <SleepTimerSheet visible={showSleepTimer} onClose={() => setShowSleepTimer(false)} />
             <PlaybackSpeedSheet visible={showSpeed} onClose={() => setShowSpeed(false)} />

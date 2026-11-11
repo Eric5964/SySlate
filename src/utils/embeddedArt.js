@@ -389,7 +389,11 @@ function hashKey(str) {
 // for anything that resolves here.
 // MP3 covers were not read before; an old "no cover" answer for an MP3 is looked at again once.
 // Entries written since carry m3: 1.
-const isOldMp3Miss = (song, entry) => !!entry && entry.uri == null && !entry.m3 && /\.mp3$/i.test(String(song?.filename || song?.id || ''));
+// Same for M4A/MP4/ALAC: their "no cover" answers from before the reader stopped trusting a missing box
+// (it now lets the full reader decide) are looked at again once. Entries written since carry m4: 1.
+const isOldMp3Miss = (song, entry) => !!entry && entry.uri == null && (
+    (!entry.m3 && /\.mp3$/i.test(String(song?.filename || song?.id || ''))) ||
+    (!entry.m4 && /\.(m4a|mp4|alac)$/i.test(String(song?.filename || song?.id || ''))));
 
 export async function getCachedArt(song) {
     if (!song?.id) return undefined;
@@ -418,7 +422,8 @@ export async function getCachedArtFast(song) {
     if (!song?.id) return undefined;
     const cache = await loadCacheMap();
     const entry = cache[song.id];
-    return entry === undefined ? undefined : (entry.uri ?? null);
+    if (entry === undefined || isOldMp3Miss(song, entry)) return undefined;
+    return entry.uri ?? null;
 }
 
 // Returns a local file:// URI for the song's embedded cover art, or null if
@@ -676,9 +681,9 @@ async function locateMp4Picture(uri, fileSize, maxLen = 20 * 1024 * 1024) {
         return null;
     };
     const moov = await find(0, fileSize, 'moov', true); if (moov === null) return null; if (moov === 'absent') return { found: false };
-    const udta = await find(moov.dataStart, moov.dataEnd, 'udta'); if (udta === null) return null; if (udta === 'absent') return { found: false };
-    const meta = await find(udta.dataStart, udta.dataEnd, 'meta'); if (meta === null) return null; if (meta === 'absent') return { found: false };
-    const ilst = await find(meta.dataStart + 4, meta.dataEnd, 'ilst'); if (ilst === null) return null; if (ilst === 'absent') return { found: false };
+    const udta = await find(moov.dataStart, moov.dataEnd, 'udta'); if (udta === null) return null; if (udta === 'absent') return null;
+    const meta = await find(udta.dataStart, udta.dataEnd, 'meta'); if (meta === null) return null; if (meta === 'absent') return null;
+    const ilst = await find(meta.dataStart + 4, meta.dataEnd, 'ilst'); if (ilst === null) return null; if (ilst === 'absent') return null;
     const covr = await find(ilst.dataStart, ilst.dataEnd, 'covr'); if (covr === null) return null; if (covr === 'absent') return { found: false };
     const data = await find(covr.dataStart, covr.dataEnd, 'data'); if (data === null) return null; if (data === 'absent') return { found: false };
     if (data.trueEnd !== data.dataEnd) return null;
@@ -763,7 +768,7 @@ async function extractEmbeddedArtUncached(song) {
         if (!(picture?.b64 ? picture.length > 0 : picture?.data?.length)) {
             // `bc`: the file was looked through completely (no size limit was hit), so the
             // end-of-loading pass for large covers has nothing to re-check here.
-            await saveCacheEntry(song.id, { uri: null, fp, ...(located && located.found === false && !located.limited ? { bc: 1 } : {}), ...(ext === 'mp3' ? { m3: 1 } : {}) });
+            await saveCacheEntry(song.id, { uri: null, fp, ...(located && located.found === false && !located.limited ? { bc: 1 } : {}), ...(ext === 'mp3' ? { m3: 1 } : {}), ...((ext === 'm4a' || ext === 'mp4' || ext === 'alac') ? { m4: 1 } : {}) });
             return null;
         }
 
@@ -794,7 +799,7 @@ async function extractEmbeddedArtUncached(song) {
         if (existing?.uri && existing.uri !== dest) {
             await FileSystem.deleteAsync(existing.uri, { idempotent: true }).catch(() => { });
         }
-        await saveCacheEntry(song.id, { uri: dest, fp, ...(ext === 'mp3' ? { m3: 1 } : {}) });
+        await saveCacheEntry(song.id, { uri: dest, fp, ...(ext === 'mp3' ? { m3: 1 } : {}), ...((ext === 'm4a' || ext === 'mp4' || ext === 'alac') ? { m4: 1 } : {}) });
         return dest;
     } catch (e) {
         console.error('extractEmbeddedArt:', e);

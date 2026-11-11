@@ -66,7 +66,7 @@ import {
     getHiddenPresets, setHiddenPresets,
     getEQOverrides, setEQOverrides,
     getShuffleMode,
-    getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch, getEQLayering, setEQLayering, subscribeEQLayering,
+    getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch, getEQLayering, setEQLayering, subscribeEQLayering, resetPlayCounts, getPlayCountUndoInfo, restorePlayCounts,
     getPrevButtonMode, setPrevButtonMode,
     getRestartThresholdUnit, setRestartThresholdUnit, getRestartThresholdPct, setRestartThresholdPct,
     getRestartThresholdSec, setRestartThresholdSec,
@@ -211,6 +211,39 @@ export default function SettingsScreen() {
     // never 'off' (only the live state uses 'off').
     const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
     const [keepPriority, setKeepPriority] = useState(true);
+    const [pcUndo, setPcUndo] = useState(null);
+    useEffect(() => { getPlayCountUndoInfo().then(setPcUndo); }, []);
+    const askResetPlayCounts = () => Alert.alert(
+        'Reset all play counts?',
+        'Every song goes back to 0 plays and Listening Stats start over. Your music and settings are not touched.',
+        [
+            { text: 'Cancel', style: 'cancel' },
+            {
+                text: 'Continue', style: 'destructive', onPress: () => Alert.alert(
+                    'Are you sure?',
+                    'A copy of the counts is kept on this phone, and you can bring them back with Restore Play Counts here. A settings file you exported earlier (Backup & Sync) also still has them and restores them through Import Settings.',
+                    [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                            text: 'Reset Play Counts', style: 'destructive', onPress: async () => {
+                                const n = await resetPlayCounts();
+                                setPcUndo(await getPlayCountUndoInfo());
+                                Alert.alert(n ? 'Play counts reset' : 'Nothing to reset', n ? 'You can undo this with Restore Play Counts.' : 'There were no play counts.');
+                            },
+                        },
+                    ]
+                ),
+            },
+        ]
+    );
+    const askRestorePlayCounts = () => Alert.alert(
+        'Restore play counts?',
+        `Brings back the counts from ${pcUndo?.at ? new Date(pcUndo.at).toLocaleDateString() : 'before the reset'}. Plays since then are kept.`,
+        [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Restore', onPress: async () => { const n = await restorePlayCounts(); Alert.alert(n ? 'Play counts restored' : 'Nothing to restore', n ? 'Your counts are back.' : 'The counts are already there.'); } },
+        ]
+    );
     const [eqLayerOn, setEqLayerOn] = useState(false);
     useEffect(() => { getEQLayering().then(setEqLayerOn); return subscribeEQLayering(setEqLayerOn); }, []);
     const [albumFromFolder, setAlbumFromFolderState] = useState(false);
@@ -682,13 +715,15 @@ export default function SettingsScreen() {
     };
     // Reset buttons are per group (Playback, Screens, ...), not per section.
     const groupResetters = {
-        playback: () => ['volume', 'spatial', 'shuffle', 'crossfade', 'queue', 'prev', 'eqLayering'].forEach(k => resetters[k]()),
+        eq: () => ['spatial', 'eqLayering'].forEach(k => resetters[k]()),
+        playback: () => ['volume', 'shuffle', 'crossfade', 'queue', 'prev'].forEach(k => resetters[k]()),
         screens: () => ['lists', 'playlistsScreen', 'allSongsScreen', 'playlistScreen', 'playerButtons', 'playerCover'].forEach(k => resetters[k]()),
         appearance: () => ['covers', 'screen'].forEach(k => resetters[k]()),
         library: () => ['artists', 'album'].forEach(k => resetters[k]()),
     };
     const GROUP_RESET_NOTE = {
-        playback: 'Volume levelling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults. EQ presets are not touched.',
+        eq: 'Balance, width and the Specialized EQs switch go back to their defaults. EQ presets and the EQs you assigned are not touched.',
+        playback: 'Volume levelling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults.',
         screens: 'Every switch and option for the Playlists, All Songs, Playlist and Player screens goes back to its default.',
         appearance: 'Cover shapes, shadows, colored top and bottom bars and keep-screen-awake go back to their defaults. Accent color, base color and the custom background are not touched.',
         library: 'Artist separators, how artists are shown and Album From Folder Name go back to their defaults. Your music and its location are not touched.',
@@ -702,7 +737,7 @@ export default function SettingsScreen() {
     const resetEverything = () => {
         Alert.alert(
             'Reset all settings?',
-            'Every setting in Playback, Screens, Appearance (look only) and Library goes back to its default.',
+            'Every setting in EQ, Playback, Screens, Appearance (look only) and Library goes back to its default.',
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -879,19 +914,8 @@ export default function SettingsScreen() {
                     builder below (sliders per BAND_HZ), already wired to
                     getCustomPresets/setCustomPresets. */}
 
-                <GroupHeader title="Playback" onReset={() => askGroupReset('playback', 'Playback')} hidden={isHidden('playback')} onToggleHidden={() => toggleGroupHidden('playback')} />
-                {!isHidden('playback') && (<>
-
-                <Section title="EQ per playlist and song">
-                    <View style={s.toggleRow}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.toggleLabel}>Different EQ per playlist and song</Text>
-                            <Text style={s.toggleSub}>Off: the EQ you picked last plays everywhere. On: a song's own EQ wins, then its playlist's, then the one you picked last. Assign them from the EQ button. Turning this off keeps your assignments but ignores them.</Text>
-                        </View>
-                        <LiveSwitch value={eqLayerOn} onValueChange={v => { setEqLayerOn(v); setEQLayering(v); }}
-                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                    </View>
-                </Section>
+                <GroupHeader title="EQ" onReset={() => askGroupReset('eq', 'EQ')} hidden={isHidden('eq')} onToggleHidden={() => toggleGroupHidden('eq')} />
+                {!isHidden('eq') && (<>
 
                 <Section title="EQ Presets">
                     {/* Built-ins and custom presets now share one 2-column
@@ -976,6 +1000,22 @@ export default function SettingsScreen() {
                         minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                     <View style={s.sliderEnds}><Text style={s.sliderEnd}>Left</Text><Text style={s.sliderEnd}>Right</Text></View>
                 </Section>
+
+                <Section title="Specialized EQs">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Specialized EQs</Text>
+                            <Text style={s.toggleSub}>Give a playlist or a single song its own EQ, from the EQ button on a playlist. A song's own EQ wins over its playlist's, which wins over your regular EQ. Turning this off keeps them but ignores them.</Text>
+                        </View>
+                        <LiveSwitch value={eqLayerOn} onValueChange={v => { setEqLayerOn(v); setEQLayering(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
+
+                </>)}
+
+                <GroupHeader title="Playback" onReset={() => askGroupReset('playback', 'Playback')} hidden={isHidden('playback')} onToggleHidden={() => toggleGroupHidden('playback')} />
+                {!isHidden('playback') && (<>
 
                 <Section title="Volume Levelling">
                     <View style={s.toggleRow}>
@@ -1642,6 +1682,16 @@ export default function SettingsScreen() {
                         <Text style={s.rowLabel}>Listening Stats</Text>
                         <Text style={s.rowSub}>Plays, hours, most played songs, and top artists</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity style={s.row} onPress={askResetPlayCounts}>
+                        <Text style={s.rowLabel}>Reset Play Counts</Text>
+                        <Text style={s.rowSub}>Start every song and the stats from 0. Can be undone</Text>
+                    </TouchableOpacity>
+                    {pcUndo ? (
+                        <TouchableOpacity style={s.row} onPress={askRestorePlayCounts}>
+                            <Text style={s.rowLabel}>Restore Play Counts</Text>
+                            <Text style={s.rowSub}>Bring back the counts from before the last reset ({pcUndo.songs} songs)</Text>
+                        </TouchableOpacity>
+                    ) : null}
                 </Section>
 
                 <Section title="Backup & Sync">
@@ -1827,7 +1877,7 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 // Words each Section answers to in the search box (besides its title).
 const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone',
-    'EQ per playlist and song': 'eq equalizer playlist song assign override different layer',
+    'Specialized EQs': 'eq equalizer playlist song assign override different layer specialized',
     'Advanced EQ, Import & Export': 'equalizer eq advanced custom parametric graphic q factor frequency band import export autoeq apo preset share',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
