@@ -11,7 +11,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists, artistMatches } from '../utils/artists';
 import { subscribeDurations } from '../utils/durations';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
-import { getSongsTotalLength, subscribePlayCount, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
+import { getCustomPresets, getEQOverrides, toStablePath, getSongsTotalLength, subscribePlayCount, getPlaylistCovers, setPlaylistCover, persistCoverImage, getPlaylistSort, setPlaylistSort } from '../utils/storage';
 import { squircle, cardRadius } from '../utils/squircle';
 import { PlayIcon, ShuffleIcon, MenuBarsIcon } from '../components/Icons';
 import SwipeableRow from '../components/SwipeableRow';
@@ -20,12 +20,13 @@ import SongVisualizer from '../components/SongVisualizer';
 import BackSwipeZone from '../components/BackSwipeZone';
 import SwipeQueueButton from '../components/SwipeQueueButton';
 import EQModal from '../components/EQModal';
+import { getPresetById } from '../utils/eq';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
 import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
-import { useListArt } from '../hooks/useListArt';
+import { useListArt, setVisibleArtIds } from '../hooks/useListArt';
 import { titleKey, compareKeys } from '../utils/sortKey';
 import { vizRowId } from '../utils/vizMatch';
 import { useVizPending } from '../utils/vizPending';
@@ -50,7 +51,7 @@ export default function PlaylistDetailScreen() {
     const { playlist = NO_PLAYLIST, initialCover } = route.params ?? {};
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext, queueEpoch,
-        currentTrack, currentPlaylist,
+        currentTrack, currentPlaylist, songEQMap, assignSongEQ, eqLayer,
     } = usePlayback();
     const { theme, base } = useTheme();
 
@@ -85,6 +86,24 @@ export default function PlaylistDetailScreen() {
     useEffect(() => { refreshSort({ cacheKey: playlist.path, source: playingSrcRef.current }); }, [playlist.songs, refreshSort]);
     const [showSort, setShowSort] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
+    // Assigning an EQ to songs: pick the EQ, tick the songs (a check on the cover), apply.
+    const [pickEQ, setPickEQ] = useState(false);
+    const [assign, setAssign] = useState(null);   // null, or { presetId, name, selected: { [songId]: true } }
+    // Name of the EQ assigned to each song here, shown after the artist.
+    const [eqNameList, setEqNameList] = useState({ cp: [], ov: {} });
+    useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ, pickEQ]);
+    const songEQNames = useMemo(() => {
+        const out = {};
+        if (!eqLayer) return out;   // assignments are ignored while "EQ per playlist and song" is off
+        for (const sg of playlist.songs || []) {
+            const id = songEQMap[toStablePath(sg.id)];
+            if (id) out[sg.id] = getPresetById(id, eqNameList.cp, eqNameList.ov).name;
+        }
+        return out;
+    }, [songEQMap, playlist.songs, eqNameList, eqLayer]);
+    const toggleAssign = useCallback((song) => {
+        setAssign(a => { if (!a) return a; const sel = { ...a.selected }; if (sel[song.id]) delete sel[song.id]; else sel[song.id] = true; return { ...a, selected: sel }; });
+    }, []);
     const [showQueue, setShowQueue] = useState(false);
     // Starts from whatever the Playlists grid already had in memory for
     // this playlist (passed through as a nav param — see openPlaylist's own
@@ -155,6 +174,8 @@ export default function PlaylistDetailScreen() {
     }, [sorted, search, artistSeparator]);
 
     const artMap = useListArt(filtered, showSongCovers);
+    const onViewable = useRef(({ viewableItems }) => setVisibleArtIds(viewableItems.map(v => v.item?.id).filter(Boolean))).current;
+    const viewCfg = useRef({ itemVisiblePercentThreshold: 10 }).current;
 
     // Tapping a song no longer force-opens the full player — the mini player
     // appearing at the bottom is the signal that something started playing.
@@ -223,13 +244,15 @@ export default function PlaylistDetailScreen() {
 
     const bg = base.surface; // neutral placeholder, see PlaylistsScreen's matching comment
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
+    const backX = useRef(new Animated.Value(0)).current;   // the whole screen slides with a back swipe that starts off the edge
 
     return (
+        <Animated.View style={{ flex: 1, transform: [{ translateX: backX.interpolate({ inputRange: [0, 10000], outputRange: [0, 10000], extrapolate: 'clamp' }) }] }}>
         <ScreenBackground ownImage style={s.container}>
             <StatusBar barStyle="light-content" />
 
             {/* Top bar: back, centered search, EQ + queue */}
-            <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
+            <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={[s.topBar, OVERLAY_HEADER, { zIndex: 5 }]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
                 {ui.pd_back !== false ? (
                     <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
@@ -273,6 +296,8 @@ export default function PlaylistDetailScreen() {
 
             <FlatList
                 data={filtered}
+                onViewableItemsChanged={onViewable}
+                viewabilityConfig={viewCfg}
                 extraData={vizExtra}
                 keyExtractor={item => item.id}
                 // Colored bar: the list runs up under the bar's soft fade (as on
@@ -288,14 +313,14 @@ export default function PlaylistDetailScreen() {
                 windowSize={performanceMode ? 5 : 15}
                 maxToRenderPerBatch={performanceMode ? 4 : 10}
                 updateCellsBatchingPeriod={performanceMode ? 90 : 50}
-                ListFooterComponent={<BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
+                ListFooterComponent={<BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
                 ListHeaderComponent={
                     <View>
                         {/* The space under the top bar. It used to be padding on the
                             list; as a real view a right swipe on it can go back. */}
-                        <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ height: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH }} />
+                        <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ height: topBarColor ? Math.max(0, hdrH - TOP_FADE) : hdrH }} />
                         {ui.pd_cover !== false && (
-                        <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={s.coverWrap}>
+                        <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={s.coverWrap}>
                             {/* Card-style outline, same look as the cards on the Playlists screen. */}
                             {detailOutline && (
                                 <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: -3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
@@ -349,7 +374,7 @@ export default function PlaylistDetailScreen() {
                         </View>
 
                         <View style={s.titleRow}>
-                            <BackSwipeZone navigation={navigation} onBack={() => navigation.goBack()} style={{ flex: 1 }}>
+                            <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
                                 {(showPlaylistTrackCount !== false || (ui.pd_hours !== false && totalLenText)) && <Text style={[s.subtitle, { color: base.textFaint }]}>{[showPlaylistTrackCount !== false ? `${playlist.songs.length} ${playlist.songs.length === 1 ? 'track' : 'tracks'}` : null, ui.pd_hours !== false ? totalLenText : null].filter(Boolean).join(' · ')}</Text>}
                             </BackSwipeZone>
@@ -375,8 +400,13 @@ export default function PlaylistDetailScreen() {
                         )}
                     </View>
                 }
+                extraData={assign}
                 renderItem={({ item }) => (
                     <SongRow
+                        assigning={!!assign}
+                        checked={!!assign?.selected[item.id]}
+                        onToggle={toggleAssign}
+                        eqName={songEQNames[item.id]}
                         item={item}
                         art={artMap[item.id]}
                         count={countFor(item)}
@@ -394,9 +424,36 @@ export default function PlaylistDetailScreen() {
                 )}
             />
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} />
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} onAssign={() => { setShowEQ(false); setTimeout(() => setPickEQ(true), 280); }} />
+            <EQModal visible={pickEQ} pickMode onClose={() => setPickEQ(false)} onPick={async (id) => {
+                const [cp, ov] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+                setAssign({ presetId: id, name: getPresetById(id, cp, ov).name, selected: {} });
+            }} />
+            {assign ? (
+                <View pointerEvents="box-none" style={s.assignBar}>
+                    <View style={[s.assignCard, { backgroundColor: base.surface, borderColor: base.border }]}>
+                        <Text style={{ color: base.text, fontSize: 13, fontWeight: '700', marginBottom: 8 }} numberOfLines={1}>
+                            {Object.keys(assign.selected).length === 0 ? `Tap songs to give them ${assign.name}` : `${assign.name} for ${Object.keys(assign.selected).length} song${Object.keys(assign.selected).length === 1 ? '' : 's'}`}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <TouchableOpacity style={[s.assignPill, { backgroundColor: theme.accent, opacity: Object.keys(assign.selected).length ? 1 : 0.4 }]} disabled={!Object.keys(assign.selected).length}
+                                onPress={async () => { await assignSongEQ((playlist.songs || []).filter(x => assign.selected[x.id]), assign.presetId); setAssign(null); }}>
+                                <Text style={[s.assignPillText, { color: theme.onAccent }]}>Apply</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[s.assignPill, { borderWidth: 1, borderColor: base.border, opacity: Object.keys(assign.selected).length ? 1 : 0.4 }]} disabled={!Object.keys(assign.selected).length}
+                                onPress={async () => { await assignSongEQ((playlist.songs || []).filter(x => assign.selected[x.id]), null); setAssign(null); }}>
+                                <Text style={[s.assignPillText, { color: base.textFaint }]}>Remove EQ</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[s.assignPill, { borderWidth: 1, borderColor: base.border }]} onPress={() => setAssign(null)}>
+                                <Text style={[s.assignPillText, { color: base.textFaint }]}>Cancel</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            ) : null}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </ScreenBackground>
+        </Animated.View>
     );
 }
 
@@ -406,11 +463,11 @@ const HIT = { top: 16, bottom: 16, left: 16, right: 16 };
 // (opening the queue or EQ sheet, a cover finishing loading for another
 // row, the play counts arriving) do not re-render every visible row, which
 // is what made the sheets stutter when they opened and closed.
-const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
+const SongRow = React.memo(function SongRow({ assigning, checked, onToggle, eqName, item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
     const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} edgeExclude={EDGE_SWIPE_WIDTH} dimColor={base.surface}>
-            <DimPressable style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
+            <DimPressable style={[s.row, { backgroundColor: base.surface }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW, checked && { borderWidth: 1.5, borderColor: theme.accent }]} onPress={() => (assigning ? onToggle(item) : onPlay(item))}>
                 {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
@@ -419,11 +476,12 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                             : null
                         }
                         {viz === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(PILL_COVER, coverShape)} /> : null}
+                        {checked ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, s.checkOverlay]}><Text style={{ color: theme.onAccent, fontSize: 22, fontWeight: '800' }}>{'\u2713'}</Text></View> : null}
                     </View>
                 )}
                 <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>
                     <Text style={[s.rowTitle, { color: base.text }]} numberOfLines={1}>{item.ourTitle ?? item.title}</Text>
-                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}</Text>
+                    <Text style={[s.rowSub, { color: base.textFaint }]} numberOfLines={1}>{formatArtists(item.ourArtist ?? item.artist, artistSeparator, artistDisplayJoin)}{eqName ? `  \u00B7  EQ: ${eqName}` : ''}</Text>
                 </View>
                 {showPlayCount && count > 0 && (
                     <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
@@ -447,6 +505,11 @@ const s = StyleSheet.create({
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
+    assignBar: { position: 'absolute', left: 12, right: 12, bottom: 150 },
+    assignCard: { borderWidth: 1, borderRadius: 16, padding: 12 },
+    assignPill: { flex: 1, borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
+    assignPillText: { fontSize: 14, fontWeight: '700' },
+    checkOverlay: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.45)' },
     btnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     btnAdded: { alignItems: 'center', justifyContent: 'center' },
     playBtnText: { fontSize: 15, fontWeight: '700' },

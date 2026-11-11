@@ -7,23 +7,22 @@ import { sanitizeCustomEQ } from './customEQ';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
-// Real bug found here ("selected EQ preset doesn't save between closing
-// and reopening"): this is a per-playlist setting (eq:<path>), which is
-// correct when you've actually picked a DIFFERENT preset for that specific
-// playlist before — but if nothing was ever saved under that exact key
-// (new playlist, or you usually play from All Songs/Queue/a different
-// playlist than whichever one you had open when you picked a preset),
-// this fell straight to the hardcoded 'flat' default, silently ignoring
-// whatever preset you'd actually set elsewhere. Now falls through to the
-// global preset first — only lands on 'flat' if NEITHER this playlist nor
-// the global slot has ever had one saved.
-export const getEQPreset = (path) => safe(async () => {
-    if (path) {
-        const perPlaylist = await AsyncStorage.getItem(`eq:${path}`);
-        if (perPlaylist !== null) return perPlaylist;
-    }
+// The CURRENT EQ: whatever preset was picked last. It is the only EQ that is saved
+// automatically, and it does not depend on which playlist is playing, so starting a song
+// from another playlist can never change or un-select it. (Per-playlist and per-song EQs
+// are separate, deliberate assignments: see getPlaylistEQ / getSongEQ and the
+// "EQ per playlist and song" setting.)
+// `legacyPath` is only used once, for installs from before this change: they saved the
+// last pick under eq:<playlist path>, so if there is no current EQ yet, that value is
+// adopted as the current EQ.
+export const getEQPreset = (legacyPath) => safe(async () => {
     const global = await AsyncStorage.getItem('eq:global');
-    return global ?? 'flat';
+    if (global !== null) return global;
+    if (legacyPath) {
+        const old = await AsyncStorage.getItem(`eq:${legacyPath}`);
+        if (old !== null) { await AsyncStorage.setItem('eq:global', old); return old; }
+    }
+    return 'flat';
 }, 'flat');
 export const getCrossfadeEnabled = () => safe(() => AsyncStorage.getItem('crossfade_enabled').then(v => v !== 'false'), true);
 export const setCrossfadeEnabled = (v) => safe(() => AsyncStorage.setItem('crossfade_enabled', String(v)), null);
@@ -58,7 +57,33 @@ export const setAlbumFromFolder = (v) => safe(() => AsyncStorage.setItem('album_
 // actually gets applied.
 export const getKeepScreenAwake = () => safe(() => AsyncStorage.getItem('keep_screen_awake').then(v => v === 'true'), false);
 export const setKeepScreenAwake = (v) => safe(() => AsyncStorage.setItem('keep_screen_awake', String(v)), null);
-export const setEQPreset = (id, path) => safe(() => AsyncStorage.setItem(path ? `eq:${path}` : 'eq:global', id), null);
+export const setEQPreset = (id) => safe(() => AsyncStorage.setItem('eq:global', id), null);
+// "EQ per playlist and song" (off by default). Off: the current EQ plays everywhere and the
+// assignments below are ignored (not deleted). On: song EQ, then playlist EQ, then current EQ.
+let eqLayering = false;
+const eqLayeringSubs = new Set();
+export const getEQLayering = () => safe(async () => { eqLayering = (await AsyncStorage.getItem('eq_layering')) === 'true'; return eqLayering; }, false);
+export const getEQLayeringCached = () => eqLayering;
+export const setEQLayering = (v) => safe(async () => {
+    eqLayering = !!v;
+    await AsyncStorage.setItem('eq_layering', String(!!v));
+    eqLayeringSubs.forEach(f => { try { f(eqLayering); } catch { } });
+}, null);
+export const subscribeEQLayering = (f) => { eqLayeringSubs.add(f); return () => eqLayeringSubs.delete(f); };
+// An EQ chosen on purpose for a whole playlist: { "doc:Folder": presetId } (stable path, like song_eq).
+export const getPlaylistEQ = () => safe(async () => {
+    const v = await AsyncStorage.getItem('playlist_eq');
+    let m = null;
+    if (v) { try { m = JSON.parse(v); } catch { } }
+    if (!m) { const b = await readBackup(); if (b?.playlist_eq && typeof b.playlist_eq === 'object') m = b.playlist_eq; }
+    const out = {};
+    if (m && typeof m === 'object') for (const [k, id] of Object.entries(m)) if (typeof id === 'string' && id.length < 80) out[k] = id;
+    return out;
+}, {});
+export const setPlaylistEQ = (map) => safe(async () => {
+    await AsyncStorage.setItem('playlist_eq', JSON.stringify(map || {}));
+    await writeBackup({ playlist_eq: map || {} });
+}, null);
 // `shuffle_mode` now holds ONLY the algorithm preference (full_cycle /
 // true_random / smart) and is never written as 'off' going forward — that
 // used to double as the on/off flag too, which is why picking a mode in
@@ -202,6 +227,21 @@ export const getCustomEQ = () => safe(async () => {
         if (c) { await AsyncStorage.setItem('custom_eq', JSON.stringify(c)); return c; }
     }
     return null;
+}, null);
+// An EQ preset assigned to individual songs: { "doc:Folder/song.mp3": presetId }. Keyed by the stable
+// (container independent) path, like playlist covers, so it survives an update or reinstall.
+export const getSongEQ = () => safe(async () => {
+    const v = await AsyncStorage.getItem('song_eq');
+    let m = null;
+    if (v) { try { m = JSON.parse(v); } catch { } }
+    if (!m) { const b = await readBackup(); if (b?.song_eq && typeof b.song_eq === 'object') m = b.song_eq; }
+    const out = {};
+    if (m && typeof m === 'object') for (const [k, id] of Object.entries(m)) if (typeof id === 'string' && id.length < 80) out[k] = id;
+    return out;
+}, {});
+export const setSongEQ = (map) => safe(async () => {
+    await AsyncStorage.setItem('song_eq', JSON.stringify(map || {}));
+    await writeBackup({ song_eq: map || {} });
 }, null);
 export const clearCustomEQ = () => safe(async () => { await AsyncStorage.removeItem('custom_eq'); }, null);
 export const setCustomEQ = (c) => safe(async () => {
@@ -1183,6 +1223,26 @@ export const getSongsTotalLength = async (songs) => {
     return { seconds, estimated: unknown > 0 };
 };
 
+// Real listening time. Hours used to be plays x song length, so a song you skipped at 40 percent added nothing and
+// one you heard twice added two full lengths. Now the seconds that were actually played are added up per song
+// (`plis:`), in real time (at 2x a minute of song is half a minute). `plisb:` remembers how many plays the song
+// already had when tracking began for it; those plays are still valued at plays x length, as before.
+let listenQueue = Promise.resolve();
+export const addListenedSeconds = (song, libSong, sec) => {
+    if (!song || !(sec > 0)) return listenQueue;
+    listenQueue = listenQueue.then(async () => {
+        try {
+            const main = libSong || song;
+            const k = playCountKey(main).slice(4);
+            const [cur, base, plays] = await Promise.all([AsyncStorage.getItem('plis:' + k), AsyncStorage.getItem('plisb:' + k), AsyncStorage.getItem(playCountKey(main))]);
+            const writes = [['plis:' + k, String(Math.round(((parseFloat(cur) || 0) + sec) * 10) / 10)]];
+            if (base === null) writes.push(['plisb:' + k, String(parseInt(plays) || 0)]);
+            await AsyncStorage.multiSet(writes);
+        } catch { }
+    });
+    return listenQueue;
+};
+
 export const getListeningStats = async (songs, separators, joinId) => {
     const allKeys = await AsyncStorage.getAllKeys();
     const keys = allKeys.filter(k => k.startsWith('pcn:'));
@@ -1192,6 +1252,17 @@ export const getListeningStats = async (songs, separators, joinId) => {
     const durs = {};
     const durKeys = allKeys.filter(k => k.startsWith('pdur:'));
     (await AsyncStorage.multiGet(durKeys)).forEach(([k, v]) => { const d = parseFloat(v); if (d > 0) durs['pcn:' + k.slice(5)] = d; });
+    // Listening time actually played (see addListenedSeconds), matched to a song the same smoothed way as counts.
+    const lisN = {}, lisbN = {};
+    {
+        const lk = allKeys.filter(k => k.startsWith('plis:'));
+        const lbk = allKeys.filter(k => k.startsWith('plisb:'));
+        const lrows = lk.length ? await AsyncStorage.multiGet(lk) : [];
+        const lbrows = lbk.length ? await AsyncStorage.multiGet(lbk) : [];
+        const nk = (key) => { const [a, b, c] = key.split('::'); return normKey(a, b, c); };
+        lrows.forEach(([k, v]) => { const x = parseFloat(v); if (x > 0) { const n = nk(k.slice(5)); lisN[n] = (lisN[n] || 0) + x; } });
+        lbrows.forEach(([k, v]) => { const x = parseInt(v); const n = nk(k.slice(6)); lisbN[n] = Math.max(lisbN[n] || 0, x || 0); });
+    }
     let knownSec = 0, knownPlays = 0;
     const byKey = {};
     // Counts filed before the album was part of the key have no album on them: they are matched to a
@@ -1246,7 +1317,15 @@ export const getListeningStats = async (songs, separators, joinId) => {
         const artist = song ? (song.ourArtist ?? song.artist) : a;
         if (song) played++;
         const dur = (song && song.duration > 0) ? song.duration : durs[k];
-        if (dur > 0) { seconds += n * dur; knownSec += n * dur; knownPlays += n; }
+        const nkey = normKey(t, a, k.slice(4).split('::')[2]);
+        const tracked = lisN[nkey];
+        if (tracked > 0) {
+            // Plays from before tracking began keep the old plays x length value; everything since is real time.
+            const before = Math.min(n, lisbN[nkey] || 0);
+            seconds += tracked;
+            if (dur > 0) { seconds += before * dur; knownSec += n * dur; knownPlays += n; }
+            else unknownPlays += before;
+        } else if (dur > 0) { seconds += n * dur; knownSec += n * dur; knownPlays += n; }
         else unknownPlays += n;
         rows.push({ title, artist: formatArtists(artist, separators, joinId), n, songId: song ? song.id : null });
         // A song with several artists counts for each of them.
@@ -1285,7 +1364,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'custom_eq', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1346,7 +1425,7 @@ export const importAllSettings = async (jsonString) => {
     const BOOL_KEYS = new Set([
         'crossfade_enabled', 'vol_norm', 'between_track_norm', 'silence_trim',
         'ramp_on_pause', 'show_play_count', 'show_song_covers',
-        'keep_priority_on_switch', 'album_from_folder', 'keep_screen_awake',
+        'keep_priority_on_switch', 'album_from_folder', 'keep_screen_awake', 'eq_layering',
         'show_player_cover', 'bg_image_enabled',
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
@@ -1421,6 +1500,12 @@ export const importAllSettings = async (jsonString) => {
             if (Number.isFinite(n) && n >= min && n <= max) toWrite.push([key, String(n)]);
         } else if (key === 'custom_eq_presets') {
             try { if (isValidEqPresets(JSON.parse(value))) toWrite.push([key, value]); } catch { }
+        } else if (key === 'song_eq' || key === 'playlist_eq') {
+            try {
+                const m = JSON.parse(value); const clean = {};
+                if (m && typeof m === 'object') for (const [k, id] of Object.entries(m)) if (typeof k === 'string' && typeof id === 'string' && id.length < 80) clean[k] = id;
+                toWrite.push([key, JSON.stringify(clean)]);
+            } catch { }
         } else if (key === 'custom_eq') {
             try { const c = sanitizeCustomEQ(JSON.parse(value)); if (c) toWrite.push([key, JSON.stringify(c)]); } catch { }
         } else if (key === 'artist_separator') {
@@ -1537,7 +1622,7 @@ export const importAllSettings = async (jsonString) => {
     // actually accepted, in the same shape writeBackup stores.
     const BACKUP_MIRRORED = {
         custom_eq_presets: JSON.parse, hidden_eq_presets: JSON.parse,
-        eq_preset_overrides: JSON.parse, custom_eq: JSON.parse, playlist_sort_orders: JSON.parse,
+        eq_preset_overrides: JSON.parse, custom_eq: JSON.parse, song_eq: JSON.parse, playlist_eq: JSON.parse, playlist_sort_orders: JSON.parse,
         playlist_order: JSON.parse, settings_hidden_groups: JSON.parse,
         my_look: JSON.parse,
         playlist_view_format: (v) => v,

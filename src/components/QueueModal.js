@@ -719,6 +719,7 @@ export default function QueueModal({ visible, onClose }) {
             setDragKey(null); setDragTo(null); endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false); setEditMode(false);
             dragY.setValue(0);
         };
+        let glided = false;
         try {
             if ((from !== to || endPri || topUN) && list[from] && list[to] && fromL && toL) {
                 // Settle the held row into its slot, then do the real move. A drop at the end of
@@ -740,11 +741,29 @@ export default function QueueModal({ visible, onClose }) {
                     if (lu) settleY = lu.y - (fromL.height || 0);
                 }
                 Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
+                // The last Priority song dropped into Up Next: the whole Priority block (label, slot, line) goes away.
+                // It used to vanish in one frame, with the dropped row sitting on top of the first Up Next row for a
+                // moment first. Now the rows close the gap with the system animation, and the dropped row keeps the
+                // spot it was settled at (dragY) and glides to its real place at the same speed.
+                const closesPriority = !endPri && !topUN && !anchorRef.current && !!list[from].isPriority && !list[to].isPriority
+                    && list.filter(r => r.isPriority).length === 1;
+                const settledDy = settleY - fromL.y;
+                const clearGlide = () => {
+                    LayoutAnimation.configureNext({
+                        duration: 280,
+                        update: { type: LayoutAnimation.Types.easeOut },
+                        delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity },
+                    });
+                    clear();
+                    dragY.setValue(settledDy);
+                    Animated.timing(dragY, { toValue: 0, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+                };
                 const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
-                await refresh(next, undefined, clear);
+                await refresh(next, undefined, closesPriority ? clearGlide : clear);
+                glided = closesPriority;
             }
         } catch (e) { console.log('[QUEUE] move failed: ' + e); }
-        clear();
+        if (!glided) clear();
     }, [dragY, moveInQueue, refresh]);
     finishRef.current = finishDrag;
 

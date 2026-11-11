@@ -31,8 +31,9 @@ export default function useLivePlayCounts(songs) {
             if (my !== tokenRef.current) return;
             const key = opts.cacheKey;
             const cached = key ? snapshots.get(key) : null;
+            // opts.hold: the list is on screen right now, so its order must not change under the finger.
             const reuse = !opts.force && cached && cached.sig === sigOf(list)
-                && (cached.source === (opts.source ?? null) || (opts.source != null && opts.source === key));
+                && (opts.hold || cached.source === (opts.source ?? null) || (opts.source != null && opts.source === key));
             if (reuse) {
                 setSortCounts(cached.counts);
                 const diff = {};

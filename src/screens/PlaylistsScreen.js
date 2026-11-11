@@ -1,9 +1,9 @@
-import React, { useContext, useState, useEffect, useLayoutEffect, useCallback, useMemo, memo, useRef, createContext } from 'react';
+import React, { useContext, useState, useEffect, useLayoutEffect, useCallback, useMemo, memo, useRef } from 'react';
 import {
-    View, Text, FlatList, TouchableOpacity, Pressable, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated, PanResponder, Easing, AppState,
+    View, Text, ScrollView, TouchableOpacity, Pressable, StyleSheet, StatusBar, Image, Alert, Dimensions, Animated, PanResponder, Easing, AppState,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useScrollToTop } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
@@ -84,22 +84,9 @@ const FORMATS = [
     { id: 'grid2', cols: 2 },
 ];
 
-// Reordering needs each playlist's position on screen. The FlatList's own
-// row wrapper reports where each row sits (grids put several playlists in
-// one row), and each playlist reports where it sits inside its row.
-const DragCtx = createContext({ rowLayouts: { current: {} }, dragRow: -1 });
-function RowCell({ index, onLayout, style, children, ...rest }) {
-    const { rowLayouts, dragRow } = useContext(DragCtx);
-    return (
-        <View
-            {...rest}
-            style={[style, dragRow === index && { zIndex: 50 }]}
-            onLayout={(e) => { rowLayouts.current[index] = e.nativeEvent.layout; if (onLayout) onLayout(e); }}
-        >
-            {children}
-        </View>
-    );
-}
+// Reordering needs each playlist's position on screen: every playlist reports where it sits
+// (all of them are direct children of one container, so a playlist keeps its identity, and its
+// already decoded cover, when the order changes).
 
 // Memoized so the hold/drag state living in the parent doesn't re-render
 // every visible row, only the one being held.
@@ -223,7 +210,7 @@ const PlaylistRow = memo(function PlaylistRow({ item, index, format, numCols, co
 
 const COVER_MS = 350;       // hold this long and let go: the cover picker opens
 const LIFT_MS = 500;        // hold this long: the playlist can be moved (iOS touch-and-hold)
-const EDIT_LIFT_MS = 120;   // in edit mode a playlist can be grabbed almost at once
+const EDIT_LIFT_MS = 150;   // in edit mode a playlist can be grabbed almost at once
 const EMPTY_HOLD_MS = 600;  // hold empty space to enter edit mode
 const DRAG_SLOP = 6;        // points the finger must move after the lift to start a drag
 const EDGE = 90;            // auto-scroll zone at the top and bottom of the list
@@ -290,7 +277,7 @@ export default function PlaylistsScreen() {
             if (!f) return;
             setFormat(prev => {
                 if (prev === f) return prev;
-                itemLayouts.current = []; rowLayouts.current = {};
+                itemLayouts.current = [];
                 return f;
             });
         });
@@ -303,7 +290,7 @@ export default function PlaylistsScreen() {
         const idx = FORMATS.findIndex(f => f.id === format);
         const next = FORMATS[(idx + 1) % FORMATS.length];
         Animated.timing(listOpacity, { toValue: 0, duration: 90, useNativeDriver: true }).start(() => {
-            itemLayouts.current = []; rowLayouts.current = {};
+            itemLayouts.current = [];
             setFormat(next.id);
             setPlaylistViewFormat(next.id);
             requestAnimationFrame(() => {
@@ -346,10 +333,11 @@ export default function PlaylistsScreen() {
     const animsRef = useRef({});
     const getAnim = (path) => (animsRef.current[path] || (animsRef.current[path] = new Animated.ValueXY()));
     const itemLayouts = useRef([]);
-    const rowLayouts = useRef({});
     const listRef = useRef(null);
+    useScrollToTop(listRef);   // tapping the Playlists tab while already on this screen scrolls all the way up
     const listBoxRef = useRef(null);
     const scrollY = useRef(0);
+    const scrollingRef = useRef(false);
     const viewH = useRef(0);
     const contentH = useRef(0);
     const timers = useRef({ cover: null, lift: null, pick: null, scroll: null, reset: null });
@@ -360,19 +348,15 @@ export default function PlaylistsScreen() {
     const numColsRef = useRef(numCols);
     numColsRef.current = numCols;
 
-    const ctxValue = useMemo(() => ({ rowLayouts, dragRow: activeIndex < 0 ? -1 : Math.floor(activeIndex / numCols) }), [activeIndex, numCols]);
-
     const onItemLayout = useCallback((index, layout) => { itemLayouts.current[index] = layout; }, []);
 
     const getSlots = () => {
         const n = playlistsRef.current.length;
-        const cols = numColsRef.current;
         const out = [];
         for (let i = 0; i < n; i++) {
             const it = itemLayouts.current[i];
-            const row = rowLayouts.current[Math.floor(i / cols)];
-            if (!it || !row) return null;
-            out.push({ cx: row.x + it.x + it.width / 2, cy: row.y + it.y + it.height / 2 });
+            if (!it) return null;
+            out.push({ cx: it.x + it.width / 2, cy: it.y + it.height / 2 });
         }
         return out;
     };
@@ -428,7 +412,11 @@ export default function PlaylistsScreen() {
 
     // First stage of a hold (a bit under half a second): the playlist lifts.
     // Letting go now opens the cover picker.
+    // A finger that has started scrolling the list never lifts a playlist (that stopped the scroll dead and
+    // then made the playlist jump to the finger).
+    const scrolledSincePress = () => scrollingRef.current || Math.abs(scrollY.current - pressScrollY.current) > 3;
     const coverReady = (index) => {
+        if (scrolledSincePress()) return;
         flags.current.lifted = true;
         setActiveIndex(index);
         Animated.spring(lift, { toValue: 1.05, friction: 8, tension: 170, useNativeDriver: true }).start();
@@ -437,6 +425,7 @@ export default function PlaylistsScreen() {
     // here a finger movement starts a drag; letting go in place still opens
     // the cover picker.
     const liftUp = (index) => {
+        if (scrolledSincePress()) return;
         if (!flags.current.lifted) coverReady(index);
         const slots = getSlots();
         if (!slots || slots.length < 2) return;   // nothing to reorder: stays a cover hold
@@ -457,7 +446,7 @@ export default function PlaylistsScreen() {
             const ny = Math.max(0, Math.min(maxY, scrollY.current + v));
             if (ny === scrollY.current) return;
             scrollY.current = ny;
-            if (listRef.current) listRef.current.scrollToOffset({ offset: ny, animated: false });
+            if (listRef.current) listRef.current.scrollTo({ y: ny, animated: false });
             applyDrag();
         }, 16);
     };
@@ -494,6 +483,11 @@ export default function PlaylistsScreen() {
 
     // The new order is on screen: now every playlist can drop its temporary
     // offset (they already sit in their new slots, so nothing visibly moves).
+    // Also when the layout is switched: a playlist still carrying an offset from a drag showed up shifted in
+    // the new layout.
+    useLayoutEffect(() => {
+        Object.values(animsRef.current).forEach(a => { a.stopAnimation(); a.setValue({ x: 0, y: 0 }); });
+    }, [format]);
     const orderKey = playlists.map(p => p.path).join('|');
     useLayoutEffect(() => {
         Object.values(animsRef.current).forEach(a => a.setValue({ x: 0, y: 0 }));
@@ -502,8 +496,11 @@ export default function PlaylistsScreen() {
     // The press/drag handlers below are created once, so they reach the
     // current versions of these functions through this ref.
     const latest = useRef({});
+    const pressScrollY = useRef(0);
     const pressIn = useCallback((item, index) => {
         clearTimers();
+        pressScrollY.current = scrollY.current;
+        scrollingRef.current = false;   // a touch stops any scrolling that was still coasting
         clearTimeout(timers.current.reset);
         if (drag.current.active || flags.current.dropping) return;
         flags.current = { lifted: false, picked: false, captured: false, dropping: false };
@@ -644,6 +641,8 @@ export default function PlaylistsScreen() {
                 and queue (same sizes, same gap, same top padding). */}
             <View style={[s.header, !topBarColor && OVERLAY_HEADER]} pointerEvents={topBarColor ? 'auto' : 'box-none'} onLayout={onHdrLayout}>
                 {topBarColor && <TopBarBack color={base.surface} />}
+                {/* While rearranging, a tap anywhere on the top bar is "Done" too. */}
+                {editMode ? <Pressable style={StyleSheet.absoluteFill} onPress={exitEdit} /> : null}
                 <Text style={[s.title, { color: base.text, flex: 1, marginLeft: 16 }]}>Playlists</Text>
                 {editMode ? (
                     <TouchableOpacity onPress={exitEdit} style={s.doneBtn} hitSlop={HIT}>
@@ -705,30 +704,24 @@ export default function PlaylistsScreen() {
                         onTouchCancel={() => { clearTimeout(emptyHold.current.timer); emptyHold.current.onItem = false; }}
                         {...pan.panHandlers}
                     >
-                    <DragCtx.Provider value={ctxValue}>
-                    <FlatList
+                    <ScrollView
                         ref={listRef}
-                        key={numCols}
-                        data={playlists}
-                        keyExtractor={item => item.path}
-                        numColumns={numCols}
-                        CellRendererComponent={RowCell}
-                        // Every playlist stays mounted so each one has a
-                        // measured spot to be dragged to.
-                        initialNumToRender={Math.max(12, playlists.length)}
+                        key={format}
                         scrollEnabled={!dragging}
                         scrollEventThrottle={16}
                         onScroll={(e) => { scrollY.current = e.nativeEvent.contentOffset.y; }}
+                        onScrollBeginDrag={() => { scrollingRef.current = true; if (!drag.current.active) clearTimers(); }}
+                        onScrollEndDrag={(e) => { const v = e.nativeEvent.velocity; if (!v || Math.abs(v.y) < 0.05) scrollingRef.current = false; }}
+                        onMomentumScrollBegin={() => { scrollingRef.current = true; }}
+                        onMomentumScrollEnd={() => { scrollingRef.current = false; }}
                         onContentSizeChange={(w, h) => { contentH.current = h; }}
-                        // Grid rows already get top spacing from each cell's own
-                        // CELL_MARGIN (applied on every side, top included) —
-                        // the extra paddingTop this used to add on top of that
-                        // was double-spacing, showing up as a noticeably
-                        // fatter gap above the grid than above the list rows
-                        // (which only rely on their own marginVertical).
-                        contentContainerStyle={{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }}
-                        renderItem={({ item, index }) => (
+                        // Grid cells get their spacing from each cell's own margins, so the container adds no
+                        // extra top gap beyond the header.
+                        contentContainerStyle={[{ paddingTop: topBarColor ? TOP_FADE : hdrH, paddingBottom: 150, paddingHorizontal: isGrid ? GRID_PADDING : 0 }, isGrid && { flexDirection: 'row', flexWrap: 'wrap' }]}
+                    >
+                        {playlists.map((item, index) => (
                             <PlaylistRow
+                                key={item.path}
                                 item={item}
                                 index={index}
                                 format={format}
@@ -752,9 +745,8 @@ export default function PlaylistsScreen() {
                                 onPress={pressRelease}
                                 onRemoveCover={removeCoverAsk}
                             />
-                        )}
-                    />
-                    </DragCtx.Provider>
+                        ))}
+                    </ScrollView>
                     </View>
                 </Animated.View>
             )}

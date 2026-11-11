@@ -181,7 +181,9 @@ function Tabs() {
             <Tab.Screen
                 name="All Songs"
                 component={AllSongsScreen}
-                options={{ tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>♪</Text> }}
+                // Not frozen: its list is rebuilt in the background (tags arriving, library rescans) and used to
+                // show up as a visible re-sort the moment the tab was opened again.
+                options={{ freezeOnBlur: false, tabBarIcon: ({ color }) => <Text style={{ color, fontSize: 22 }}>♪</Text> }}
             />
             <Tab.Screen
                 name="Playlists"

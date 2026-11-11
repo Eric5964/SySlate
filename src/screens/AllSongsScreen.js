@@ -3,7 +3,7 @@ import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
-import { useNavigation, useScrollToTop, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useScrollToTop, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
@@ -19,7 +19,7 @@ import { getPlaylistSort, setPlaylistSort, playCountKey } from '../utils/storage
 import { vizRowId } from '../utils/vizMatch';
 import { useVizPending } from '../utils/vizPending';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
-import { useListArt } from '../hooks/useListArt';
+import { useListArt, setVisibleArtIds } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
 import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
@@ -103,7 +103,11 @@ export default function AllSongsScreen() {
     const playingSrcA = currentPlaylist?.path ?? currentPlaylist?.name ?? null;
     const playingSrcARef = useRef(playingSrcA);
     playingSrcARef.current = playingSrcA;
-    useEffect(() => { refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current }); }, [dedupedSongs, refreshSort]);
+    // While this tab is on screen the order is never re-read (hold); a rebuilt list is sorted while it is away.
+    const isFocused = useIsFocused();
+    const isFocusedRef = useRef(isFocused);
+    isFocusedRef.current = isFocused;
+    useEffect(() => { refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current, hold: isFocusedRef.current }); }, [dedupedSongs, refreshSort]);
 
     useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
     // Precomputed once per song instead of inside the sort comparator —
@@ -141,6 +145,8 @@ export default function AllSongsScreen() {
     }, [sorted, search, artistSeparator]);
 
     const artMap = useListArt(filtered, showSongCovers);
+    const onViewable = useRef(({ viewableItems }) => setVisibleArtIds(viewableItems.map(v => v.item?.id).filter(Boolean))).current;
+    const viewCfg = useRef({ itemVisiblePercentThreshold: 10 }).current;
 
     const play = async (song) => {
         const playlist = { name: 'All Songs', path: ALL_SONGS_KEY, songs: sorted };
@@ -239,6 +245,8 @@ export default function AllSongsScreen() {
                 <FlatList
                     ref={listRef}
                     data={filtered}
+                    onViewableItemsChanged={onViewable}
+                    viewabilityConfig={viewCfg}
                     extraData={vizExtra}
                     keyExtractor={item => item.id}
                     contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 150 }}

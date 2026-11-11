@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
 import AudioEngine, { useProgress, usePlaybackState, matchProgress, State } from '../native/AudioEngine';
@@ -24,6 +24,7 @@ import { squircle, cardRadius } from '../utils/squircle';
 import SongVisualizer from '../components/SongVisualizer';
 import { mixHex } from '../utils/color';
 import { getPlayCounts, peekPlayCount, playCountKey, playCountKeyN, subscribePlayCount } from '../utils/storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TOP_PAD } from '../utils/layout';
 
 const { width } = Dimensions.get('window');
@@ -538,6 +539,16 @@ export default function PlayerScreen() {
         }
     }, []);
 
+    // The length of the song as remembered from an earlier reading, shown while the player has not reported one yet
+    // (right after a tap the time used to read 0:00 / 0:00 for about a second).
+    const [knownDur, setKnownDur] = useState(0);
+    useEffect(() => {
+        let c = false;
+        setKnownDur(0);
+        if (!currentTrack) return undefined;
+        AsyncStorage.getItem('pdur:' + playCountKey(currentTrack).slice(4)).then(v => { if (!c) setKnownDur(parseFloat(v) || 0); }).catch(() => { });
+        return () => { c = true; };
+    }, [currentTrack?.id]);
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
     const displayArtist = formatArtists(currentTrack?.ourArtist ?? currentTrack?.artist ?? '', artistSeparator, artistDisplayJoin);
     // No per-song embedded-artwork (ID3/FLAC picture tag) extraction exists
@@ -559,8 +570,18 @@ export default function PlayerScreen() {
     // every track change, not just once — a manual toggle from a previous
     // song shouldn't carry over to the next one.
     const initialLyricsPeek = peekLyrics(currentTrack?.id);
-    const [lyricsData, setLyricsData] = useState(() => (initialLyricsPeek !== undefined ? initialLyricsPeek : null));
-    const [showingLyrics, setShowingLyrics] = useState(() => autoShowLyrics && !!initialLyricsPeek);
+    // Both are tagged with the song they belong to. Right after a song change (the title switches at the
+    // crossfade midpoint) the old song's lyrics, or its "lyrics showing" state, were still what rendered
+    // until the new lookup finished; now anything that is not for the current song counts as not there.
+    const [lyricsRaw, setLyricsRaw] = useState(() => ({ id: currentTrack?.id, data: initialLyricsPeek !== undefined ? initialLyricsPeek : null }));
+    const [showingRaw, setShowingRaw] = useState(() => ({ id: currentTrack?.id, on: autoShowLyrics && !!initialLyricsPeek }));
+    const nowId = currentTrack?.id;
+    const nowIdRef = useRef(nowId);
+    nowIdRef.current = nowId;
+    const lyricsData = lyricsRaw.id === nowId ? lyricsRaw.data : (peekLyrics(nowId) ?? null);
+    const showingLyrics = showingRaw.id === nowId ? showingRaw.on : (autoShowLyrics && !!peekLyrics(nowId));
+    const setLyricsData = useCallback((data) => setLyricsRaw({ id: nowIdRef.current, data }), []);
+    const setShowingLyrics = useCallback((on) => setShowingRaw({ id: nowIdRef.current, on }), []);
     useEffect(() => {
         if (!currentTrack?.id || lyricsMode === 'off') {
             setLyricsData(null);
@@ -1361,6 +1382,21 @@ export default function PlayerScreen() {
         return () => { stopAnim(); clearTimeout(stuckSafetyTimer.current); clearTimeout(clearDragTimer.current); clearTimeout(discResyncTimer.current); };
     }, []);
 
+    // While the screen is off the native bar animation stops, but the clock the drift check uses keeps going, so
+    // on waking the bar looked "on track" and stayed far behind the time text until the next song. On every wake
+    // the running animation is dropped; the next position reading starts it again from the real spot.
+    useEffect(() => {
+        let t = null;
+        const sub = AppState.addEventListener('change', (st) => {
+            if (st !== 'active') return;
+            stopAnim();
+            clearTimeout(t);
+            t = setTimeout(() => { stopAnim(); }, 450);
+        });
+        return () => { sub.remove(); clearTimeout(t); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // Both move with transforms so they can run on the native side.
     const fillX = useMemo(() => animPct.interpolate({ inputRange: [0, 1], outputRange: [-barW, 0] }), [animPct, barW]);
     const thumbX = useMemo(() => animPct.interpolate({ inputRange: [0, 1], outputRange: [0, barW] }), [animPct, barW]);
@@ -1513,7 +1549,7 @@ export default function PlayerScreen() {
                                     pointerEvents={showingLyrics ? 'none' : 'auto'}
                                 >
                                     {artwork
-                                        ? <Image source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
+                                        ? <Image key={artwork} source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                         : null
                                     }
                                     {playerVizCover && !performanceMode && !showingLyrics ? <SongVisualizer color={theme.accent} mode="cover" size={width - 56} radius={squircle(width - 56, coverShape)} /> : null}
@@ -1667,33 +1703,25 @@ export default function PlayerScreen() {
                                         );
                                     })}</React.Fragment>
                                 </Animated.ScrollView>
+                            </Animated.View>
+                        )}
+                        {lyricsArrows && lyricsData ? (
+                            // Fixed arrows at the left and right edge of the SCREEN (the box is inset 28 on each side),
+                            // at the height where the active line always sits. They do not move with the lyrics. Accent
+                            // coloured while words are playing, dim while the line is blank or before the first line.
+                            <Animated.View pointerEvents="none" style={{ position: 'absolute', top: 0, height: width - 56, left: -28, right: -28, opacity: lyricsOpacity }}>
                                 {(() => {
-                                    // Small arrows at the left and right edge, on the line the lyrics are at. They
-                                    // ride the scroll position, so they stay with the line while it scrolls. Accent
-                                    // coloured while words are playing, dim while the line is blank.
-                                    if (!lyricsArrows || !showingLyrics || !lyricsData || rawActiveLine < 0) return null;
-                                    const ys = lyricsRowYRef.current;
-                                    let cy = null;
-                                    if (activeLine >= 0) { const y = ys.get(activeLine); if (y !== undefined) cy = y + 17; }
-                                    else {
-                                        let p = rawActiveLine, n = rawActiveLine + 1;
-                                        while (p >= 0 && !lyricsData[p]?.text) p--;
-                                        while (n < lyricsData.length && !lyricsData[n]?.text) n++;
-                                        const yp = ys.get(p), yn = ys.get(n);
-                                        if (yp !== undefined && yn !== undefined) cy = (yp + 34 + yn) / 2;
-                                    }
-                                    if (cy === null) return null;
                                     const color = (activeLine >= 0 && lyricsData[activeLine]?.text) ? lyricActiveColor : lyricIdleColor;
-                                    const ty = lyricsScrollY.interpolate({ inputRange: [0, 1], outputRange: [cy - 9, cy - 10] });
+                                    const top = (width - 56) * 0.5 + 17 - 19;
                                     return (
                                         <>
-                                            <Animated.Text pointerEvents="none" style={[s.lyricArrow, { left: 5, color, transform: [{ translateY: ty }] }]}>{'\u25B8'}</Animated.Text>
-                                            <Animated.Text pointerEvents="none" style={[s.lyricArrow, { right: 5, color, transform: [{ translateY: ty }] }]}>{'\u25C2'}</Animated.Text>
+                                            <Text style={[s.lyricArrow, { left: 2, top, color }]}>{'\u25B8'}</Text>
+                                            <Text style={[s.lyricArrow, { right: 2, top, color }]}>{'\u25C2'}</Text>
                                         </>
                                     );
                                 })()}
                             </Animated.View>
-                        )}
+                        ) : null}
                     </View>
                 </View>
 
@@ -1780,7 +1808,7 @@ export default function PlayerScreen() {
                             {dragRatio !== null || justSwitched
                                 ? <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : switchProg.position)}</Text>
                                 : <LiveTime position={progress.position} duration={progress.duration} playing={isPlaying} rate={playbackRate} style={[s.time, { color: base.textFaint }]} />}
-                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(justSwitched ? switchProg.duration : progress.duration)}</Text>
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt((justSwitched ? switchProg.duration : progress.duration) || knownDur)}</Text>
                         </View>
                     </View>
                 </View>
@@ -1906,7 +1934,7 @@ const s = StyleSheet.create({
     // same 800 weight always; active vs inactive is still clearly
     // distinguished by color/opacity alone (see the color/opacity props
     // where this style gets applied), just without the reflow.
-    lyricArrow: { position: 'absolute', top: 0, fontSize: 13, lineHeight: 18, fontWeight: '700' },
+    lyricArrow: { position: 'absolute', top: 0, fontSize: 26, lineHeight: 38, fontWeight: '700' },
     lyricLine: { fontSize: 24, lineHeight: 34, fontWeight: '800', textAlign: 'center', marginVertical: 7 },
     // Two fixes here per direct feedback:
     // 1. "too bolded, just a normal bold ideally, noticeable but not over

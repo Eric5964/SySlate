@@ -66,7 +66,7 @@ import {
     getHiddenPresets, setHiddenPresets,
     getEQOverrides, setEQOverrides,
     getShuffleMode,
-    getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch,
+    getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch, getEQLayering, setEQLayering, subscribeEQLayering,
     getPrevButtonMode, setPrevButtonMode,
     getRestartThresholdUnit, setRestartThresholdUnit, getRestartThresholdPct, setRestartThresholdPct,
     getRestartThresholdSec, setRestartThresholdSec,
@@ -211,6 +211,8 @@ export default function SettingsScreen() {
     // never 'off' (only the live state uses 'off').
     const [shuffleTypePref, setShuffleTypePref] = useState('full_cycle');
     const [keepPriority, setKeepPriority] = useState(true);
+    const [eqLayerOn, setEqLayerOn] = useState(false);
+    useEffect(() => { getEQLayering().then(setEqLayerOn); return subscribeEQLayering(setEqLayerOn); }, []);
     const [albumFromFolder, setAlbumFromFolderState] = useState(false);
     // Simple or Advanced view (kept saved) and the search box.
     const [mode, setModeState] = useState('simple');
@@ -658,6 +660,7 @@ export default function SettingsScreen() {
             setSilenceTrim(false);
         },
         queue: () => { setKeepPriority(true); setKeepPriorityOnPlaylistSwitch(true); },
+        eqLayering: () => { setEqLayerOn(false); setEQLayering(false); },
         prev: () => { setPrevButtonModeState('previous_track'); setPrevButtonMode('previous_track'); setRestartThresholdState(3); setRestartThresholdSec(3); setRestartUnitState('sec'); setRestartThresholdUnit('sec'); setRestartPctState(5); setRestartThresholdPct(5); },
         lists: () => { setVizMode('off'); setPlayerVizCover(false); setShowSongCovers(true); setShowPlayCount(true); setShowPlaylistTrackCount(true); setShowPlaylistTitles(true); setPlaylistCards(true); setPlaylistArrow(true); setSongPillShadow(false); setMiniPlayerShadow(true); },
         playlistsScreen: () => ['pl_layout', 'pl_reload'].forEach(n => setUiShown(n, true)),
@@ -679,7 +682,7 @@ export default function SettingsScreen() {
     };
     // Reset buttons are per group (Playback, Screens, ...), not per section.
     const groupResetters = {
-        playback: () => ['volume', 'spatial', 'shuffle', 'crossfade', 'queue', 'prev'].forEach(k => resetters[k]()),
+        playback: () => ['volume', 'spatial', 'shuffle', 'crossfade', 'queue', 'prev', 'eqLayering'].forEach(k => resetters[k]()),
         screens: () => ['lists', 'playlistsScreen', 'allSongsScreen', 'playlistScreen', 'playerButtons', 'playerCover'].forEach(k => resetters[k]()),
         appearance: () => ['covers', 'screen'].forEach(k => resetters[k]()),
         library: () => ['artists', 'album'].forEach(k => resetters[k]()),
@@ -878,6 +881,17 @@ export default function SettingsScreen() {
 
                 <GroupHeader title="Playback" onReset={() => askGroupReset('playback', 'Playback')} hidden={isHidden('playback')} onToggleHidden={() => toggleGroupHidden('playback')} />
                 {!isHidden('playback') && (<>
+
+                <Section title="EQ per playlist and song">
+                    <View style={s.toggleRow}>
+                        <View style={{ flex: 1 }}>
+                            <Text style={s.toggleLabel}>Different EQ per playlist and song</Text>
+                            <Text style={s.toggleSub}>Off: the EQ you picked last plays everywhere. On: a song's own EQ wins, then its playlist's, then the one you picked last. Assign them from the EQ button. Turning this off keeps your assignments but ignores them.</Text>
+                        </View>
+                        <LiveSwitch value={eqLayerOn} onValueChange={v => { setEqLayerOn(v); setEQLayering(v); }}
+                            trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                    </View>
+                </Section>
 
                 <Section title="EQ Presets">
                     {/* Built-ins and custom presets now share one 2-column
@@ -1813,6 +1827,7 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 // Words each Section answers to in the search box (besides its title).
 const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone',
+    'EQ per playlist and song': 'eq equalizer playlist song assign override different layer',
     'Advanced EQ, Import & Export': 'equalizer eq advanced custom parametric graphic q factor frequency band import export autoeq apo preset share',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',

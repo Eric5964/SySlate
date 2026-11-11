@@ -29,6 +29,17 @@ const YIELD_EVERY = 20;
 // first render everywhere after.
 const SESSION_ART = {};
 
+// The rows that are on screen right now (the lists report them). Their covers are fetched first and a few at a
+// time, instead of waiting their turn in list order behind hundreds of rows nobody is looking at.
+let VISIBLE = new Set();
+const visibleSubs = new Set();
+export function setVisibleArtIds(ids) {
+    VISIBLE = new Set(ids);
+    visibleSubs.forEach(f => { try { f(); } catch { } });
+}
+const VISIBLE_PARALLEL = 3;
+const VISIBLE_MAX = 16;
+
 export function useListArt(songs, enabled) {
     // Starts from everything already known (this session's results plus the
     // on-disk cover cache, read synchronously), so a list's first paint
@@ -123,6 +134,35 @@ export function useListArt(songs, enabled) {
 
         runCacheOnly();
 
+        // Visible rows first: a few extractions at once, no stagger, without waiting for the settle delay.
+        let visBusy = false, visAgain = false, visTimer = null;
+        const extractVisible = async () => {
+            if (visBusy) { visAgain = true; return; }
+            visBusy = true;
+            try {
+                do {
+                    visAgain = false;
+                    const todo = songs.filter(sg => VISIBLE.has(sg.id) && !resolved.has(sg.id)).slice(0, VISIBLE_MAX);
+                    for (let i = 0; i < todo.length; i += VISIBLE_PARALLEL) {
+                        if (isStale()) return;
+                        await Promise.all(todo.slice(i, i + VISIBLE_PARALLEL).map(async (song) => {
+                            try {
+                                const uri = await extractEmbeddedArt(song);
+                                if (isStale()) return;
+                                resolved.add(song.id);
+                                pending[song.id] = uri;
+                                pendingCount++;
+                            } catch { }
+                        }));
+                        flush();
+                    }
+                } while (visAgain && !isStale());
+            } finally { visBusy = false; }
+        };
+        const onVisible = () => { clearTimeout(visTimer); visTimer = setTimeout(extractVisible, 120); };
+        visibleSubs.add(onVisible);
+        onVisible();
+
         const cancelRef = { current: null };
         const handle = InteractionManager.runAfterInteractions(() => {
             const t = setTimeout(runNewExtractions, 300);
@@ -166,7 +206,7 @@ export function useListArt(songs, enabled) {
             setArtMap(prev => ({ ...prev, [id]: uri }));
         });
 
-        return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); unsubscribe(); };
+        return () => { cancelled = true; cancelRef.current?.(); clearInterval(sweepInterval); unsubscribe(); visibleSubs.delete(onVisible); clearTimeout(visTimer); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, songs]);
 

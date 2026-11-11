@@ -4,7 +4,7 @@ import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand } from '../utils/eq';
-import { getCustomPresets, getEQOverrides, getPreAmp } from '../utils/storage';
+import { getCustomPresets, getEQOverrides, getPreAmp, getSongEQ, setSongEQ, toStablePath, addListenedSeconds, getEQLayering, subscribeEQLayering, getPlaylistEQ, setPlaylistEQ } from '../utils/storage';
 import { toNativeArrays, presetParamBands } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
@@ -73,7 +73,12 @@ const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` 
 // Exported so SettingsScreen can re-apply immediately after editing whatever
 // preset is currently active, instead of the change only taking effect the
 // next time a preset gets selected.
+// The preset that is assigned to the song that is playing, or else to the playlist it plays from (only
+// while "EQ per playlist and song" is on, see eqOverride in the provider). It wins over whatever preset a
+// caller asks for, so every place that re-applies the EQ (playlist start, editing a preset) honours it.
+let eqOverrideId = null;
 export async function applyEQPreset(id) {
+    id = eqOverrideId || id;
     try {
         const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
         const preset = getPresetById(id, custom, overrides);
@@ -162,6 +167,32 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const [shuffleOn, setShuffleOn] = useState(false);
     const [shuffleMode, setShuffleModeState] = useState('full_cycle');
     const [eqPresetId, setEqPresetId] = useState('flat');
+    // "EQ per playlist and song" (Settings, off by default). Off: eqPresetId (the current EQ) plays everywhere.
+    // On: a preset assigned to the playing song wins, then one assigned to the playlist, then the current EQ.
+    const [eqLayer, setEqLayer] = useState(false);
+    useEffect(() => { getEQLayering().then(setEqLayer); return subscribeEQLayering(setEqLayer); }, []);
+    // EQ presets assigned to single songs (stable path -> preset id) and to whole playlists (same kind of key).
+    const [songEQMap, setSongEQMap] = useState({});
+    const [playlistEQMap, setPlaylistEQMap] = useState({});
+    useEffect(() => { getSongEQ().then(setSongEQMap); getPlaylistEQ().then(setPlaylistEQMap); }, []);
+    const assignSongEQ = useCallback(async (songs, presetId) => {
+        const next = { ...songEQMap };
+        for (const sg of songs || []) {
+            const k = toStablePath(sg?.id);
+            if (!k) continue;
+            if (presetId) next[k] = presetId; else delete next[k];
+        }
+        setSongEQMap(next);
+        await setSongEQ(next);
+    }, [songEQMap]);
+    const assignPlaylistEQ = useCallback(async (path, presetId) => {
+        const k = toStablePath(path);
+        if (!k) return;
+        const next = { ...playlistEQMap };
+        if (presetId) next[k] = presetId; else delete next[k];
+        setPlaylistEQMap(next);
+        await setPlaylistEQ(next);
+    }, [playlistEQMap]);
 
     // Lyrics were only ever fetched lazily by PlayerScreen itself, on
     // mount/track-change — meaning the very first time any given song's
@@ -418,6 +449,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // Pausing adds nothing (no readings come), and playing the song again from the start after it was
     // counted (or looping it) starts a new round that needs its own half.
     const playCreditedRef = useRef({ trackId: null, credited: false, listened: 0, lastPos: null, lastAt: 0 });
+    const listenPendRef = useRef({ track: null, sec: 0 });
+    const flushListened = () => {
+        const lp = listenPendRef.current;
+        if (lp.track && lp.sec > 0.5) addListenedSeconds(lp.track, libraryFor(lp.track), lp.sec);
+        lp.sec = 0;
+    };
+    useEffect(() => {
+        const sub = AppState.addEventListener('change', (st) => { if (st !== 'active') flushListened(); });
+        return () => sub.remove();
+    }, []);
     const playbackRateRef = useRef(1);
     useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
     useEffect(() => {
@@ -437,13 +478,22 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 pc.credited = false;
                 pc.listened = 0;
             }
+            // Listening time: the song seconds that really went by, in real time, filed per song every ~15 s and when
+            // the song changes (the Listening Stats hours use this instead of plays x length).
+            const lp = listenPendRef.current;
+            if (lp.track && lp.track.id !== track.id) { flushListened(); }
+            lp.track = track;
             if (pc.lastPos != null) {
                 const d = position - pc.lastPos;
                 const gapSec = Math.min(120, Math.max(0, (now - pc.lastAt) / 1000));
                 // The most song that can go by per second: the playing speed, or the disc's top speed (3x).
                 const fastest = Math.max(playbackRateRef.current || 1, 3);
                 const allowed = fastest * 1.3 * gapSec + 0.4;
-                if (d > 0 && d <= allowed) pc.listened += d;
+                if (d > 0 && d <= allowed) {
+                    pc.listened += d;
+                    lp.sec += Math.min(d / Math.max(0.25, playbackRateRef.current || 1), gapSec + 0.4);
+                    if (lp.sec >= 15) flushListened();
+                }
             }
             pc.lastPos = position;
             pc.lastAt = now;
@@ -1843,9 +1893,28 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         } catch { }
     }, [singleLoop]);
 
-    const changeEQPreset = useCallback(async (id, path) => {
+    // Which assigned EQ (if any) applies to what is playing right now: song first, then playlist.
+    const eqOverride = useMemo(() => {
+        if (!eqLayer) return null;
+        const sk = currentTrack?.id ? toStablePath(currentTrack.id) : null;
+        if (sk && songEQMap[sk]) return { id: songEQMap[sk], source: 'song' };
+        const pk = currentPlaylist?.path ? toStablePath(currentPlaylist.path) : null;
+        if (pk && playlistEQMap[pk]) return { id: playlistEQMap[pk], source: 'playlist' };
+        return null;
+    }, [eqLayer, currentTrack?.id, currentPlaylist?.path, songEQMap, playlistEQMap]);
+    const eqOverrideApplied = useRef(null);
+    useEffect(() => {
+        const next = eqOverride?.id || null;
+        eqOverrideId = next;
+        // Re-apply only when the assigned EQ changes (or goes away): plain song changes with no assignment
+        // on either side never touch the EQ, and the current EQ applies itself when it is picked.
+        if (next !== eqOverrideApplied.current) { eqOverrideApplied.current = next; applyEQPreset(eqPresetId); }
+    }, [eqOverride?.id, eqPresetId]);
+
+    // Picking a preset changes the CURRENT EQ and nothing else (it no longer saves anything per playlist).
+    const changeEQPreset = useCallback(async (id) => {
         setEqPresetId(id);
-        await setEQPreset(id, path);
+        await setEQPreset(id);
         await applyEQPreset(id);
     }, []);
 
@@ -2066,13 +2135,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const value = useMemo(() => ({
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
-        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
+        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
-        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession,
+        toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
