@@ -969,6 +969,13 @@ export const resetPlayCounts = () => safe(async () => {
     const entries = {};
     (await AsyncStorage.multiGet(keys)).forEach(([k, v]) => { if (v != null) entries[k] = v; });
     // Written BEFORE anything is removed; if the copy cannot be written, nothing is removed.
+    // A second reset must not replace the first copy with an almost empty one: merge, the higher number wins.
+    try {
+        const old = JSON.parse(await FileSystem.readAsStringAsync(PLAYCOUNT_UNDO_PATH));
+        for (const [k, v] of Object.entries(old?.entries || {})) {
+            if (!(k in entries) || (parseFloat(v) || 0) > (parseFloat(entries[k]) || 0)) entries[k] = v;
+        }
+    } catch (e) { /* no earlier copy */ }
     await FileSystem.writeAsStringAsync(PLAYCOUNT_UNDO_PATH, JSON.stringify({ at: Date.now(), entries }));
     await AsyncStorage.multiRemove(keys);
     playCountCache.clear();

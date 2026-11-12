@@ -3,6 +3,8 @@ import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { PILL_H } from '../utils/layout';
 import { useNavigation, useScrollToTop, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
@@ -15,7 +17,8 @@ import SongVisualizer from '../components/SongVisualizer';
 import EQModal from '../components/EQModal';
 import QueueModal from '../components/QueueModal';
 import { MenuBarsIcon } from '../components/Icons';
-import { getPlaylistSort, setPlaylistSort, playCountKey } from '../utils/storage';
+import { getPlaylistSort, setPlaylistSort, playCountKey, getCustomPresets, getEQOverrides, toStablePath } from '../utils/storage';
+import { getPresetById } from '../utils/eq';
 import { vizRowId } from '../utils/vizMatch';
 import { useVizPending } from '../utils/vizPending';
 import useLivePlayCounts from '../hooks/useLivePlayCounts';
@@ -46,12 +49,16 @@ const ALL_SONGS_KEY = '__all__';
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
-    const { playSongFromPlaylist, addToQueue, queueEpoch, currentTrack, currentPlaylist } = usePlayback();
+    const { playSongFromPlaylist, addToQueue, queueEpoch, currentTrack, currentPlaylist, songEQMap, assignSongEQ, eqLayer } = usePlayback();
     const { theme, base } = useTheme();
     const navigation = useNavigation();
     const [search, setSearch] = useState('');
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
+    const insets = useSafeAreaInsets();
+    const [assign, setAssign] = useState(null);   // null, or { presetId, name, selected: { [songId]: true } }
+    const [eqNameList, setEqNameList] = useState({ cp: [], ov: {} });
+    useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ]);
     const [sortId, setSortId] = useState('alpha');
     const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui, vizMode } = usePreferences();
@@ -97,7 +104,37 @@ export default function AllSongsScreen() {
     // the snapshot, which is read again when the app opens, the sort is changed, the
     // songs change, or a different queue is played.
     const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(dedupedSongs);
-    const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
+    // Name of each song's own EQ, shown small in the row. A song counts as one song across all its copies (same title + artist).
+    const songEQNames = useMemo(() => {
+        const out = {};
+        if (!eqLayer) return out;
+        const byKey = {};
+        for (const sg of allSongs) {
+            const id = songEQMap[toStablePath(sg.id)];
+            if (id && !byKey[playCountKey(sg)]) byKey[playCountKey(sg)] = id;
+        }
+        for (const sg of dedupedSongs) {
+            const id = byKey[playCountKey(sg)];
+            if (id) out[sg.id] = getPresetById(id, eqNameList.cp, eqNameList.ov).name;
+        }
+        return out;
+    }, [eqLayer, songEQMap, allSongs, dedupedSongs, eqNameList]);
+    const toggleAssign = useCallback((song) => {
+        setAssign(a => {
+            if (!a) return a;
+            const selected = { ...a.selected };
+            if (selected[song.id]) delete selected[song.id]; else selected[song.id] = true;
+            return { ...a, selected };
+        });
+    }, []);
+    // Gives the EQ to every copy of each picked song, so it follows the song whichever playlist it is played from.
+    const applyAssign = async (presetId) => {
+        const keys = new Set(dedupedSongs.filter(x => assign?.selected[x.id]).map(playCountKey));
+        await assignSongEQ(allSongs.filter(x => keys.has(playCountKey(x))), presetId);
+        setAssign(null);
+    };
+    const assignCount = assign ? Object.keys(assign.selected).length : 0;
+    const vizExtra = useMemo(() => ({ liveCounts, vizId, assign }), [liveCounts, vizId, assign]);
     // Same rule as a playlist: starting a song does not re-sort the list under you, and opening it again
     // keeps its order unless another playlist was played in between.
     const playingSrcA = currentPlaylist?.path ?? currentPlaylist?.name ?? null;
@@ -271,6 +308,10 @@ export default function AllSongsScreen() {
                         theme={theme}
                         base={base}
                         onPlay={stablePlay}
+                        assigning={!!assign}
+                        checked={!!assign?.selected[item.id]}
+                        onToggle={toggleAssign}
+                        eqName={songEQNames[item.id]}
                         onQueue={stableAddToQueue}
                         viz={vizId && item.id === vizId ? vizMode : 'off'}
                     />
@@ -278,7 +319,31 @@ export default function AllSongsScreen() {
                 />
             )}
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} />
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} onAssign={async (id) => {
+                setShowEQ(false);
+                const [cp, ov] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+                setAssign({ presetId: id, name: getPresetById(id, cp, ov).name, selected: {} });
+            }} />
+            {assign ? (
+                <View pointerEvents="box-none" style={[s.assignBar, { bottom: 49 + insets.bottom + 8 + (currentTrack ? PILL_H + 6 : 0) }]}>
+                    <View style={[s.assignCard, { backgroundColor: base.surface, borderColor: base.border }]}>
+                        <Text style={{ color: base.text, fontSize: 13, fontWeight: '700', marginBottom: 8 }} numberOfLines={1}>
+                            {assignCount === 0 ? `Tap songs to give them ${assign.name}` : `${assign.name} for ${assignCount} song${assignCount === 1 ? '' : 's'}`}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                            <TouchableOpacity style={[s.assignPill, { backgroundColor: theme.accent, opacity: assignCount ? 1 : 0.4 }]} disabled={!assignCount} onPress={() => applyAssign(assign.presetId)}>
+                                <Text style={[s.assignPillText, { color: theme.onAccent }]}>Apply</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[s.assignPill, { borderWidth: 1, borderColor: base.border, opacity: assignCount ? 1 : 0.4 }]} disabled={!assignCount} onPress={() => applyAssign(null)}>
+                                <Text style={[s.assignPillText, { color: base.textFaint }]}>Remove EQ</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={[s.assignPill, { borderWidth: 1, borderColor: base.border }]} onPress={() => setAssign(null)}>
+                                <Text style={[s.assignPillText, { color: base.textFaint }]}>Cancel</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            ) : null}
             <QueueModal visible={showQueue} onClose={() => setShowQueue(false)} />
         </ScreenBackground>
         </TouchableWithoutFeedback>
@@ -291,11 +356,11 @@ const HIT = { top: 12, bottom: 12, left: 12, right: 12 };
 // (opening the queue or EQ sheet, a cover finishing loading for another
 // row, the play counts arriving) do not re-render every visible row, which
 // is what made the sheets stutter when they opened and closed.
-const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
+const SongRow = React.memo(function SongRow({ assigning, checked, onToggle, eqName, item, art, count, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, onPlay, onQueue, viz }) {
     const { songPillShadow } = usePreferences();
     return (
         <SwipeableRow onSwipeRight={() => onQueue(item)} rightColor={theme.accent} dimColor={base.surface}>
-            <DimPressable style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW]} onPress={() => onPlay(item)}>
+            <DimPressable style={[s.row, { backgroundColor: base.surface, flexDirection: 'row', alignItems: 'center' }, pillPad(showSongCovers), songPillShadow && COVER_SHADOW, checked && { borderWidth: 1.5, borderColor: theme.accent }]} onPress={() => (assigning ? onToggle(item) : onPlay(item))}>
                 {viz === 'pill' ? <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, borderRadius: 12, overflow: 'hidden' }}><SongVisualizer color={theme.accent} mode="pill" radius={12} /></View> : null}
                 {showSongCovers && (
                     <View style={[s.thumb, { backgroundColor: base.surface, borderRadius: squircle(PILL_COVER, coverShape) }]}>
@@ -304,6 +369,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                             : null
                         }
                         {viz === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(PILL_COVER, coverShape)} /> : null}
+                        {checked ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, s.checkOverlay]}><Text style={{ color: theme.onAccent, fontSize: 22, fontWeight: '800' }}>{'\u2713'}</Text></View> : null}
                     </View>
                 )}
                 <View style={{ flex: 1, marginRight: addedClearance(showPlayCount ? count : 0) }}>
@@ -313,6 +379,7 @@ const SongRow = React.memo(function SongRow({ item, art, count, showSongCovers, 
                 {showPlayCount && count > 0 && (
                     <Text style={[s.playCount, { color: base.textFaint }]}>{count}×</Text>
                 )}
+                {eqName ? <Text pointerEvents="none" numberOfLines={1} style={[s.eqName, { color: base.textFaint }]}>{eqName}</Text> : null}
             </DimPressable>
         </SwipeableRow>
     );
@@ -339,6 +406,12 @@ const s = StyleSheet.create({
     clearBtn: { position: 'absolute', right: 8, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
     topBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+    assignBar: { position: 'absolute', left: 12, right: 12 },
+    eqName: { position: 'absolute', top: 11, right: 11, maxWidth: 110, fontSize: 10, opacity: 0.85 },
+    assignCard: { borderWidth: 1, borderRadius: 16, padding: 12 },
+    assignPill: { flex: 1, borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
+    assignPillText: { fontSize: 14, fontWeight: '700' },
+    checkOverlay: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.45)' },
     eqTag: { fontSize: 16, fontWeight: "700" },
     empty: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
     emptyTitle: { color: '#e5e5e5', fontSize: 18, fontWeight: '600', marginBottom: 12 },

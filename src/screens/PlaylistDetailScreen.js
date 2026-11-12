@@ -121,7 +121,7 @@ export default function PlaylistDetailScreen() {
         () => (vizMode !== 'off' && !performanceMode) ? vizRowId(playlist.songs, vizPendingSong || currentTrack) : null,
         [vizMode, performanceMode, playlist.songs, currentTrack, vizPendingSong]
     );
-    const vizExtra = useMemo(() => ({ liveCounts, vizId }), [liveCounts, vizId]);
+    const vizExtra = useMemo(() => ({ liveCounts, vizId, assign }), [liveCounts, vizId, assign]);
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     useEffect(() => {
@@ -401,7 +401,6 @@ export default function PlaylistDetailScreen() {
                         )}
                     </View>
                 }
-                extraData={assign}
                 renderItem={({ item }) => (
                     <SongRow
                         assigning={!!assign}

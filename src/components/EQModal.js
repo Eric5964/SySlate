@@ -30,6 +30,8 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
     }, [visible]);
 
     const nameOf = (id) => allPresets.find(p => p.id === id)?.name || id;
+    // An assigned preset that was deleted later has no name to show.
+    const ovName = (id) => allPresets.find(p => p.id === id)?.name || 'a deleted preset';
     const plKey = playlistPath ? toStablePath(playlistPath) : null;
     const plEQ = plKey ? playlistEQMap?.[plKey] : null;
     const showLayers = !pickMode && eqLayer;
@@ -45,7 +47,7 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
         );
     };
     const overrideText = showLayers && eqOverride
-        ? (eqOverride.source === 'song' ? `This song plays with its own EQ (${nameOf(eqOverride.id)}).` : `This playlist plays with its own EQ (${nameOf(eqOverride.id)}).`)
+        ? (eqOverride.source === 'song' ? `This song plays with its own EQ (${ovName(eqOverride.id)}).` : `This playlist plays with its own EQ (${ovName(eqOverride.id)}).`)
         : null;
 
     // Only on a playlist's own screen (it passes playlistPath / onAssign); the player and All Songs have no buttons.
@@ -71,6 +73,11 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
         </View>
     ) : null;
 
+    // Remove only appears where it can be understood: a song's own EQ on a playlist or All Songs screen, a playlist's EQ only on that playlist's screen.
+    const canRemove = !!eqOverride && (eqOverride.source === 'song'
+        ? (!!playlistPath || !!onAssign)
+        : (!!plKey && toStablePath(currentPlaylist?.path) === plKey));
+
     return (
         <BottomSheet visible={visible} onClose={onClose} expandable selfPadded footer={footer} guard={guard}
             header={<View style={{ alignSelf: 'stretch' }}>
@@ -78,7 +85,7 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
                 {overrideText ? (
                     <View style={s.overrideRow}>
                         <Text style={[s.overrideText, { color: base.textFaint }]}>{overrideText}</Text>
-                        {playlistPath ? <TouchableOpacity onPress={() => {
+                        {canRemove ? <TouchableOpacity onPress={() => {
                             if (eqOverride.source === 'song') assignSongEQ([currentTrack], null);
                             else assignPlaylistEQ(currentPlaylist?.path, null);
                         }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>

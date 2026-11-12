@@ -249,7 +249,7 @@ export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
         const key = `${p.id || ''}|${p.qid || ''}`;
         const now = nowMs;
         if (otherSong.key !== key) otherSong = { key, since: now };
-        else if (now - otherSong.since > 2500) stale = false;
+        else if (now - otherSong.since > CROSSFADE_ESTIMATE_MAX_MS + 500) stale = false;   // longer than the longest crossfade (6 s), or the old song's position showed up before the halfway point
     } else {
         otherSong.key = '';
     }
