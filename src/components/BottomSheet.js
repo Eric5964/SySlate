@@ -43,7 +43,14 @@ export function useSheetGuard() {
     return { guard, contentDragging };
 }
 
-export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false, footer = null, guard = null }) {
+// Sheets whose list pads itself (`selfPadded`) use this as the list's bottom padding: the sheet is laid out full
+// screen and slid down while normal, so the last rows need that much room to be scrollable into view.
+export const sheetBottomPad = (normalHeight = SHEET_HEIGHT) => Math.max(0, SCREEN_H - normalHeight);
+
+// selfPadded: the content is NOT squeezed above the visible edge by a padding wrapper. Its list fills the whole
+// sheet and pads its own end (sheetBottomPad), so while the sheet is dragged up the rows below the normal edge are
+// already there instead of appearing only when the finger lifts.
+export default function BottomSheet({ visible, onClose, header, children, height: normalHeight = SHEET_HEIGHT, expandable = false, footer = null, guard = null, selfPadded = false }) {
     const { base } = useTheme();
     const insets = useSafeAreaInsets();
     const height = expandable ? SCREEN_H : normalHeight;            // laid-out height
@@ -193,7 +200,7 @@ export default function BottomSheet({ visible, onClose, header, children, height
                         </Animated.View>
                     </PanGestureHandler>
                 </Animated.View>
-                <Animated.View style={{ flex: 1, paddingBottom: contentPad }} {...(guard ? contentPan.panHandlers : {})}>
+                <Animated.View style={{ flex: 1, paddingBottom: selfPadded ? 0 : contentPad }} {...(guard ? contentPan.panHandlers : {})}>
                     <View style={{ flex: 1, paddingBottom: footer ? footerH : 0 }}>
                         {children}
                     </View>

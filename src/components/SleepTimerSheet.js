@@ -45,7 +45,7 @@ export default function SleepTimerSheet({ visible, onClose }) {
     const active = !!sleepTimerEndAt || sleepAtTrackEnd;
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}
+        <BottomSheet visible={visible} onClose={onClose} expandable header={<Text style={[s.sheetTitle, { color: base.text }]}>Sleep Timer</Text>}
             footer={customOpen ? (
                 <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setSleepTimer(customMin); onClose(); }}>
                     <Text style={[s.startText, { color: theme.onAccent }]}>Start</Text>

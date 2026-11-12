@@ -51,7 +51,7 @@ export default function PlaylistDetailScreen() {
     const { playlist = NO_PLAYLIST, initialCover } = route.params ?? {};
     const {
         playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, addToQueue, queuePlaylistNext, queueEpoch,
-        currentTrack, currentPlaylist, songEQMap, assignSongEQ, eqLayer,
+        currentTrack, currentPlaylist, songEQMap, assignSongEQ, eqLayer, playlistEQMap,
     } = usePlayback();
     const { theme, base } = useTheme();
 
@@ -87,20 +87,21 @@ export default function PlaylistDetailScreen() {
     const [showSort, setShowSort] = useState(false);
     const [showEQ, setShowEQ] = useState(false);
     // Assigning an EQ to songs: pick the EQ, tick the songs (a check on the cover), apply.
-    const [pickEQ, setPickEQ] = useState(false);
     const [assign, setAssign] = useState(null);   // null, or { presetId, name, selected: { [songId]: true } }
     // Name of the EQ assigned to each song here, shown after the artist.
     const [eqNameList, setEqNameList] = useState({ cp: [], ov: {} });
-    useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ, pickEQ]);
+    useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ]);
     const songEQNames = useMemo(() => {
         const out = {};
         if (!eqLayer) return out;   // assignments are ignored while "EQ per playlist and song" is off
+        // A song's own EQ, else the one this playlist uses: either way it is the EQ the song plays with here.
+        const plId = playlistEQMap?.[toStablePath(playlist.path)];
         for (const sg of playlist.songs || []) {
-            const id = songEQMap[toStablePath(sg.id)];
+            const id = songEQMap[toStablePath(sg.id)] || plId;
             if (id) out[sg.id] = getPresetById(id, eqNameList.cp, eqNameList.ov).name;
         }
         return out;
-    }, [songEQMap, playlist.songs, eqNameList, eqLayer]);
+    }, [songEQMap, playlistEQMap, playlist.path, playlist.songs, eqNameList, eqLayer]);
     const toggleAssign = useCallback((song) => {
         setAssign(a => { if (!a) return a; const sel = { ...a.selected }; if (sel[song.id]) delete sel[song.id]; else sel[song.id] = true; return { ...a, selected: sel }; });
     }, []);
@@ -424,13 +425,14 @@ export default function PlaylistDetailScreen() {
                 )}
             />
 
-            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} onAssign={() => { setShowEQ(false); setTimeout(() => setPickEQ(true), 280); }} />
-            <EQModal visible={pickEQ} pickMode onClose={() => setPickEQ(false)} onPick={async (id) => {
+            <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} onAssign={async (id) => {
+                // Uses the EQ that is selected right now: no second menu.
+                setShowEQ(false);
                 const [cp, ov] = await Promise.all([getCustomPresets(), getEQOverrides()]);
                 setAssign({ presetId: id, name: getPresetById(id, cp, ov).name, selected: {} });
             }} />
             {assign ? (
-                <View pointerEvents="box-none" style={[s.assignBar, { bottom: currentTrack ? 150 : 96 }]}>
+                <View pointerEvents="box-none" style={[s.assignBar, { bottom: currentTrack ? 76 : 12 }]}>
                     <View style={[s.assignCard, { backgroundColor: base.surface, borderColor: base.border }]}>
                         <Text style={{ color: base.text, fontSize: 13, fontWeight: '700', marginBottom: 8 }} numberOfLines={1}>
                             {Object.keys(assign.selected).length === 0 ? `Tap songs to give them ${assign.name}` : `${assign.name} for ${Object.keys(assign.selected).length} song${Object.keys(assign.selected).length === 1 ? '' : 's'}`}
@@ -508,7 +510,7 @@ const s = StyleSheet.create({
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
     assignBar: { position: 'absolute', left: 12, right: 12 },
-    eqName: { position: 'absolute', top: 5, right: 12, maxWidth: 110, fontSize: 10, opacity: 0.85 },
+    eqName: { position: 'absolute', top: 11, right: 11, maxWidth: 110, fontSize: 10, opacity: 0.85 },
     assignCard: { borderWidth: 1, borderRadius: 16, padding: 12 },
     assignPill: { flex: 1, borderRadius: 12, paddingVertical: 11, alignItems: 'center' },
     assignPillText: { fontSize: 14, fontWeight: '700' },

@@ -212,8 +212,13 @@ export default function PlayerScreen() {
     }, [currentTrack?.id, pastHalf, libraryFor]);
 
     // Show the new count the moment this song's play is counted.
-    useEffect(() => subscribePlayCount(({ key, n }) => {
+    useEffect(() => subscribePlayCount(({ key, n, counts }) => {
         const lib = (libraryFor && libraryFor(currentTrack)) || currentTrack;
+        if (counts) {
+            const hit = [playCountKey(lib), playCountKeyN(lib)].find(k => counts[k] !== undefined);
+            if (currentTrack?.id && hit !== undefined) setPc({ id: currentTrack.id, n: counts[hit] });
+            return;
+        }
         if (currentTrack?.id && (playCountKey(lib) === key || playCountKeyN(lib) === key)) setPc({ id: currentTrack.id, n });
     }), [currentTrack, libraryFor]);
 

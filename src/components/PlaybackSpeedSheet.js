@@ -28,7 +28,7 @@ export default function PlaybackSpeedSheet({ visible, onClose }) {
     const isPreset = PRESETS.some(p => Math.abs(p - playbackRate) < 0.001);
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} header={<Text style={[s.sheetTitle, { color: base.text }]}>Playback Speed</Text>}
+        <BottomSheet visible={visible} onClose={onClose} expandable header={<Text style={[s.sheetTitle, { color: base.text }]}>Playback Speed</Text>}
             footer={customOpen ? (
                 <TouchableOpacity style={[s.startBtn, { backgroundColor: theme.accent }]} onPress={() => { setPlaybackRate(Math.round(custom * 100) / 100); onClose(); }}>
                     <Text style={[s.startText, { color: theme.onAccent }]}>Set speed</Text>

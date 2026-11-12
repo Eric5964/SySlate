@@ -49,7 +49,7 @@ export default function useLivePlayCounts(songs) {
             }
         });
     }, []);
-    useEffect(() => subscribePlayCount(({ key, n }) => setLive(prev => ({ ...prev, [key]: n }))), []);
+    useEffect(() => subscribePlayCount(({ key, n, counts }) => setLive(prev => (counts ? { ...prev, ...counts } : { ...prev, [key]: n }))), []);
     const countFor = useCallback((song) => {
         if (!song) return 0;
         const l = live[playCountKey(song)] ?? live[playCountKeyN(song)];

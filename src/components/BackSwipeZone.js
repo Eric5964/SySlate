@@ -22,7 +22,9 @@ export default function BackSwipeZone({ onBack, style, children, navigation, dra
         return navigation.addListener('gestureStart', () => { stackGestureStarted.current = true; });
     }, [navigation]);
     const width = Dimensions.get('window').width;
-    const follow = useRef(dragX ? Animated.event([{ nativeEvent: { translationX: dragX } }], { useNativeDriver: true }) : undefined).current;
+    // Follows the finger with plain setValue calls. (It used to be a native-driver Animated.event on a plain View; that
+    // hookup crashed the app with an "onAnimatedValueUpdate listener" error when the swipe was let go.)
+    const follow = useRef(dragX ? ({ nativeEvent: e }) => { dragX.setValue(Math.max(0, e.translationX)); } : undefined).current;
     const reset = () => { if (dragX) Animated.spring(dragX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 90 }).start(); };
     const handlerRef = useRef(({ nativeEvent: e }) => {
         if (e.state === State.BEGAN) { startX.current = e.absoluteX; stackGestureStarted.current = false; return; }

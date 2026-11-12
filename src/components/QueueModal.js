@@ -9,7 +9,7 @@ import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
 import { pillPad, PILL_COVER, addedClearance } from '../utils/layout';
 import SwipeableRow from './SwipeableRow';
-import BottomSheet, { useSheetGuard } from './BottomSheet';
+import BottomSheet, { useSheetGuard, sheetBottomPad } from './BottomSheet';
 import { useListArt } from '../hooks/useListArt';
 import { listArtUri } from '../utils/embeddedArt';
 import { perf } from '../utils/perf';
@@ -534,11 +534,18 @@ export default function QueueModal({ visible, onClose }) {
     rowsRef.current = rows;
     // A play that is counted while the queue is open shows at once. Only the number
     // shown changes; the queue itself is not touched.
-    useEffect(() => subscribePlayCount(({ key, n }) => setPlayCounts(prev => {
+    useEffect(() => subscribePlayCount(({ key, n, counts }) => setPlayCounts(prev => {
         let next = null;
         const consider = (song) => {
             const lib = song ? (libraryFor ? (libraryFor(song) || song) : song) : null;
-            if (song && (playCountKey(lib) === key || playCountKeyN(lib) === key) && prev[song.id] !== n) { if (!next) next = { ...prev }; next[song.id] = n; }
+            if (!song) return;
+            let v = n;
+            if (counts) {   // a reset or restore: everything at once
+                const hit = [playCountKey(lib), playCountKeyN(lib)].find(k => counts[k] !== undefined);
+                if (hit === undefined) return;
+                v = counts[hit];
+            } else if (!(playCountKey(lib) === key || playCountKeyN(lib) === key)) return;
+            if (prev[song.id] !== v) { if (!next) next = { ...prev }; next[song.id] = v; }
         };
         rowsRef.current.forEach(r => consider(r.song));
         consider(currentTrack);
@@ -671,7 +678,7 @@ export default function QueueModal({ visible, onClose }) {
         endPriRef.current = false; setDragEndPri(false); topUNRef.current = false; setDragTopUN(false);
         dragY.setValue(0);
         editRef.current = true;
-        if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
+        if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = Math.min(h, Math.max(1, Dimensions.get('window').height - (y > 0 ? y : listTop.current))); });
         // More rows are built while a row is held, so there is always list
         // below to scroll into (rows are only ever appended, so the held
         // row and the slots measured so far keep their places).
@@ -799,7 +806,7 @@ export default function QueueModal({ visible, onClose }) {
             edgeSince.current = 0;
             // The sheet may still have been sliding in when it was measured
             // (open the queue and grab a row straight away): measure again now.
-            if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
+            if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = Math.min(h, Math.max(1, Dimensions.get('window').height - (y > 0 ? y : listTop.current))); });
             const touches0 = e.nativeEvent.touches || [];
             primaryTouch.current = pressTouchId.current != null
                 ? pressTouchId.current
@@ -831,7 +838,7 @@ export default function QueueModal({ visible, onClose }) {
                 if (!(listTop.current > 0) || !(viewH.current > 0)) {
                     // Not measured yet (or the measurement came back as 0): measure again
                     // instead of never scrolling, and say so once in the log.
-                    if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; });
+                    if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = Math.min(h, Math.max(1, Dimensions.get('window').height - (y > 0 ? y : listTop.current))); });
                     if (now - lastScrollLog.current > 1500) { lastScrollLog.current = now; console.log('[QUEUE] autoscroll waiting: listTop=' + Math.round(listTop.current) + ' viewH=' + Math.round(viewH.current)); }
                     return;
                 }
@@ -1109,7 +1116,7 @@ export default function QueueModal({ visible, onClose }) {
     };
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} guard={sheetGuard} header={
+        <BottomSheet visible={visible} onClose={onClose} guard={sheetGuard} expandable selfPadded header={
             <View style={s.headerRow}>
                 <Text style={[s.sheetTitle, { color: base.text }]}>Queue</Text>
             </View>
@@ -1126,7 +1133,7 @@ export default function QueueModal({ visible, onClose }) {
                 // from asserting something false for that first stretch.
                 <View style={{ flex: 1 }} />
             ) : (
-                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = h; }); }} {...dragPan.panHandlers}>
+                <View ref={boxRef} style={{ flex: 1 }} onLayout={(e) => { viewH.current = Math.min(e.nativeEvent.layout.height, Math.max(1, Dimensions.get('window').height - (listTop.current > 0 ? listTop.current : 0))); if (boxRef.current) boxRef.current.measureInWindow((x, y, w, h) => { if (y > 0) listTop.current = y; if (h > 0) viewH.current = Math.min(h, Math.max(1, Dimensions.get('window').height - (y > 0 ? y : listTop.current))); }); }} {...dragPan.panHandlers}>
                 <FlatList
                     ref={listRef}
                     scrollEventThrottle={16}
@@ -1145,6 +1152,7 @@ export default function QueueModal({ visible, onClose }) {
                     renderItem={renderItem}
                     showsVerticalScrollIndicator={false}
                     style={{ flex: 1 }}
+                    contentContainerStyle={{ paddingBottom: sheetBottomPad() }}
                     // Same fix as before, FlatList supports the same prop —
                     // keeps whatever's currently on screen anchored in place
                     // when a promote/remove changes content above it,

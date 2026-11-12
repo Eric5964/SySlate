@@ -3,7 +3,7 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
-import { getPresetById, clampEQBand } from '../utils/eq';
+import { getPresetById, clampEQBand, BUILT_IN_PRESETS } from '../utils/eq';
 import { getCustomPresets, getEQOverrides, getPreAmp, getSongEQ, setSongEQ, toStablePath, addListenedSeconds, getEQLayering, subscribeEQLayering, getPlaylistEQ, setPlaylistEQ } from '../utils/storage';
 import { toNativeArrays, presetParamBands } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
@@ -78,9 +78,10 @@ const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` 
 // caller asks for, so every place that re-applies the EQ (playlist start, editing a preset) honours it.
 let eqOverrideId = null;
 export async function applyEQPreset(id) {
-    id = eqOverrideId || id;
     try {
         const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+        // An assigned EQ wins, unless the preset it points to was deleted: then the current EQ plays instead of Flat.
+        if (eqOverrideId && (BUILT_IN_PRESETS.some(p => p.id === eqOverrideId) || custom.some(p => p.id === eqOverrideId))) id = eqOverrideId;
         const preset = getPresetById(id, custom, overrides);
         // A saved parametric preset (own frequency / gain / Q per band) goes through the parametric path.
         const param = presetParamBands(preset);

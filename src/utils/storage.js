@@ -973,7 +973,10 @@ export const resetPlayCounts = () => safe(async () => {
     await AsyncStorage.multiRemove(keys);
     playCountCache.clear();
     looseIndex = null;
-    keys.forEach(key => playCountListeners.forEach(fn => { try { fn({ key, n: 0 }); } catch { } }));
+    // ONE event for everything (thousands of separate ones froze the app for ~20 s: every listener re-rendered per key).
+    const counts = {};
+    keys.forEach(k => { if (/^(pc|pci|pcn|pcx):/.test(k)) counts[k] = 0; });
+    playCountListeners.forEach(fn => { try { fn({ key: null, n: 0, counts }); } catch { } });
     return keys.length;
 }, 0);
 export const getPlayCountUndoInfo = () => safe(async () => {
@@ -993,7 +996,9 @@ export const restorePlayCounts = () => safe(async () => {
     if (toWrite.length) await AsyncStorage.multiSet(toWrite);
     playCountCache.clear();
     looseIndex = null;
-    toWrite.forEach(([key, v]) => playCountListeners.forEach(fn => { try { fn({ key, n: parseInt(v) || 0 }); } catch { } }));
+    const counts = {};
+    toWrite.forEach(([k, v]) => { if (/^(pc|pci|pcn|pcx):/.test(k)) counts[k] = parseInt(v) || 0; });
+    playCountListeners.forEach(fn => { try { fn({ key: null, n: 0, counts }); } catch { } });
     return toWrite.length;
 }, 0);
 

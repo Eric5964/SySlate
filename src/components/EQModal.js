@@ -4,7 +4,7 @@ import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
 import { BUILT_IN_PRESETS } from '../utils/eq';
 import { getCustomPresets, getHiddenPresets, toStablePath } from '../utils/storage';
-import BottomSheet, { useSheetGuard } from './BottomSheet';
+import BottomSheet, { useSheetGuard, sheetBottomPad } from './BottomSheet';
 
 // Picking a preset changes your CURRENT EQ (the one that plays unless a song or playlist has its own).
 // With "EQ per playlist and song" on, the footer also lets you give a preset to this playlist or to songs;
@@ -36,8 +36,8 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
     const showPlaylistBtn = showLayers && !!plKey;
     // Only what is playing can be overridden: say so, so a pick that has no audible effect is not a mystery.
     // Giving a playlist its own EQ changes what every song in it sounds like, so say so first.
-    const togglePlaylistEQ = () => {
-        if (plEQ) { assignPlaylistEQ(playlistPath, null); return; }
+    const assignToPlaylist = () => {
+        if (plEQ) { assignPlaylistEQ(playlistPath, eqPresetId); return; }   // already a deliberate choice: just change it
         Alert.alert(
             `Use ${nameOf(eqPresetId)} for this playlist?`,
             'Every song in this playlist will play with it. Songs you gave their own EQ keep theirs. Your regular EQ stays as it is for everything else.',
@@ -51,24 +51,29 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
     // Only on a playlist's own screen (it passes playlistPath / onAssign); the player and All Songs have no buttons.
     const footer = (!pickMode && showLayers && (showPlaylistBtn || onAssign)) ? (
         <View style={{ gap: 8 }}>
-            {showPlaylistBtn ? (
-                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={togglePlaylistEQ}>
+            {showPlaylistBtn && (!plEQ || plEQ !== eqPresetId) ? (
+                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={() => assignToPlaylist()}>
                     <Text style={[s.assignText, { color: theme.accent }]} numberOfLines={1}>
-                        {plEQ ? `Stop using ${nameOf(plEQ)} for this playlist` : `Use ${nameOf(eqPresetId)} for this playlist`}
+                        {plEQ ? `Change this playlist to ${nameOf(eqPresetId)}` : `Use ${nameOf(eqPresetId)} for this playlist`}
                     </Text>
                 </TouchableOpacity>
             ) : null}
+            {showPlaylistBtn && plEQ ? (
+                <TouchableOpacity style={[s.assignBtn, { borderColor: base.border }]} onPress={() => assignPlaylistEQ(playlistPath, null)}>
+                    <Text style={[s.assignText, { color: base.textFaint }]} numberOfLines={1}>Stop using {nameOf(plEQ)} for this playlist</Text>
+                </TouchableOpacity>
+            ) : null}
             {onAssign ? (
-                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={onAssign}>
-                    <Text style={[s.assignText, { color: theme.accent }]}>Assign an EQ to songs</Text>
+                <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={() => onAssign(eqPresetId)}>
+                    <Text style={[s.assignText, { color: theme.accent }]} numberOfLines={1}>Assign {nameOf(eqPresetId)} to songs</Text>
                 </TouchableOpacity>
             ) : null}
         </View>
     ) : null;
 
     return (
-        <BottomSheet visible={visible} onClose={onClose} expandable footer={footer} guard={guard}
-            header={<View>
+        <BottomSheet visible={visible} onClose={onClose} expandable selfPadded footer={footer} guard={guard}
+            header={<View style={{ alignSelf: 'stretch' }}>
                 <Text style={[s.sheetTitle, { color: base.text }]}>{pickMode ? 'Assign which EQ?' : 'EQ Preset'}</Text>
                 {overrideText ? (
                     <View style={s.overrideRow}>
@@ -82,7 +87,7 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
                     </View>
                 ) : null}
             </View>}>
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} scrollEventThrottle={16} scrollEnabled={!contentDragging}
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} scrollEventThrottle={16} scrollEnabled={!contentDragging} contentContainerStyle={{ paddingBottom: sheetBottomPad() }}
                 onScroll={(e) => { guard.current.atTop = e.nativeEvent.contentOffset.y <= 2; }}>
                 {eqPresets.length === 0
                     ? <Text style={[s.empty, { color: base.textFaint }]}>No presets visible — manage in Settings</Text>
@@ -107,8 +112,8 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
 
 const s = StyleSheet.create({
     sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
-    overrideRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 6, gap: 12 },
-    overrideText: { fontSize: 12, flex: 1 },
+    overrideRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingHorizontal: 24, paddingBottom: 6, gap: 12, alignSelf: 'stretch' },
+    overrideText: { fontSize: 12, flexShrink: 1 },
     presetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1 },
     presetName: { fontSize: 17 },
     assignBtn: { borderWidth: 1.5, borderRadius: 14, paddingVertical: 13, alignItems: 'center', paddingHorizontal: 12 },

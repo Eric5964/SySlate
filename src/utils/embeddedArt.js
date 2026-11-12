@@ -766,6 +766,10 @@ async function extractEmbeddedArtUncached(song) {
         }
 
         if (!(picture?.b64 ? picture.length > 0 : picture?.data?.length)) {
+            // So the Debug Log can say WHY a song has no cover (the first 40 per session).
+            if ((ext === 'm4a' || ext === 'mp4' || ext === 'alac') && (globalThis.__artMissLogged = (globalThis.__artMissLogged || 0) + 1) <= 40) {
+                console.log('[ART] no cover read from ' + String(song.filename || song.id).slice(-60) + ' (' + ext + ', ' + (fp?.size ?? '?') + ' bytes): quick locate ' + (located === null || located === undefined ? 'could not decide, full reader found nothing' : (located.found ? 'found but unreadable' : (located.limited ? 'picture over the size limit' : 'no picture box'))));
+            }
             // `bc`: the file was looked through completely (no size limit was hit), so the
             // end-of-loading pass for large covers has nothing to re-check here.
             await saveCacheEntry(song.id, { uri: null, fp, ...(located && located.found === false && !located.limited ? { bc: 1 } : {}), ...(ext === 'mp3' ? { m3: 1 } : {}), ...((ext === 'm4a' || ext === 'mp4' || ext === 'alac') ? { m4: 1 } : {}) });
