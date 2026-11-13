@@ -3323,7 +3323,10 @@ class AudioEngine: RCTEventEmitter {
             if let t = activeNodeTrack { currentIndex = liveIndex(for: t, hint: currentIndex ?? 0) }
             return
         }
-        let incomingNode = idleNode
+        // The node the crossfade is really using. idleNode is worked out fresh and can name a DIFFERENT node
+        // (e.g. a fading-out node finished meanwhile and sorts first): the real incoming node then kept playing
+        // on its own while the seek started a second copy of the same song on the wrong node.
+        let incomingNode = crossfadeIncomingNode ?? idleNode
         if fadeOutOutgoing { handOffToDyingNode(outgoingNode) } else { outgoingNode.stop(); outgoingNode.volume = 0 }
         if snapToFull { incomingNode.volume = crossfadeTargetVolume }
 
@@ -4504,7 +4507,20 @@ class AudioEngine: RCTEventEmitter {
         crossfadeLeadTimer = nil
         segmentStartOffsetSeconds = startAtSeconds
         frozenPositionSeconds = nil // a seek moves the origin; never keep the pre-seek snapshot
+        // Click-free seek: the cut and the restart used to land on the node at full level, which is the
+        // click/static heard when a scrub is released. The node is taken to silence first (only in the plain
+        // steady state: nothing else is fading it, no scratch, no cold-start mute), then brought back up
+        // over ~40 ms after the new position starts.
+        let dipTarget = volume * currentGainCorrection
+        let dip = autoPlay && activeNode.isPlaying && rampTimer == nil && !coldMuteHeld && !scratchActive
+            && dipTarget > 0.01 && abs(activeNode.volume - dipTarget) < 0.02
+        if dip {
+            activeNode.volume = 0
+            Thread.sleep(forTimeInterval: 0.03)   // the render thread picks the 0 up before the cut
+        }
         killDyingNode(); activeNode.stop()
+        // Nothing but the active node may be making sound after a seek (a stray node was the second copy of the song).
+        for n in [nodeA, nodeB, nodeC] where n !== activeNode { n.stop(); n.volume = 0 }
         playbackToken &+= 1
         let token = playbackToken
 
@@ -4545,6 +4561,22 @@ class AudioEngine: RCTEventEmitter {
             activeNode.play()
             setState(.playing)
             scheduleCrossfadeLeadIn()
+            if dip {
+                let node = activeNode!
+                let steps = 10
+                for i in 1...steps {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.004 * Double(i)) { [weak self, weak node] in
+                        guard let self = self, let node = node, self.playbackToken == token, self.activeNode === node, self.rampTimer == nil else { return }
+                        node.volume = dipTarget * Float(i) / Float(steps)
+                    }
+                }
+                // Safety: whatever happened above, the level is never left low.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak node] in
+                    guard let self = self, let node = node, self.playbackToken == token, self.activeNode === node, self.rampTimer == nil, !self.isCrossfading else { return }
+                    let want = self.volume * self.currentGainCorrection
+                    if node.volume < want * 0.99 { node.volume = want }
+                }
+            }
         } else {
             setState(.ready)
         }

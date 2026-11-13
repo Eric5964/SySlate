@@ -4,9 +4,10 @@
 export const CUSTOM_BAND_COUNT = 10;
 export const FREQ_MIN = 20;
 export const FREQ_MAX = 20000;
-export const GAIN_MIN = -12;
-export const GAIN_MAX = 12;
-export const Q_MIN = 0.1;
+export const GAIN_MIN = -6;
+export const GAIN_MAX = 6;
+// 0.2: the engine's widest filter is 5 octaves, which is a Q of about 0.18. Below that the slider would do nothing.
+export const Q_MIN = 0.2;
 export const Q_MAX = 10;
 export const FILTER_TYPES = ['peak', 'lowshelf', 'highshelf'];
 export const FILTER_LABELS = { peak: 'Peak', lowshelf: 'Low shelf', highshelf: 'High shelf' };
@@ -73,6 +74,73 @@ export const posToFreq = (p) => round(FREQ_MIN * Math.pow(FREQ_MAX / FREQ_MIN, c
 export const qToPos = (q) => Math.log(clamp(q, Q_MIN, Q_MAX) / Q_MIN) / Math.log(Q_MAX / Q_MIN);
 export const posToQ = (p) => round(Q_MIN * Math.pow(Q_MAX / Q_MIN, clamp(p, 0, 1)), 2);
 export const formatFreq = (f) => (f >= 1000 ? `${(f / 1000).toFixed(f >= 10000 ? 1 : 2).replace(/\.?0+$/, '')} kHz` : `${Math.round(f)} Hz`);
+
+// ---- Snapping (so dragging lands on values a person would actually pick) and typed input ----
+// Frequencies the slider is drawn towards: the standard third-octave (ISO) values, the powers of 2, and round numbers
+// (multiples of 5, 10, 25, 50, 100, 250, 500, 1000 as the range goes up).
+const ISO_FREQS = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
+const POW2_FREQS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
+const GRID_FREQS = (() => {
+    const out = [];
+    const add = (from, to, step) => { for (let f = from; f <= to + 1e-9; f += step) out.push(round(f, 1)); };
+    add(20, 95, 5); add(100, 190, 10); add(200, 475, 25); add(500, 950, 50); add(1000, 1900, 100);
+    add(2000, 4750, 250); add(5000, 9500, 500); add(10000, 20000, 1000);
+    return out;
+})();
+export const SNAP_FREQS = (() => {
+    const kept = [];
+    for (const f of [...ISO_FREQS, ...POW2_FREQS, ...GRID_FREQS]) {
+        if (f < FREQ_MIN || f > FREQ_MAX) continue;
+        if (kept.some(k => Math.abs(Math.log(k / f)) < 0.012)) continue;
+        kept.push(f);
+    }
+    return kept.sort((a, b) => a - b);
+})();
+// Snapping is a light magnet, not a grid: close to one of those values the slider lands on it, anywhere else it just
+// rounds to a sensible step (so 437 Hz, 1.3 dB or Q 0.9 are all reachable by dragging). Exact numbers: hold the value.
+const FREQ_MAGNET = 0.012;   // about 1.2 percent either side
+const nearestLog = (list, v) => {
+    const x = Math.max(1e-6, v);
+    let best = list[0], bd = Infinity;
+    for (const c of list) { const d = Math.abs(Math.log(c / x)); if (d < bd) { bd = d; best = c; } }
+    return [best, bd];
+};
+export const snapFreq = (f) => {
+    const x = clamp(f, FREQ_MIN, FREQ_MAX);
+    const [best, d] = nearestLog(SNAP_FREQS, x);
+    if (d < FREQ_MAGNET) return best;
+    const step = Math.pow(10, Math.floor(Math.log10(x)) - 2);   // 1 Hz up to 1 kHz, then 10 Hz, then 100 Hz
+    return clamp(round(Math.round(x / step) * step, 1), FREQ_MIN, FREQ_MAX);
+};
+export const snapQ = (q) => {
+    const x = clamp(q, Q_MIN, Q_MAX);
+    for (const m of [0.71, 1.41]) if (Math.abs(x - m) < 0.03) return m;   // Butterworth and the default width
+    return clamp(round(Math.round(x * 10) / 10, 1), Q_MIN, Q_MAX);
+};
+export const snapGain = (g) => round(clamp(Math.round(g * 10) / 10, GAIN_MIN, GAIN_MAX), 1) + 0;   // tenths of a dB
+
+// Typed values. Each returns the clamped number, or null when the text is not a number.
+export function parseFreqInput(text) {
+    const m = String(text ?? '').trim().toLowerCase().replace(',', '.').match(/^(\d*\.?\d+)\s*(khz|k|hz)?$/);
+    if (!m) return null;
+    let v = parseFloat(m[1]);
+    if (!Number.isFinite(v)) return null;
+    if (m[2] && m[2][0] === 'k') v *= 1000;
+    else if (!m[2] && v < FREQ_MIN) v *= 1000;   // "2" or "1.5" with no unit: kilohertz
+    return round(clamp(v, FREQ_MIN, FREQ_MAX), 1);
+}
+export function parseGainInput(text) {
+    const m = String(text ?? '').trim().toLowerCase().replace(',', '.').replace('\u2212', '-').match(/^([+-]?\d*\.?\d+)\s*(db)?$/);
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    return Number.isFinite(v) ? round(clamp(v, GAIN_MIN, GAIN_MAX), 2) : null;
+}
+export function parseQInput(text) {
+    const m = String(text ?? '').trim().replace(',', '.').match(/^(\d*\.?\d+)$/);
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    return Number.isFinite(v) ? round(clamp(v, Q_MIN, Q_MAX), 2) : null;
+}
 
 // ---- Frequency response (RBJ biquads, 48 kHz), used to turn bands into a GraphicEQ curve ----
 function biquadMagDb(b, f) {

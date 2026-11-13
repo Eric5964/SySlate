@@ -5,6 +5,8 @@ import { isScrolling } from '../utils/scrollGuard';
 export default function PureSlider({
     minimumValue = 0, maximumValue = 1, step = 0.5, value = 0,
     onValueChange, onSlidingComplete,
+    // Held still for a while: fires once, the touch is dropped and the value goes back to what it was before the touch.
+    onLongPress,
     minimumTrackTintColor = '#7c3aed',
     maximumTrackTintColor = '#222',
     thumbTintColor = '#7c3aed',
@@ -20,10 +22,16 @@ export default function PureSlider({
     const layoutRef = useRef({ pageX: 0, width: 1 });
     const valRef = useRef(value);
     const engaged = useRef(false);
+    const holdTimer = useRef(null);
+    const handedOver = useRef(false);
+    const pendingTouch = useRef(false);
+    const startXY = useRef({ x: 0, y: 0 });
+    const clearHold = () => { if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; } };
+    useEffect(() => clearHold, []);
     // Keep ALL props fresh — avoids stale closure in PanResponder
-    const propsRef = useRef({ onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, guardScroll });
+    const propsRef = useRef({ onValueChange, onSlidingComplete, onLongPress, minimumValue, maximumValue, step, disabled, value, guardScroll });
     useEffect(() => {
-        propsRef.current = { onValueChange, onSlidingComplete, minimumValue, maximumValue, step, disabled, value, guardScroll };
+        propsRef.current = { onValueChange, onSlidingComplete, onLongPress, minimumValue, maximumValue, step, disabled, value, guardScroll };
     });
 
     const measure = () => {
@@ -61,12 +69,34 @@ export default function PureSlider({
             if (propsRef.current.disabled) return;
             measure();
             engaged.current = false;
+            clearHold();
+            handedOver.current = false;
+            if (propsRef.current.onLongPress) {
+                // Nothing moves yet: a hold opens the typed-value prompt, a drag or a tap moves the slider as usual.
+                startXY.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
+                pendingTouch.current = true;
+                holdTimer.current = setTimeout(() => {
+                    holdTimer.current = null;
+                    if (!pendingTouch.current) return;
+                    pendingTouch.current = false;
+                    handedOver.current = true;
+                    propsRef.current.onLongPress?.();
+                }, 550);
+                return;
+            }
             if (propsRef.current.guardScroll) return;   // waits for a sideways move or a tap
             engaged.current = true;
             apply(e.nativeEvent.pageX);
         },
         onPanResponderMove: (e, g) => {
-            if (propsRef.current.disabled) return;
+            if (propsRef.current.disabled || handedOver.current) return;
+            if (pendingTouch.current) {
+                // Moving more than a few points means it is a drag, not a hold.
+                if (Math.hypot(e.nativeEvent.pageX - startXY.current.x, e.nativeEvent.pageY - startXY.current.y) <= 8) return;
+                pendingTouch.current = false;
+                clearHold();
+                engaged.current = true;
+            }
             if (propsRef.current.guardScroll && !engaged.current) {
                 // Mostly sideways and far enough to be a drag; an up-down swipe is a scroll.
                 if (Math.abs(g.dx) < 5 || Math.abs(g.dx) < Math.abs(g.dy) * 1.3 || isScrolling()) return;
@@ -75,7 +105,10 @@ export default function PureSlider({
             apply(e.nativeEvent.pageX);
         },
         onPanResponderRelease: (e, g) => {
+            clearHold();
             if (propsRef.current.disabled) return;
+            if (handedOver.current) { handedOver.current = false; engaged.current = false; pendingTouch.current = false; return; }
+            if (pendingTouch.current) { pendingTouch.current = false; apply(e.nativeEvent.pageX); engaged.current = true; }   // a tap
             if (propsRef.current.guardScroll && !engaged.current) {
                 // A plain tap (finger barely moved, page still): jump to the tapped spot.
                 if (Math.hypot(g.dx, g.dy) > 8 || isScrolling()) return;
@@ -86,6 +119,9 @@ export default function PureSlider({
             engaged.current = false;
         },
         onPanResponderTerminate: () => {
+            clearHold();
+            pendingTouch.current = false;
+            if (handedOver.current) { handedOver.current = false; engaged.current = false; return; }
             // Taken over by the page's scrolling: keep what the slider already had.
             if (engaged.current) propsRef.current.onSlidingComplete?.(valRef.current);
             engaged.current = false;

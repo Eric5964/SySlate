@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo, startTransiti
 import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Image, Animated, Easing, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
-import AudioEngine, { useProgress, usePlaybackState, matchProgress, State } from '../native/AudioEngine';
+import AudioEngine, { useProgress, usePlaybackState, matchProgress, peekLastProgress, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useLibrary } from '../context/LibraryContext';
@@ -304,15 +304,18 @@ export default function PlayerScreen() {
         animRunRef.current = null;
     };
 
-    const startRealTimeAnim = (fromPct, grace = false) => {
+    // `durOverride`: the song's real length when the caller knows it better than `progress` (right after a song
+    // change `progress` can still hold the old song's length, which made the bar run too fast until the next poll).
+    const startRealTimeAnim = (fromPct, grace = false, durOverride = 0) => {
         stopAnim();
         animPct.setValue(fromPct);
         animPctValueRef.current = fromPct;
         if (grace) barGraceUntil.current = Date.now() + 2500;
-        if (!isPlaying || progress.duration <= 0 || fromPct >= 1) return;
+        const dur = durOverride > 0 ? durOverride : progress.duration;
+        if (!isPlaying || dur <= 0 || fromPct >= 1) return;
         // Real time to the end = remaining song time / playback speed.
-        const remainingMs = Math.max(0, ((1 - fromPct) * progress.duration * 1000) / (playbackRate || 1));
-        barRun.current = { from: fromPct, at: Date.now(), rate: (playbackRate || 1) / progress.duration };
+        const remainingMs = Math.max(0, ((1 - fromPct) * dur * 1000) / (playbackRate || 1));
+        barRun.current = { from: fromPct, at: Date.now(), rate: (playbackRate || 1) / dur };
         const anim = Animated.timing(animPct, { toValue: 1, duration: remainingMs, easing: Easing.linear, useNativeDriver: true });
         animRunRef.current = anim;
         anim.start();
@@ -496,6 +499,7 @@ export default function PlayerScreen() {
     const onProgressStateChange = useRef((e) => {
         const { state, absoluteX } = e.nativeEvent;
         if (state === GHState.BEGAN) {
+            holdDismissRef.current(true);
             measureProgress();
             committedRef.current = false;
             realDragMovedRef.current = false;
@@ -508,6 +512,7 @@ export default function PlayerScreen() {
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
             onScrubRef.current(absoluteX, true);
+            holdDismissRef.current(false);
         }
     }).current;
 
@@ -538,6 +543,8 @@ export default function PlayerScreen() {
     const panRef = useRef(null);
     const tapRef = useRef(null);
     const onTapStateChange = useRef((e) => {
+        if (e.nativeEvent.state === GHState.BEGAN) holdDismissRef.current(true);
+        if (e.nativeEvent.state === GHState.END || e.nativeEvent.state === GHState.CANCELLED || e.nativeEvent.state === GHState.FAILED) holdDismissRef.current(false);
         if (e.nativeEvent.state === GHState.ACTIVE && !realDragMovedRef.current) {
             measureProgress();
             // A tap is its own complete gesture: it must start from a
@@ -584,7 +591,30 @@ export default function PlayerScreen() {
     const nowId = currentTrack?.id;
     const nowIdRef = useRef(nowId);
     nowIdRef.current = nowId;
-    const lyricsData = lyricsRaw.id === nowId ? lyricsRaw.data : (peekLyrics(nowId) ?? null);
+    const lyricsBase = lyricsRaw.id === nowId ? lyricsRaw.data : (peekLyrics(nowId) ?? null);
+    // With a Blank Line Gap set, the lyrics start on a blank line (before the first line) and end on one (after the
+    // last line), the same kind of empty row a long wordless stretch gets, so the first and last lines sit one row
+    // away from where the active line rests instead of right on it. The end one starts when the last line has had
+    // a full gap's worth of time (or at the file's own trailing empty timestamp, if it has one). Off = untouched.
+    const lyricsData = useMemo(() => {
+        if (!lyricsBase || !lyricsBase.length || !(lyricsGapSec > 0)) return lyricsBase;
+        const firstText = lyricsBase.findIndex(l => l.text);
+        if (firstText < 0) return lyricsBase;
+        let lastText = lyricsBase.length - 1;
+        while (lastText > firstText && !lyricsBase[lastText].text) lastText--;
+        const body = lyricsBase.slice(firstText, lastText + 1);
+        const trailing = lyricsBase[lastText + 1];
+        // The end row starts a full gap after the last line (a file's own trailing empty timestamp counts only if it is later).
+        const endTime = Math.max(trailing ? trailing.time : 0, lyricsBase[lastText].time + lyricsGapSec);
+        // The last entry only exists so the end row counts as a gap row (a gap row needs an entry after it); it is
+        // never reached, so the view stays on the end row until the song ends.
+        return [
+            { time: -1000, text: '' },
+            ...body,
+            { time: endTime, text: '' },
+            { time: 1e9, text: '' },
+        ];
+    }, [lyricsBase, lyricsGapSec]);
     const showingLyrics = showingRaw.id === nowId ? showingRaw.on : (autoShowLyrics && !!peekLyrics(nowId));
     const setLyricsData = useCallback((data) => setLyricsRaw({ id: nowIdRef.current, data }), []);
     const setShowingLyrics = useCallback((on) => setShowingRaw({ id: nowIdRef.current, on }), []);
@@ -845,6 +875,19 @@ export default function PlayerScreen() {
     const showQueueRef = useRef(false);
     showQueueRef.current = showQueue;
     useEffect(() => { navigation.setOptions({ gestureEnabled: !showQueue }); }, [navigation, showQueue]);
+    // Swipe-down-to-close is also off while a finger is on the progress bar or on any button (a scrub or a press with
+    // a little downward drift used to close the Player). Released as soon as the finger lifts; a backstop timer lets
+    // go anyway if a lift is ever missed, so the gesture can never stay off.
+    const dismissHoldTimer = useRef(null);
+    const holdDismiss = useCallback((on) => {
+        if (dismissHoldTimer.current) { clearTimeout(dismissHoldTimer.current); dismissHoldTimer.current = null; }
+        if (on) dismissHoldTimer.current = setTimeout(() => { dismissHoldTimer.current = null; navigation.setOptions({ gestureEnabled: !showQueueRef.current }); }, 20000);
+        navigation.setOptions({ gestureEnabled: on ? false : !showQueueRef.current });
+    }, [navigation]);
+    useEffect(() => () => { if (dismissHoldTimer.current) clearTimeout(dismissHoldTimer.current); }, []);
+    const holdDismissRef = useRef(holdDismiss);
+    holdDismissRef.current = holdDismiss;
+    const HOLD = { onPressIn: () => holdDismissRef.current(true), onPressOut: () => holdDismissRef.current(false) };
     // Leaving the disc view always lets go of a finger-on-disc state and turns the gesture back on.
     useEffect(() => { if (!showingDisc && discHeldRef.current) { discHeldRef.current = false; setDiscHeld(false); navigation.setOptions({ gestureEnabled: !showQueueRef.current }); } }, [showingDisc, navigation]);
     // The swipe-down-to-close gesture is only switched off AFTER a finger lands on
@@ -1319,13 +1362,25 @@ export default function PlayerScreen() {
             // comes back quickly does the bar fall back to 0.
             // The old song's bar is cleared at once (it used to keep running for up to a
             // quarter second after a skip while the real spot was being asked for).
-            stopAnim();
-            animPct.setValue(0);
-            animPctValueRef.current = 0;
             const trackAtChange = currentTrack?.id;
             const idAtChange = currentTrack?.id;
             let settled = false;
             let zeroed = false;
+            // The engine pushes a position about every quarter second, so the newest one already describes the new
+            // song (a crossfade announces it halfway through). Used right now, synchronously: the bar goes straight
+            // from the old song to the new song's real spot, without a stop at 0 and without waiting for a round trip.
+            const lp = peekLastProgress();
+            if (lp && lp.duration > 0 && idAtChange && lp.id === idAtChange && Date.now() - lp.at < 1200 && lp.position <= 40) {
+                const adv = isPlaying ? ((Date.now() - lp.at) / 1000) * (playbackRate || 1) : 0;
+                const pos = Math.min(lp.duration, lp.position + adv);
+                settled = true;
+                setSwitchProg({ position: pos, duration: lp.duration });
+                startRealTimeAnim(Math.max(0, Math.min(1, pos / lp.duration)), true, lp.duration);
+                return;
+            }
+            stopAnim();
+            animPct.setValue(0);
+            animPctValueRef.current = 0;
             // The bar waits at 0 only briefly; the real spot is asked for again every 120 ms
             // (up to ~1.5 s) so an answer that was not ready yet, or still described the other song,
             // still lands soon, instead of the bar sitting at 0 and then popping in later.
@@ -1341,7 +1396,7 @@ export default function PlayerScreen() {
                     if (!usable) { retry(); return; }
                     settled = true;
                     setSwitchProg({ position: p.position, duration: p.duration });
-                    startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true);
+                    startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true, p.duration);
                 }).catch(retry);
             };
             trySeed();
@@ -1483,7 +1538,7 @@ export default function PlayerScreen() {
                 {/* no empty slot when the arrow is off, so the title centers between the left edge and the icons.
                     (Keep comments on their own line: text after a } on the same line becomes a stray string in the View and crashes.) */}
                 {playerBtns.back
-                    ? <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
+                    ? <TouchableOpacity {...HOLD} onPress={() => navigation.goBack()} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.topIcon, { color: theme.accent }]}>↓</Text>
                     </TouchableOpacity>
                     : null}
@@ -1497,16 +1552,16 @@ export default function PlayerScreen() {
                         engine was replaced with the custom AudioEngine
                         (which DOES support EQ) several rounds ago and this
                         was never un-hidden. */}
-                    {playerBtns.sleep && <TouchableOpacity onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
+                    {playerBtns.sleep && <TouchableOpacity {...HOLD} onPress={() => setShowSleepTimer(true)} hitSlop={HIT} style={s.topBtn}>
                         <MoonIcon size={19} color={(sleepTimerEndAt || sleepAtTrackEnd) ? theme.accent : offColor} />
                     </TouchableOpacity>}
-                    {playerBtns.speed && <TouchableOpacity onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
+                    {playerBtns.speed && <TouchableOpacity {...HOLD} onPress={() => setShowSpeed(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: Math.abs(playbackRate - 1) > 0.001 ? theme.accent : offColor }]}>{formatSpeed(playbackRate)}</Text>
                     </TouchableOpacity>}
-                    {playerBtns.eq && <TouchableOpacity onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
+                    {playerBtns.eq && <TouchableOpacity {...HOLD} onPress={() => setShowEQ(true)} hitSlop={HIT} style={s.topBtn}>
                         <Text style={[s.eqTag, { color: theme.accent }]}>EQ</Text>
                     </TouchableOpacity>}
-                    {playerBtns.queue && <TouchableOpacity onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
+                    {playerBtns.queue && <TouchableOpacity {...HOLD} onPress={() => setShowQueue(true)} hitSlop={HIT} style={s.topBtn}>
                         <MenuBarsIcon size={20} color={theme.accent} />
                     </TouchableOpacity>}
                 </View>
@@ -1774,7 +1829,7 @@ export default function PlayerScreen() {
                     <View style={[s.trackInfoGroup, { marginTop: 16 }]} onLayout={(e) => { vizLay.current.groupY = e.nativeEvent.layout.y; recomputeVizTop(); }}>
                     <View style={[s.lyricsToggleSlot, { marginBottom: 14 }, titleLines > 1 ? { transform: [{ translateY: -titleLineH }] } : null]}>
                         {(hasLyricsView || djDisc) && (
-                            <TouchableOpacity onPress={cycleView} style={s.lyricsToggleBtn}>
+                            <TouchableOpacity {...HOLD} onPress={cycleView} style={s.lyricsToggleBtn}>
                                 <Text style={[s.lyricsToggleText, { color: theme.accent }]}>
                                     {nextViewLabel}
                                 </Text>
@@ -1869,13 +1924,13 @@ export default function PlayerScreen() {
                         gated behind JS work even at its quickest. This gives
                         an instant visual response the moment the finger
                         touches down, independent of everything else. */}
-                    <TouchableOpacity onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    <TouchableOpacity {...HOLD} onPress={onPressShuffle} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <ShuffleIcon size={35} color={shuffleColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
+                    <TouchableOpacity {...HOLD} onPress={() => skipWithRamp('prev')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipPrevIcon size={38} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity
+                    <TouchableOpacity {...HOLD}
                         onPress={() => {
                             if (discHeldRef.current) return;   // the disc is being scratched: not now
                             setFadeBusy(true);
@@ -1890,10 +1945,10 @@ export default function PlayerScreen() {
                     >
                         {isPlaying ? <PauseIcon size={33} color={theme.onAccent} /> : <PlayIcon size={33} color={theme.onAccent} />}
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
+                    <TouchableOpacity {...HOLD} onPress={() => skipWithRamp('next')} style={s.skipBtn} hitSlop={HIT}>
                         <SkipNextIcon size={38} color={skipIconColor} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
+                    <TouchableOpacity {...HOLD} onPress={onPressLoop} style={s.sideBtn} hitSlop={HIT} activeOpacity={1}>
                         <LoopIcon size={35} color={loopColor} single={singleLoop} />
                     </TouchableOpacity>
                 </View>

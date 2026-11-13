@@ -221,6 +221,10 @@ try {
     NativeAudioEngine.getState().then(state => { if (lastPlaybackState === State.None) lastPlaybackState = state; }).catch(() => { });
 } catch { }
 
+// The newest position reading the engine pushed (about every quarter second), with the time it arrived. The progress bar
+// uses it to start a new song's bar at its real spot at once (a crossfade flips the song halfway through).
+export function peekLastProgress() { return lastProgress; }
+
 // A reading only counts for the song it describes. A reading that was taken
 // just before a skip can arrive just after it (or just before the app has
 // heard about a crossfade's halfway song change); native tags every reading

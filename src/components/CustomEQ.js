@@ -11,6 +11,7 @@ import { getPresetById } from '../utils/eq';
 import {
     defaultCustomEQ, sanitizeCustomEQ, bandsFromPreset, makeParamPreset, presetParamBands, toNativeArrays,
     FILTER_TYPES, FILTER_LABELS, GAIN_MIN, GAIN_MAX, freqToPos, posToFreq, qToPos, posToQ, formatFreq,
+    snapFreq, snapQ, snapGain, parseFreqInput, parseGainInput, parseQInput,
     exportGraphicEQ, exportParametricEQ, exportSySlateEQ, parseEQText,
 } from '../utils/customEQ';
 
@@ -60,6 +61,18 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
         setBands(clean);
         preview(clean);
     };
+
+    // Hold a value (or its slider) to type an exact one. iOS only (Alert.prompt); elsewhere the sliders are all there is.
+    const askValue = (title, hint, current, parse, apply) => {
+        if (Platform.OS !== 'ios' || !Alert.prompt) return;
+        Alert.prompt(title, hint, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Set', onPress: (txt) => { const v = parse(txt); if (v === null) Alert.alert('Not a valid value', hint); else apply(v); } },
+        ], 'plain-text', String(current), 'numbers-and-punctuation');
+    };
+    const askFreq = (i) => askValue(`Band ${i + 1} frequency`, 'In Hz, or with k for kHz (for example 440 or 2.5k). 20 Hz to 20 kHz.', bandsRef.current[i].f, parseFreqInput, v => commitBand(i, { f: v }));
+    const askGain = (i) => askValue(`Band ${i + 1} gain`, 'In dB, from -6 to 6 (for example -3.5).', bandsRef.current[i].g, parseGainInput, v => commitBand(i, { g: v }));
+    const askQ = (i) => askValue(`Band ${i + 1} Q`, 'From 0.2 to 10 (for example 0.71 or 2).', bandsRef.current[i].q, parseQInput, v => commitBand(i, { q: v }));
 
     const startFromCurrent = () => {
         Alert.alert('Start from the current preset?', 'This replaces all 10 bands in this editor with the preset you are using now. Nothing is saved until you press Save.', [
@@ -118,19 +131,19 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
                                     ))}
                                 </View>
                             </View>
-                            <SliderLine label="Freq" value={formatFreq(b.f)} base={base}>
-                                <PureSlider style={{ flex: 1 }} minimumValue={0} maximumValue={1} step={0.001} value={freqToPos(b.f)}
-                                    onValueChange={p => setBand(i, { f: posToFreq(p) })} onSlidingComplete={p => commitBand(i, { f: posToFreq(p) })}
+                            <SliderLine label="Freq" value={formatFreq(b.f)} base={base} onHold={() => askFreq(i)}>
+                                <PureSlider style={{ flex: 1 }} minimumValue={0} maximumValue={1} step={0.001} value={freqToPos(b.f)} onLongPress={() => askFreq(i)}
+                                    onValueChange={p => setBand(i, { f: snapFreq(posToFreq(p)) })} onSlidingComplete={p => commitBand(i, { f: snapFreq(posToFreq(p)) })}
                                     minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             </SliderLine>
-                            <SliderLine label="Gain" value={`${b.g > 0 ? '+' : ''}${b.g.toFixed(1)} dB`} base={base}>
-                                <PureSlider style={{ flex: 1 }} minimumValue={GAIN_MIN} maximumValue={GAIN_MAX} step={0.1} value={b.g}
-                                    onValueChange={v => setBand(i, { g: Math.round(v * 10) / 10 })} onSlidingComplete={v => commitBand(i, { g: Math.round(v * 10) / 10 })}
+                            <SliderLine label="Gain" value={`${b.g > 0 ? '+' : ''}${b.g.toFixed(1)} dB`} base={base} onHold={() => askGain(i)}>
+                                <PureSlider style={{ flex: 1 }} minimumValue={GAIN_MIN} maximumValue={GAIN_MAX} step={0.1} value={b.g} onLongPress={() => askGain(i)}
+                                    onValueChange={v => setBand(i, { g: snapGain(v) })} onSlidingComplete={v => commitBand(i, { g: snapGain(v) })}
                                     minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             </SliderLine>
-                            <SliderLine label="Q" value={b.q.toFixed(2)} base={base} dim={b.t !== 'peak'}>
-                                <PureSlider style={{ flex: 1 }} minimumValue={0} maximumValue={1} step={0.001} value={qToPos(b.q)}
-                                    onValueChange={p => setBand(i, { q: posToQ(p) })} onSlidingComplete={p => commitBand(i, { q: posToQ(p) })}
+                            <SliderLine label="Q" value={b.q.toFixed(2)} base={base} dim={b.t !== 'peak'} onHold={() => askQ(i)}>
+                                <PureSlider style={{ flex: 1 }} minimumValue={0} maximumValue={1} step={0.001} value={qToPos(b.q)} onLongPress={() => askQ(i)}
+                                    onValueChange={p => setBand(i, { q: snapQ(posToQ(p)) })} onSlidingComplete={p => commitBand(i, { q: snapQ(posToQ(p)) })}
                                     minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
                             </SliderLine>
                         </View>
@@ -265,12 +278,16 @@ export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
     );
 }
 
-function SliderLine({ label, value, base, dim, children }) {
+function SliderLine({ label, value, base, dim, onHold, children }) {
     return (
         <View style={[st.line, dim && { opacity: 0.45 }]}>
-            <Text style={{ color: base.textFaint, fontSize: 11, width: 34 }}>{label}</Text>
+            <TouchableOpacity activeOpacity={0.6} delayLongPress={450} onLongPress={onHold} style={{ width: 34, paddingVertical: 8 }}>
+                <Text style={{ color: base.textFaint, fontSize: 11 }}>{label}</Text>
+            </TouchableOpacity>
             {children}
-            <Text style={{ color: base.textDim ?? base.textFaint, fontSize: 11, width: 74, textAlign: 'right' }}>{value}</Text>
+            <TouchableOpacity activeOpacity={0.6} delayLongPress={450} onLongPress={onHold} style={{ width: 74, paddingVertical: 8 }}>
+                <Text style={{ color: base.textDim ?? base.textFaint, fontSize: 11, textAlign: 'right' }}>{value}</Text>
+            </TouchableOpacity>
         </View>
     );
 }
