@@ -49,7 +49,16 @@ export default function useLivePlayCounts(songs) {
             }
         });
     }, []);
-    useEffect(() => subscribePlayCount(({ key, n, counts }) => setLive(prev => (counts ? { ...prev, ...counts } : { ...prev, [key]: n }))), []);
+    useEffect(() => subscribePlayCount(({ key, n, counts, reset }) => {
+        if (reset) {
+            // A reset: every number goes to zero, and the remembered orders (made from the old counts) are dropped.
+            snapshots.clear();
+            setLive({});
+            setSortCounts(Object.fromEntries((songsRef.current || []).map(sg => [sg.id, 0])));
+            return;
+        }
+        setLive(prev => (counts ? { ...prev, ...counts } : { ...prev, [key]: n }));
+    }), []);
     const countFor = useCallback((song) => {
         if (!song) return 0;
         const l = live[playCountKey(song)] ?? live[playCountKeyN(song)];

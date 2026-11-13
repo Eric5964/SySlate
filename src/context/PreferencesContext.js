@@ -39,7 +39,7 @@ import {
     getCrossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack as persistCrossfadeDurationEndOfTrack,
     getWithinTrackNorm, setWithinTrackNorm as persistWithinTrackNorm,
     getPreAmp, setPreAmp as persistPreAmp,
-    getSpatialWidth, setSpatialWidth as persistSpatialWidth, getSpatialBalance, setSpatialBalance as persistSpatialBalance,
+    getMonoAudio, setMonoAudio as persistMonoAudio, getSpatialWidth, setSpatialWidth as persistSpatialWidth, getSpatialBalance, setSpatialBalance as persistSpatialBalance,
     getBetweenTrackNorm, setBetweenTrackNorm as persistBetweenTrackNorm,
     getSilenceTrim, setSilenceTrim as persistSilenceTrim,
     getShowPlaylistTrackCount, setShowPlaylistTrackCount as persistShowPlaylistTrackCount,
@@ -105,6 +105,7 @@ const Ctx = createContext({
     backgroundImageUri: null, setBackgroundImageUri: () => { },
     crossfadeEnabled: true, setCrossfadeEnabled: () => { },
     preAmp: 0, setPreAmp: () => { },
+    monoAudio: false, setMonoAudio: () => { },
     spatialWidth: 100, setSpatialWidth: () => { }, spatialBalance: 0, setSpatialBalance: () => { },
     // Renamed in meaning, not in name: this is now specifically the "on
     // skip" crossfade duration (see AudioEngine.swift's advance()) — kept
@@ -183,7 +184,8 @@ export function PreferencesProvider({ children }) {
     const [preAmp, setPreAmpState] = useState(0);
     const [spatialWidth, setSpatialWidthState] = useState(100);
     const [spatialBalance, setSpatialBalanceState] = useState(0);
-    const spatialRef = useRef({ width: 100, balance: 0 });
+    const spatialRef = useRef({ width: 100, balance: 0, mono: false });
+    const [monoAudio, setMonoAudioState] = useState(false);
     const [betweenTrackNorm, setBetweenTrackNormState] = useState(false);
     const [silenceTrim, setSilenceTrimState] = useState(false);
     const [showPlaylistTrackCount, setShowPlaylistTrackCountState] = useState(true);
@@ -286,10 +288,10 @@ export function PreferencesProvider({ children }) {
         getCrossfadeDurationEndOfTrack().then((v) => { setCrossfadeDurationEndOfTrackState(v); AudioEngine.setCrossfadeDurationEndOfTrack(v).catch(() => { }); });
         getWithinTrackNorm().then((v) => { setWithinTrackNormState(v); AudioEngine.setWithinTrackNormEnabled(v).catch(() => { }); });
         getPreAmp().then((v) => { setPreAmpState(v); AudioEngine.setPreAmp(v).catch(() => { }); });
-        Promise.all([getSpatialWidth(), getSpatialBalance()]).then(([w, b]) => {
-            setSpatialWidthState(w); setSpatialBalanceState(b);
-            spatialRef.current = { width: w, balance: b };
-            AudioEngine.setSpatial(w / 100, b / 100);
+        Promise.all([getSpatialWidth(), getSpatialBalance(), getMonoAudio()]).then(([w, b, m]) => {
+            setSpatialWidthState(w); setSpatialBalanceState(b); setMonoAudioState(m);
+            spatialRef.current = { width: w, balance: b, mono: m };
+            AudioEngine.setSpatial(m ? 0 : w / 100, b / 100);
         });
         getBetweenTrackNorm().then((v) => { setBetweenTrackNormState(v); AudioEngine.setBetweenTrackNormEnabled(v).catch(() => { }); });
         getSilenceTrim().then((v) => { setSilenceTrimState(v); AudioEngine.setSilenceTrimEnabled(v).catch(() => { }); });
@@ -410,12 +412,17 @@ export function PreferencesProvider({ children }) {
     const setSpatialWidth = useCallback((v) => {
         setSpatialWidthState(v); persistSpatialWidth(v);
         spatialRef.current.width = v;
-        AudioEngine.setSpatial(v / 100, spatialRef.current.balance / 100);
+        AudioEngine.setSpatial(spatialRef.current.mono ? 0 : v / 100, spatialRef.current.balance / 100);
     }, []);
     const setSpatialBalance = useCallback((v) => {
         setSpatialBalanceState(v); persistSpatialBalance(v);
         spatialRef.current.balance = v;
-        AudioEngine.setSpatial(spatialRef.current.width / 100, v / 100);
+        AudioEngine.setSpatial(spatialRef.current.mono ? 0 : spatialRef.current.width / 100, v / 100);
+    }, []);
+    const setMonoAudio = useCallback((v) => {
+        setMonoAudioState(v); persistMonoAudio(v);
+        spatialRef.current.mono = v;
+        AudioEngine.setSpatial(v ? 0 : spatialRef.current.width / 100, spatialRef.current.balance / 100);
     }, []);
     const setPreAmp = useCallback((v) => {
         setPreAmpState(v);
@@ -489,7 +496,7 @@ export function PreferencesProvider({ children }) {
         crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack,
         withinTrackNorm, setWithinTrackNorm,
         preAmp, setPreAmp,
-        spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance,
+        spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, monoAudio, setMonoAudio,
         betweenTrackNorm, setBetweenTrackNorm,
         silenceTrim, setSilenceTrim,
         showPlaylistTrackCount, setShowPlaylistTrackCount,
@@ -507,7 +514,7 @@ export function PreferencesProvider({ children }) {
         showPlayCount, showSongCovers, artistSeparator, lyricsMode, lyricsOn, djDisc, autoShow, vizMode, playerVizCover, playerVizBehind, djDiscSpin, djDiscTouch, autoShowLyrics, autoShowDisc, miniPlayerShadow, performanceMode, useVolumeTags, djDiscType, djDiscAssist, djDiscRpm, playerOutline, detailOutline, songPillShadow, playerBtns,
         lyricsResyncSec, lyricsOffsetSec, lyricsGapSec, lyricsArrows, keepScreenAwake, coverShape, showPlayerCover, coverShadow,
         backgroundImageEnabled, backgroundImageUri,
-        crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, spatialWidth, spatialBalance, betweenTrackNorm, silenceTrim,
+        crossfadeEnabled, crossfadeDuration, crossfadeDurationEndOfTrack, withinTrackNorm, preAmp, spatialWidth, spatialBalance, monoAudio, betweenTrackNorm, silenceTrim,
         showPlaylistTrackCount, showPlaylistTitles, lyricsScrollLocked, artistDisplayJoin,
         topBarColor, bottomBarColor, playlistCoverShape, playlistCoverShadow, playlistCards, playlistArrow, ui,
     ]);

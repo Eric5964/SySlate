@@ -155,9 +155,38 @@ let cacheMapPromise = null;
 // The same map, held directly once loaded, so a list can read every cover it
 // already knows about in one synchronous pass instead of awaiting per song.
 let cacheMapSync = null;
+// An entry that names a cover file is only worth keeping if that file is really there. Entries stored the whole
+// file:// address, which can stop being right (the app's folder moved, or the file was cleaned up), and such an entry
+// was trusted forever: the row stayed blank and the cover was never looked for again. Now every entry is checked once
+// per launch against the real folder listing: a file that is there is re-pointed at the current folder, one that is
+// not is forgotten so the normal loader reads that song's cover again.
+async function verifyArtFiles(map) {
+    let names;
+    try {
+        const info = await FileSystem.getInfoAsync(ART_DIR);
+        names = info.exists ? new Set(await FileSystem.readDirectoryAsync(ART_DIR)) : new Set();
+    } catch { return map; }   // listing failed: change nothing
+    let changed = false;
+    for (const id of Object.keys(map)) {
+        const entry = map[id];
+        const uri = entry && entry.uri;
+        if (!uri || typeof uri !== 'string') continue;
+        const name = uri.split('.song-art/').pop();
+        if (names.has(name)) {
+            const fixed = ART_DIR + name;
+            if (fixed !== uri) { entry.uri = fixed; changed = true; }
+        } else {
+            delete map[id];
+            changed = true;
+        }
+    }
+    if (changed) schedulePersist(() => map);
+    return map;
+}
 async function loadCacheMap() {
     if (!cacheMapPromise) {
         cacheMapPromise = AsyncStorage.getItem(CACHE_KEY).then(v => v ? JSON.parse(v) : {}).catch(() => ({}))
+            .then(verifyArtFiles)
             .then(m => { cacheMapSync = m; return m; });
     }
     return cacheMapPromise;

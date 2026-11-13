@@ -18,6 +18,7 @@ const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
 let useVolumeTags = true;
 let lastPlaybackRate = 1;
+let lastSeekAt = 0;
 
 export const Event = {
     PlaybackState: 'PlaybackState',
@@ -133,7 +134,9 @@ const AudioEngine = {
     play: () => NativeAudioEngine.play(),
     pause: () => NativeAudioEngine.pause(),
     stop: () => NativeAudioEngine.stop(),
-    seekTo: (seconds) => NativeAudioEngine.seekTo(seconds),
+    seekTo: (seconds) => { lastSeekAt = Date.now(); return NativeAudioEngine.seekTo(seconds); },
+    // When JS last asked for a seek: listening time is not counted across one (the position jumped, it was not played).
+    getLastSeekAt: () => lastSeekAt,
     // DJ disc: begin resolves true once scratch audio is ready.
     // The last speed JS asked for. The fade code needs it: track positions are in song seconds, fades run in real seconds.
     setPlaybackRate: (rate) => { const r = Number(rate); if (Number.isFinite(r) && r > 0) lastPlaybackRate = r; return NativeAudioEngine.setPlaybackRate(rate); },

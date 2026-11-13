@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share, StatusBar 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import ScreenBackground from '../components/ScreenBackground';
-import { getDebugLogLines, clearDebugLog, subscribeDebugLog } from '../utils/debugLog';
+import { getDebugLogLines, clearDebugLog, subscribeDebugLog, getPreviousSession } from '../utils/debugLog';
 
 const fmtTime = (t) => {
     const d = new Date(t);
@@ -21,7 +21,10 @@ export default function DebugLogScreen({ navigation }) {
     // this (insets.top + a few px) — same fix here, plus a bottom one for
     // the button this screen has that Player's own layout doesn't.
     const insets = useSafeAreaInsets();
-    const [lines, setLines] = useState(getDebugLogLines());
+    const [curLines, setLines] = useState(getDebugLogLines());
+    const [showPrev, setShowPrev] = useState(false);
+    const prev = getPreviousSession();
+    const lines = showPrev && prev ? prev.lines : curLines;
     const scrollRef = useRef(null);
     const atBottomRef = useRef(true);
 
@@ -57,6 +60,13 @@ export default function DebugLogScreen({ navigation }) {
                     <Text style={[s.headerBtn, { color: theme.accent }]}>Clear</Text>
                 </TouchableOpacity>
             </View>
+            {prev ? (
+                <TouchableOpacity onPress={() => setShowPrev(v => !v)} style={{ paddingHorizontal: 16, paddingBottom: 6 }}>
+                    <Text style={{ color: theme.accent, fontSize: 13, fontWeight: '700' }}>
+                        {showPrev ? 'Showing the previous session. Tap for this one.' : `Show the previous session (${prev.lines.length} lines, last saved ${fmtTime(prev.savedAt)}, app was ${prev.appState})`}
+                    </Text>
+                </TouchableOpacity>
+            ) : null}
             <Text style={s.subtitle}>
                 {lines.length} lines — captures [RAMP-DEBUG], [SEEK-DEBUG], and any other console.log/native log while this screen (or the app) has been open. Reproduce the issue, then Share to send it over.
             </Text>

@@ -10,7 +10,7 @@ import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { useLibrary } from './LibraryContext';
-import { getPlayCounts, playCountKeyN, baseCountKeyN } from '../utils/storage';
+import { getPlayCounts, playCountKeyN, baseCountKeyN, setListenHooks } from '../utils/storage';
 import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction, preemptForNewAction, waitForPreempt, setActionEpoch, getPreemptEpoch, isActionPreempted, releaseFadeById, restoreAfterPreemptIfSilenced } from '../services/PlaybackService';
 
 // Thrown inside a Play/Shuffle/tap action that a newer one has replaced. Not an error.
@@ -453,12 +453,26 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const listenPendRef = useRef({ track: null, sec: 0 });
     const flushListened = () => {
         const lp = listenPendRef.current;
-        if (lp.track && lp.sec > 0.5) addListenedSeconds(lp.track, libraryFor(lp.track), lp.sec);
+        let p;
+        if (lp.track && lp.sec > 0.05) p = addListenedSeconds(lp.track, libraryFor(lp.track), lp.sec);
         lp.sec = 0;
+        return p;
     };
     useEffect(() => {
         const sub = AppState.addEventListener('change', (st) => { if (st !== 'active') flushListened(); });
-        return () => sub.remove();
+        // Paused or stopped: filed right away, so a force-quit while paused loses nothing.
+        const sub2 = AudioEngine.addEventListener(Event.PlaybackState, ({ state }) => { if (state !== State.Playing) flushListened(); });
+        // Listening Stats files what is waiting before it reads; a play-count reset drops it (and the half-way
+        // progress of the song now playing) so none of it is written back after the reset.
+        setListenHooks(
+            () => {
+                listenPendRef.current = { track: null, sec: 0 };
+                const pc = playCreditedRef.current;
+                pc.credited = false; pc.listened = 0;
+            },
+            () => flushListened(),
+        );
+        return () => { sub.remove(); sub2.remove(); setListenHooks(null, null); };
     }, []);
     const playbackRateRef = useRef(1);
     useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
@@ -486,15 +500,19 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             lp.track = track;
             if (pc.lastPos != null) {
                 const d = position - pc.lastPos;
+                const rate = Math.max(0.25, playbackRateRef.current || 1);
                 const gapSec = Math.min(120, Math.max(0, (now - pc.lastAt) / 1000));
                 // The most song that can go by per second: the playing speed, or the disc's top speed (3x).
-                const fastest = Math.max(playbackRateRef.current || 1, 3);
+                const fastest = Math.max(rate, 3);
                 const allowed = fastest * 1.3 * gapSec + 0.4;
-                if (d > 0 && d <= allowed) {
-                    pc.listened += d;
-                    lp.sec += Math.min(d / Math.max(0.25, playbackRateRef.current || 1), gapSec + 0.4);
-                    if (lp.sec >= 15) flushListened();
-                }
+                if (d > 0 && d <= allowed) pc.listened += d;
+                // Listening TIME is stricter: only stretches that were played at the normal speed. A seek, a scratch
+                // of the disc or any jump between two readings is not listening, and the time is never more than
+                // the real time that went by (a long gap, e.g. the screen off, is allowed up to 15 minutes).
+                const realGap = Math.min(900, Math.max(0, (now - pc.lastAt) / 1000));
+                const seeked = (AudioEngine.getLastSeekAt ? AudioEngine.getLastSeekAt() : 0) >= pc.lastAt - 50;
+                if (!seeked && d > 0 && d <= rate * realGap * 1.5 + 0.5) lp.sec += Math.min(d / rate, realGap);
+                if (lp.sec >= 10) flushListened();
             }
             pc.lastPos = position;
             pc.lastAt = now;

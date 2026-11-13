@@ -197,7 +197,7 @@ export default function SettingsScreen() {
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
-    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, playerVizBehind, setPlayerVizBehind, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, lyricsGapSec, setLyricsGapSec, lyricsArrows, setLyricsArrows, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
+    const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, playerVizBehind, setPlayerVizBehind, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, lyricsGapSec, setLyricsGapSec, lyricsArrows, setLyricsArrows, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, monoAudio, setMonoAudio, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
 
     const [loaded, setLoaded] = useState(false);
@@ -680,7 +680,7 @@ export default function SettingsScreen() {
     // audio engine and the other screens follow along immediately.
     const resetters = {
         volume: () => { setWithinTrackNorm(false); setBetweenTrackNorm(false); },
-        spatial: () => { setSpatialWidth(100); setSpatialBalance(0); },
+        spatial: () => { setSpatialWidth(100); setSpatialBalance(0); setMonoAudio(false); },
         shuffle: () => { setShuffleTypePref('full_cycle'); changeShuffleMode('full_cycle'); },
         crossfade: () => {
             setCrossfadeEnabled(true);
@@ -984,7 +984,8 @@ export default function SettingsScreen() {
                     onSaved={async () => { setCP(await getCustomPresets()); applyEQPreset(eqPresetId); }} />
 
                 <Section title="Spatial">
-                    <Text style={s.sliderSub}>Width</Text>
+                    {toggle('Mono Audio', 'Plays the same sound in both ears', monoAudio, setMonoAudio)}
+                    <Text style={[s.sliderSub, { paddingTop: 8 }]}>Width</Text>
                     <Text style={s.sliderNote}>How wide the stereo sound is. 100% is the song as it was recorded</Text>
                     <Text style={[s.sliderVal, { color: theme.accent }]}>{Math.round(widthLocal)}%</Text>
                     <PureSlider guardScroll style={s.slider} minimumValue={0} maximumValue={200} step={5} value={widthLocal}

@@ -50,9 +50,28 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
         ? (eqOverride.source === 'song' ? `This song plays with its own EQ (${ovName(eqOverride.id)}).` : `This playlist plays with its own EQ (${ovName(eqOverride.id)}).`)
         : null;
 
+    // Remove only appears where it can be understood: a song's own EQ on a playlist or All Songs screen, a playlist's EQ only on that playlist's screen.
+    const canRemove = !!eqOverride && (eqOverride.source === 'song'
+        ? (!!playlistPath || !!onAssign)
+        : (!!plKey && toStablePath(currentPlaylist?.path) === plKey));
+
+    // The note about this song's (or playlist's) own EQ sits at the bottom, above the buttons.
+    const overrideBlock = overrideText ? (
+        <View style={s.overrideRow}>
+            <Text style={[s.overrideText, { color: base.textFaint }]}>{overrideText}</Text>
+            {canRemove ? <TouchableOpacity onPress={() => {
+                if (eqOverride.source === 'song') assignSongEQ([currentTrack], null);
+                else assignPlaylistEQ(currentPlaylist?.path, null);
+            }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={[s.overrideText, { color: theme.accent, fontWeight: '700' }]}>Remove</Text>
+            </TouchableOpacity> : null}
+        </View>
+    ) : null;
+
     // Only on a playlist's own screen (it passes playlistPath / onAssign); the player and All Songs have no buttons.
-    const footer = (!pickMode && showLayers && (showPlaylistBtn || onAssign)) ? (
+    const footer = (!pickMode && showLayers && (showPlaylistBtn || onAssign || overrideText)) ? (
         <View style={{ gap: 8 }}>
+            {overrideBlock}
             {showPlaylistBtn && (!plEQ || plEQ !== eqPresetId) ? (
                 <TouchableOpacity style={[s.assignBtn, { borderColor: theme.accent }]} onPress={() => assignToPlaylist()}>
                     <Text style={[s.assignText, { color: theme.accent }]} numberOfLines={1}>
@@ -73,26 +92,10 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
         </View>
     ) : null;
 
-    // Remove only appears where it can be understood: a song's own EQ on a playlist or All Songs screen, a playlist's EQ only on that playlist's screen.
-    const canRemove = !!eqOverride && (eqOverride.source === 'song'
-        ? (!!playlistPath || !!onAssign)
-        : (!!plKey && toStablePath(currentPlaylist?.path) === plKey));
-
     return (
         <BottomSheet visible={visible} onClose={onClose} expandable selfPadded footer={footer} guard={guard}
             header={<View style={{ alignSelf: 'stretch' }}>
                 <Text style={[s.sheetTitle, { color: base.text }]}>{pickMode ? 'Assign which EQ?' : 'EQ Preset'}</Text>
-                {overrideText ? (
-                    <View style={s.overrideRow}>
-                        <Text style={[s.overrideText, { color: base.textFaint }]}>{overrideText}</Text>
-                        {canRemove ? <TouchableOpacity onPress={() => {
-                            if (eqOverride.source === 'song') assignSongEQ([currentTrack], null);
-                            else assignPlaylistEQ(currentPlaylist?.path, null);
-                        }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                            <Text style={[s.overrideText, { color: theme.accent, fontWeight: '700' }]}>Remove</Text>
-                        </TouchableOpacity> : null}
-                    </View>
-                ) : null}
             </View>}>
             <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} scrollEventThrottle={16} scrollEnabled={!contentDragging} contentContainerStyle={{ paddingBottom: sheetBottomPad() }}
                 onScroll={(e) => { guard.current.atTop = e.nativeEvent.contentOffset.y <= 2; }}>
@@ -119,7 +122,7 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
 
 const s = StyleSheet.create({
     sheetTitle: { fontSize: 16, fontWeight: '700', marginBottom: 4, paddingHorizontal: 24 },
-    overrideRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingHorizontal: 24, paddingBottom: 6, gap: 12, alignSelf: 'stretch' },
+    overrideRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingHorizontal: 4, paddingBottom: 2, gap: 12, alignSelf: 'stretch' },
     overrideText: { fontSize: 12, flexShrink: 1 },
     presetRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 24, borderBottomWidth: 1 },
     presetName: { fontSize: 17 },

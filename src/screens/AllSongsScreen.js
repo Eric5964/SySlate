@@ -3,8 +3,6 @@ import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PILL_H } from '../utils/layout';
 import { useNavigation, useScrollToTop, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
@@ -55,7 +53,6 @@ export default function AllSongsScreen() {
     const [search, setSearch] = useState('');
     const [showEQ, setShowEQ] = useState(false);
     const [showQueue, setShowQueue] = useState(false);
-    const insets = useSafeAreaInsets();
     const [assign, setAssign] = useState(null);   // null, or { presetId, name, selected: { [songId]: true } }
     const [eqNameList, setEqNameList] = useState({ cp: [], ov: {} });
     useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ]);
@@ -325,7 +322,7 @@ export default function AllSongsScreen() {
                 setAssign({ presetId: id, name: getPresetById(id, cp, ov).name, selected: {} });
             }} />
             {assign ? (
-                <View pointerEvents="box-none" style={[s.assignBar, { bottom: 49 + insets.bottom + 8 + (currentTrack ? PILL_H + 6 : 0) }]}>
+                <View pointerEvents="box-none" style={[s.assignBar, { bottom: currentTrack ? 76 : 12 }]}>
                     <View style={[s.assignCard, { backgroundColor: base.surface, borderColor: base.border }]}>
                         <Text style={{ color: base.text, fontSize: 13, fontWeight: '700', marginBottom: 8 }} numberOfLines={1}>
                             {assignCount === 0 ? `Tap songs to give them ${assign.name}` : `${assign.name} for ${assignCount} song${assignCount === 1 ? '' : 's'}`}

@@ -212,7 +212,8 @@ export default function PlayerScreen() {
     }, [currentTrack?.id, pastHalf, libraryFor]);
 
     // Show the new count the moment this song's play is counted.
-    useEffect(() => subscribePlayCount(({ key, n, counts }) => {
+    useEffect(() => subscribePlayCount(({ key, n, counts, reset }) => {
+        if (reset) { if (currentTrack?.id) setPc({ id: currentTrack.id, n: 0 }); return; }
         const lib = (libraryFor && libraryFor(currentTrack)) || currentTrack;
         if (counts) {
             const hit = [playCountKey(lib), playCountKeyN(lib)].find(k => counts[k] !== undefined);
@@ -1629,7 +1630,10 @@ export default function PlayerScreen() {
                                 <Animated.ScrollView
                                     ref={lyricsScrollRef}
                                     style={{ flex: 1 }}
-                                    contentContainerStyle={s.lyricsContent}
+                                    // Half the box above the first line and below the last one (in points: a percent padding is
+                                    // a share of the WIDTH, which was 40 percent here, so the first line sat above the middle and
+                                    // the view could never put it, or the last line, where every other line sits). 7 is a row's margin.
+                                    contentContainerStyle={[s.lyricsContent, { paddingTop: (width - 56) * 0.5 - 7, paddingBottom: (width - 56) * 0.5 }]}
                                     showsVerticalScrollIndicator={false}
                                     scrollEnabled={showingLyrics && !lyricsScrollLocked}
                                     onScroll={Animated.event(
@@ -1949,7 +1953,7 @@ const s = StyleSheet.create({
     lyricsToggleSlot: { height: 28, justifyContent: 'flex-end', alignItems: 'center' },
     lyricsToggleBtn: { alignSelf: 'center', paddingHorizontal: 10, paddingVertical: 4 },
     lyricsToggleText: { fontSize: 12, fontWeight: '500', opacity: 0.7 },
-    lyricsContent: { paddingVertical: '40%', paddingHorizontal: 6 },
+    lyricsContent: { paddingHorizontal: 6 },
     // Was 700 base / 800 active — a real weight change between the two,
     // which shifts glyph widths enough to reflow line-wrapping right as a
     // line becomes active (Eric: "the boldness makes the lyrics have a

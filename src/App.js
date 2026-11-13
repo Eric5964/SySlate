@@ -105,6 +105,9 @@ function PlaylistsStackScreen() {
                     ...TransitionPresets.SlideFromRightIOS,
                     gestureEnabled: true,
                     gestureDirection: 'horizontal',
+                    // Keep the Playlists screen mounted and visible underneath, so the custom swipe-out (which moves the screen itself,
+                    // not the stack) shows it instead of an empty background.
+                    detachPreviousScreen: false,
                     // A bit higher than the 0.3 default so a quick flick
                     // carries the swipe-to-dismiss through more readily,
                     // instead of needing to cross most of the screen width.

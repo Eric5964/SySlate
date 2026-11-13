@@ -146,6 +146,9 @@ export const getSpatialWidth = () => safe(() => AsyncStorage.getItem('spatial_wi
 export const setSpatialWidth = (v) => safe(() => AsyncStorage.setItem('spatial_width', String(v)), null);
 export const getSpatialBalance = () => safe(() => AsyncStorage.getItem('spatial_balance').then(v => { const n = v !== null ? parseFloat(v) : 0; return Number.isFinite(n) ? n : 0; }), 0);
 export const setSpatialBalance = (v) => safe(() => AsyncStorage.setItem('spatial_balance', String(v)), null);
+// Mono: both ears get the same sound (the Spatial effect with its width at zero), whatever the Width slider says.
+export const getMonoAudio = () => safe(() => AsyncStorage.getItem('mono_audio').then(v => v === 'true'), false);
+export const setMonoAudio = (v) => safe(() => AsyncStorage.setItem('mono_audio', String(v)), null);
 
 // Whether built-in ("premade") presets are shown in the Settings screen's
 // own EQ Presets grid. Separate from hiddenPresets (which governs the
@@ -963,7 +966,12 @@ export const subscribePlayCount = (fn) => { playCountListeners.add(fn); return (
 // holds the counts and brings them back through Import Settings.
 const PLAYCOUNT_UNDO_PATH = FileSystem.documentDirectory + '.syslate_playcounts_undo.json';
 const PLAY_COUNT_KEY_RE = /^(pc|pci|pcn|pcx|plis|plisb):/;
+// PlaybackContext registers these: the reset hook drops listening time and half-way plays still waiting in memory
+// (they would be written straight back after the reset), the flusher files what is waiting before Listening Stats reads.
+let listenResetHook = null, listenFlusher = null;
+export const setListenHooks = (reset, flush) => { listenResetHook = reset; listenFlusher = flush; };
 export const resetPlayCounts = () => safe(async () => {
+    try { if (listenResetHook) listenResetHook(); await listenQueue; } catch { }
     const keys = (await AsyncStorage.getAllKeys()).filter(k => PLAY_COUNT_KEY_RE.test(k));
     if (!keys.length) return 0;
     const entries = {};
@@ -980,10 +988,15 @@ export const resetPlayCounts = () => safe(async () => {
     await AsyncStorage.multiRemove(keys);
     playCountCache.clear();
     looseIndex = null;
+    // The remembered counts under each file path: left alone, a song with no count of its own took the old one
+    // back from here (and filed it again) the next time it was shown or played.
+    idCountIndex = null;
     // ONE event for everything (thousands of separate ones froze the app for ~20 s: every listener re-rendered per key).
     const counts = {};
     keys.forEach(k => { if (/^(pc|pci|pcn|pcx):/.test(k)) counts[k] = 0; });
-    playCountListeners.forEach(fn => { try { fn({ key: null, n: 0, counts }); } catch { } });
+    // reset: true tells every screen to zero what it shows, whatever spelling it holds the song under (the counts
+    // above only name keys that were filed, and a song can show a count read from an older key).
+    playCountListeners.forEach(fn => { try { fn({ key: null, n: 0, counts, reset: true }); } catch { } });
     return keys.length;
 }, 0);
 export const getPlayCountUndoInfo = () => safe(async () => {
@@ -1003,6 +1016,7 @@ export const restorePlayCounts = () => safe(async () => {
     if (toWrite.length) await AsyncStorage.multiSet(toWrite);
     playCountCache.clear();
     looseIndex = null;
+    idCountIndex = null;
     const counts = {};
     toWrite.forEach(([k, v]) => { if (/^(pc|pci|pcn|pcx):/.test(k)) counts[k] = parseInt(v) || 0; });
     playCountListeners.forEach(fn => { try { fn({ key: null, n: 0, counts }); } catch { } });
@@ -1295,6 +1309,8 @@ export const addListenedSeconds = (song, libSong, sec) => {
 };
 
 export const getListeningStats = async (songs, separators, joinId) => {
+    // What the player is still holding in memory (up to ~10 s of listening) is filed first, so the hours are current.
+    try { if (listenFlusher) await listenFlusher(); await listenQueue; } catch { }
     const allKeys = await AsyncStorage.getAllKeys();
     const keys = allKeys.filter(k => k.startsWith('pcn:'));
     const counts = {};
@@ -1304,15 +1320,17 @@ export const getListeningStats = async (songs, separators, joinId) => {
     const durKeys = allKeys.filter(k => k.startsWith('pdur:'));
     (await AsyncStorage.multiGet(durKeys)).forEach(([k, v]) => { const d = parseFloat(v); if (d > 0) durs['pcn:' + k.slice(5)] = d; });
     // Listening time actually played (see addListenedSeconds), matched to a song the same smoothed way as counts.
-    const lisN = {}, lisbN = {};
+    const lisN = {}, lisbN = {}, lisBaseN = {}, lisbBaseN = {};
     {
         const lk = allKeys.filter(k => k.startsWith('plis:'));
         const lbk = allKeys.filter(k => k.startsWith('plisb:'));
         const lrows = lk.length ? await AsyncStorage.multiGet(lk) : [];
         const lbrows = lbk.length ? await AsyncStorage.multiGet(lbk) : [];
         const nk = (key) => { const [a, b, c] = key.split('::'); return normKey(a, b, c); };
-        lrows.forEach(([k, v]) => { const x = parseFloat(v); if (x > 0) { const n = nk(k.slice(5)); lisN[n] = (lisN[n] || 0) + x; } });
-        lbrows.forEach(([k, v]) => { const x = parseInt(v); const n = nk(k.slice(6)); lisbN[n] = Math.max(lisbN[n] || 0, x || 0); });
+        // Also kept without the album: a count filed before the album was part of the key must still find its listening time.
+        const bk2 = (key) => { const [a, b] = key.split('::'); return normKey(a, b, ''); };
+        lrows.forEach(([k, v]) => { const x = parseFloat(v); if (x > 0) { const n = nk(k.slice(5)); lisN[n] = (lisN[n] || 0) + x; const b = bk2(k.slice(5)); lisBaseN[b] = (lisBaseN[b] || 0) + x; } });
+        lbrows.forEach(([k, v]) => { const x = parseInt(v); const n = nk(k.slice(6)); lisbN[n] = Math.max(lisbN[n] || 0, x || 0); const b = bk2(k.slice(6)); lisbBaseN[b] = Math.max(lisbBaseN[b] || 0, x || 0); });
     }
     let knownSec = 0, knownPlays = 0;
     const byKey = {};
@@ -1369,10 +1387,11 @@ export const getListeningStats = async (songs, separators, joinId) => {
         if (song) played++;
         const dur = (song && song.duration > 0) ? song.duration : durs[k];
         const nkey = normKey(t, a, k.slice(4).split('::')[2]);
-        const tracked = lisN[nkey];
+        const baseN = normKey(t, a, '');
+        const tracked = lisN[nkey] || lisBaseN[baseN];
         if (tracked > 0) {
             // Plays from before tracking began keep the old plays x length value; everything since is real time.
-            const before = Math.min(n, lisbN[nkey] || 0);
+            const before = Math.min(n, lisbN[nkey] ?? lisbBaseN[baseN] ?? 0);
             seconds += tracked;
             if (dur > 0) { seconds += before * dur; knownSec += n * dur; knownPlays += n; }
             else unknownPlays += before;
@@ -1415,7 +1434,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'spatial_width', 'spatial_balance', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'spatial_width', 'spatial_balance', 'mono_audio', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1481,7 +1500,7 @@ export const importAllSettings = async (jsonString) => {
         'show_premade_settings', 'cover_shadow',
         'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked',
         'top_bar_color', 'bottom_bar_color', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow',
-        'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'performance_mode', 'use_volume_tags',
+        'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'performance_mode', 'use_volume_tags', 'mono_audio',
     ]);
     // [min, max] — matches each setting's own slider bounds in
     // SettingsScreen.js (see e.g. the Crossfade Duration / Audio Ramp /

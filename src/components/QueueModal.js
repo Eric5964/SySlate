@@ -534,7 +534,13 @@ export default function QueueModal({ visible, onClose }) {
     rowsRef.current = rows;
     // A play that is counted while the queue is open shows at once. Only the number
     // shown changes; the queue itself is not touched.
-    useEffect(() => subscribePlayCount(({ key, n, counts }) => setPlayCounts(prev => {
+    useEffect(() => subscribePlayCount(({ key, n, counts, reset }) => setPlayCounts(prev => {
+        if (reset) {   // every number in the queue goes to zero
+            const z = {};
+            rowsRef.current.forEach(r => { if (r.song) z[r.song.id] = 0; });
+            if (currentTrack) z[currentTrack.id] = 0;
+            return z;
+        }
         let next = null;
         const consider = (song) => {
             const lib = song ? (libraryFor ? (libraryFor(song) || song) : song) : null;
