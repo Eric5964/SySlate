@@ -181,11 +181,12 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
 }
 
 // The Export current EQ / Import EQ buttons under the EQ presets in Settings.
-export default function EQAdvancedRows({ s, onPresetsChanged }) {
+export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle, leading }) {
     const { theme, base } = useTheme();
     const { eqPresetId } = usePlayback();
     const { preAmp: legacyPre } = usePreferences();
     const [showImport, setShowImport] = useState(false);
+    const [showExport, setShowExport] = useState(false);
     const [importText, setImportText] = useState('');
     const eqPresetIdRef = useRef(eqPresetId);
     eqPresetIdRef.current = eqPresetId;
@@ -222,14 +223,11 @@ export default function EQAdvancedRows({ s, onPresetsChanged }) {
     const share = async (message, title) => {
         try { await Share.share({ message, title }); } catch (e) { Alert.alert('Export failed', String(e?.message)); }
     };
-    const askExport = () => {
-        Alert.alert('Export current EQ', 'Choose a format', [
-            { text: 'SySlate (all presets)', onPress: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), builtinPreAmps: await getBuiltinPreAmps() }), 'SySlate EQ') },
-            { text: 'GraphicEQ (current preset)', onPress: async () => share(exportGraphicEQ(await currentBands(), await currentPre()), 'SySlate GraphicEQ') },
-            { text: 'Parametric (current preset)', onPress: async () => share(exportParametricEQ(await currentBands(), await currentPre()), 'SySlate Parametric EQ') },
-            { text: 'Cancel', style: 'cancel' },
-        ]);
-    };
+    const exportOptions = [
+        { label: 'SySlate (all presets)', run: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), builtinPreAmps: await getBuiltinPreAmps() }), 'SySlate EQ') },
+        { label: 'GraphicEQ (current preset)', run: async () => share(exportGraphicEQ(await currentBands(), await currentPre()), 'SySlate GraphicEQ') },
+        { label: 'Parametric (current preset)', run: async () => share(exportParametricEQ(await currentBands(), await currentPre()), 'SySlate Parametric EQ') },
+    ];
 
     const applyImport = async () => {
         const r = parseEQText(importText);
@@ -268,14 +266,29 @@ export default function EQAdvancedRows({ s, onPresetsChanged }) {
 
     return (
         <>
-            <View style={{ flexDirection: 'row' }}>
-                <TouchableOpacity style={[s.addBtn, { flex: 1, margin: 7, marginTop: 14, padding: 13, borderColor: theme.accent }]} onPress={askExport}>
-                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>Export current EQ</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 4, paddingBottom: 22 }}>
+                {leading}
+                <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => setShowExport(true)}>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 13 }]} numberOfLines={1} adjustsFontSizeToFit>Export current EQ</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[s.addBtn, { flex: 1, margin: 7, marginTop: 14, padding: 13, borderColor: theme.accent }]} onPress={() => { setImportText(''); setShowImport(true); }}>
-                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>Import EQ</Text>
+                <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => { setImportText(''); setShowImport(true); }}>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 13 }]} numberOfLines={1} adjustsFontSizeToFit>Import EQ</Text>
                 </TouchableOpacity>
             </View>
+
+            {/* A tap outside closes it (a plain Alert cannot). The share sheet opens once this has slid away. */}
+            <BottomSheet visible={showExport} onClose={() => setShowExport(false)} height={340}>
+                <View style={{ paddingHorizontal: 20 }}>
+                    <Text style={s.sheetTitle}>Export current EQ</Text>
+                    <Text style={{ color: base.textFaint, fontSize: 13, marginBottom: 16 }}>Choose a format</Text>
+                    {exportOptions.map(o => (
+                        <TouchableOpacity key={o.label} style={[pillStyle, { flex: 0, marginHorizontal: 0, borderColor: theme.accent }]}
+                            onPress={() => { setShowExport(false); setTimeout(o.run, 450); }}>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>{o.label}</Text>
+                        </TouchableOpacity>
+                    ))}
+                </View>
+            </BottomSheet>
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)} expandable
                 footer={(

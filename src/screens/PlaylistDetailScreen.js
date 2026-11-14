@@ -18,6 +18,7 @@ import SwipeableRow from '../components/SwipeableRow';
 import DimPressable from '../components/DimPressable';
 import SongVisualizer from '../components/SongVisualizer';
 import BackSwipeZone from '../components/BackSwipeZone';
+import { playlistBackX } from '../utils/backSwipe';
 import SwipeQueueButton from '../components/SwipeQueueButton';
 import EQModal from '../components/EQModal';
 import { getPresetById } from '../utils/eq';
@@ -245,7 +246,8 @@ export default function PlaylistDetailScreen() {
 
     const bg = base.surface; // neutral placeholder, see PlaylistsScreen's matching comment
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
-    const backX = useRef(new Animated.Value(0)).current;   // the whole screen slides with a back swipe that starts off the edge
+    const backX = playlistBackX;   // the whole screen slides with a back swipe that starts off the edge (shared with the Playlists screen under it)
+    useEffect(() => { backX.setValue(0); return () => backX.setValue(0); }, [backX]);
 
     return (
         <Animated.View style={{ flex: 1, transform: [{ translateX: backX.interpolate({ inputRange: [0, 10000], outputRange: [0, 10000], extrapolate: 'clamp' }) }] }}>

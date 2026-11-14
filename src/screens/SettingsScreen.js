@@ -199,6 +199,8 @@ export default function SettingsScreen() {
     // Always the full set now, regardless of hidden state — see the
     // comment above for why (this grid is the editor, not the picker;
     // EQModal.js's picker is what actually respects hiddenPresets).
+    // The four EQ buttons: same height, a true pill shape.
+    const eqPill = { flex: 1, height: 50, borderRadius: 25, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, marginHorizontal: 7, marginVertical: 7 };
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
@@ -968,24 +970,25 @@ export default function SettingsScreen() {
                             </View>
                         ))}
                     </View>
-                    <View style={[s.eqButtonRow, { alignItems: 'center' }]}>
-                        <TouchableOpacity style={[s.addBtn, { flex: 1.3, margin: 7, paddingVertical: 14, paddingHorizontal: 8, borderColor: theme.accent }]} onPress={openNewPresetSheet}>
+                    {/* Row 1: the two ways to make an EQ. Row 2: the premade switch, then export and import. */}
+                    <View style={{ flexDirection: 'row', paddingHorizontal: 7, paddingTop: 10 }}>
+                        <TouchableOpacity style={[eqPill, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
                             <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        {/* Advanced EQ: a small square pill next to Add Custom Preset */}
-                        <TouchableOpacity style={{ width: 52, height: 52, borderRadius: 16, borderWidth: 1.5, borderColor: theme.accent, alignItems: 'center', justifyContent: 'center', marginVertical: 7, marginRight: 7 }}
-                            onPress={() => setAdvEQ({ open: true, preset: null })}>
-                            <Text style={{ color: theme.accent, fontSize: 11, fontWeight: '700', textAlign: 'center', lineHeight: 13 }}>{'Adv\nEQ'}</Text>
+                        <TouchableOpacity style={[eqPill, { borderColor: theme.accent }]} onPress={() => setAdvEQ({ open: true, preset: null })}>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Advanced EQ</Text>
                         </TouchableOpacity>
-                        <View style={[s.toggleRow, { flex: 1, margin: 7, marginLeft: 0, paddingVertical: 0 }]}>
-                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 12 }]}>Show Premade Presets</Text>
-                            <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
-                                trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                        </View>
                     </View>
 
-                    {/* Each EQ has its own pre-amp, inside its editor. Export and import sit here. */}
-                    <EQAdvancedRows s={s}
+                    {/* Each EQ has its own pre-amp, inside its editor. */}
+                    <EQAdvancedRows s={s} pillStyle={eqPill}
+                        leading={(
+                            <View style={{ width: 84, alignItems: 'center', justifyContent: 'center', marginHorizontal: 7 }}>
+                                <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
+                                    trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                                <Text style={{ color: base.textFaint, fontSize: 11, marginTop: 5, textAlign: 'center' }}>Show premade</Text>
+                            </View>
+                        )}
                         onPresetsChanged={async () => { setCP(await getCustomPresets()); setEO(await getEQOverrides()); setBuiltinPre(await getBuiltinPreAmps()); }} />
                 </Section>
 
@@ -1821,7 +1824,7 @@ export default function SettingsScreen() {
                             for now — see resetEditingPresetToDefault below —
                             but nothing can create a NEW override anymore.) */}
                         <View style={s.bandRow}>
-                            <Text style={[s.bandHz, { width: 52, color: theme.accent, fontWeight: '700' }]}>Pre-amp</Text>
+                            <Text style={[s.bandHz, { color: theme.accent, fontWeight: '700' }]}>Pre</Text>
                             <PureSlider
                                 style={{ flex: 1, marginHorizontal: 8 }}
                                 minimumValue={PRE_MIN} maximumValue={PRE_MAX} step={0.5} value={newPre}

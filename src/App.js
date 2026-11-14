@@ -6,6 +6,7 @@ import { autoBackupIfDue, listAutoBackups, restoreAutoBackup } from './utils/sto
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
+import { playlistBackX } from './utils/backSwipe';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
@@ -90,6 +91,15 @@ enableScreens(true);
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
 const PlaylistsStack = createStackNavigator();
+const playlistsUnderShift = ({ next, inverted, layouts: { screen } }) => {
+    if (!next) return { cardStyle: {} };
+    const shift = Animated.multiply(
+        next.progress.interpolate({ inputRange: [0, 1], outputRange: [0, screen.width * -0.3], extrapolate: 'clamp' }),
+        inverted,
+    );
+    const rest = playlistBackX.interpolate({ inputRange: [0, screen.width], outputRange: [1, 0], extrapolate: 'clamp' });
+    return { cardStyle: { transform: [{ translateX: Animated.multiply(shift, rest) }] } };
+};
 
 // Nesting these two inside their own stack (instead of PlaylistDetail living
 // at the top-level Root stack) keeps the tab bar visible while viewing a
@@ -100,10 +110,10 @@ function PlaylistsStackScreen() {
             <PlaylistsStack.Screen
                 name="PlaylistsList"
                 component={PlaylistsScreen}
-                // The Playlists screen stays put while a playlist slides off it. The stack's default pushes the screen underneath
-                // 30 percent to the left and only moves it back when the pop is finished, which showed as a shifted
-                // screen (title off the edge) for a moment and then a jump once the playlist was swiped out.
-                options={{ cardStyleInterpolator: () => ({ cardStyle: {} }) }}
+                // The stack's usual shift of the screen underneath (30 percent to the left while a screen is on top of it),
+                // plus this: a playlist swiped away from somewhere other than the edge moves itself, so the Playlists screen
+                // gets that swipe's progress (playlistBackX) and eases its shift back to rest the same way the edge swipe does.
+                options={{ cardStyleInterpolator: playlistsUnderShift }}
             />
             <PlaylistsStack.Screen
                 name="PlaylistDetail"

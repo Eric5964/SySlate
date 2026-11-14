@@ -620,6 +620,19 @@ export default function PlayerScreen() {
         ];
     }, [lyricsBase, lyricsGapSec]);
     const showingLyrics = showingRaw.id === nowId ? showingRaw.on : (autoShowLyrics && !!peekLyrics(nowId));
+    // When this song became the current one. A view change that comes right after it (a song with lyrics follows one
+    // without) is part of the song change, not a button press, and is shown at once: see the view effect below.
+    const trackChangeIdRef = useRef(nowId);
+    const trackChangedAtRef = useRef(0);
+    if (trackChangeIdRef.current !== nowId) { trackChangeIdRef.current = nowId; trackChangedAtRef.current = Date.now(); }
+    // The cover's visualizer overlay (which also dims the cover) stays mounted until the cover has finished fading
+    // out. It used to go the moment the lyrics came on, so the fading cover showed at full brightness.
+    const [vizHold, setVizHold] = useState(showingLyrics);
+    useEffect(() => {
+        if (!showingLyrics) { setVizHold(false); return undefined; }
+        const t = setTimeout(() => setVizHold(true), 420);
+        return () => clearTimeout(t);
+    }, [showingLyrics]);
     const setLyricsData = useCallback((data) => setLyricsRaw({ id: nowIdRef.current, data }), []);
     const setShowingLyrics = useCallback((on) => setShowingRaw({ id: nowIdRef.current, on }), []);
     // Reading the next songs' lyrics ahead of time (the .lrc files are tiny): a skip or a crossfade to a song with
@@ -971,6 +984,9 @@ export default function PlayerScreen() {
             ? Animated.sequence([Animated.delay(170), Animated.timing(v, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true })])
             : Animated.timing(v, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true });
         const coverOn = !showingLyrics && !showingDisc;
+        // The lyrics coming on right after a song change: the cover shown for them is the NEW song's, which would flash
+        // up for the fade. It is hidden at once and the lyrics come in without the usual wait.
+        const withSongChange = showingLyrics && !showingDisc && Date.now() - trackChangedAtRef.current < 600;
         // The previous change-over must be stopped first. Its delayed "fade in" step could still
         // be waiting (170 ms) when a newer change-over started (a song with lyrics flips the view
         // twice in a row), and then fired afterwards, overwriting the newer one: the disc ended up
@@ -983,7 +999,11 @@ export default function PlayerScreen() {
         // value the moment it loses its view binding. Leaving the lyrics view flips lyricsPlaced
         // to false, which stopped lyricsFade, which (with the default) stopped the disc's delayed
         // fade-in and the cover's fade as well, leaving them stuck at whatever they had reached.
-        const anim = Animated.parallel([go(coverFade, coverOn), go(lyricsFade, showingLyrics), go(discFade, showingDisc)], { stopTogether: false });
+        if (withSongChange) coverFade.setValue(0);
+        const lyricsIn = withSongChange
+            ? Animated.timing(lyricsFade, { toValue: 1, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: true })
+            : go(lyricsFade, showingLyrics);
+        const anim = Animated.parallel([withSongChange ? Animated.timing(coverFade, { toValue: 0, duration: 1, useNativeDriver: true }) : go(coverFade, coverOn), lyricsIn, go(discFade, showingDisc)], { stopTogether: false });
         viewAnimRef.current = anim;
         anim.start(({ finished }) => {
             if (viewAnimRef.current === anim) viewAnimRef.current = null;
@@ -1639,7 +1659,7 @@ export default function PlayerScreen() {
                                         ? <Image key={artwork} source={{ uri: artwork }} style={s.artImg} resizeMode="cover" />
                                         : null
                                     }
-                                    {playerVizCover && !performanceMode && !showingLyrics ? <SongVisualizer color={theme.accent} mode="cover" size={width - 56} radius={squircle(width - 56, coverShape)} /> : null}
+                                    {playerVizCover && !performanceMode && !vizHold ? <SongVisualizer color={theme.accent} mode="cover" size={width - 56} radius={squircle(width - 56, coverShape)} /> : null}
                                 </Animated.View>
                             </Animated.View>
                         )}
