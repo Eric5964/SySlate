@@ -6,6 +6,9 @@ export const FREQ_MIN = 20;
 export const FREQ_MAX = 20000;
 export const GAIN_MIN = -6;
 export const GAIN_MAX = 6;
+export const PRE_MIN = -6;   // pre-amp range, per EQ
+export const PRE_MAX = 6;
+export const clampPre = (v) => round(clamp(Number.isFinite(Number(v)) ? Number(v) : 0, PRE_MIN, PRE_MAX), 2);
 // 0.2: the engine's widest filter is 5 octaves, which is a Q of about 0.18. Below that the slider would do nothing.
 export const Q_MIN = 0.2;
 export const Q_MAX = 10;
@@ -62,9 +65,11 @@ export const bandsFromPreset = (gains) => DEFAULT_FREQS.map((f, i) => ({
 // A saved parametric EQ lives in the normal custom preset list: { id, name, bands, param }.
 // `bands` is the 10 gains clamped to the fixed presets' +-6 dB range (what an older build or the preset
 // validators see), `param` is the full set of { f, g, q, t } bands the engine actually uses.
-export function makeParamPreset(id, name, bands) {
+export function makeParamPreset(id, name, bands, pre) {
     const clean = (sanitizeCustomEQ({ bands }) || defaultCustomEQ()).bands;
-    return { id, name, bands: clean.map(b => round(clamp(b.g, -6, 6), 2)), param: clean };
+    const out = { id, name, bands: clean.map(b => round(clamp(b.g, -6, 6), 2)), param: clean };
+    if (pre !== undefined && pre !== null && Number.isFinite(Number(pre))) out.pre = clampPre(pre);
+    return out;
 }
 export const presetParamBands = (preset) => (preset && Array.isArray(preset.param) ? (sanitizeCustomEQ({ bands: preset.param }) || null)?.bands ?? null : null);
 
@@ -192,8 +197,8 @@ export function exportParametricEQ(bands, preAmpDb = 0) {
     return `# SySlate EQ (Equalizer APO parametric)\nPreamp: ${num(preAmpDb, 1)} dB\n${lines.join('\n')}\n`;
 }
 
-export function exportSySlateEQ({ customPresets = [], overrides = {}, preAmp = 0 }) {
-    return JSON.stringify({ syslateEQ: 1, preAmp, customPresets, overrides }, null, 2);
+export function exportSySlateEQ({ customPresets = [], overrides = {}, builtinPreAmps = {} }) {
+    return JSON.stringify({ syslateEQ: 1, customPresets, overrides, builtinPreAmps }, null, 2);
 }
 
 // ---- Import ----
@@ -220,7 +225,7 @@ export function parseEQText(text) {
     if (text.length > 2 * 1024 * 1024) return { kind: 'error', message: 'That is too large to be an EQ file.' };
     const t = text.trim();
     const preM = t.match(/Preamp:\s*(-?[\d.]+)\s*dB/i);
-    const preAmp = preM ? clamp(parseFloat(preM[1]) || 0, -12, 12) : null;
+    const preAmp = preM ? clampPre(parseFloat(preM[1]) || 0) : null;
 
     if (t[0] === '{') {
         let obj;
@@ -232,6 +237,7 @@ export function parseEQText(text) {
                     const param = Array.isArray(p.param) ? sanitizeCustomEQ({ bands: p.param })?.bands : null;
                     const out = { id: String(p.id || ''), name: p.name, bands: p.bands.map(v => clamp(v, -6, 6)) };
                     if (param) out.param = param;
+                    if (Number.isFinite(Number(p.pre))) out.pre = clampPre(p.pre);
                     return out;
                 })
             : [];
@@ -242,8 +248,12 @@ export function parseEQText(text) {
             }
         }
         const custom = sanitizeCustomEQ(obj.customEQ);
-        const pa = Number.isFinite(Number(obj.preAmp)) ? clamp(Number(obj.preAmp), -12, 12) : null;
-        return { kind: 'syslate', customPresets, overrides, custom, preAmp: pa };
+        const pa = Number.isFinite(Number(obj.preAmp)) ? clampPre(obj.preAmp) : null;   // older exports: one global value
+        const builtinPreAmps = {};
+        if (obj.builtinPreAmps && typeof obj.builtinPreAmps === 'object') {
+            for (const [k, v] of Object.entries(obj.builtinPreAmps)) if (k.length <= 40 && Number.isFinite(Number(v))) builtinPreAmps[k] = clampPre(v);
+        }
+        return { kind: 'syslate', customPresets, overrides, custom, preAmp: pa, builtinPreAmps };
     }
 
     const g = t.match(/GraphicEQ:\s*([^\n\r]+)/i);

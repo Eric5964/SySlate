@@ -4,8 +4,8 @@ import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
 import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
 import { getPresetById, clampEQBand, BUILT_IN_PRESETS } from '../utils/eq';
-import { getCustomPresets, getEQOverrides, getPreAmp, getSongEQ, setSongEQ, toStablePath, addListenedSeconds, getEQLayering, subscribeEQLayering, getPlaylistEQ, setPlaylistEQ } from '../utils/storage';
-import { toNativeArrays, presetParamBands } from '../utils/customEQ';
+import { getCustomPresets, getEQOverrides, getPreAmp, getBuiltinPreAmps, getSongEQ, setSongEQ, toStablePath, addListenedSeconds, getEQLayering, subscribeEQLayering, getPlaylistEQ, setPlaylistEQ } from '../utils/storage';
+import { toNativeArrays, presetParamBands, clampPre } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
@@ -79,16 +79,19 @@ const stampQid = (track) => ({ ...track, _qid: `q${QID_PREFIX}_${++qidCounter}` 
 let eqOverrideId = null;
 export async function applyEQPreset(id) {
     try {
-        const [custom, overrides] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+        const [custom, overrides, builtinPre, legacyPre] = await Promise.all([getCustomPresets(), getEQOverrides(), getBuiltinPreAmps(), getPreAmp()]);
         // An assigned EQ wins, unless the preset it points to was deleted: then the current EQ plays instead of Flat.
         if (eqOverrideId && (BUILT_IN_PRESETS.some(p => p.id === eqOverrideId) || custom.some(p => p.id === eqOverrideId))) id = eqOverrideId;
         const preset = getPresetById(id, custom, overrides);
+        // Each EQ has its own pre-amp: a custom preset's own `pre`, a premade preset's entry, else the old global value.
+        const mine = custom.find(p => p.id === preset.id);
+        const preDb = clampPre(Number.isFinite(Number(mine?.pre)) ? mine.pre : (Number.isFinite(Number(builtinPre?.[preset.id])) ? builtinPre[preset.id] : legacyPre));
         // A saved parametric preset (own frequency / gain / Q per band) goes through the parametric path.
         const param = presetParamBands(preset);
         if (param) {
             const n = toNativeArrays({ bands: param });
             await AudioEngine.setEQParametric(n.freqs, n.gains, n.bws, n.types);
-            AudioEngine.setPreAmp(await getPreAmp()).catch(() => { });   // the pre-amp rides on the same EQ unit: keep it as saved
+            AudioEngine.setPreAmp(preDb).catch(() => { });   // the pre-amp rides on the same EQ unit
             return;
         }
         // Clamped here — the one place EVERY band value actually reaches
@@ -97,7 +100,7 @@ export async function applyEQPreset(id) {
         // range was ±12 can't hand the native side something outside what
         // it's now meant to support.
         await AudioEngine.setEQBands(preset.bands.map(clampEQBand));
-        AudioEngine.setPreAmp(await getPreAmp()).catch(() => { });
+        AudioEngine.setPreAmp(preDb).catch(() => { });
     } catch { }
 }
 const stampQids = (tracks) => tracks.map(stampQid);

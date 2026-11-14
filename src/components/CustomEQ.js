@@ -6,13 +6,13 @@ import AudioEngine from '../native/AudioEngine';
 import { useTheme } from '../context/ThemeContext';
 import { usePlayback, applyEQPreset } from '../context/PlaybackContext';
 import { usePreferences } from '../context/PreferencesContext';
-import { getCustomEQ, clearCustomEQ, getCustomPresets, setCustomPresets, getEQOverrides, setEQOverrides } from '../utils/storage';
+import { getCustomEQ, clearCustomEQ, getCustomPresets, setCustomPresets, getEQOverrides, setEQOverrides, getBuiltinPreAmps, setBuiltinPreAmps } from '../utils/storage';
 import { getPresetById } from '../utils/eq';
 import {
     defaultCustomEQ, sanitizeCustomEQ, bandsFromPreset, makeParamPreset, presetParamBands, toNativeArrays,
     FILTER_TYPES, FILTER_LABELS, GAIN_MIN, GAIN_MAX, freqToPos, posToFreq, qToPos, posToQ, formatFreq,
     snapFreq, snapQ, snapGain, parseFreqInput, parseGainInput, parseQInput,
-    exportGraphicEQ, exportParametricEQ, exportSySlateEQ, parseEQText,
+    exportGraphicEQ, exportParametricEQ, exportSySlateEQ, parseEQText, PRE_MIN, PRE_MAX, clampPre,
 } from '../utils/customEQ';
 
 // Advanced EQ: a preset with 10 bands that each have their own frequency, gain, Q and filter type.
@@ -36,6 +36,11 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
     const [name, setName] = useState('');
     const [bands, setBands] = useState(defaultCustomEQ().bands);
     const bandsRef = useRef(bands);
+    // This EQ's own pre-amp. A preset saved before pre-amps were per EQ starts from the old global value.
+    const { preAmp: legacyPre } = usePreferences();
+    const [pre, setPre] = useState(0);
+    const preRef = useRef(0);
+    preRef.current = pre;
     bandsRef.current = bands;
     const wasVisible = useRef(false);
 
@@ -44,6 +49,7 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
             const pb = presetParamBands(preset);
             setName(preset ? preset.name : '');
             setBands(pb || defaultCustomEQ().bands);
+            setPre(preset ? clampPre(Number.isFinite(Number(preset.pre)) ? preset.pre : legacyPre) : 0);
         }
         if (!visible && wasVisible.current) applyEQPreset(eqPresetIdRef.current);   // stop previewing
         wasVisible.current = visible;
@@ -74,6 +80,8 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
     const askGain = (i) => askValue(`Band ${i + 1} gain`, 'In dB, from -6 to 6 (for example -3.5).', bandsRef.current[i].g, parseGainInput, v => commitBand(i, { g: v }));
     const askQ = (i) => askValue(`Band ${i + 1} Q`, 'From 0.2 to 10 (for example 0.71 or 2).', bandsRef.current[i].q, parseQInput, v => commitBand(i, { q: v }));
 
+    const askPre = () => askValue('Pre-amp', 'In dB, from -6 to 6 (for example -1.5).', preRef.current, parseGainInput, v => { const c = clampPre(v); setPre(c); AudioEngine.setPreAmp(c).catch(() => { }); });
+
     const startFromCurrent = () => {
         Alert.alert('Start from the current preset?', 'This replaces all 10 bands in this editor with the preset you are using now. Nothing is saved until you press Save.', [
             { text: 'Cancel', style: 'cancel' },
@@ -97,10 +105,10 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
         if (!trimmed) { Alert.alert('Name needed', 'Give this preset a name first.'); return; }
         const list = await getCustomPresets();
         if (preset && list.some(p => p.id === preset.id)) {
-            const made = makeParamPreset(preset.id, trimmed, bandsRef.current);
+            const made = makeParamPreset(preset.id, trimmed, bandsRef.current, preRef.current);
             await setCustomPresets(list.map(p => (p.id === preset.id ? { ...p, ...made } : p)));
         } else {
-            await setCustomPresets([...list, makeParamPreset(`custom_${Date.now()}`, uniqueName(trimmed, list), bandsRef.current)]);
+            await setCustomPresets([...list, makeParamPreset(`custom_${Date.now()}`, uniqueName(trimmed, list), bandsRef.current, preRef.current)]);
         }
         onSaved?.();
         onClose();
@@ -118,6 +126,17 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
                 <TextInput style={[s.nameInput, { borderColor: theme.accent }]} value={name} onChangeText={setName}
                     placeholder="Preset name..." placeholderTextColor="#444" />
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                    <View style={[st.card, { borderColor: base.border }]}>
+                        <View style={st.cardHead}>
+                            <Text style={{ color: base.text, fontWeight: '700', fontSize: 13 }}>Pre-amp</Text>
+                            <Text style={{ color: base.textFaint, fontSize: 11 }}>Gain on top of this EQ</Text>
+                        </View>
+                        <SliderLine label="Gain" value={`${pre > 0 ? '+' : ''}${pre.toFixed(1)} dB`} base={base} onHold={askPre}>
+                            <PureSlider style={{ flex: 1 }} minimumValue={PRE_MIN} maximumValue={PRE_MAX} step={0.1} value={pre} onLongPress={askPre}
+                                onValueChange={v => setPre(clampPre(v))} onSlidingComplete={v => { const c = clampPre(v); setPre(c); AudioEngine.setPreAmp(c).catch(() => { }); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
+                        </SliderLine>
+                    </View>
                     {bands.map((b, i) => (
                         <View key={i} style={[st.card, { borderColor: base.border }]}>
                             <View style={st.cardHead}>
@@ -161,11 +180,11 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
     );
 }
 
-// The rows under the EQ presets in Settings: new Advanced EQ, export, import.
-export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
+// The Export current EQ / Import EQ buttons under the EQ presets in Settings.
+export default function EQAdvancedRows({ s, onPresetsChanged }) {
     const { theme, base } = useTheme();
     const { eqPresetId } = usePlayback();
-    const { preAmp, setPreAmp } = usePreferences();
+    const { preAmp: legacyPre } = usePreferences();
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const eqPresetIdRef = useRef(eqPresetId);
@@ -193,14 +212,21 @@ export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
         const cur = getPresetById(eqPresetIdRef.current, cp, ov);
         return presetParamBands(cur) || bandsFromPreset(cur.bands);
     };
+    // The playing EQ's own pre-amp (same order as when it is applied).
+    const currentPre = async () => {
+        const [cp, bp] = await Promise.all([getCustomPresets(), getBuiltinPreAmps()]);
+        const cur = getPresetById(eqPresetIdRef.current, cp, await getEQOverrides());
+        const mine = cp.find(p => p.id === cur.id);
+        return clampPre(Number.isFinite(Number(mine?.pre)) ? mine.pre : (Number.isFinite(Number(bp?.[cur.id])) ? bp[cur.id] : legacyPre));
+    };
     const share = async (message, title) => {
         try { await Share.share({ message, title }); } catch (e) { Alert.alert('Export failed', String(e?.message)); }
     };
     const askExport = () => {
-        Alert.alert('Export EQ', 'Choose a format', [
-            { text: 'SySlate (all presets)', onPress: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), preAmp }), 'SySlate EQ') },
-            { text: 'GraphicEQ (current preset)', onPress: async () => share(exportGraphicEQ(await currentBands(), preAmp), 'SySlate GraphicEQ') },
-            { text: 'Parametric (current preset)', onPress: async () => share(exportParametricEQ(await currentBands(), preAmp), 'SySlate Parametric EQ') },
+        Alert.alert('Export current EQ', 'Choose a format', [
+            { text: 'SySlate (all presets)', onPress: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), builtinPreAmps: await getBuiltinPreAmps() }), 'SySlate EQ') },
+            { text: 'GraphicEQ (current preset)', onPress: async () => share(exportGraphicEQ(await currentBands(), await currentPre()), 'SySlate GraphicEQ') },
+            { text: 'Parametric (current preset)', onPress: async () => share(exportParametricEQ(await currentBands(), await currentPre()), 'SySlate Parametric EQ') },
             { text: 'Cancel', style: 'cancel' },
         ]);
     };
@@ -216,13 +242,14 @@ export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
                 const added = [];
                 r.customPresets.forEach((p, i) => {
                     if (have.has(key(p))) return;
-                    added.push({ ...p, id: `custom_${Date.now()}_${i}` });
+                    // An export from before pre-amps were per EQ has one global value: it goes on every preset it brings.
+                    added.push({ ...p, id: `custom_${Date.now()}_${i}`, ...(p.pre === undefined && r.preAmp !== null ? { pre: r.preAmp } : {}) });
                 });
-                if (r.custom && r.custom.bands.some(b => b.g !== 0)) added.push(makeParamPreset(`custom_${Date.now()}_c`, 'Advanced EQ (imported)', r.custom.bands));
+                if (r.custom && r.custom.bands.some(b => b.g !== 0)) added.push(makeParamPreset(`custom_${Date.now()}_c`, 'Advanced EQ (imported)', r.custom.bands, r.preAmp ?? 0));
                 if (added.length) await setCustomPresets([...existing, ...added]);
                 const ovN = Object.keys(r.overrides).length;
                 if (ovN) await setEQOverrides({ ...(await getEQOverrides()), ...r.overrides });
-                if (r.preAmp !== null) setPreAmp(r.preAmp);
+                if (r.builtinPreAmps && Object.keys(r.builtinPreAmps).length) await setBuiltinPreAmps({ ...(await getBuiltinPreAmps()), ...r.builtinPreAmps });
                 applyEQPreset(eqPresetIdRef.current);
                 onPresetsChanged?.();
                 setShowImport(false); setImportText('');
@@ -231,8 +258,7 @@ export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
             }
             // GraphicEQ, parametric filters, tables, ten gains: each becomes a new Advanced EQ preset.
             const name = uniqueName('Imported EQ', existing);
-            await setCustomPresets([...existing, makeParamPreset(`custom_${Date.now()}`, name, r.bands)]);
-            if (r.preAmp !== null) setPreAmp(r.preAmp);
+            await setCustomPresets([...existing, makeParamPreset(`custom_${Date.now()}`, name, r.bands, r.preAmp ?? 0)]);
             onPresetsChanged?.();
             setShowImport(false); setImportText('');
             const what = r.kind === 'graphic' ? `${r.points} points, resampled to 10 bands` : `${r.count} filter${r.count === 1 ? '' : 's'}`;
@@ -242,18 +268,14 @@ export default function EQAdvancedRows({ s, onPresetsChanged, onNewAdvanced }) {
 
     return (
         <>
-            <TouchableOpacity style={s.row} onPress={onNewAdvanced}>
-                <Text style={s.rowLabel}>New Advanced EQ</Text>
-                <Text style={s.rowSub}>A preset with 10 bands that each have their own frequency, gain, Q and filter type. It is saved with your other presets</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.row} onPress={askExport}>
-                <Text style={s.rowLabel}>Export EQ</Text>
-                <Text style={s.rowSub}>Share as SySlate, Equalizer APO GraphicEQ or parametric text</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
-                <Text style={s.rowLabel}>Import EQ</Text>
-                <Text style={s.rowSub}>SySlate export, GraphicEQ, AutoEq / Equalizer APO filters, a frequency and gain table, or ten gains</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row' }}>
+                <TouchableOpacity style={[s.addBtn, { flex: 1, margin: 7, marginTop: 14, padding: 13, borderColor: theme.accent }]} onPress={askExport}>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>Export current EQ</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[s.addBtn, { flex: 1, margin: 7, marginTop: 14, padding: 13, borderColor: theme.accent }]} onPress={() => { setImportText(''); setShowImport(true); }}>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>Import EQ</Text>
+                </TouchableOpacity>
+            </View>
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)} expandable
                 footer={(

@@ -287,7 +287,7 @@ export function PreferencesProvider({ children }) {
         getCrossfadeDurationSkip().then((v) => { setCrossfadeDurationState(v); AudioEngine.setCrossfadeDuration(v).catch(() => { }); });
         getCrossfadeDurationEndOfTrack().then((v) => { setCrossfadeDurationEndOfTrackState(v); AudioEngine.setCrossfadeDurationEndOfTrack(v).catch(() => { }); });
         getWithinTrackNorm().then((v) => { setWithinTrackNormState(v); AudioEngine.setWithinTrackNormEnabled(v).catch(() => { }); });
-        getPreAmp().then((v) => { setPreAmpState(v); AudioEngine.setPreAmp(v).catch(() => { }); });
+        getPreAmp().then((v) => { setPreAmpState(v); });   // the old global value: each EQ has its own now, applied with the EQ
         Promise.all([getSpatialWidth(), getSpatialBalance(), getMonoAudio()]).then(([w, b, m]) => {
             setSpatialWidthState(w); setSpatialBalanceState(b); setMonoAudioState(m);
             spatialRef.current = { width: w, balance: b, mono: m };
@@ -427,7 +427,6 @@ export function PreferencesProvider({ children }) {
     const setPreAmp = useCallback((v) => {
         setPreAmpState(v);
         persistPreAmp(v);
-        AudioEngine.setPreAmp(v).catch(() => { });
     }, []);
     const setBetweenTrackNorm = useCallback((v) => {
         setBetweenTrackNormState(v);

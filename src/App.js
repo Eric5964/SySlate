@@ -97,7 +97,14 @@ const PlaylistsStack = createStackNavigator();
 function PlaylistsStackScreen() {
     return (
         <PlaylistsStack.Navigator screenOptions={{ headerShown: false, cardStyle: { backgroundColor: 'transparent' } }}>
-            <PlaylistsStack.Screen name="PlaylistsList" component={PlaylistsScreen} />
+            <PlaylistsStack.Screen
+                name="PlaylistsList"
+                component={PlaylistsScreen}
+                // The Playlists screen stays put while a playlist slides off it. The stack's default pushes the screen underneath
+                // 30 percent to the left and only moves it back when the pop is finished, which showed as a shifted
+                // screen (title off the edge) for a moment and then a jump once the playlist was swiped out.
+                options={{ cardStyleInterpolator: () => ({ cardStyle: {} }) }}
+            />
             <PlaylistsStack.Screen
                 name="PlaylistDetail"
                 component={PlaylistDetailScreen}

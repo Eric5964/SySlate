@@ -24,6 +24,7 @@ import { TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/l
 import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay, EQ_MIN, EQ_MAX } from '../utils/eq';
 import { applyEQPreset } from '../context/PlaybackContext';
 import EQAdvancedRows, { AdvancedEQSheet } from '../components/CustomEQ';
+import { PRE_MIN, PRE_MAX, clampPre } from '../utils/customEQ';
 
 // 'none' turns off multi-artist splitting entirely (see getArtistSeparator
 // in storage.js for the default-';' reasoning).
@@ -65,6 +66,7 @@ import {
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     getEQOverrides, setEQOverrides,
+    getBuiltinPreAmps, setBuiltinPreAmps, getPreAmp,
     getShuffleMode,
     getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch, getEQLayering, setEQLayering, subscribeEQLayering, resetPlayCounts, getPlayCountUndoInfo, restorePlayCounts,
     getPrevButtonMode, setPrevButtonMode,
@@ -191,6 +193,9 @@ export default function SettingsScreen() {
     const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
+    // This EQ's own pre-amp in the editor below, and the premade presets' saved pre-amps.
+    const [newPre, setNewPre] = useState(0);
+    const [builtinPre, setBuiltinPre] = useState({});
     // Always the full set now, regardless of hidden state — see the
     // comment above for why (this grid is the editor, not the picker;
     // EQModal.js's picker is what actually respects hiddenPresets).
@@ -331,6 +336,7 @@ export default function SettingsScreen() {
             setRamp(await getAudioRamp());
             setRampPause(await getRampOnPause());
             setCP(await getCustomPresets());
+            setBuiltinPre(await getBuiltinPreAmps());
             setHP(await getHiddenPresets());
             setEO(await getEQOverrides());
             setShuffleTypePref(await getShuffleMode());
@@ -410,6 +416,7 @@ export default function SettingsScreen() {
     const eqClearTimerRef = useRef(null);
     const closeEQSheet = () => {
         setShowNewEQ(false);
+        if (editingId && eqPresetId === editingId) applyEQPreset(eqPresetId);   // drops any pre-amp preview
         if (eqClearTimerRef.current) clearTimeout(eqClearTimerRef.current);
         eqClearTimerRef.current = setTimeout(() => {
             eqClearTimerRef.current = null;
@@ -427,6 +434,7 @@ export default function SettingsScreen() {
         setEditingIsBuiltIn(false);
         setNewName('');
         setNewBands(new Array(BAND_COUNT).fill(0));
+        setNewPre(0);
         setShowNewEQ(true);
     };
 
@@ -443,6 +451,9 @@ export default function SettingsScreen() {
         setEditingIsBuiltIn(!!preset.isBuiltIn);
         setNewName(preset.name);
         setNewBands([...preset.bands]);
+        // Its own value, else (an EQ saved before pre-amps were per EQ) the old global one.
+        const own = preset.isBuiltIn ? builtinPre[preset.id] : preset.pre;
+        setNewPre(clampPre(Number.isFinite(Number(own)) ? own : preAmp));
         setShowNewEQ(true);
     };
 
@@ -453,15 +464,21 @@ export default function SettingsScreen() {
     // same as before.
     const savePreset = async () => {
         if (editingIsBuiltIn && editingId) {
-            const nextOverrides = { ...eqOverrides, [editingId]: [...newBands] };
-            setEO(nextOverrides); await setEQOverrides(nextOverrides);
+            // Only a real change to the bands makes it an edited premade preset; the pre-amp is kept on its own.
+            const cur = displayPresets.find(p => p.id === editingId);
+            if (!cur || cur.bands.some((v, i) => v !== newBands[i])) {
+                const nextOverrides = { ...eqOverrides, [editingId]: [...newBands] };
+                setEO(nextOverrides); await setEQOverrides(nextOverrides);
+            }
+            const nextPre = { ...builtinPre, [editingId]: newPre };
+            setBuiltinPre(nextPre); await setBuiltinPreAmps(nextPre);
         } else if (editingId) {
-            const next = customPresets.map(p => p.id === editingId ? { ...p, name: newName.trim() || p.name, bands: [...newBands] } : p);
+            const next = customPresets.map(p => p.id === editingId ? { ...p, name: newName.trim() || p.name, bands: [...newBands], pre: newPre } : p);
             setCP(next); await setCustomPresets(next);
         } else {
             if (!newName.trim()) return;
             const id = 'custom_' + Date.now();
-            const next = [...customPresets, { id, name: newName.trim(), bands: [...newBands] }];
+            const next = [...customPresets, { id, name: newName.trim(), bands: [...newBands], pre: newPre }];
             setCP(next); await setCustomPresets(next);
         }
         // If the preset just edited is the one actually playing right now,
@@ -482,6 +499,9 @@ export default function SettingsScreen() {
         delete nextOverrides[editingId];
         setEO(nextOverrides); await setEQOverrides(nextOverrides);
         setNewBands([...builtIn.bands]);
+        setNewPre(0);
+        const nextPre = { ...builtinPre, [editingId]: 0 };
+        setBuiltinPre(nextPre); await setBuiltinPreAmps(nextPre);
         if (eqPresetId === editingId) applyEQPreset(eqPresetId);
     };
 
@@ -948,37 +968,27 @@ export default function SettingsScreen() {
                             </View>
                         ))}
                     </View>
-                    <View style={s.eqButtonRow}>
-                        <TouchableOpacity style={[s.addBtn, s.eqButtonHalf, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
-                            <Text style={[s.addBtnText, { color: theme.accent }]}>+ Add Custom Preset</Text>
+                    <View style={[s.eqButtonRow, { alignItems: 'center' }]}>
+                        <TouchableOpacity style={[s.addBtn, { flex: 1.3, margin: 7, paddingVertical: 14, paddingHorizontal: 8, borderColor: theme.accent }]} onPress={openNewPresetSheet}>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        <View style={[s.toggleRow, s.eqButtonHalf, { paddingVertical: 0 }]}>
-                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 13 }]}>Show Premade Presets</Text>
+                        {/* Advanced EQ: a small square pill next to Add Custom Preset */}
+                        <TouchableOpacity style={{ width: 52, height: 52, borderRadius: 16, borderWidth: 1.5, borderColor: theme.accent, alignItems: 'center', justifyContent: 'center', marginVertical: 7, marginRight: 7 }}
+                            onPress={() => setAdvEQ({ open: true, preset: null })}>
+                            <Text style={{ color: theme.accent, fontSize: 11, fontWeight: '700', textAlign: 'center', lineHeight: 13 }}>{'Adv\nEQ'}</Text>
+                        </TouchableOpacity>
+                        <View style={[s.toggleRow, { flex: 1, margin: 7, marginLeft: 0, paddingVertical: 0 }]}>
+                            <Text style={[s.toggleLabel, { flex: 1, fontSize: 12 }]}>Show Premade Presets</Text>
                             <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
                                 trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                         </View>
                     </View>
 
-                    {/* Pre-amp: a single broadband gain on top of whatever
-                        preset is active, not tied to any one preset — lives
-                        here rather than inside the preset editor since it
-                        applies globally regardless of which preset is
-                        picked (same as how a hardware EQ's master gain knob
-                        works alongside its band sliders). */}
-                    <Text style={[s.sliderSub, { paddingTop: 20 }]}>Pre-amp</Text>
-                    <Text style={s.sliderNote}>Gain on top of the EQ</Text>
-                    <Text style={[s.sliderVal, { color: theme.accent }]}>{preAmpLocal > 0 ? '+' : ''}{preAmpLocal.toFixed(1)}dB</Text>
-                    <PureSlider guardScroll style={s.slider} minimumValue={-12} maximumValue={12} step={0.5} value={preAmpLocal}
-                        onValueChange={setPreAmpLocal} onSlidingComplete={v => { setPreAmpLocal(v); setPreAmp(v); }}
-                        minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent} />
-                    <View style={s.sliderEnds}><Text style={s.sliderEnd}>-12dB</Text><Text style={s.sliderEnd}>+12dB</Text></View>
+                    {/* Each EQ has its own pre-amp, inside its editor. Export and import sit here. */}
+                    <EQAdvancedRows s={s}
+                        onPresetsChanged={async () => { setCP(await getCustomPresets()); setEO(await getEQOverrides()); setBuiltinPre(await getBuiltinPreAmps()); }} />
                 </Section>
 
-                <Section title="Advanced EQ, Import & Export">
-                    <EQAdvancedRows s={s}
-                        onPresetsChanged={async () => { setCP(await getCustomPresets()); setEO(await getEQOverrides()); }}
-                        onNewAdvanced={() => setAdvEQ({ open: true, preset: null })} />
-                </Section>
                 <AdvancedEQSheet visible={advEQ.open} preset={advEQ.preset} s={s}
                     onClose={() => setAdvEQ(a => ({ ...a, open: false }))}
                     onSaved={async () => { setCP(await getCustomPresets()); applyEQPreset(eqPresetId); }} />
@@ -1810,6 +1820,17 @@ export default function SettingsScreen() {
                             drag via eqOverrides; that mechanism still exists
                             for now — see resetEditingPresetToDefault below —
                             but nothing can create a NEW override anymore.) */}
+                        <View style={s.bandRow}>
+                            <Text style={[s.bandHz, { width: 52, color: theme.accent, fontWeight: '700' }]}>Pre-amp</Text>
+                            <PureSlider
+                                style={{ flex: 1, marginHorizontal: 8 }}
+                                minimumValue={PRE_MIN} maximumValue={PRE_MAX} step={0.5} value={newPre}
+                                onValueChange={v => setNewPre(clampPre(v))}
+                                onSlidingComplete={v => { const c = clampPre(v); setNewPre(c); if (editingId && eqPresetId === editingId) AudioEngine.setPreAmp(c).catch(() => { }); }}
+                                minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
+                            />
+                            <Text style={s.bandVal}>{newPre > 0 ? '+' : ''}{newPre.toFixed(1)}</Text>
+                        </View>
                         {newBands.map((val, i) => (
                             <View key={i} style={s.bandRow}>
                                 <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
@@ -1877,9 +1898,8 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 
 // Words each Section answers to in the search box (besides its title).
 const SECTION_KW = {
-    'EQ Presets': 'equalizer eq bass treble sound tone',
+    'EQ Presets': 'equalizer eq bass treble sound tone advanced custom parametric graphic q factor frequency band import export autoeq apo preset share pre-amp preamp gain',
     'Specialized EQs': 'eq equalizer playlist song assign override different layer specialized',
-    'Advanced EQ, Import & Export': 'equalizer eq advanced custom parametric graphic q factor frequency band import export autoeq apo preset share',
     'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
     'Shuffle': 'shuffle random smart dumb cycle order playback',

@@ -592,8 +592,8 @@ export default function PlayerScreen() {
     const nowIdRef = useRef(nowId);
     nowIdRef.current = nowId;
     const lyricsBase = lyricsRaw.id === nowId ? lyricsRaw.data : (peekLyrics(nowId) ?? null);
-    // With a Blank Line Gap set, the lyrics start on a blank line (before the first line) and end on one (after the
-    // last line), the same kind of empty row a long wordless stretch gets, so the first and last lines sit one row
+    // With a Blank Line Gap set, the lyrics start on a blank line (when the intro is at least a gap long) and end on one
+    // (after the last line), the same kind of empty row a long wordless stretch gets, so the first and last lines sit one row
     // away from where the active line rests instead of right on it. The end one starts when the last line has had
     // a full gap's worth of time (or at the file's own trailing empty timestamp, if it has one). Off = untouched.
     const lyricsData = useMemo(() => {
@@ -608,8 +608,12 @@ export default function PlayerScreen() {
         const endTime = Math.max(trailing ? trailing.time : 0, lyricsBase[lastText].time + lyricsGapSec);
         // The last entry only exists so the end row counts as a gap row (a gap row needs an entry after it); it is
         // never reached, so the view stays on the end row until the song ends.
+        // The start follows the same rule as any other gap: the stretch from 0 s to the first line must be at least the
+        // gap long to get its own blank row (then the song opens on that row, first line one row below). A shorter
+        // intro has no blank row and the first line sits where the active line sits.
+        const startBlank = body[0].time >= lyricsGapSec ? [{ time: -1000, text: '' }] : [];
         return [
-            { time: -1000, text: '' },
+            ...startBlank,
             ...body,
             { time: endTime, text: '' },
             { time: 1e9, text: '' },
@@ -1006,6 +1010,7 @@ export default function PlayerScreen() {
     // box-edge gradient overlay entirely, see the lyrics map() below).
     const lyricsScrollY = useRef(new Animated.Value(0)).current;
     const lyricsRowYRef = useRef(new Map());
+    const lyricsRowHRef = useRef(new Map());   // each row's height (a long line wraps to 2 or 3 lines)
     // For a line that wraps onto several rows of text: the text of each visual row, from
     // onTextLayout. Each visual row then fades on its own at the top and bottom edge, so a long
     // line fades smoothly instead of as one flat block.
@@ -1019,6 +1024,7 @@ export default function PlayerScreen() {
         // The previous song's positions must not be readable for the new lines: the remount
         // below makes every row report a fresh one, and until then "not measured" is correct.
         lyricsRowYRef.current.clear();
+        lyricsRowHRef.current.clear();
         lyricsLinesRef.current.clear();
     }
     const lyricsSetKey = lyricsSetRef.current.n;
@@ -1177,7 +1183,9 @@ export default function PlayerScreen() {
             const yNext = hasNext ? lyricsRowYRef.current.get(next) : undefined;
             if ((hasPrev && yPrev === undefined) || (hasNext && yNext === undefined)) return;   // wait for the rows to be measured
             let target;
-            if (hasPrev && hasNext) target = (yPrev + yNext) / 2;
+            // Halfway between the BOTTOM of the line before and the TOP of the line after (the line before can be 2 or 3
+            // lines tall). The 17 is half of a one-line row: the spot an active line's middle rests on.
+            if (hasPrev && hasNext) target = (yPrev + (lyricsRowHRef.current.get(prev) ?? 34) + yNext) / 2 - 17;
             else if (hasPrev) target = yPrev;
             else if (hasNext) target = yNext;
             else return;
@@ -1723,7 +1731,7 @@ export default function PlayerScreen() {
                                     <React.Fragment key={lyricsSetKey}>{lyricsData.map((line, i) => {
                                         if (!line.text) {
                                             if (!isGapLine(i)) return null;   // an empty timestamp: nothing is drawn (no "...")
-                                            return <View key={i} onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); bumpLyricsLayout(); }} style={{ height: 34, marginVertical: 7 }} />;
+                                            return <View key={i} onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); }} style={{ height: 34, marginVertical: 7 }} />;
                                         }
                                         // Spotify-style: the lines themselves fade out toward the top
                                         // and bottom edge of the box (no dark box over them). A row's
@@ -1742,7 +1750,7 @@ export default function PlayerScreen() {
                                             outputRange: [0, 1, 1, 0],
                                             extrapolate: 'clamp',
                                         }));
-                                        const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); bumpLyricsLayout(); };
+                                        const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); };
                                         const textColor = i === activeLine ? lyricActiveColor : lyricIdleColor;
                                         const shadow = { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 };
                                         const rows = lyricsLinesRef.current.get(i);
