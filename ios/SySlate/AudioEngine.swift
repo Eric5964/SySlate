@@ -2265,7 +2265,7 @@ class AudioEngine: RCTEventEmitter {
         }
         if repeatMode == .track {
             crossfadeSelfLoop = true
-            startCrossfade(toIndex: idx, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds)
+            startCrossfade(toIndex: idx, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds, why: "lead-in timer, loop")
             return
         }
         crossfadeSelfLoop = false
@@ -2280,7 +2280,7 @@ class AudioEngine: RCTEventEmitter {
         }
         guard newIndex >= 0, newIndex < queue.count else { return }
         currentIndex = newIndex
-        startCrossfade(toIndex: newIndex, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds)
+        startCrossfade(toIndex: newIndex, duration: crossfadeLeadDurationSeconds ?? crossfadeDurationEndOfTrackSeconds, why: "lead-in timer")
     }
 
     // Fires when a scheduled segment finishes playing to the end on its
@@ -2504,7 +2504,7 @@ class AudioEngine: RCTEventEmitter {
         if !suppressCrossfade, crossfadeEnabled, crossfadeDuration > 0.05, incomingLongEnough, autoPlay, (direction == 1 || direction == -1), !isCrossfading, state == .playing {
             currentIndex = newIndex
             crossfadeSelfLoop = false
-            startCrossfade(toIndex: newIndex, duration: crossfadeDuration)
+            startCrossfade(toIndex: newIndex, duration: crossfadeDuration, why: "advance()")
             return
         }
 
@@ -2538,7 +2538,10 @@ class AudioEngine: RCTEventEmitter {
         return live
     }
 
-    private func startCrossfade(toIndex idx: Int, duration: Double) {
+    private func startCrossfade(toIndex idx: Int, duration: Double, why: String = "") {
+        var fromDuration = 0.0
+        if let ci = currentIndex, ci >= 0, ci < queue.count, let d = queue[ci].duration { fromDuration = d }
+        debugLog("[XFADE] starting (\(why)): position=\(String(format: "%.2f", currentPositionSeconds()))s of \(String(format: "%.2f", fromDuration))s, duration=\(String(format: "%.2f", duration))s, to index \(idx)")
         abortScratch()   // a song change during a scratch ends the scratch (no two songs at once)
         guard idx >= 0, idx < queue.count else { return }
         // Whichever path got here (manual skip via advance(), or the early
@@ -3569,7 +3572,7 @@ class AudioEngine: RCTEventEmitter {
         }
         if crossfadeEnabled, crossfadeDurationSkipSeconds > 0.05, !isCrossfading, state == .playing, idx != currentIndex {
             currentIndex = idx
-            startCrossfade(toIndex: idx, duration: crossfadeDurationSkipSeconds)
+            startCrossfade(toIndex: idx, duration: crossfadeDurationSkipSeconds, why: "skip()")
             resolve(nil)
             return
         }
@@ -3615,7 +3618,7 @@ class AudioEngine: RCTEventEmitter {
         // track change, so no change event is sent for it.
         crossfadeSelfLoop = (idx == currentIndex)
         currentIndex = idx
-        startCrossfade(toIndex: idx, duration: duration.doubleValue)
+        startCrossfade(toIndex: idx, duration: duration.doubleValue, why: "crossfadeToIndex from JS")
         resolve(nil)
     }
 

@@ -3,7 +3,7 @@ import {
     View, Text, FlatList, TouchableOpacity, Image,
     TextInput, StyleSheet, StatusBar, Keyboard, TouchableWithoutFeedback,
 } from 'react-native';
-import { useNavigation, useScrollToTop, useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useNavigation, useScrollToTop, useIsFocused } from '@react-navigation/native';
 import { LibraryContext } from '../context/LibraryContext';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';

@@ -1731,7 +1731,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // branch below), since even a track that's supposed to resume
             // near its own start still needs to actually be loaded at all.
             await AudioEngine.load(0, false);
-            const restoredEqId = await getEQPreset(last.playlist?.path);
+            let restoredEqId = await getEQPreset(last.playlist?.path);
+            // A saved id can point at a preset that no longer exists (a custom EQ deleted, or a
+            // settings file from another device). Flat is what would actually play, so say Flat.
+            try {
+                const customNow = await getCustomPresets();
+                if (!BUILT_IN_PRESETS.some(p => p.id === restoredEqId) && !customNow.some(p => p.id === restoredEqId)) {
+                    restoredEqId = 'flat';
+                    setEQPreset('flat');
+                }
+            } catch { }
             // Real bug found here: this applied the restored preset's
             // bands to the audio engine but never told React about it —
             // eqPresetId's own useState defaults to 'flat' and nothing

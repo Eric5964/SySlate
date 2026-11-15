@@ -66,7 +66,7 @@ import {
     getCustomPresets, setCustomPresets,
     getHiddenPresets, setHiddenPresets,
     getEQOverrides, setEQOverrides,
-    getBuiltinPreAmps, setBuiltinPreAmps, getPreAmp,
+    getBuiltinPreAmps, setBuiltinPreAmps,
     getShuffleMode,
     getKeepPriorityOnPlaylistSwitch, setKeepPriorityOnPlaylistSwitch, getEQLayering, setEQLayering, subscribeEQLayering, resetPlayCounts, getPlayCountUndoInfo, restorePlayCounts,
     getPrevButtonMode, setPrevButtonMode,
@@ -153,7 +153,7 @@ function LiveSwitch({ value, onValueChange, ...rest }) {
 
 export default function SettingsScreen() {
     const navigation = useNavigation();
-    const { changeShuffleMode, eqPresetId, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback } = usePlayback();
+    const { changeShuffleMode, eqPresetId, changeEQPreset, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback } = usePlayback();
     const { reload, scanPath, scanError, withBusy } = useLibrary();
     const { themeId, setTheme, theme, baseId, setBase, base, isLight, toggleLightMode } = useTheme();
     const s = useMemo(() => makeStyles(base), [base]);
@@ -199,8 +199,8 @@ export default function SettingsScreen() {
     // Always the full set now, regardless of hidden state — see the
     // comment above for why (this grid is the editor, not the picker;
     // EQModal.js's picker is what actually respects hiddenPresets).
-    // The four EQ buttons: same height, a true pill shape.
-    const eqPill = { flex: 1, height: 50, borderRadius: 25, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, marginHorizontal: 7, marginVertical: 7 };
+    // The four EQ buttons: same height, rounded corners like the song cards (not a pill).
+    const eqPill = { flex: 1, height: 50, borderRadius: 14, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, marginHorizontal: 7, marginVertical: 7 };
     const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
@@ -302,20 +302,6 @@ export default function SettingsScreen() {
         AudioEngine.getAutoplayDevices().then(d => { if (alive) setAutoplayDevices(d); });
         return () => { alive = false; };
     }, []);
-    const [preAmpLocal, setPreAmpLocal] = useState(preAmp);
-    // Real bug found here — this is "pre-amp doesn't stay between
-    // sessions": preAmpLocal only ever took preAmp's value at this
-    // component's FIRST render (useState(preAmp) only reads it once).
-    // preAmp itself gets correctly restored from storage in
-    // PreferencesContext — but that restore resolves asynchronously,
-    // after this screen has almost certainly already mounted and already
-    // captured preAmp as its still-default 0. Nothing ever re-synced
-    // preAmpLocal once the real value arrived, so the slider (and the dB
-    // label, since both read preAmpLocal) sat at 0 regardless of what was
-    // actually persisted and actually applied to native — the setting
-    // itself was fine the whole time, just never reflected here unless
-    // you happened to drag the slider yourself.
-    useEffect(() => { setPreAmpLocal(preAmp); }, [preAmp]);
     // Same idea for the Spatial sliders: the value shown follows the slider live, and is only saved when it is let go.
     const [widthLocal, setWidthLocal] = useState(spatialWidth);
     const [balanceLocal, setBalanceLocal] = useState(spatialBalance);
@@ -396,6 +382,11 @@ export default function SettingsScreen() {
     const deleteCustomPreset = async (id) => {
         const next = customPresets.filter(p => p.id !== id);
         setCP(next); await setCustomPresets(next);
+        // Deleting the preset that is currently selected must not leave the
+        // app pointing at an id that no longer exists: fall back to Flat and
+        // re-apply so the audio follows the selection instead of keeping the
+        // deleted preset's bands.
+        if (eqPresetId === id) await changeEQPreset('flat');
     };
 
     const confirmDeleteCustomPreset = (preset) => {
@@ -506,13 +497,6 @@ export default function SettingsScreen() {
         setBuiltinPre(nextPre); await setBuiltinPreAmps(nextPre);
         if (eqPresetId === editingId) applyEQPreset(eqPresetId);
     };
-
-    const MODES = [
-        { id: 'full_cycle', label: 'Full Cycle', sub: 'Every song once before any repeat' },
-        { id: 'true_random', label: 'True Random', sub: 'Any song, any time. No cycle, repeats possible' },
-        { id: 'smart', label: 'Smart', sub: 'Random, but leans toward songs you have played less. No cycle' },
-        { id: 'dumb', label: 'Dumb', sub: 'Random, but leans toward songs you have played more. No cycle' },
-    ];
 
     // Best-effort detection of which sideload tool is running this build.
     // Copies songs picked in the Files app into the app's own Documents folder (see utils/importMusic.js).
@@ -695,7 +679,6 @@ export default function SettingsScreen() {
     );
     const uiOn = (id) => ui[id] !== false;
     const uiPick = (id) => setUiShown(id, ui[id] === false);
-    const uiRow = (name, label, sub, first) => toggle(label, sub, ui[name] !== false, (v) => setUiShown(name, v), first);
 
     // ---- Reset to default (per section, and everything) -------------------
     // Each one uses the same setters the switches and sliders use, so the
@@ -970,25 +953,26 @@ export default function SettingsScreen() {
                             </View>
                         ))}
                     </View>
-                    {/* Row 1: the two ways to make an EQ. Row 2: the premade switch, then export and import. */}
-                    <View style={{ flexDirection: 'row', paddingHorizontal: 7, paddingTop: 10 }}>
-                        <TouchableOpacity style={[eqPill, { borderColor: theme.accent }]} onPress={openNewPresetSheet}>
+                    {/* Row 1: custom and advanced share three quarters, the premade switch has the last quarter.
+                        Row 2 (inside EQAdvancedRows): import and export across the full width. */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 10 }}>
+                        <TouchableOpacity style={[eqPill, { flex: 3, borderColor: theme.accent }]} onPress={openNewPresetSheet}>
                             <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Custom Preset</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity style={[eqPill, { borderColor: theme.accent }]} onPress={() => setAdvEQ({ open: true, preset: null })}>
-                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Advanced EQ</Text>
+                        <TouchableOpacity style={[eqPill, { flex: 3, borderColor: theme.accent }]} onPress={() => setAdvEQ({ open: true, preset: null })}>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Advanced EQ</Text>
                         </TouchableOpacity>
+                        <View style={{ flex: 2, alignItems: 'center', justifyContent: 'center', marginHorizontal: 7 }}>
+                            <View style={{ width: 51, height: 31 }}>
+                                <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
+                                    trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
+                            </View>
+                            <Text style={{ color: base.textFaint, fontSize: 11, marginTop: 5, textAlign: 'center', alignSelf: 'stretch' }} numberOfLines={1} adjustsFontSizeToFit>Show premade</Text>
+                        </View>
                     </View>
 
                     {/* Each EQ has its own pre-amp, inside its editor. */}
                     <EQAdvancedRows s={s} pillStyle={eqPill}
-                        leading={(
-                            <View style={{ width: 84, alignItems: 'center', justifyContent: 'center', marginHorizontal: 7 }}>
-                                <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
-                                    trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
-                                <Text style={{ color: base.textFaint, fontSize: 11, marginTop: 5, textAlign: 'center' }}>Show premade</Text>
-                            </View>
-                        )}
                         onPresetsChanged={async () => { setCP(await getCustomPresets()); setEO(await getEQOverrides()); setBuiltinPre(await getBuiltinPreAmps()); }} />
                 </Section>
 

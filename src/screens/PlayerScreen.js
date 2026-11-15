@@ -10,7 +10,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { formatArtists } from '../utils/artists';
 import { getLyrics, activeLyricIndex, peekLyrics } from '../utils/lyrics';
 import { useTheme } from '../context/ThemeContext';
-import { skipWithRamp, playWithRamp, pauseWithRamp, isTransitionLocked, forceReleaseFade } from '../services/PlaybackService';
+import { skipWithRamp, playWithRamp, pauseWithRamp, isTransitionLocked } from '../services/PlaybackService';
 import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, ShuffleIcon, LoopIcon, MenuBarsIcon, MoonIcon } from '../components/Icons';
 import SleepTimerSheet from '../components/SleepTimerSheet';
 import { PanGestureHandler, TapGestureHandler, State as GHState } from 'react-native-gesture-handler';
@@ -1402,17 +1402,27 @@ export default function PlayerScreen() {
                 const adv = isPlaying ? ((Date.now() - lp.at) / 1000) * (playbackRate || 1) : 0;
                 const pos = Math.min(lp.duration, lp.position + adv);
                 settled = true;
+                console.log(`[BAR] seeded from the engine's last reading: ${pos.toFixed(2)}s (reading ${Date.now() - lp.at}ms old)`);
                 setSwitchProg({ position: pos, duration: lp.duration });
                 startRealTimeAnim(Math.max(0, Math.min(1, pos / lp.duration)), true, lp.duration);
                 return;
             }
+            // No reading for the new song yet. A crossfade announces the new song halfway through, so it is already about
+            // half a crossfade in (a song that ended by itself uses the end-of-track length). Start the bar THERE rather
+            // than at 0; the real position replaces it as soon as it arrives (a few tens of ms), and for a plain song start
+            // that is a move back of a fraction of a percent at most.
+            const wasNearEnd = animPctValueRef.current > 0.9;
+            const estSec = (crossfadeEnabled && isPlaying) ? ((wasNearEnd ? crossfadeDurationEndOfTrack : crossfadeDuration) || 0) / 2 : 0;
+            const estDur = currentTrack?.duration || progress.duration || 0;
+            const estPct = estDur > 0 ? Math.max(0, Math.min(1, estSec / estDur)) : 0;
+            console.log(`[BAR] no matching reading yet (last: ${lp ? `${lp.id === idAtChange ? 'same song' : 'other song'}, ${Date.now() - lp.at}ms old` : 'none'}); starting at the estimated ${estSec.toFixed(2)}s`);
             stopAnim();
-            animPct.setValue(0);
-            animPctValueRef.current = 0;
+            animPct.setValue(estPct);
+            animPctValueRef.current = estPct;
             // The bar waits at 0 only briefly; the real spot is asked for again every 120 ms
             // (up to ~1.5 s) so an answer that was not ready yet, or still described the other song,
             // still lands soon, instead of the bar sitting at 0 and then popping in later.
-            const toZero = () => { if (settled || zeroed || lastSyncedTrackIdRef.current !== trackAtChange) return; zeroed = true; startRealTimeAnim(0, true); };
+            const toZero = () => { if (settled || zeroed || lastSyncedTrackIdRef.current !== trackAtChange) return; zeroed = true; startRealTimeAnim(estPct, true, estDur); };
             setTimeout(toZero, 250);
             let attempts = 0;
             const trySeed = () => {
@@ -1492,15 +1502,29 @@ export default function PlayerScreen() {
     // While the screen is off the native bar animation stops, but the clock the drift check uses keeps going, so
     // on waking the bar looked "on track" and stayed far behind the time text until the next song. On every wake
     // the running animation is dropped; the next position reading starts it again from the real spot.
+    // The bar is restarted at once from the engine's answer (and again once the 450 ms stop below has passed), instead
+    // of sitting still until the next position poll arrives, which took one to two seconds after waking.
+    const startAnimRef = useRef(null);
+    startAnimRef.current = startRealTimeAnim;
     useEffect(() => {
         let t = null;
+        let t2 = null;
+        const seed = () => {
+            AudioEngine.getProgress().then(p => {
+                if (!p || !(p.duration > 0) || p.position > p.duration) return;
+                if (p.id && nowIdRef.current && p.id !== nowIdRef.current) return;
+                startAnimRef.current?.(Math.max(0, Math.min(1, p.position / p.duration)), true, p.duration);
+            }).catch(() => { });
+        };
         const sub = AppState.addEventListener('change', (st) => {
             if (st !== 'active') return;
             stopAnim();
-            clearTimeout(t);
+            seed();
+            clearTimeout(t); clearTimeout(t2);
             t = setTimeout(() => { stopAnim(); }, 450);
+            t2 = setTimeout(seed, 520);
         });
-        return () => { sub.remove(); clearTimeout(t); };
+        return () => { sub.remove(); clearTimeout(t); clearTimeout(t2); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, Dimensions, unstable_batchedUpdates, LayoutAnimation } from 'react-native';
+import { View, Text, Image, FlatList, StyleSheet, Animated, Easing, PanResponder, Dimensions, unstable_batchedUpdates, LayoutAnimation } from 'react-native';
 import DimPressable from './DimPressable';
 import AudioEngine, { Event } from '../native/AudioEngine';
 import { usePlayback } from '../context/PlaybackContext';
@@ -99,23 +99,6 @@ function GrowInRow({ children, isNew }) {
             {children}
         </Animated.View>
     );
-}
-
-// The "Priority" and "Up Next" pills' own fade — opacity only, no height
-// animation (unlike GrowInRow above, which hardcodes ROW_HEIGHT and would
-// grow the pill to the wrong height since it's much shorter than a row).
-// Driven by the exact same `isNew` flag as the pill's own first row,
-// passed in from listData below rather than computed on its own timer —
-// see the big comment above where pills used to live for why an
-// independent timer was the actual bug last time this was tried: the pill
-// used to animate in ~220ms after its rows on its own schedule, so a
-// freshly-added priority row could sit there for that whole window with no
-// "Priority" label above it yet, reading as if it landed under "Now
-// Playing" instead. Sharing the identical flag makes that desync
-// structurally impossible instead of just less likely — they can only
-// ever start in the same render.
-function FadePill({ children }) {
-    return <>{children}</>;
 }
 
 // Mirrors GrowInRow — shrinks a row's height AND content out before it's

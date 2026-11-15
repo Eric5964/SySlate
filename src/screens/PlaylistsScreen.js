@@ -17,6 +17,7 @@ import {
     getPlaylistCovers, setPlaylistCover, persistCoverImage, shrinkOldPlaylistCovers,
 } from '../utils/storage';
 import { COVER_SHADOW } from '../utils/shadow';
+import { playlistBackX } from '../utils/backSwipe';
 import ScreenBackground from '../components/ScreenBackground';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -633,7 +634,13 @@ export default function PlaylistsScreen() {
 
     latest.current = { coverReady, liftUp, endDrag, resetHold, applyDrag, changeCover };
 
+    // A playlist swiped away from somewhere other than the edge moves itself (not the stack), and shares how far it has
+    // gone in playlistBackX. The stack leaves this screen pushed 30 percent to the left while a playlist is open; this
+    // takes that shift back at the same pace, so the screen slides in from the left exactly as it does for an edge swipe.
+    // It is 0 at all other times.
+    const backSwipeShift = useMemo(() => playlistBackX.interpolate({ inputRange: [0, 10000], outputRange: [0, 3000], extrapolate: 'clamp' }), []);
     return (
+        <Animated.View style={{ flex: 1, transform: [{ translateX: backSwipeShift }] }}>
         <ScreenBackground style={s.container}>
             <StatusBar barStyle="light-content" />
             {/* Same top row as All Songs and the Player: title where the back
@@ -752,6 +759,7 @@ export default function PlaylistsScreen() {
             )}
 
         </ScreenBackground>
+        </Animated.View>
     );
 }
 

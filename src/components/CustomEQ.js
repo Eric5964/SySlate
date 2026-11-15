@@ -181,7 +181,7 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
 }
 
 // The Export current EQ / Import EQ buttons under the EQ presets in Settings.
-export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle, leading }) {
+export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
     const { theme, base } = useTheme();
     const { eqPresetId } = usePlayback();
     const { preAmp: legacyPre } = usePreferences();
@@ -266,13 +266,12 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle, leading
 
     return (
         <>
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 4, paddingBottom: 22 }}>
-                {leading}
-                <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => setShowExport(true)}>
-                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 13 }]} numberOfLines={1} adjustsFontSizeToFit>Export current EQ</Text>
-                </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 2, paddingBottom: 22 }}>
                 <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => { setImportText(''); setShowImport(true); }}>
-                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 13 }]} numberOfLines={1} adjustsFontSizeToFit>Import EQ</Text>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Import EQ</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => setShowExport(true)}>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Export current EQ</Text>
                 </TouchableOpacity>
             </View>
 

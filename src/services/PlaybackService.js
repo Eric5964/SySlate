@@ -20,13 +20,8 @@ let skipLock = false;
 let skipLockStartedAt = 0;
 let skipLockExpectedDurationMs = 0;
 let rampLock = false;
-// True only for the duration of the natural end-of-track ramp's fade-IN half
-// (the new/repeated track ramping 0->1 after the old one finished fading
-// out) — used by skipWithRamp's halfway-aware handling to tell "barely into
-// this transition" from "already committed to the incoming track".
-let naturalFadeInActive = false;
 // True only while playWithRamp's own fresh-start/resume ramp-in is running
-// — mirrors naturalFadeInActive above, but for the OTHER kind of ramp-in.
+// — the only ramp-in flag.
 let rampInActive = false;
 
 // Direct feedback: toggling Crossfade mid-transition was making the
@@ -378,19 +373,8 @@ async function checkRampWindow(position, duration) {
                 // at 2.5s — respects the real configured duration, matching
                 // what a genuine track-to-track transition gets.
                 if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
-                    naturalFadeInActive = true;
-                    try {
-                        try { await AudioEngine.setVolume(0); } catch { }
-                        await fadeVol(0, 1, ramp, newId);
-                    } finally {
-                        // finally, not just a line after — fadeVol/setVolume
-                        // are already exception-safe internally so this
-                        // shouldn't be reachable via a throw in practice, but
-                        // a flag stuck at true here would silently break
-                        // every pause after it (see pauseWithRamp), so it's
-                        // worth the extra safety net regardless.
-                        naturalFadeInActive = false;
-                    }
+                    try { await AudioEngine.setVolume(0); } catch { }
+                    await fadeVol(0, 1, ramp, newId);
                 } else {
                     try { await AudioEngine.setVolume(1); } catch { }
                 }
@@ -1155,8 +1139,7 @@ export async function PlaybackService() {
                 if (!reallyPlaying) {
                     try { await AudioEngine.setVolume(1); } catch { }
                 } else if (isFadeOwner(id)) {
-                    naturalFadeInActive = true;
-                    try {
+                    {
                         // Previously capped at Math.min(ramp, 2.5) — a
                         // leftover hidden cap that never got removed here
                         // when the equivalent cap was removed from the
@@ -1167,8 +1150,6 @@ export async function PlaybackService() {
                         // a loop-repeat (going through the other path) used
                         // the full configured value. Now both agree.
                         await fadeVol(0, 1, ramp, id);
-                    } finally {
-                        naturalFadeInActive = false;
                     }
                 }
             } else {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import {
     View, Text, FlatList, TouchableOpacity,
     StyleSheet, TextInput, StatusBar, Image, Alert, Animated,
@@ -247,7 +247,7 @@ export default function PlaylistDetailScreen() {
     const bg = base.surface; // neutral placeholder, see PlaylistsScreen's matching comment
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
     const backX = playlistBackX;   // the whole screen slides with a back swipe that starts off the edge (shared with the Playlists screen under it)
-    useEffect(() => { backX.setValue(0); return () => backX.setValue(0); }, [backX]);
+    useLayoutEffect(() => { backX.setValue(0); return () => backX.setValue(0); }, [backX]);
 
     return (
         <Animated.View style={{ flex: 1, transform: [{ translateX: backX.interpolate({ inputRange: [0, 10000], outputRange: [0, 10000], extrapolate: 'clamp' }) }] }}>

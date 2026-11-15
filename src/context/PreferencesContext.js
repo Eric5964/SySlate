@@ -114,7 +114,7 @@ const Ctx = createContext({
     // (SettingsScreen's slider, the native setter, the AsyncStorage key)
     // already lines up with "the skip one" once End of Track gets its own
     // field below.
-    crossfadeDuration: 4, setCrossfadeDuration: () => { },
+    crossfadeDuration: 2, setCrossfadeDuration: () => { },
     crossfadeDurationEndOfTrack: 4, setCrossfadeDurationEndOfTrack: () => { },
     withinTrackNorm: false, setWithinTrackNorm: () => { },
     betweenTrackNorm: false, setBetweenTrackNorm: () => { },

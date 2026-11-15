@@ -3,7 +3,7 @@ import { splitArtists, formatArtists } from './artists';
 import * as FileSystem from 'expo-file-system';
 import { EQ_MIN, EQ_MAX, BAND_COUNT, clampEQBand } from './eq';
 import AudioEngine from '../native/AudioEngine';
-import { sanitizeCustomEQ } from './customEQ';
+import { sanitizeCustomEQ, clampPre } from './customEQ';
 
 const safe = async (fn, fallback) => { try { return await fn(); } catch { return fallback; } };
 
@@ -1442,7 +1442,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'eq_builtin_preamps', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'spatial_width', 'spatial_balance', 'mono_audio', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'eq_builtin_preamps', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'eq:global', 'spatial_width', 'spatial_balance', 'mono_audio', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'lyrics_gap_sec', 'lyrics_arrows', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1499,7 +1499,7 @@ export const importAllSettings = async (jsonString) => {
     const obj = JSON.parse(jsonString);
     if (!obj || typeof obj !== 'object') throw new Error('Not a settings object');
 
-    const ONE_ZERO_KEYS = new Set(['dj_disc', 'dj_disc_auto', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)]);
+    const ONE_ZERO_KEYS = new Set(['dj_disc', 'dj_disc_auto', 'lyrics_arrows', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)]);
     const BOOL_KEYS = new Set([
         'crossfade_enabled', 'vol_norm', 'between_track_norm', 'silence_trim',
         'ramp_on_pause', 'show_play_count', 'show_song_covers',
@@ -1521,7 +1521,7 @@ export const importAllSettings = async (jsonString) => {
         crossfade: [0, 6], crossfade_duration_eot: [0, 6],
         skip_crossfade: [0, 6], crossfade_duration: [0, 6], crossfade_duration_skip: [0, 6],
         audio_ramp: [0, 6],
-        lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3],
+        lyrics_resync_sec: [0, 6], lyrics_offset_sec: [-3, 3], lyrics_gap_sec: [0, 30],
         restart_threshold_sec: [0, 24],
         restart_threshold_pct: [0, 50],
         preamp_db: [-12, 12],
@@ -1546,7 +1546,7 @@ export const importAllSettings = async (jsonString) => {
         'theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode',
         'playlist_view_format', 'lyrics_mode',
         'prev_button_mode', 'restart_threshold_unit', 'cover_shape', 'playlist_cover_shape',
-        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show', 'viz_mode', 'settings_mode',
+        'artist_display_join', 'dj_disc_rpm', 'dj_disc_type', 'auto_show', 'viz_mode', 'settings_mode', 'eq:global',
     ]);
     // EQ band range — imported from eq.js (EQ_MIN/EQ_MAX) so this can
     // never drift from what the sliders/native side actually support.
@@ -1621,7 +1621,25 @@ export const importAllSettings = async (jsonString) => {
                         if (!Array.isArray(bands) || bands.length !== BAND_COUNT || !bands.every(b => typeof b === 'number' && Number.isFinite(b))) continue;
                         out[id] = bands.map(clampEQBand);
                     }
-                    if (Object.keys(out).length) toWrite.push([key, JSON.stringify(out)]);
+                    // Adds to what is already here (same preset id: the imported one wins).
+                    if (Object.keys(out).length) toWrite.push([key, JSON.stringify({ ...(await getEQOverrides()), ...out })]);
+                }
+            } catch { }
+        } else if (key === 'eq_builtin_preamps') {
+            // { [builtInPresetId]: preAmpDb } — per-built-in pre-amp overrides.
+            // Values are clamped to the same ±6 dB the slider allows; anything
+            // non-finite or out of shape is dropped rather than written through.
+            try {
+                const parsed = JSON.parse(value);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const out = {};
+                    for (const [id, db] of Object.entries(parsed)) {
+                        if (typeof id !== 'string' || !id || id.length > 100) continue;
+                        if (typeof db !== 'number' || !Number.isFinite(db)) continue;
+                        out[id] = clampPre(db);
+                    }
+                    // Adds to what is already here (same preset id: the imported one wins).
+                    if (Object.keys(out).length) toWrite.push([key, JSON.stringify({ ...(await getBuiltinPreAmps()), ...out })]);
                 }
             } catch { }
         } else if (key === 'playlist_sort_orders') {

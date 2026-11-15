@@ -106,8 +106,9 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
                             onPress={() => {
                                 if (pickMode) { onPick?.(p.id); onClose(); return; }
                                 changeEQPreset(p.id);
-                                // With the playlist buttons showing, stay open so "Use ... for this playlist" is one tap away.
-                                if (!showPlaylistBtn) onClose();
+                                // With the playlist buttons showing, stay open so "Use ... for this playlist" is one tap away;
+                                // on All Songs the same goes for "Assign ... to songs".
+                                if (!showPlaylistBtn && !(showLayers && onAssign)) onClose();
                             }}
                         >
                             <Text style={[s.presetName, { color: base.textFaint }, !pickMode && eqPresetId === p.id && { color: base.text, fontWeight: '700' }]}>{p.name}</Text>

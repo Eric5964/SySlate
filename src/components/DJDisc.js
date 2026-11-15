@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
-import { View, Image, Text, Animated, Easing, StyleSheet } from 'react-native';
+import { View, Image, Animated, Easing, StyleSheet } from 'react-native';
 import { Gesture, GestureDetector, State } from 'react-native-gesture-handler';
 import AudioEngine from '../native/AudioEngine';
 import { subscribeTransportRamp, subscribeSkipPress } from '../utils/transportRamp';
@@ -134,8 +134,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     // waiting for the 500ms position updates.
     const scratchEst = useRef(0);
     const scratchEstT = useRef(0);
-    const atHi = useRef(false);   // at the end limit (the crossfade area at the end)
-    const atLo = useRef(false);   // at the start limit (the crossfade area at the start)
     const pendingDeg = useRef(0);
     const lastTick = useRef(0);
     const tickTimer = useRef(null);
@@ -501,7 +499,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
     api.current.tick = () => {
         const now = Date.now();
         const L = live.current;
-        const dtS = Math.max(0, Math.min(0.1, (now - (lastTick.current || now)) / 1000));
         lastTick.current = now;
         pendingDeg.current = 0;
         const au = autoRef.current;
@@ -683,7 +680,6 @@ export default function DJDisc({ size, artwork, accent, shadow = false, outline 
 
 
     const R = size;
-    const labelD = R * 0.4;
     // Built once: re-creating these on every render (the position changes
     // several times a second) rebuilt the native animation graph each time.
     const spinDeg = useMemo(() => Animated.add(spin, lag).interpolate({ inputRange: [0, MT], outputRange: ['0deg', '360deg'] }), [spin, lag]);
