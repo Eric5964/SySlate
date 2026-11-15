@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useContext, startTransitio
 import {
     View, Text, StyleSheet, ScrollView, Switch,
     TouchableOpacity, StatusBar, TextInput,
-    Share, Alert, KeyboardAvoidingView, Platform, Dimensions,
+    Share, Alert, KeyboardAvoidingView, Platform, Dimensions, Animated,
 } from 'react-native';
 import { useScrollToTop } from '@react-navigation/native';
 import { useNavigation } from '@react-navigation/native';
@@ -64,7 +64,7 @@ import {
     getAudioRamp, setAudioRamp,
     getRampOnPause, setRampOnPause,
     getCustomPresets, setCustomPresets,
-    getHiddenPresets, setHiddenPresets,
+    getHiddenPresets, setHiddenPresets, getPresetOrder, setPresetOrder,
     getEQOverrides, setEQOverrides,
     getBuiltinPreAmps, setBuiltinPreAmps,
     getShuffleMode,
@@ -151,6 +151,120 @@ function LiveSwitch({ value, onValueChange, ...rest }) {
     return <Switch {...rest} value={local} onValueChange={(v) => { setLocal(v); applyLater(() => onValueChange && onValueChange(v)); }} />;
 }
 
+const CHIP_H = 44;
+const HOLD_MS = 450;
+// The EQ preset chips: two columns, hold one and drag it to a new spot (like the playlists).
+// Every chip sits at an absolute slot, so the others slide out of the way smoothly.
+function EQChipGrid({ presets, onReorder, scrollRef, base, renderChip }) {
+    const [width, setWidth] = useState(0);
+    const [dragId, setDragId] = useState(null);
+    const [orderIds, setOrderIds] = useState(() => presets.map(p => p.id));
+    const rootRef = useRef(null);
+    const vals = useRef({});
+    const d = useRef({ timer: null, startX: 0, startY: 0, originX: 0, originY: 0, id: null, slot0: null, ignoreUntil: 0 });
+    const orderRef = useRef(orderIds);
+    orderRef.current = orderIds;
+    const colW = width / 2;
+    const slotOf = (i) => ({ x: (i % 2) * colW, y: Math.floor(i / 2) * CHIP_H });
+    const rows = Math.ceil(orderIds.length / 2);
+
+    useEffect(() => { if (!dragId) setOrderIds(presets.map(p => p.id)); }, [presets, dragId]);
+
+    // A new chip starts at its own slot (made during render so it shows at once).
+    if (width) {
+        presets.forEach((p, i) => {
+            if (!vals.current[p.id]) { const at = orderIds.indexOf(p.id); vals.current[p.id] = new Animated.ValueXY(slotOf(at >= 0 ? at : i)); }
+        });
+    }
+    // Slide every chip (except the one under the finger) to its slot.
+    useEffect(() => {
+        if (!width) return;
+        orderIds.forEach((id, i) => {
+            if (id === dragId || !vals.current[id]) return;
+            Animated.timing(vals.current[id], { toValue: slotOf(i), duration: 170, useNativeDriver: true }).start();
+        });
+    }, [orderIds, width, dragId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+    const setScroll = (on) => { try { scrollRef?.current?.setNativeProps({ scrollEnabled: on }); } catch { } };
+    useEffect(() => () => { clearTimeout(d.current.timer); setScroll(true); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+    const clearTimer = () => { clearTimeout(d.current.timer); d.current.timer = null; };
+    const onStart = (e) => {
+        const ne = e.nativeEvent;
+        if (d.current.id || (ne.touches && ne.touches.length > 1)) return;
+        d.current.startX = ne.pageX; d.current.startY = ne.pageY;
+        rootRef.current?.measureInWindow((x, y) => { d.current.originX = x; d.current.originY = y; });
+        clearTimer();
+        d.current.timer = setTimeout(() => {
+            d.current.timer = null;
+            const col = Math.floor((d.current.startX - d.current.originX) / (colW || 1));
+            const row = Math.floor((d.current.startY - d.current.originY) / CHIP_H);
+            const idx = row * 2 + col;
+            if (col < 0 || col > 1 || row < 0 || idx < 0 || idx >= orderRef.current.length) return;
+            const id = orderRef.current[idx];
+            d.current.id = id;
+            d.current.slot0 = slotOf(idx);
+            vals.current[id]?.stopAnimation();
+            setScroll(false);
+            setDragId(id);
+        }, HOLD_MS);
+    };
+    const onMove = (e) => {
+        const ne = e.nativeEvent;
+        if (!d.current.id) {
+            // Moved before the hold finished: it is a scroll, not a drag.
+            if (d.current.timer && Math.hypot(ne.pageX - d.current.startX, ne.pageY - d.current.startY) > 8) clearTimer();
+            return;
+        }
+        const v = vals.current[d.current.id];
+        if (!v) return;
+        const maxX = colW, maxY = (rows - 1) * CHIP_H;
+        const x = Math.max(0, Math.min(maxX, d.current.slot0.x + ne.pageX - d.current.startX));
+        const y = Math.max(0, Math.min(maxY, d.current.slot0.y + ne.pageY - d.current.startY));
+        v.setValue({ x, y });
+        const col = Math.max(0, Math.min(1, Math.floor((x + colW / 2) / colW)));
+        const row = Math.max(0, Math.min(rows - 1, Math.floor((y + CHIP_H / 2) / CHIP_H)));
+        const target = Math.min(orderRef.current.length - 1, row * 2 + col);
+        const from = orderRef.current.indexOf(d.current.id);
+        if (target !== from && target >= 0) {
+            const next = orderRef.current.slice();
+            next.splice(from, 1);
+            next.splice(target, 0, d.current.id);
+            setOrderIds(next);
+        }
+    };
+    const onEnd = () => {
+        clearTimer();
+        if (!d.current.id) return;
+        d.current.id = null;
+        d.current.ignoreUntil = Date.now() + 400;   // the release must not also count as a tap on the chip
+        setScroll(true);
+        setDragId(null);
+        onReorder(orderRef.current);
+    };
+    const guard = (fn) => () => { if (Date.now() > d.current.ignoreUntil) fn(); };
+
+    return (
+        <View ref={rootRef} collapsable={false} style={{ marginHorizontal: 8, marginVertical: 8, height: rows * CHIP_H }}
+            onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+            onTouchStart={onStart} onTouchMove={onMove} onTouchEnd={onEnd} onTouchCancel={onEnd}>
+            {width > 0 && presets.map(p => {
+                const v = vals.current[p.id];
+                if (!v) return null;
+                const lifted = p.id === dragId;
+                return (
+                    <Animated.View key={p.id} style={[
+                        { position: 'absolute', left: 0, top: 0, width: colW, height: CHIP_H, transform: [...v.getTranslateTransform(), { scale: lifted ? 1.04 : 1 }] },
+                        lifted && { zIndex: 10, backgroundColor: base.border, borderRadius: 10, opacity: 0.95 },
+                    ]}>
+                        {renderChip(p, guard)}
+                    </Animated.View>
+                );
+            })}
+        </View>
+    );
+}
+
 export default function SettingsScreen() {
     const navigation = useNavigation();
     const { changeShuffleMode, eqPresetId, changeEQPreset, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback } = usePlayback();
@@ -167,6 +281,7 @@ export default function SettingsScreen() {
     const [customPresets, setCP] = useState([]);
     const [hiddenPresets, setHP] = useState([]);
     const [eqOverrides, setEO] = useState({});
+    const [presetOrder, setPresetOrderState] = useState([]);
     // Real UX confusion found here (direct feedback: "eq presets are a bit
     // confusing... it should be 'manage presets' so you can enable/disable
     // the presets, not touching your personal shit"): this single grid
@@ -201,7 +316,7 @@ export default function SettingsScreen() {
     // EQModal.js's picker is what actually respects hiddenPresets).
     // The four EQ buttons: same height, rounded corners like the song cards (not a pill).
     const eqPill = { flex: 1, height: 50, borderRadius: 14, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, marginHorizontal: 7, marginVertical: 7 };
-    const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides), [customPresets, eqOverrides]);
+    const displayPresets = useMemo(() => mergePresetsForDisplay(customPresets, eqOverrides, presetOrder), [customPresets, eqOverrides, presetOrder]);
     const [showImport, setShowImport] = useState(false);
     const [importText, setImportText] = useState('');
     const { showPlayCount, setShowPlayCount, showSongCovers, setShowSongCovers, artistSeparator, setArtistSeparator, lyricsOn, setLyricsOn, djDisc, setDjDisc, autoShow, setAutoShow, vizMode, setVizMode, playerVizCover, setPlayerVizCover, playerVizBehind, setPlayerVizBehind, djDiscSpin, setDjDiscSpin, djDiscTouch, setDjDiscTouch, miniPlayerShadow, setMiniPlayerShadow, performanceMode, setPerformanceMode, useVolumeTags, setUseVolumeTags, shadowsRaw, djDiscRpm, setDjDiscRpm, djDiscType, setDjDiscType, djDiscAssist, setDjDiscAssist, playerOutline, setPlayerOutline, detailOutline, setDetailOutline, songPillShadow, setSongPillShadow, playerBtns, setPlayerBtnShown, lyricsResyncSec, setLyricsResyncSec, lyricsOffsetSec, setLyricsOffsetSec, lyricsGapSec, setLyricsGapSec, lyricsArrows, setLyricsArrows, keepScreenAwake, setKeepScreenAwake, coverShape, setCoverShape, showPlayerCover, setShowPlayerCover, coverShadow, setCoverShadow, backgroundImageEnabled, setBackgroundImageEnabled, backgroundImageUri, setBackgroundImageUri, crossfadeEnabled, setCrossfadeEnabled, crossfadeDuration, setCrossfadeDuration, crossfadeDurationEndOfTrack, setCrossfadeDurationEndOfTrack, withinTrackNorm, setWithinTrackNorm, betweenTrackNorm, setBetweenTrackNorm, silenceTrim, setSilenceTrim, preAmp, setPreAmp, spatialWidth, setSpatialWidth, spatialBalance, setSpatialBalance, monoAudio, setMonoAudio, showPlaylistTrackCount, setShowPlaylistTrackCount, showPlaylistTitles, setShowPlaylistTitles, lyricsScrollLocked, setLyricsScrollLocked, artistDisplayJoin, setArtistDisplayJoin, topBarColor, setTopBarColor, bottomBarColor, setBottomBarColor, playlistCoverShape, setPlaylistCoverShape, playlistCoverShadow, setPlaylistCoverShadow, playlistCards, setPlaylistCards, playlistArrow, setPlaylistArrow, ui, setUiShown } = usePreferences();
@@ -327,6 +442,7 @@ export default function SettingsScreen() {
             setBuiltinPre(await getBuiltinPreAmps());
             setHP(await getHiddenPresets());
             setEO(await getEQOverrides());
+            setPresetOrderState(await getPresetOrder());
             setShuffleTypePref(await getShuffleMode());
             setKeepPriority(await getKeepPriorityOnPlaylistSwitch());
             setAlbumFromFolderState(await getAlbumFromFolder());
@@ -375,6 +491,17 @@ export default function SettingsScreen() {
         () => showPremadeInSettings ? displayPresets : displayPresets.filter(p => p.isBuiltIn ? p.id === 'flat' : true),
         [displayPresets, showPremadeInSettings]
     );
+
+    // A new arrangement of the chips on screen. Presets that are not on screen (premade ones hidden by
+    // the switch) keep their own places in the saved order.
+    const reorderPresets = (visibleIds) => {
+        const all = displayPresets.map(p => p.id);
+        const shown = new Set(visibleIds);
+        let k = 0;
+        const next = all.map(id => shown.has(id) ? visibleIds[k++] : id);
+        setPresetOrderState(next);
+        setPresetOrder(next);
+    };
 
     // Built-ins can only be hidden (above), never actually removed from the
     // list — they're baked into BUILT_IN_PRESETS. This is for custom
@@ -932,27 +1059,26 @@ export default function SettingsScreen() {
                         children (checkbox / name / delete) instead of one
                         big TouchableOpacity, since a name tap now needs to
                         mean something different from a checkbox tap. */}
-                    <View style={s.eqGrid}>
-                        {visiblePresets.map(p => (
-                            <View key={p.id} style={s.eqChip}>
-                                <TouchableOpacity onPress={() => togglePresetVisible(p.id)} hitSlop={HIT} style={s.checkWrapGrid}>
+                    <EQChipGrid presets={visiblePresets} onReorder={reorderPresets} scrollRef={scrollRef} base={base}
+                        renderChip={(p, guard) => (
+                            <View style={[s.eqChip, { width: '100%', height: CHIP_H, paddingVertical: 0 }]}>
+                                <TouchableOpacity onPress={guard(() => togglePresetVisible(p.id))} hitSlop={HIT} style={s.checkWrapGrid}>
                                     <View style={[s.checkbox, { borderColor: theme.accent }, !hiddenPresets.includes(p.id) && { backgroundColor: theme.accent }]}>
                                         {!hiddenPresets.includes(p.id) && <Text style={{ color: theme.onAccent, fontSize: 11, fontWeight: '700' }}>✓</Text>}
                                     </View>
                                 </TouchableOpacity>
-                                <TouchableOpacity style={s.eqChipNameWrap} onPress={() => openEditPresetSheet(p)}>
+                                <TouchableOpacity style={s.eqChipNameWrap} onPress={guard(() => openEditPresetSheet(p))}>
                                     <Text style={s.eqChipName} numberOfLines={1}>
                                         {p.name}{p.isOverridden ? ' •' : ''}
                                     </Text>
                                 </TouchableOpacity>
                                 {!p.isBuiltIn && (
-                                    <TouchableOpacity onPress={() => confirmDeleteCustomPreset(p)} hitSlop={HIT} style={s.eqDelWrap}>
+                                    <TouchableOpacity onPress={guard(() => confirmDeleteCustomPreset(p))} hitSlop={HIT} style={s.eqDelWrap}>
                                         <Text style={s.eqDel}>✕</Text>
                                     </TouchableOpacity>
                                 )}
                             </View>
-                        ))}
-                    </View>
+                        )} />
                     {/* Row 1: custom and advanced share three quarters, the premade switch has the last quarter.
                         Row 2 (inside EQAdvancedRows): import and export across the full width. */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 10 }}>
@@ -963,7 +1089,7 @@ export default function SettingsScreen() {
                             <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Advanced EQ</Text>
                         </TouchableOpacity>
                         <View style={{ flex: 2, alignItems: 'center', justifyContent: 'center', marginHorizontal: 7 }}>
-                            <View style={{ width: 51, height: 31 }}>
+                            <View style={{ width: 64, height: 31 }}>
                                 <LiveSwitch value={showPremadeInSettings} onValueChange={togglePremadeInSettings}
                                     trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
                             </View>

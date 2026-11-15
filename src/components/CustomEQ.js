@@ -266,7 +266,7 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
 
     return (
         <>
-            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 2, paddingBottom: 22 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 2, paddingBottom: 2 }}>
                 <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => { setImportText(''); setShowImport(true); }}>
                     <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Import EQ</Text>
                 </TouchableOpacity>

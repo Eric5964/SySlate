@@ -207,6 +207,22 @@ export const setHiddenPresets = (p) => safe(async () => {
     await AsyncStorage.setItem('hidden_eq_presets', JSON.stringify(p));
     await writeBackup({ hidden_eq_presets: p });
 }, null);
+// The order the user arranged the EQ presets in (list of ids). Presets not in
+// it (new ones) go after, in their usual order. See eq.js sortByOrder.
+export const getPresetOrder = () => safe(async () => {
+    const v = await AsyncStorage.getItem('eq_preset_order');
+    if (v) return JSON.parse(v);
+    const backup = await readBackup();
+    if (backup?.eq_preset_order?.length) {
+        await AsyncStorage.setItem('eq_preset_order', JSON.stringify(backup.eq_preset_order));
+        return backup.eq_preset_order;
+    }
+    return [];
+}, []);
+export const setPresetOrder = (o) => safe(async () => {
+    await AsyncStorage.setItem('eq_preset_order', JSON.stringify(o));
+    await writeBackup({ eq_preset_order: o });
+}, null);
 // Per-built-in-preset band overrides — { [builtInPresetId]: bands[] } — so
 // editing a built-in preset (e.g. "Bass Boost") overwrites it in place
 // instead of spinning off a separate custom preset, while still being
@@ -1442,7 +1458,7 @@ export const exportAllSettings = async () => {
     // settings that were in the validation lists but missing from this list,
     // so Export Settings (and the auto-backup, which is built from this) threw
     // them away, and import could never restore them.
-    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'eq_builtin_preamps', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'eq:global', 'spatial_width', 'spatial_balance', 'mono_audio', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'lyrics_gap_sec', 'lyrics_arrows', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
+    const keys = ['theme_id', 'base_color_id', 'base_color_id_pre_light', 'shuffle_mode', 'shuffle_on', 'crossfade', 'crossfade_enabled', 'crossfade_duration', 'crossfade_duration_eot', 'crossfade_duration_skip', 'skip_crossfade', 'vol_norm', 'between_track_norm', 'silence_trim', 'audio_ramp', 'ramp_on_pause', 'custom_eq_presets', 'hidden_eq_presets', 'eq_preset_overrides', 'eq_builtin_preamps', 'eq_preset_order', 'custom_eq', 'song_eq', 'playlist_eq', 'eq_layering', 'preamp_db', 'eq:global', 'spatial_width', 'spatial_balance', 'mono_audio', 'show_premade_settings', 'show_play_count', 'show_song_covers', 'keep_priority_on_switch', 'artist_separator', 'lyrics_mode', 'lyrics_resync_sec', 'lyrics_offset_sec', 'lyrics_gap_sec', 'lyrics_arrows', 'prev_button_mode', 'restart_threshold_sec', 'album_from_folder', 'keep_screen_awake', 'cover_shape', 'cover_shadow', 'show_player_cover', 'last_session', 'show_playlist_track_count', 'show_playlist_titles', 'lyrics_scroll_locked', 'artist_display_join', 'dj_disc', 'dj_disc_auto', 'playback_rate', 'player_btn_sleep', 'player_btn_speed', 'player_btn_eq', 'player_btn_queue', 'player_btn_label', 'player_btn_back', 'top_bar_color', 'bottom_bar_color', 'bg_image_enabled', 'playlist_cover_shape', 'playlist_cover_shadow', 'playlist_cards', 'playlist_arrow', 'dj_disc_rpm', 'dj_disc_type', 'dj_disc_assist', 'dj_disc_spin', 'dj_disc_touch', 'auto_show', 'viz_mode', 'player_viz_cover', 'player_viz_behind', 'performance_mode', 'use_volume_tags', 'settings_hidden_groups', 'player_outline', 'detail_outline', 'song_pill_shadow', 'mini_player_shadow', 'restart_threshold_unit', 'restart_threshold_pct', 'settings_mode', 'my_look', ...UI_TOGGLE_NAMES.map(n => `ui_${n}`)];
     const pairs = await AsyncStorage.multiGet(keys);
     const obj = {};
     pairs.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
@@ -1529,7 +1545,7 @@ export const importAllSettings = async (jsonString) => {
         playback_rate: [0.25, 3],
     };
     // Keys whose value is a JSON-encoded array of strings.
-    const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'playlist_order', 'settings_hidden_groups']);
+    const JSON_ARRAY_KEYS = new Set(['hidden_eq_presets', 'eq_preset_order', 'playlist_order', 'settings_hidden_groups']);
     // (playlist_covers and bg_image_uri are NOT accepted here: a settings file could point them at any
     // file or web address. Pictures only come in through importPicturesFile, which writes its own copies.)
     // The playlist sort ids the two sort menus actually offer (see SORTS in
@@ -1717,7 +1733,7 @@ export const importAllSettings = async (jsonString) => {
     // PRE-import values and quietly undo the import. Mirror whatever was
     // actually accepted, in the same shape writeBackup stores.
     const BACKUP_MIRRORED = {
-        custom_eq_presets: JSON.parse, hidden_eq_presets: JSON.parse,
+        custom_eq_presets: JSON.parse, hidden_eq_presets: JSON.parse, eq_preset_order: JSON.parse,
         eq_preset_overrides: JSON.parse, custom_eq: JSON.parse, song_eq: JSON.parse, playlist_eq: JSON.parse, playlist_sort_orders: JSON.parse,
         playlist_order: JSON.parse, settings_hidden_groups: JSON.parse,
         my_look: JSON.parse,

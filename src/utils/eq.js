@@ -67,7 +67,18 @@ export function getPresetById(id, customPresets = [], overrides = {}) {
 // override applied on top if it has one) followed by every custom preset,
 // each tagged with isBuiltIn/isOverridden so the UI can decide what
 // editing/deleting/resetting means for that particular row.
-export function mergePresetsForDisplay(customPresets = [], overrides = {}) {
+// Puts presets in the order the user arranged them; anything not in the saved
+// order (new presets) keeps its usual place after the arranged ones.
+export function sortByOrder(list, order) {
+    if (!Array.isArray(order) || !order.length) return list;
+    const pos = new Map(order.map((id, i) => [id, i]));
+    return list
+        .map((p, i) => ({ p, i, k: pos.has(p.id) ? pos.get(p.id) : order.length + i }))
+        .sort((a, b) => a.k - b.k)
+        .map(x => x.p);
+}
+
+export function mergePresetsForDisplay(customPresets = [], overrides = {}, order = []) {
     const builtIns = BUILT_IN_PRESETS.map(p => {
         const override = overrides?.[p.id];
         return override
@@ -75,7 +86,7 @@ export function mergePresetsForDisplay(customPresets = [], overrides = {}) {
             : { ...p, isBuiltIn: true, isOverridden: false };
     });
     const customs = customPresets.map(p => ({ ...p, isBuiltIn: false, isOverridden: false }));
-    return [...builtIns, ...customs];
+    return sortByOrder([...builtIns, ...customs], order);
 }
 
 // Keep EQ_PRESETS as alias for components that import it

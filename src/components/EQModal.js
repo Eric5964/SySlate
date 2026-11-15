@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Text, TouchableOpacity, StyleSheet, ScrollView, View, Alert } from 'react-native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useTheme } from '../context/ThemeContext';
-import { BUILT_IN_PRESETS } from '../utils/eq';
-import { getCustomPresets, getHiddenPresets, toStablePath } from '../utils/storage';
+import { BUILT_IN_PRESETS, sortByOrder } from '../utils/eq';
+import { getCustomPresets, getHiddenPresets, getPresetOrder, toStablePath } from '../utils/storage';
 import BottomSheet, { useSheetGuard, sheetBottomPad } from './BottomSheet';
 
 // Picking a preset changes your CURRENT EQ (the one that plays unless a song or playlist has its own).
@@ -23,9 +23,10 @@ export default function EQModal({ visible, onClose, playlistPath, pickMode = fal
         (async () => {
             const custom = await getCustomPresets();
             const hidden = await getHiddenPresets();
-            setAllPresets([...BUILT_IN_PRESETS, ...custom]);
+            const ordered = sortByOrder([...BUILT_IN_PRESETS, ...custom], await getPresetOrder());
+            setAllPresets(ordered);
             // Flat used to be exempt from hiding, so unchecking it in Settings did nothing here.
-            setEqPresets([...BUILT_IN_PRESETS, ...custom].filter(p => !hidden.includes(p.id)));
+            setEqPresets(ordered.filter(p => !hidden.includes(p.id)));
         })();
     }, [visible]);
 

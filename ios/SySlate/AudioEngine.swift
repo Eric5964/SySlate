@@ -3131,6 +3131,7 @@ class AudioEngine: RCTEventEmitter {
         if state != .playing, !isCrossfading, let stale = staleScheduleToken, stale == playbackToken {
             staleScheduleToken = nil
             let resumeAt = max(0, frozenPositionSeconds ?? currentPositionSeconds())
+            debugLog(String(format: "[POS] resuming after the output was lost: reloading at %.2fs (held position %@)", resumeAt, frozenPositionSeconds.map { String(format: "%.2f", $0) } ?? "none"))
             // This restart of the output (session on again, engine started, song loaded again) went
             // without the cold-start mute the normal play path has, so the restart could be heard as a
             // pop: a Play from Control Center after the output had gone away (car, headphones) popped,
