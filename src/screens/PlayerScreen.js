@@ -1218,6 +1218,7 @@ export default function PlayerScreen() {
             return;
         }
         if (activeLine < 0) {
+            console.log(`[LYRICS] no line lit: raw=${rawActiveLine} position=${(effectiveLyricsProgress.position || 0).toFixed(1)}s of ${(effectiveLyricsProgress.duration || 0).toFixed(1)}s, playing=${isPlaying}, first timed line at ${lyricsData?.[0]?.time ?? 'n/a'}s`);
             if (lyricsManualScroll) return;
             // Real gap in the fix above (the y===undefined guard's twin
             // case, missed on the first pass): activeLine is forced to -1
