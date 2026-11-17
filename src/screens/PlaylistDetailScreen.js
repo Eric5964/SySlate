@@ -247,8 +247,9 @@ export default function PlaylistDetailScreen() {
     const bg = base.surface; // neutral placeholder, see PlaylistsScreen's matching comment
     const sortLabel = SORTS.find(s => s.id === sortId)?.label ?? 'Sort';
     const backX = playlistBackX;   // the whole screen slides with a back swipe that starts off the edge (shared with the Playlists screen under it)
-    // Cleared when a playlist opens, not when it closes: the Playlists screen under it keeps using it until the stack has
-    // finished closing this one (see backSwipeShift in PlaylistsScreen), and it has no effect while no playlist is open.
+    // Cleared when a playlist opens, not when it closes: the Playlists screen's card style (playlistsUnderShift in App.js)
+    // multiplies it by the stack's own progress, so it has no effect while no playlist is open, and clearing it earlier
+    // let go of the screen's shift a few frames before the stack did.
     useLayoutEffect(() => { backX.setValue(0); }, [backX]);
 
     return (

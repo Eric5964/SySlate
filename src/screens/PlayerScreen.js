@@ -350,7 +350,7 @@ export default function PlayerScreen() {
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
                 onScrubRef.current(lastTouchX.current, true);
-            }, 500);
+            }, 1200);
             return;
         }
 
@@ -362,7 +362,6 @@ export default function PlayerScreen() {
         committedRef.current = true;
         clearTimeout(stuckSafetyTimer.current);
 
-        startRealTimeAnim(ratio);
         clearTimeout(clearDragTimer.current);
 
         // Abuse case flagged explicitly: held long enough that the track
@@ -372,6 +371,8 @@ export default function PlayerScreen() {
         // instead of applying it to the wrong track.
         const nowTrackId = currentTrack?._qid ?? currentTrack?.id ?? null;
         if (nowTrackId !== gestureTrackIdRef.current) { console.log('[SEEK-DEBUG] commit dropped: track id mismatch', { nowTrackId, gesture: gestureTrackIdRef.current }); setDragRatio(null); return; }
+        // Only a seek that is really going to be made moves the bar (a dropped one used to leave it at the dragged spot).
+        startRealTimeAnim(ratio);
 
         if (progress.duration > 0) {
             const targetRatio = ratio;
@@ -493,6 +494,10 @@ export default function PlayerScreen() {
 
     const onProgressGestureEvent = useRef((e) => {
         realDragMovedRef.current = true;
+        // The safety timer may already have committed a seek while the finger rested on the bar (a hold). If the
+        // finger then moves on, the release must still commit its own, final spot: before, it was ignored as
+        // "already committed", the bar showed the drag, and then snapped back to where the sound really was.
+        committedRef.current = false;
         onScrubRef.current(e.nativeEvent.absoluteX, false);
     }).current;
 
@@ -508,7 +513,7 @@ export default function PlayerScreen() {
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
                 onScrubRef.current(lastTouchX.current, true);
-            }, 500);
+            }, 1200);
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
             onScrubRef.current(absoluteX, true);
@@ -763,7 +768,11 @@ export default function PlayerScreen() {
         () => matchProgress(lyricsProgress, currentTrack?._qid, currentTrack?.duration || knownDur, currentTrack?.id),
         [lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
     );
-    let effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgressMatched;
+    // The lyrics follow the same reading as the progress bar, playing or paused (it is refreshed every second even
+    // while paused). They used a separate one-shot reading while paused, which could be old: pausing near the end of a
+    // song put the lyrics on an earlier part of the song than the bar showed. The separate reading is only for when
+    // the bar's reading has no duration yet.
+    let effectiveLyricsProgress = progressKnown ? progress : lyricsProgressMatched;
     // The last real position of this song. While paused, the one-shot reading can come back empty or tagged as
     // another song's (seen after the app has been in the background); the lyrics then lost their place and jumped
     // to the start. The song cannot have moved while paused, so the last real position is still right.

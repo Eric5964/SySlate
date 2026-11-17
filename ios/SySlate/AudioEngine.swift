@@ -1976,9 +1976,17 @@ class AudioEngine: RCTEventEmitter {
             // comment. precomputedAnalysis is nil exactly when neither
             // feature is on, same condition this used to check itself.
             if let analysis = precomputedAnalysis {
-                if silenceTrimEnabled && startAtSeconds == 0 {
-                    effectiveStartAtSeconds = analysis.leadInSeconds
-                    trailingCutSeconds = analysis.trailingCutSeconds
+                if silenceTrimEnabled {
+                    // The lead-in is only skipped on a real start (position 0). The tail cut does not depend
+                    // on where playback starts: it used to be dropped on every reload at a later position
+                    // (resume after the output was lost, a repair restart, a restored session), which made the
+                    // song 3 to 9 seconds "longer" mid-song (the progress bar re-scaled and jumped back) and
+                    // played the silent tail. A start inside the tail itself keeps the whole file.
+                    if startAtSeconds == 0 { effectiveStartAtSeconds = analysis.leadInSeconds }
+                    let fileSeconds = Double(file.length) / file.processingFormat.sampleRate
+                    if startAtSeconds < fileSeconds - analysis.trailingCutSeconds - 0.25 {
+                        trailingCutSeconds = analysis.trailingCutSeconds
+                    }
                 }
                 if betweenTrackNormEnabled {
                     gainCorrection = analysis.gainCorrection
