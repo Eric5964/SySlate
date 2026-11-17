@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect, useScrollToTop } from '@react-navigation/native';
+import { useCardAnimation } from '@react-navigation/stack';
 import { LibraryContext } from '../context/LibraryContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePreferences } from '../context/PreferencesContext';
@@ -638,7 +639,16 @@ export default function PlaylistsScreen() {
     // gone in playlistBackX. The stack leaves this screen pushed 30 percent to the left while a playlist is open; this
     // takes that shift back at the same pace, so the screen slides in from the left exactly as it does for an edge swipe.
     // It is 0 at all other times.
-    const backSwipeShift = useMemo(() => playlistBackX.interpolate({ inputRange: [0, 10000], outputRange: [0, 3000], extrapolate: 'clamp' }), []);
+    // The take-back is scaled by how far the playlist screen on top is still "open" in the stack (its progress, 1 to 0).
+    // When the swipe has finished and the stack pops the playlist, that progress falls to 0 by itself, and the stack's
+    // 30 percent shift and this take-back cancel each other the whole way, so the screen stays put. Before, the take-back
+    // was cleared the moment the playlist closed, a few frames before the stack let go of its shift, and the screen showed
+    // pushed 30 percent to the left with an empty box beside it.
+    const noNextProgress = useRef(new Animated.Value(0)).current;
+    const nextProgress = useCardAnimation().next?.progress;
+    const backSwipeShift = useMemo(
+        () => Animated.multiply(playlistBackX.interpolate({ inputRange: [0, 10000], outputRange: [0, 3000], extrapolate: 'clamp' }), nextProgress || noNextProgress),
+        [nextProgress, noNextProgress]);
     return (
         <Animated.View style={{ flex: 1, transform: [{ translateX: backSwipeShift }] }}>
         <ScreenBackground style={s.container}>

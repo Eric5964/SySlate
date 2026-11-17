@@ -2776,7 +2776,7 @@ class AudioEngine: RCTEventEmitter {
             // exact reason.
             let angle = t * .pi / 2
             outgoingNode.volume = outgoingVolumeStart * cos(angle)
-            incomingNode.volume = targetVolume * sin(angle)
+            incomingNode.volume = self.crossfadeTargetVolume * sin(angle)   // read live: a fade-in asked for mid-crossfade can raise it
 
             // Requested: the title/art should switch partway through the
             // crossfade, not only once it's fully done. currentIndex is
@@ -4729,6 +4729,17 @@ class AudioEngine: RCTEventEmitter {
                 // A fade-IN (or restore) during a crossfade: the crossfade is
                 // already fading the incoming song in, so this is skipped
                 // instead of snapping the crossfade shut. See setVolume.
+                // BUT the crossfade fades the incoming song up to whatever
+                // volume was set when it began. A resume right at a song's end
+                // (volume still 0 from the start of its ramp-in, whose ramp
+                // had not started yet) therefore crossfaded into silence, and
+                // the ramp that should have lifted it was skipped here: the
+                // sound stayed off until the volume was set again. Hand the
+                // ramp's target to the crossfade instead.
+                volume = max(volume, toVal)
+                if crossfadeIncomingFile != nil {
+                    crossfadeTargetVolume = max(crossfadeTargetVolume, toVal * max(crossfadeIncomingGainCorrection, 0.0001))
+                }
                 resolve(nil)
                 return
             }

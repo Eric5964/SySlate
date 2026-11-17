@@ -763,7 +763,16 @@ export default function PlayerScreen() {
         () => matchProgress(lyricsProgress, currentTrack?._qid, currentTrack?.duration || knownDur, currentTrack?.id),
         [lyricsProgress, currentTrack?._qid, currentTrack?.duration, currentTrack?.id]
     );
-    const effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgressMatched;
+    let effectiveLyricsProgress = (isPlaying && progressKnown) ? progress : lyricsProgressMatched;
+    // The last real position of this song. While paused, the one-shot reading can come back empty or tagged as
+    // another song's (seen after the app has been in the background); the lyrics then lost their place and jumped
+    // to the start. The song cannot have moved while paused, so the last real position is still right.
+    const lastGoodLyrics = useRef({ id: null, position: 0, duration: 0 });
+    if (effectiveLyricsProgress.duration > 0 && !effectiveLyricsProgress.stale) {
+        lastGoodLyrics.current = { id: currentTrack?.id, position: effectiveLyricsProgress.position, duration: effectiveLyricsProgress.duration };
+    } else if (!isPlaying && currentTrack?.id && lastGoodLyrics.current.id === currentTrack.id && lastGoodLyrics.current.duration > 0) {
+        effectiveLyricsProgress = lastGoodLyrics.current;
+    }
 
     // Same "is progress real yet" gate used elsewhere in this file (pct,
     // animPct, etc.) — position:0/duration:0 before the first real poll

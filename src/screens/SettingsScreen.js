@@ -158,32 +158,37 @@ const HOLD_MS = 450;
 function EQChipGrid({ presets, onReorder, scrollRef, base, renderChip }) {
     const [width, setWidth] = useState(0);
     const [dragId, setDragId] = useState(null);
-    const [orderIds, setOrderIds] = useState(() => presets.map(p => p.id));
+    const [dragOrder, setDragOrder] = useState([]);
     const rootRef = useRef(null);
     const vals = useRef({});
     const d = useRef({ timer: null, startX: 0, startY: 0, originX: 0, originY: 0, id: null, slot0: null, ignoreUntil: 0 });
+    // Off the screen the order is simply the presets' own order; only while one is held does the grid keep its own.
+    const orderIds = dragId ? dragOrder : presets.map(p => p.id);
     const orderRef = useRef(orderIds);
     orderRef.current = orderIds;
+    const prevKey = useRef('');
     const colW = width / 2;
     const slotOf = (i) => ({ x: (i % 2) * colW, y: Math.floor(i / 2) * CHIP_H });
     const rows = Math.ceil(orderIds.length / 2);
 
-    useEffect(() => { if (!dragId) setOrderIds(presets.map(p => p.id)); }, [presets, dragId]);
-
     // A new chip starts at its own slot (made during render so it shows at once).
     if (width) {
-        presets.forEach((p, i) => {
-            if (!vals.current[p.id]) { const at = orderIds.indexOf(p.id); vals.current[p.id] = new Animated.ValueXY(slotOf(at >= 0 ? at : i)); }
-        });
+        orderIds.forEach((id, i) => { if (!vals.current[id]) vals.current[id] = new Animated.ValueXY(slotOf(i)); });
     }
-    // Slide every chip (except the one under the finger) to its slot.
+    // Chips slide to their slots after a move. When chips appear or disappear (the Show premade switch) every
+    // chip jumps straight to its slot instead, so none of them can overlap on the way.
+    const idKey = orderIds.slice().sort().join('|');
     useEffect(() => {
         if (!width) return;
+        const sameSet = prevKey.current === idKey;
+        prevKey.current = idKey;
         orderIds.forEach((id, i) => {
-            if (id === dragId || !vals.current[id]) return;
-            Animated.timing(vals.current[id], { toValue: slotOf(i), duration: 170, useNativeDriver: true }).start();
+            const v = vals.current[id];
+            if (!v || id === dragId) return;
+            if (sameSet) Animated.timing(v, { toValue: slotOf(i), duration: 170, useNativeDriver: true }).start();
+            else { v.stopAnimation(); v.setValue(slotOf(i)); }
         });
-    }, [orderIds, width, dragId]);   // eslint-disable-line react-hooks/exhaustive-deps
+    }, [orderIds.join('|'), idKey, width, dragId]);   // eslint-disable-line react-hooks/exhaustive-deps
 
     const setScroll = (on) => { try { scrollRef?.current?.setNativeProps({ scrollEnabled: on }); } catch { } };
     useEffect(() => () => { clearTimeout(d.current.timer); setScroll(true); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -206,6 +211,7 @@ function EQChipGrid({ presets, onReorder, scrollRef, base, renderChip }) {
             d.current.slot0 = slotOf(idx);
             vals.current[id]?.stopAnimation();
             setScroll(false);
+            setDragOrder(orderRef.current.slice());
             setDragId(id);
         }, HOLD_MS);
     };
@@ -230,7 +236,7 @@ function EQChipGrid({ presets, onReorder, scrollRef, base, renderChip }) {
             const next = orderRef.current.slice();
             next.splice(from, 1);
             next.splice(target, 0, d.current.id);
-            setOrderIds(next);
+            setDragOrder(next);
         }
     };
     const onEnd = () => {
