@@ -142,20 +142,24 @@ export default function PlayerScreen() {
     // — even mid-song — briefly showed 0:00 before jumping to the real
     // position. prevTrackIdRef starts equal to the first render's id, so the
     // mount case is a no-op; only a later, real change fires this.
-    const prevTrackIdRef = useRef(currentTrack?.id);
+    // The song's SLOT (the per-play _qid), not just its file id: the same song can sit in the queue twice (a Priority copy next to
+    // the original), and a change from one copy to the other has to count as a song change for the bar, or the bar stayed full
+    // for up to half a second and then jumped back.
+    const slotKey = currentTrack?._qid ?? currentTrack?.id;
+    const prevTrackIdRef = useRef(slotKey);
     const [justSwitched, setJustSwitched] = useState(false);
     // Where the new song really is right after a change (a crossfade flips the
     // display halfway, so it is already a few seconds in), so the time and bar
     // start there instead of at 0:00 and jumping.
     const [switchProg, setSwitchProg] = useState({ position: 0, duration: 0 });
     useEffect(() => {
-        if (prevTrackIdRef.current === currentTrack?.id) return;
-        prevTrackIdRef.current = currentTrack?.id;
+        if (prevTrackIdRef.current === slotKey) return;
+        prevTrackIdRef.current = slotKey;
         setSwitchProg({ position: 0, duration: 0 });
         setJustSwitched(true);
         const t = setTimeout(() => setJustSwitched(false), 400);
         return () => clearTimeout(t);
-    }, [currentTrack?.id]);
+    }, [slotKey]);
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
 
@@ -331,7 +335,19 @@ export default function PlayerScreen() {
         (pageX - progressLayout.current.pageX) / progressLayout.current.width
     ));
 
+    // A gesture that was taken over (a vertical swipe starting on the bar closes the screen instead) must not seek: the bar goes
+    // back to where the sound really is and the release that follows is ignored.
+    const abortScrub = () => {
+        clearTimeout(stuckSafetyTimer.current);
+        committedRef.current = true;
+        pendingSeekRatioRef.current = null;
+        setDragRatio(null);
+        startRealTimeAnim(pct, true);
+    };
     const onScrub = (absoluteX, commit) => {
+        // Already committed this gesture (the safety timer, or the tap handler): a second commit leaves the bar alone
+        // (it used to stop the bar at the touch spot until the next poll).
+        if (commit && committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
         lastTouchX.current = absoluteX;
         const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
@@ -358,7 +374,6 @@ export default function PlayerScreen() {
         // fires once per gesture: without this guard, a real release
         // landing right after the safety backstop already fired would
         // seek twice to (almost) the same spot.
-        if (committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
         committedRef.current = true;
         clearTimeout(stuckSafetyTimer.current);
 
@@ -478,7 +493,8 @@ export default function PlayerScreen() {
     // Rebuilt on gesture-handler with activeOffsetX so a horizontal drag on
     // the bar correctly claims priority over the screen's vertical gesture.
     const onScrubRef = useRef(onScrub);
-    useEffect(() => { onScrubRef.current = onScrub; });
+    const abortScrubRef = useRef(abortScrub);
+    useEffect(() => { onScrubRef.current = onScrub; abortScrubRef.current = abortScrub; });
 
     // These MUST stay referentially stable across renders (recreating them
     // mid-gesture is what caused the earlier RNGH crash), so they delegate
@@ -516,6 +532,12 @@ export default function PlayerScreen() {
             }, 1200);
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
+            // Failed/cancelled by a mostly vertical move that never became a horizontal drag: not a seek.
+            if (state !== GHState.END && !realDragMovedRef.current && Math.abs(e.nativeEvent.translationY || 0) > 8) {
+                abortScrubRef.current();
+                holdDismissRef.current(false);
+                return;
+            }
             onScrubRef.current(absoluteX, true);
             holdDismissRef.current(false);
         }
@@ -1308,7 +1330,7 @@ export default function PlayerScreen() {
     // the real progress hook reports (e.g. after a system hiccup). Anything
     // else, the animation just keeps running uninterrupted at real-time speed
     // — no restart, no stutter.
-    const lastSyncedTrackIdRef = useRef(currentTrack?.id);
+    const lastSyncedTrackIdRef = useRef(slotKey);
     const discResyncTimer = useRef(null);
     // While a finger is on the disc the song's speed is the finger's, so the
     // bar's own timer would be wrong: it follows the real position instead
@@ -1350,11 +1372,11 @@ export default function PlayerScreen() {
     useEffect(() => {
         if (dragRatio !== null) return; // scrubbing owns the value right now
         if (discHeld || Date.now() < syncPausedUntil.current) return; // the disc is being scratched (or just let go)
-        const trackChanged = lastSyncedTrackIdRef.current !== currentTrack?.id;
+        const trackChanged = lastSyncedTrackIdRef.current !== slotKey;
         // A reading for the other song (around a crossfade's song change) says
         // nothing about this one: leave the bar alone until a real one comes.
         if (progress.stale && !trackChanged) return;
-        lastSyncedTrackIdRef.current = currentTrack?.id;
+        lastSyncedTrackIdRef.current = slotKey;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
         // since a drift-gated check skips the stop() call whenever drift
         // happens to be near-zero at the moment of pausing — which is the
@@ -1374,7 +1396,7 @@ export default function PlayerScreen() {
             // `pct` can be up to 500ms old at the instant of a pause (lock
             // screen, Control Center, headphones). Read the exact position
             // so the frozen bar sits where playback really stopped.
-            const trackAtPause = currentTrack?.id;
+            const trackAtPause = slotKey;
             AudioEngine.getProgress().then(p => {
                 if (lastSyncedTrackIdRef.current !== trackAtPause || !(p?.duration > 0)) return;
                 const exact = Math.max(0, Math.min(1, p.position / p.duration));
@@ -1409,7 +1431,7 @@ export default function PlayerScreen() {
             // comes back quickly does the bar fall back to 0.
             // The old song's bar is cleared at once (it used to keep running for up to a
             // quarter second after a skip while the real spot was being asked for).
-            const trackAtChange = currentTrack?.id;
+            const trackAtChange = slotKey;
             const idAtChange = currentTrack?.id;
             let settled = false;
             let zeroed = false;
@@ -1476,7 +1498,7 @@ export default function PlayerScreen() {
             startRealTimeAnim(pct, !animRunRef.current);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [progress.position, isPlaying, currentTrack?.id, playbackRate, discHeld]);
+    }, [progress.position, isPlaying, slotKey, playbackRate, discHeld]);
 
     // Safety net: a seek preview that nothing has cleared for 4 s is dropped,
     // so the time text and the bar can never stay frozen at a spot.

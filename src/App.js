@@ -6,6 +6,7 @@ import { autoBackupIfDue, listAutoBackups, restoreAutoBackup } from './utils/sto
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
+import { playlistBackX } from './utils/backSwipe';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableScreens } from 'react-native-screens';
@@ -90,7 +91,40 @@ enableScreens(true);
 const Tab = createBottomTabNavigator();
 const Root = createStackNavigator();
 const PlaylistsStack = createStackNavigator();
-const playlistsUnderShift = () => ({ cardStyle: {} });   // no parallax: the Playlists screen stays put under a playlist
+// How the playlist slides over (and the Playlists screen under it is shifted, roughly iOS's 30 percent
+// parallax for the screen below) while a playlist is on top. Copied from @react-navigation/stack's own
+// SlideFromRightIOS (forHorizontalIOS), with one change: the shift of the screen below is ALSO eased by a
+// custom back-swipe's own progress (playlistBackX).
+//
+// An edge swipe moves the stack's own gesture value, so `next.progress` carries the parallax for both screens
+// at once. A swipe that starts off the edge strip instead moves the screen itself (BackSwipeZone writes into
+// playlistBackX) — it never moves `next.progress` at all, which left the Playlists screen pinned at -30% through
+// the whole custom swipe and snapping back when the pop took effect. `rest` goes 1 -> 0 as the swipe goes, so
+// multiplying the shift by it makes the under-screen glide back into place, matching the edge swipe.
+//
+// This interpolator MUST be used by the screen on top (PlaylistDetail), not just the screen below: a screen that
+// has another screen stacked above it doesn't use its own cardStyleInterpolator at all — the navigator takes the
+// transition config (including the interpolator) from the next screen's options. Setting it only on the Playlists
+// screen (which is what an earlier attempt did) has no effect while a playlist is open.
+const playlistBackSlide = ({ current, next, inverted, layouts: { screen } }) => {
+    const translateFocused = Animated.multiply(
+        current.progress.interpolate({ inputRange: [0, 1], outputRange: [screen.width, 0], extrapolate: 'clamp' }),
+        inverted,
+    );
+    let translateUnfocused = 0;
+    if (next) {
+        const shift = next.progress.interpolate({ inputRange: [0, 1], outputRange: [0, screen.width * -0.3], extrapolate: 'clamp' });
+        const rest = playlistBackX.interpolate({ inputRange: [0, screen.width], outputRange: [1, 0], extrapolate: 'clamp' });
+        translateUnfocused = Animated.multiply(Animated.multiply(shift, rest), inverted);
+    }
+    const overlayOpacity = current.progress.interpolate({ inputRange: [0, 1], outputRange: [0, 0.07], extrapolate: 'clamp' });
+    const shadowOpacity = current.progress.interpolate({ inputRange: [0, 1], outputRange: [0, 0.3], extrapolate: 'clamp' });
+    return {
+        cardStyle: { transform: [{ translateX: translateFocused }, { translateX: translateUnfocused }] },
+        overlayStyle: { opacity: overlayOpacity },
+        shadowStyle: { shadowOpacity },
+    };
+};
 
 // Nesting these two inside their own stack (instead of PlaylistDetail living
 // at the top-level Root stack) keeps the tab bar visible while viewing a
@@ -101,16 +135,18 @@ function PlaylistsStackScreen() {
             <PlaylistsStack.Screen
                 name="PlaylistsList"
                 component={PlaylistsScreen}
-                // The stack's usual shift of the screen underneath (30 percent to the left while a screen is on top of it),
-                // plus this: a playlist swiped away from somewhere other than the edge moves itself, so the Playlists screen
-                // gets that swipe's progress (playlistBackX) and eases its shift back to rest the same way the edge swipe does.
-                options={{ cardStyleInterpolator: playlistsUnderShift }}
+                // Same interpolator the detail screen declares: whatever is stacked on top of this screen doesn't
+                // use the list's own cardStyleInterpolator at all (the navigator takes the transition config from the
+                // detail's options, which carry playlistBackSlide), so this only matters for the moment nothing is
+                // on top any more (next === undefined) — where it returns an empty card style either way.
+                options={{ cardStyleInterpolator: playlistBackSlide }}
             />
             <PlaylistsStack.Screen
                 name="PlaylistDetail"
                 component={PlaylistDetailScreen}
                 options={{
                     ...TransitionPresets.SlideFromRightIOS,
+                    cardStyleInterpolator: playlistBackSlide,
                     gestureEnabled: true,
                     gestureDirection: 'horizontal',
                     // Keep the Playlists screen mounted and visible underneath, so the custom swipe-out (which moves the screen itself,

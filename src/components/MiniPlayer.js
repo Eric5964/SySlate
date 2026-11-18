@@ -63,12 +63,14 @@ export default function MiniPlayer({ withTabBar = true }) {
     // that has its own start/stop state to get out of sync.
     const basisRef = useRef({ position: progress.position, duration: progress.duration, at: Date.now() });
     const [, forceTick] = useState(0);
-    const lastTrackIdRef = useRef(currentTrack?.id);
+    // The song's slot (per-play _qid), so a change from one copy of a song to another copy of the same song counts as a change.
+    const slotKey = currentTrack?._qid ?? currentTrack?.id;
+    const lastTrackIdRef = useRef(slotKey);
 
     useEffect(() => {
-        const trackChanged = lastTrackIdRef.current !== currentTrack?.id;
+        const trackChanged = lastTrackIdRef.current !== slotKey;
         if (progress.stale && !trackChanged) return;   // a reading for the other song: ignore it
-        lastTrackIdRef.current = currentTrack?.id;
+        lastTrackIdRef.current = slotKey;
         if (trackChanged) {
             // Same fix as PlayerScreen's own progress bar for this — see
             // its trackChanged comment. Right after a track change,
@@ -82,7 +84,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             // flips the display halfway, so the new song is already a few
             // seconds in) and start there. Falls back to 0 if no usable answer
             // arrives quickly.
-            const trackAtChange = currentTrack?.id;
+            const trackAtChange = slotKey;
             const idAtChange = currentTrack?.id;
             // The old song's position must not stay on screen while the real one is asked for:
             // the bar goes to the start at once, then moves to the real spot when it is known.
@@ -125,7 +127,7 @@ export default function MiniPlayer({ withTabBar = true }) {
         // change" (the whole pause) and leapt toward the end until the
         // next poll moved. Now the basis is re-stamped on every poll and
         // on every play/pause toggle.
-    }, [progress, isPlaying, currentTrack?.id, playbackRate]);
+    }, [progress, isPlaying, slotKey, playbackRate]);
 
     // On every play/pause change, read the true position right now instead
     // of trusting a poll that can be up to 500ms old (a pause from the lock

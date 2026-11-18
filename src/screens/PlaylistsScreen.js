@@ -634,9 +634,10 @@ export default function PlaylistsScreen() {
     latest.current = { coverReady, liftUp, endDrag, resetHold, applyDrag, changeCover };
 
     // (A playlist swiped away from somewhere other than the edge moves itself and shares its progress in playlistBackX.
-    // The shift of this screen that goes with it is applied ONCE, by the card style in App.js (playlistsUnderShift:
-    // the stack's 30 percent shift times how much of the swipe is left). It used to be applied a second time here,
-    // which pushed this screen too far right during the swipe and left it displaced for a few frames at the end.)
+    // The matching shift of this screen is applied by the stack's card style in App.js — the interpolator lives on the
+    // playlist screen's own options (playlistBackSlide), because whatever is on top of this screen decides this screen's
+    // card style, not this screen. It eases the stack's 30 percent shift back to rest with the swipe's progress instead
+    // of next.progress, which a custom swipe never moves.)
     return (
         <Animated.View style={{ flex: 1 }}>
         <ScreenBackground style={s.container}>

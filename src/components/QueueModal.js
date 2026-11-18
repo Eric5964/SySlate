@@ -418,8 +418,10 @@ export default function QueueModal({ visible, onClose }) {
         // not the newer PlaybackActiveTrackChanged one, so staying
         // consistent with what's already proven to fire elsewhere in this
         // codebase rather than assuming the newer event is also available.
-        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => refresh());
-        return () => sub.remove();
+        let t = null;
+        // A second look a moment later: after a back skip the Priority songs are moved up natively just after the change.
+        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => { refresh(); clearTimeout(t); t = setTimeout(() => refresh(), 450); });
+        return () => { sub.remove(); clearTimeout(t); };
     }, [visible, refresh]);
 
     const priorityRows = rows.filter(r => r.isPriority);

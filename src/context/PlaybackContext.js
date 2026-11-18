@@ -593,6 +593,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // track as "current" with its cover. Each event takes a ticket; only
     // the newest one is allowed to apply.
     const trackChangeSeqRef = useRef(0);
+    const lastIndexRef = useRef(null);   // native queue index of the song before the current one (see the back-move below)
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             const seq = ++trackChangeSeqRef.current;
@@ -651,8 +652,58 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // dropped ALL of its tracked copies the moment just one of
                 // them started playing, losing track of the other(s) even
                 // though they're still genuinely queued.
-                if (priorityRef.current[0] === track.id) {
-                    const next = priorityRef.current.slice(1);
+                // Index bookkeeping for going BACK: the Priority zone is "the slots right after the current one", so
+                // a back skip (or a tap on an earlier song) left it covering the songs just gone back to, and the real
+                // Priority songs fell into Up Next. When the index went down, the Priority block is moved back up to
+                // sit right after the new current song, and a back move never counts as playing a Priority song.
+                let wentBack = false;
+                let curIdx = null;
+                let prevIdx = null;
+                try {
+                    curIdx = await AudioEngine.getCurrentTrack();
+                    // Check staleness before touching the shared bookkeeping: an older change that resolved AFTER a newer one
+                    // would otherwise write its old index into lastIndexRef, and the next event's back-detection (and the
+                    // Priority count below) would reason from the wrong origin.
+                    if (seq !== trackChangeSeqRef.current) return;
+                    prevIdx = lastIndexRef.current;
+                    lastIndexRef.current = curIdx;
+                    if (prevIdx != null && curIdx != null && curIdx < prevIdx && priorityRef.current.length > 0) {
+                        wentBack = true;
+                        const delta = prevIdx - curIdx;
+                        serialQueue(async () => {
+                            try {
+                                const pri = priorityRef.current;
+                                const q = await AudioEngine.getQueue();
+                                const now = await AudioEngine.getCurrentTrack();
+                                if (now !== curIdx || !pri.length) return;
+                                // the block must really be where the old current song left it
+                                for (let i = 0; i < pri.length; i++) {
+                                    if (q[curIdx + 1 + delta + i]?.id !== pri[i]) return;
+                                }
+                                for (let i = 0; i < pri.length; i++) {
+                                    const from = curIdx + 1 + delta + i;
+                                    const to = curIdx + 1 + i;
+                                    await AudioEngine.remove(from);
+                                    await AudioEngine.add(q[from], to);
+                                }
+                                saveSessionRef.current?.();   // the saved session reads the Priority block as "the songs right after the current one"
+                            } catch (e) { console.error('priority back-move:', e); }
+                        });
+                    }
+                } catch { }
+                // How many Priority songs this change used up: normally one. When several songs were skipped through quickly,
+                // the events in between can be dropped (a newer change took over), and only the index tells how far it went.
+                let usedUp = 0;
+                if (!wentBack) {
+                    const pri = priorityRef.current;
+                    if (prevIdx != null && curIdx != null && curIdx > prevIdx) {
+                        const k = curIdx - prevIdx;
+                        if (k <= pri.length && pri[k - 1] === track.id) usedUp = k;
+                    }
+                    if (!usedUp && pri[0] === track.id) usedUp = 1;
+                }
+                if (usedUp > 0) {
+                    const next = priorityRef.current.slice(usedUp);
                     priorityRef.current = next;
                     setPriorityQueue(next);
                     // Real bug found here: currentPlaylist never got
