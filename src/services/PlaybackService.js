@@ -524,7 +524,15 @@ export async function playWithRamp(preClaimedId, startActionArg) {
     // Only a plain Play/resume is blocked; loading a chosen song passes its own startAction.
     if (!startActionArg && !preClaimedId && playBlockedAfterReplace) return;
     const startAction = startActionArg || (() => AudioEngine.play());
-    if (!preClaimedId && isTransitionLocked()) { queueAction(() => playWithRamp()); return; }
+    if (!preClaimedId && isTransitionLocked()) {
+        // Run later, when the lock lets go. A plain Play that finds the song already playing by then (an earlier Play
+        // or tap that was waiting started it) must not run: it would drop the level to 0 and ramp in again, an audible dip.
+        queueAction(async () => {
+            try { if ((await AudioEngine.getState()) === State.Playing) return; } catch { }
+            playWithRamp();
+        });
+        return;
+    }
     rampLock = true;
     try {
         const ramp = await getAudioRamp();
@@ -945,7 +953,14 @@ export async function skipWithRamp(direction = 'next') {
             // leave the no-crossfade flag armed for the next real skip.
             await AudioEngine.setSuppressNextCrossfade(direction === 'next' || !restartCurrent).catch(() => { });
             if (direction === 'next') return AudioEngine.skipToNext();
-            if (restartCurrent) return AudioEngine.seekTo(0);
+            if (restartCurrent) {
+                await AudioEngine.seekTo(0);
+                // A seek only repositions: while the song is paused it does not start it again (native leaves it "ready"). This
+                // is the start action of a skip while paused, so playback has to be started here, or playWithRamp waits at
+                // volume 0 for sound that never comes (about 13 s, holding every Play and song tap behind it).
+                try { if ((await AudioEngine.getState()) !== State.Playing) await AudioEngine.play(); } catch { }
+                return;
+            }
             return AudioEngine.skipToPrevious();
         };
 

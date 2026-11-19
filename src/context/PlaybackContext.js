@@ -594,6 +594,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // the newest one is allowed to apply.
     const trackChangeSeqRef = useRef(0);
     const lastIndexRef = useRef(null);   // native queue index of the song before the current one (see the back-move below)
+    // Slot ids (_qid) of songs that were played FROM Priority. A back skip over them puts them back into Priority.
+    const playedPriQidsRef = useRef(new Set());
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             const seq = ++trackChangeSeqRef.current;
@@ -667,7 +669,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     if (seq !== trackChangeSeqRef.current) return;
                     prevIdx = lastIndexRef.current;
                     lastIndexRef.current = curIdx;
-                    if (prevIdx != null && curIdx != null && curIdx < prevIdx && priorityRef.current.length > 0) {
+                    if (prevIdx != null && curIdx != null && curIdx < prevIdx && (priorityRef.current.length > 0 || playedPriQidsRef.current.size > 0)) {
                         wentBack = true;
                         const delta = prevIdx - curIdx;
                         serialQueue(async () => {
@@ -675,17 +677,31 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                                 const pri = priorityRef.current;
                                 const q = await AudioEngine.getQueue();
                                 const now = await AudioEngine.getCurrentTrack();
-                                if (now !== curIdx || !pri.length) return;
-                                // the block must really be where the old current song left it
+                                if (now !== curIdx) return;
+                                // the Priority block must really be where the old current song left it
                                 for (let i = 0; i < pri.length; i++) {
                                     if (q[curIdx + 1 + delta + i]?.id !== pri[i]) return;
                                 }
-                                for (let i = 0; i < pri.length; i++) {
-                                    const from = curIdx + 1 + delta + i;
-                                    const to = curIdx + 1 + i;
-                                    await AudioEngine.remove(from);
-                                    await AudioEngine.add(q[from], to);
+                                // The songs just gone back over (the old current one included). The ones that were played from
+                                // Priority become Priority again, in the order they were played, ahead of the Priority songs that
+                                // were still waiting. Everything else gone back over stays in Up Next, after them.
+                                const passed = q.slice(curIdx + 1, prevIdx + 1);
+                                const block = q.slice(prevIdx + 1, prevIdx + 1 + pri.length);
+                                const played = playedPriQidsRef.current;
+                                const back = passed.filter(t => t && t._qid && played.has(t._qid));
+                                const rest = passed.filter(t => !(t && t._qid && played.has(t._qid)));
+                                if (!back.length && !pri.length) return;
+                                const region = q.slice(curIdx + 1, prevIdx + 1 + pri.length);
+                                const wanted = [...back, ...block, ...rest];
+                                const same = wanted.length === region.length && wanted.every((t, i) => t === region[i] || (t._qid && t._qid === region[i]._qid));
+                                if (!same) {
+                                    for (let i = region.length - 1; i >= 0; i--) await AudioEngine.remove(curIdx + 1 + i);
+                                    await AudioEngine.add(wanted, curIdx + 1);
                                 }
+                                for (const t of back) played.delete(t._qid);
+                                const nextPri = [...back.map(t => t.id), ...pri];
+                                priorityRef.current = nextPri;
+                                setPriorityQueue(nextPri);
                                 saveSessionRef.current?.();   // the saved session reads the Priority block as "the songs right after the current one"
                             } catch (e) { console.error('priority back-move:', e); }
                         });
@@ -703,6 +719,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     if (!usedUp && pri[0] === track.id) usedUp = 1;
                 }
                 if (usedUp > 0) {
+                    // Remember which slots were played from Priority (see the back-move above). The current song now; the ones
+                    // skipped through (dropped events) are read from the queue without holding anything up.
+                    if (track._qid) playedPriQidsRef.current.add(track._qid);
+                    if (usedUp > 1 && prevIdx != null && curIdx != null) {
+                        const from = prevIdx + 1, to = curIdx;
+                        AudioEngine.getQueue().then(qq => { for (let j = from; j < to; j++) if (qq[j]?._qid) playedPriQidsRef.current.add(qq[j]._qid); }).catch(() => { });
+                    }
                     const next = priorityRef.current.slice(usedUp);
                     priorityRef.current = next;
                     setPriorityQueue(next);
@@ -1139,6 +1162,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         logicalQueueRef.current = fullQueue;
         const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
         await AudioEngine.reset();
+        playedPriQidsRef.current.clear();
+        lastIndexRef.current = null;   // a new queue: the old index says nothing about it (would read as a back skip)
         await withTimeout(AudioEngine.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
         // Deliberately NOT calling fillRestOfWindow() here — callers that

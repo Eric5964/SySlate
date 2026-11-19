@@ -84,7 +84,25 @@ const MORE_ROWS = 80;
 // grows from nothing to its full height (and fades in), one view doing it, so the space opens smoothly
 // instead of just appearing. At the top the system animation does it, as before.
 let GROW_BY_HEIGHT = false;
+// The row that was just added (and the Priority label / line that appear with it) grows in by its own scale, on the
+// native driver. This used to be the system layout animation's "create" effect, but that one applies to EVERY view
+// created in that commit, and the list creates a view for the row at the far end of its window whenever the rows
+// shift by one, so the bottom row of the screen grew in as if it were the new one. Only a view that mounts with
+// isNew set animates here; the value starts at 0, so there is no frame at full size first.
+function useScaleIn(isNew) {
+    const born = useRef(isNew && !GROW_BY_HEIGHT);
+    const v = useRef(new Animated.Value(born.current ? 0 : 1)).current;
+    const [on, setOn] = useState(born.current);
+    useEffect(() => {
+        if (!born.current) return;
+        born.current = false;
+        Animated.timing(v, { toValue: 1, duration: 240, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(() => setOn(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    return on ? { transform: [{ scaleY: v }] } : null;
+}
 function GrowInRow({ children, isNew }) {
+    const scaleStyle = useScaleIn(isNew);
     const g = useRef(new Animated.Value(1)).current;
     const [growing, setGrowing] = useState(false);
     useEffect(() => {
@@ -95,7 +113,7 @@ function GrowInRow({ children, isNew }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isNew]);
     return (
-        <Animated.View style={growing ? { height: g.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), opacity: g, overflow: 'hidden' } : null}>
+        <Animated.View style={scaleStyle || (growing ? { height: g.interpolate({ inputRange: [0, 1], outputRange: [0, ROW_HEIGHT] }), opacity: g, overflow: 'hidden' } : null)}>
             {children}
         </Animated.View>
     );
@@ -132,7 +150,8 @@ function ShrinkOutRow({ removing, children }) {
 // smoothly when the last row under it is being removed: the box shrinks to
 // nothing while its content shrinks and fades, in step with the row's own
 // removal, instead of vanishing at the end.
-function CollapseBlock({ collapsing, children }) {
+function CollapseBlock({ collapsing, growing, children }) {
+    const scaleStyle = useScaleIn(!!growing);
     const o = useRef(new Animated.Value(1)).current;
     useEffect(() => {
         if (!collapsing) return;
@@ -141,7 +160,7 @@ function CollapseBlock({ collapsing, children }) {
     }, [collapsing]);
     return (
         <View style={collapsing ? { height: 0, overflow: 'hidden' } : null}>
-            <Animated.View style={collapsing ? { opacity: o } : null}>{children}</Animated.View>
+            <Animated.View style={collapsing ? { opacity: o } : scaleStyle}>{children}</Animated.View>
         </View>
     );
 }
@@ -350,9 +369,8 @@ export default function QueueModal({ visible, onClose }) {
             // When the list is scrolled down it keeps the visible rows in place by itself (maintainVisibleContentPosition),
             // so the rows must NOT also be animated to their new places: the two fought and the whole list slid up and back.
             GROW_BY_HEIGHT = !!anchorRef.current;
-            if (justAddedKey) LayoutAnimation.configureNext(anchorRef.current
-                ? { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY } }
-                : { duration: 240, create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.scaleY }, update: { type: LayoutAnimation.Types.easeOut } });
+            // Only the rows' move is animated by the system here (the new row's own grow-in is GrowInRow's); no "create" effect.
+            if (justAddedKey && !anchorRef.current) LayoutAnimation.configureNext({ duration: 240, update: { type: LayoutAnimation.Types.easeOut } });
             unstable_batchedUpdates(() => {
                 setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
                 setRows(upcoming);

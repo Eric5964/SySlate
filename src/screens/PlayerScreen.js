@@ -1331,6 +1331,8 @@ export default function PlayerScreen() {
     // else, the animation just keeps running uninterrupted at real-time speed
     // — no restart, no stutter.
     const lastSyncedTrackIdRef = useRef(slotKey);
+    // True once a normal poll has fed the bar since the last song change (the fallback below must not undo it).
+    const barFedRef = useRef(false);
     const discResyncTimer = useRef(null);
     // While a finger is on the disc the song's speed is the finger's, so the
     // bar's own timer would be wrong: it follows the real position instead
@@ -1377,6 +1379,7 @@ export default function PlayerScreen() {
         // nothing about this one: leave the bar alone until a real one comes.
         if (progress.stale && !trackChanged) return;
         lastSyncedTrackIdRef.current = slotKey;
+        if (trackChanged) barFedRef.current = false;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
         // since a drift-gated check skips the stop() call whenever drift
         // happens to be near-zero at the moment of pausing — which is the
@@ -1463,7 +1466,7 @@ export default function PlayerScreen() {
             // The bar waits at 0 only briefly; the real spot is asked for again every 120 ms
             // (up to ~1.5 s) so an answer that was not ready yet, or still described the other song,
             // still lands soon, instead of the bar sitting at 0 and then popping in later.
-            const toZero = () => { if (settled || zeroed || lastSyncedTrackIdRef.current !== trackAtChange) return; zeroed = true; startRealTimeAnim(estPct, true, estDur); };
+            const toZero = () => { if (settled || zeroed || barFedRef.current || lastSyncedTrackIdRef.current !== trackAtChange) return; zeroed = true; startRealTimeAnim(estPct, true, estDur); };
             setTimeout(toZero, 250);
             let attempts = 0;
             const trySeed = () => {
@@ -1488,6 +1491,7 @@ export default function PlayerScreen() {
         // change) the audio position is still settling, so a bigger gap is
         // tolerated; later a bar that is ahead is left alone until it is
         // clearly off (a backward jump is the visible kind of glitch).
+        barFedRef.current = true;
         const aheadSec = (barPctNow() - pct) * (progress.duration || 0);
         const inGrace = Date.now() < barGraceUntil.current;
         const tooFarAhead = aheadSec > (inGrace ? 1.5 : 1.2);

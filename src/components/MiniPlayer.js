@@ -100,7 +100,8 @@ export default function MiniPlayer({ withTabBar = true }) {
             let zeroed = false;
             // Waits at 0 only briefly; the real spot is asked for again every 120 ms (up to ~1.5 s),
             // so an answer that was not ready yet still lands soon instead of popping in seconds later.
-            const toZero = () => { if (settled || zeroed || lastTrackIdRef.current !== trackAtChange) return; zeroed = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
+            // A normal poll may already have given the bar a real reading since the change (basis duration > 0): then leave it.
+            const toZero = () => { if (settled || zeroed || lastTrackIdRef.current !== trackAtChange || basisRef.current.duration > 0) return; zeroed = true; basisRef.current = { position: 0, duration: 0, at: Date.now() }; forceTick(t => t + 1); };
             setTimeout(toZero, 250);
             let attempts = 0;
             const trySeed = () => {

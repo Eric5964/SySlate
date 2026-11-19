@@ -520,6 +520,7 @@ class AudioEngine: RCTEventEmitter {
         configureRemoteCommandCenter()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleAppDidBecomeActive(_:)), name: UIApplication.didBecomeActiveNotification, object: nil)
         _ = newOutputAppearedSinceLastLook()   // remember which outputs exist now
         NotificationCenter.default.addObserver(self, selector: #selector(handleEngineConfigChange(_:)), name: .AVAudioEngineConfigurationChange, object: engine)
         // Requested: ramp out briefly (not an instant cut) specifically when
@@ -1308,6 +1309,28 @@ class AudioEngine: RCTEventEmitter {
     // the lock screen, Control Center and the car showed no player at all.
     private var needsNowPlayingReclaim = true
     private var reclaimToken: Int = 0
+    private var lastReclaimAt = Date.distantPast
+
+    // Coming back to the app: iOS can lose track of us while we sat in the background (the lock screen, Control
+    // Center or the car then show paused, or nothing, while the song plays). Nothing ever told it otherwise,
+    // because a reclaim only happened on an interruption or after a long silence. So when the app becomes active
+    // while the song really plays (and no pause fade is under way), claim Now Playing again; when it is really
+    // paused, send that again instead.
+    @objc private func handleAppDidBecomeActive(_ notification: Notification) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.handleAppDidBecomeActive(notification) }
+            return
+        }
+        if interruptionActive { return }
+        if state == .playing, displayedAsPaused != true {
+            if Date().timeIntervalSince(lastReclaimAt) < 5 { return }
+            debugLog("[NP] app became active while playing: claiming Now Playing again so iOS shows playing")
+            reclaimNowPlaying()
+        } else if state != .playing, displayedAsPaused != false {
+            debugLog("[NP] app became active while paused: sending paused to iOS again")
+            updateNowPlayingInfo()
+        }
+    }
 
     // Takes the Now Playing spot back: the session is activated, the entry is cleared and
     // written again (iOS treats that as a new claim, which is what brings the lock screen
@@ -1320,6 +1343,7 @@ class AudioEngine: RCTEventEmitter {
         }
         needsNowPlayingReclaim = false
         reclaimToken += 1
+        lastReclaimAt = Date()
         let token = reclaimToken
         activateSession()
         UIApplication.shared.beginReceivingRemoteControlEvents()
