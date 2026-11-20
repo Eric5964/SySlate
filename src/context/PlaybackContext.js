@@ -596,6 +596,10 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const lastIndexRef = useRef(null);   // native queue index of the song before the current one (see the back-move below)
     // Slot ids (_qid) of songs that were played FROM Priority. A back skip over them puts them back into Priority.
     const playedPriQidsRef = useRef(new Set());
+    // Set by jumpToQueueIndex when it has ALREADY removed the skipped-over Priority entries itself ({ idx, t }). The change
+    // listener must then not remove them a second time: with several copies of the same song in Priority (same id) it did,
+    // so tapping the top of three identical Priority rows dropped two entries and pushed the last copy into Up Next.
+    const jumpHandledRef = useRef(null);
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             const seq = ++trackChangeSeqRef.current;
@@ -710,7 +714,10 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // How many Priority songs this change used up: normally one. When several songs were skipped through quickly,
                 // the events in between can be dropped (a newer change took over), and only the index tells how far it went.
                 let usedUp = 0;
-                if (!wentBack) {
+                const jh = jumpHandledRef.current;
+                const jumpHandled = !!jh && jh.idx === curIdx && Date.now() - jh.t < 8000;
+                if (jumpHandled) jumpHandledRef.current = null;
+                if (!wentBack && !jumpHandled) {
                     const pri = priorityRef.current;
                     if (prevIdx != null && curIdx != null && curIdx > prevIdx) {
                         const k = curIdx - prevIdx;
@@ -889,7 +896,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
     const removeFromQueue = useCallback((realIndex, qid) => serialQueue(async () => {
         try {
-            let currentIndex = await AudioEngine.getCurrentTrack();
+            const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
             // The removal runs a moment after the swipe (after its animation): the queue may
             // have moved on, so find the row again by its slot id instead of trusting the old
@@ -897,13 +904,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             if (qid) {
                 const q = await AudioEngine.getQueue();
                 if (q[realIndex]?._qid !== qid) realIndex = q.findIndex(t => t._qid === qid);
-                // The track can also finish while those two calls are in flight. Reading the
-                // index again keeps the guard below honest: without it a row that has just
-                // become the current slot passes a stale `realIndex <= currentIndex` check and
-                // remove() deletes the playing song and clears native's currentIndex.
-                const fresh = await AudioEngine.getCurrentTrack();
-                if (fresh === null || fresh === undefined) return priorityRef.current;
-                currentIndex = fresh;
             }
             if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return priorityRef.current;
             await AudioEngine.remove(realIndex);
@@ -946,46 +946,27 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // `toReal` is the slot it should end up in. Which zone (Priority or Up
     // Next) it lands in follows from where it is dropped: inside the
     // priority rows it becomes priority, after them it becomes Up Next.
-    // `fromQid` is the dragged slot's _qid: a song change while the finger is
-    // down rebuilds the rows, and the numbers captured at the drop no longer
-    // point at the row that was dragged. Finding it again by _qid (and moving
-    // the drop slot by the same amount) keeps the move on the intended song;
-    // without it a move landing in that window reordered a different song.
-    const moveInQueue = useCallback((fromReal, toReal, endOfPriority = false, topOfUpNext = false, fromQid) => serialQueue(async () => {
+    const moveInQueue = useCallback((fromReal, toReal, endOfPriority = false, topOfUpNext = false) => serialQueue(async () => {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
             if ((fromReal === toReal && !endOfPriority && !topOfUpNext) || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
             const queue = await AudioEngine.getQueue();
-            let from = fromReal;
-            let to = toReal;
-            if (fromQid) {
-                if (queue[from]?._qid !== fromQid) {
-                    const found = queue.findIndex(t => t._qid === fromQid);
-                    if (found < 0) return priorityRef.current;   // that row is gone: nothing to move
-                    // The whole list shifted with it (the current song left the top), so the
-                    // slot it was dropped on did too.
-                    const delta = found - from;
-                    from = found;
-                    to = toReal + delta;
-                }
-            }
-            if (from <= currentIndex || to <= currentIndex) return priorityRef.current;
-            const track = queue[from];
+            const track = queue[fromReal];
             if (!track) return priorityRef.current;
             const pc = priorityRef.current.length;
             const pStart = currentIndex + 1;
-            const wasPriority = from < pStart + pc;
+            const wasPriority = fromReal < pStart + pc;
             const pcWithout = wasPriority ? pc - 1 : pc;
-            const ins = to - pStart;   // its place among the upcoming songs without itself
+            const ins = toReal - pStart;   // its place among the upcoming songs without itself
             // endOfPriority: a song from Up Next dropped below the last Priority row (the slot is the same
             // as the top of Up Next, so the list alone cannot tell the two apart).
             // topOfUpNext: a Priority song dropped at the top of Up Next leaves Priority (without it, a song from
             // Priority dropped on that same slot always stayed last in Priority, so nothing could be moved there).
             const becomesPriority = ins < pcWithout || (ins === pcWithout && (wasPriority ? !topOfUpNext : endOfPriority));
             const pcNew = pcWithout + (becomesPriority ? 1 : 0);
-            await AudioEngine.remove(from);
-            await AudioEngine.add(track, to);
+            await AudioEngine.remove(fromReal);
+            await AudioEngine.add(track, toReal);
             const after = await AudioEngine.getQueue();
             const next = after.slice(pStart, pStart + pcNew).map(t => t.id);
             priorityRef.current = next;
@@ -1066,6 +1047,12 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     const next = priorityRef.current.slice(skippedCount);
                     priorityRef.current = next;
                     setPriorityQueue(next);
+                    jumpHandledRef.current = { idx: realIndex, t: Date.now() };   // the change listener must not trim these again
+                    try {
+                        // These were Priority songs that are now behind the current one: a back skip puts them back into Priority.
+                        const qq = await AudioEngine.getQueue();
+                        for (let j = priorityStart; j <= realIndex; j++) if (qq[j]?._qid) playedPriQidsRef.current.add(qq[j]._qid);
+                    } catch { }
                     if (crossfadeReady) {
                         await AudioEngine.skip(realIndex);
                     } else {
@@ -1103,6 +1090,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (priorityTracks.length) {
                     await AudioEngine.add(priorityTracks, newTargetIndex + 1);
                 }
+                // The Priority songs were moved along behind the target and stay Priority: the change listener must not count the
+                // landing as one of them being played (it did when the target had the same id as a Priority entry).
+                jumpHandledRef.current = { idx: newTargetIndex, t: Date.now() };
                 if (crossfadeReady) {
                     await AudioEngine.skip(newTargetIndex);
                 } else {
@@ -1516,13 +1506,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // "Keep Priority Queue When Switching Playlists" decides whether the priority songs
             // survive; when it is off, only the playing song is kept.
             const keepPriority = await getKeepPriorityOnPlaylistSwitch();
-            const priorityTracks = keepPriority
-                ? queue.slice(currentIndex + 1, currentIndex + 1 + priorityRef.current.length)
-                : [];
-            // The block can be shorter than priorityRef near the end of the queue (or after drift): everything
-            // below must use what is actually there, not the tracked length, or the logical queue would keep
-            // slots that do not exist and loadedThrough would run past its end.
-            const keepEnd = currentIndex + 1 + priorityTracks.length;
+            const keepEnd = currentIndex + 1 + (keepPriority ? priorityRef.current.length : 0);
+            const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             // Shuffled: arranged so its first song is not the one that plays right before it.
             const rest = shuffled
                 ? await buildQueueAsync(playlist.songs, mode, queue[keepEnd - 1])
@@ -1531,10 +1516,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // Same bulk replace as a shuffle change (reshuffleUpcoming).
             await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
             if (priorityTracks.length) await withTimeout(AudioEngine.add(priorityTracks), 4000);
-            // Track exactly what was carried over. Keeping the old list when the slice was shorter left ids
-            // behind for songs that are no longer in the queue, which threw off every later priority boundary.
-            priorityRef.current = priorityTracks.map(t => t.id);
-            setPriorityQueue(priorityRef.current);
             const batch = stampQids(rest.slice(0, QUEUE_WINDOW_SIZE));
             if (batch.length) await withTimeout(AudioEngine.add(batch), 6000);
             const newLogical = [...queue.slice(0, keepEnd), ...rest];

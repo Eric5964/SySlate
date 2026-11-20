@@ -936,7 +936,9 @@ export default function PlayerScreen() {
     // a little downward drift used to close the Player). Released as soon as the finger lifts; a backstop timer lets
     // go anyway if a lift is ever missed, so the gesture can never stay off.
     const dismissHoldTimer = useRef(null);
+    const holdActiveRef = useRef(false);
     const holdDismiss = useCallback((on) => {
+        holdActiveRef.current = !!on;
         if (dismissHoldTimer.current) { clearTimeout(dismissHoldTimer.current); dismissHoldTimer.current = null; }
         if (on) dismissHoldTimer.current = setTimeout(() => { dismissHoldTimer.current = null; navigation.setOptions({ gestureEnabled: !showQueueRef.current }); }, 20000);
         navigation.setOptions({ gestureEnabled: on ? false : !showQueueRef.current });
@@ -945,6 +947,13 @@ export default function PlayerScreen() {
     const holdDismissRef = useRef(holdDismiss);
     holdDismissRef.current = holdDismiss;
     const HOLD = { onPressIn: () => holdDismissRef.current(true), onPressOut: () => holdDismissRef.current(false) };
+    // Backstop for a missed release: when the LAST finger lifts anywhere on the Player (or the touch is cancelled), swipe-down-to-close
+    // is switched back on if a hold is still active. A touch on the progress bar could end without a terminal gesture state
+    // reaching the handlers, which left the gesture off (it only came back after a button press).
+    const releaseHoldOnLift = useRef((e) => {
+        const t = e?.nativeEvent?.touches;
+        if (holdActiveRef.current && (!t || t.length === 0)) holdDismissRef.current(false);
+    }).current;
     // Leaving the disc view always lets go of a finger-on-disc state and turns the gesture back on.
     useEffect(() => { if (!showingDisc && discHeldRef.current) { discHeldRef.current = false; setDiscHeld(false); navigation.setOptions({ gestureEnabled: !showQueueRef.current }); } }, [showingDisc, navigation]);
     // The swipe-down-to-close gesture is only switched off AFTER a finger lands on
@@ -1628,7 +1637,7 @@ export default function PlayerScreen() {
 
     // The top edge is TOP_PAD, the same as the other screens' bars. It used the phone's status bar height + 6, which sat a few points lower on some phones.
     return (
-        <ScreenBackground ownImage style={[s.container, { paddingTop: TOP_PAD }]}>
+        <ScreenBackground ownImage style={[s.container, { paddingTop: TOP_PAD }]} viewProps={{ onTouchEndCapture: releaseHoldOnLift, onTouchCancelCapture: releaseHoldOnLift }}>
             <GradientCap color={theme.accent} height={68} style={{ borderBottomLeftRadius: 16, borderBottomRightRadius: 16, opacity: 0.5 }} />
 
             <View style={s.topBar}>

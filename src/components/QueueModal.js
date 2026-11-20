@@ -311,10 +311,6 @@ export default function QueueModal({ visible, onClose }) {
     // changes once, all at the same moment as the Now Playing row, not in two halves.
     const currentTrackRef = useRef(currentTrack);
     currentTrackRef.current = currentTrack;
-    // A refresh that started while the sheet was open can land after it closes (refresh awaits the native queue and
-    // index). Configuring a layout animation then would animate whatever commits next on the screen underneath.
-    const sheetOpenRef = useRef(visible);
-    sheetOpenRef.current = visible;
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply, smooth) => {
         try {
@@ -353,21 +349,25 @@ export default function QueueModal({ visible, onClose }) {
                 }
             }
             const activePriority = priorityOverride ?? priorityQueueRef.current;
-            // How many of the slots after the current one are Priority. The block always sits right after NATIVE's
-            // current slot (see PlaybackContext's priorityEnd = currentIndex + 1 + length), not after the slot the list
-            // is showing: mid-crossfade those differ by one, and anchoring this to the shown slot marked the incoming
-            // song as Priority while pushing the last real Priority song into Up Next for a frame. Normally this is all
-            // of the Priority list; right when a Priority song becomes the current one the list can still hold it for a
-            // moment, so that leading entry is dropped and only the entries after it count.
-            const matchesFrom = (k) => activePriority.slice(k).every((id, j) => queue[currentIndex + 1 + j]?.id === id);
-            let priorityCount = activePriority.length;
-            if (!matchesFrom(0)) {
+            // How many of the slots after the current one are Priority. Normally all of the Priority list. But right when a
+            // Priority song becomes the current one, the list can still hold it for a moment: then the song that is now
+            // current is the first entry, and only the entries after it are still upcoming.
+            // Rows count as Priority only while they really are the songs of the Priority list, in order. The list can be
+            // briefly out of step with the queue (a change just landed, or an entry went stale); labelling by position alone
+            // then turned the next Up Next song into a Priority one.
+            const prefixLen = (k) => {
+                let m = 0;
+                while (k + m < activePriority.length && queue[curIdx + 1 + m]?.id === activePriority[k + m]) m++;
+                return m;
+            };
+            let priorityCount = prefixLen(0);
+            if (priorityCount === 0) {
+                // The song that just became current can still be the first entry of the list: only what follows it is upcoming.
                 for (let k = 1; k <= activePriority.length; k++) {
-                    if (queue[currentIndex]?.id === activePriority[k - 1] && matchesFrom(k)) { priorityCount = activePriority.length - k; break; }
+                    if (queue[curIdx]?.id === activePriority[k - 1]) { priorityCount = prefixLen(k); break; }
                 }
             }
-            // Every realIndex below is a true native slot, not a display offset, so this boundary is native too.
-            const priorityEnd = currentIndex + 1 + priorityCount;
+            const priorityEnd = curIdx + 1 + priorityCount;
             let justAddedKey = null;
             const upcoming = queue.slice(curIdx + 1).map((song, i) => {
                 const realIndex = curIdx + 1 + i;
@@ -404,9 +404,9 @@ export default function QueueModal({ visible, onClose }) {
             // so the rows must NOT also be animated to their new places: the two fought and the whole list slid up and back.
             GROW_BY_HEIGHT = !!anchorRef.current;
             // Only the rows' move is animated by the system here (the new row's own grow-in is GrowInRow's); no "create" effect.
-            if (sheetOpenRef.current && justAddedKey && !anchorRef.current) LayoutAnimation.configureNext({ duration: 240, update: { type: LayoutAnimation.Types.easeOut } });
+            if (justAddedKey && !anchorRef.current) LayoutAnimation.configureNext({ duration: 240, update: { type: LayoutAnimation.Types.easeOut } });
             // The song just became the current one: the rows below it move up smoothly instead of jumping.
-            else if (sheetOpenRef.current && smooth && !anchorRef.current) LayoutAnimation.configureNext({ duration: 260, update: { type: LayoutAnimation.Types.easeOut }, delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity } });
+            else if (smooth && !anchorRef.current) LayoutAnimation.configureNext({ duration: 260, update: { type: LayoutAnimation.Types.easeOut }, delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity } });
             unstable_batchedUpdates(() => {
                 setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
                 setRows(upcoming);
@@ -835,11 +835,11 @@ export default function QueueModal({ visible, onClose }) {
                     draggedListIndex = -1; editRef.current = false; endPriRef.current = false; topUNRef.current = false;
                     Animated.timing(dragY, { toValue: 0, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
                     glided = true;
-                    const next = await moveInQueue(held.realIndex, list[to].realIndex, endPri, topUN, held.song?._qid);
+                    const next = await moveInQueue(held.realIndex, list[to].realIndex, endPri, topUN);
                     await refresh(next);
                 } else {
                     Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-                    const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN, list[from].song?._qid);
+                    const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
                     await refresh(next, undefined, clear);
                 }
             }
