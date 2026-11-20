@@ -3471,7 +3471,8 @@ class AudioEngine: RCTEventEmitter {
             debugLog("[RAMP-DEBUG] skip NEXT arrived mid-crossfade, queued until it finishes")
             return
         }
-        advance(direction: 1, wrap: repeatMode == .queue, autoPlay: true, isManualSkip: true)
+        // Next while paused only changes the song: it stays paused (JS ramps the song in only when it was playing).
+        advance(direction: 1, wrap: repeatMode == .queue, autoPlay: state == .playing, isManualSkip: true)
     }
 
     private func skipToPreviousInternal() {
@@ -3484,7 +3485,7 @@ class AudioEngine: RCTEventEmitter {
             debugLog("[RAMP-DEBUG] skip PREVIOUS arrived mid-crossfade, queued until it finishes")
             return
         }
-        advance(direction: -1, wrap: repeatMode == .queue, autoPlay: true, isManualSkip: true)
+        advance(direction: -1, wrap: repeatMode == .queue, autoPlay: state == .playing, isManualSkip: true)
     }
 
     // MARK: - Exposed methods (mirrors RNTP's method names/shapes)

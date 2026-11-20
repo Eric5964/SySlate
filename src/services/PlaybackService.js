@@ -953,44 +953,17 @@ export async function skipWithRamp(direction = 'next') {
             // leave the no-crossfade flag armed for the next real skip.
             await AudioEngine.setSuppressNextCrossfade(direction === 'next' || !restartCurrent).catch(() => { });
             if (direction === 'next') return AudioEngine.skipToNext();
-            if (restartCurrent) {
-                await AudioEngine.seekTo(0);
-                // A seek only repositions: while the song is paused it does not start it again (native leaves it "ready"). This
-                // is the start action of a skip while paused, so playback has to be started here, or playWithRamp waits at
-                // volume 0 for sound that never comes (about 13 s, holding every Play and song tap behind it).
-                try { if ((await AudioEngine.getState()) !== State.Playing) await AudioEngine.play(); } catch { }
-                return;
-            }
+            if (restartCurrent) return AudioEngine.seekTo(0);   // while playing, native keeps it playing; while paused it stays paused
             return AudioEngine.skipToPrevious();
         };
 
         const wasPlaying = (await AudioEngine.getState()) === State.Playing;
 
         if (!wasPlaying) {
-            // Real bug found here: this called doNativeSkip() directly, then
-            // playWithRamp() as a completely separate step afterward — unlike
-            // every OTHER fresh-start call site (see PlaybackContext.js's
-            // song-tap/playlist-Play/Shuffle paths), which pre-claim the fade
-            // and pass their native call in AS playWithRamp's startAction, so
-            // playWithRamp's own setVolume(0) always lands BEFORE native
-            // starts playing. Two real problems from skipping that pattern
-            // here: (1) native's finishLoadingTrack sets
-            // activeNode.volume = volume * gainCorrection and autoplays
-            // immediately — `volume` is whatever was last set, which is 1
-            // right after any pause (pauseWithRamp/pauseImmediate both
-            // restore it to 1 post-pause) — so the new track started
-            // audibly at FULL volume, unramped; (2) skipLock was already
-            // true at this point (set above), so the plain playWithRamp()
-            // call immediately hit its own isTransitionLocked() guard and
-            // got queued rather than run — it only actually executed ~100ms
-            // later, in drainPending(), once skipLock cleared. Net effect:
-            // skip-while-paused briefly played the new song at full volume,
-            // then snapped to 0 and ramped up from there — not a ramp-in at
-            // all for that ~100ms+ window. Fixed by adopting the same
-            // pre-claim pattern as every other fresh-start path.
-            forceReleaseFade();
-            const preClaimedId = preClaimFadeForFreshStart();
-            await playWithRamp(preClaimedId, () => withTimeout(doNativeSkip(), 5000));
+            // A skip (or restart) while PAUSED only changes the song or goes back to the start: it stays paused, with no ramp
+            // and no sound. (Native skipToNext/Previous/seekTo do not start playback when the engine is not playing.) The
+            // Play button ramps it in later like any other start.
+            try { await withTimeout(doNativeSkip(), 5000); } catch { }
             return;
         }
 

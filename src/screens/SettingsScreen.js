@@ -1089,10 +1089,10 @@ export default function SettingsScreen() {
                         Row 2 (inside EQAdvancedRows): import and export across the full width. */}
                     <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingTop: 10 }}>
                         <TouchableOpacity style={[eqPill, { flex: 3, borderColor: theme.accent }]} onPress={openNewPresetSheet}>
-                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Custom Preset</Text>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Custom Preset</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={[eqPill, { flex: 3, borderColor: theme.accent }]} onPress={() => setAdvEQ({ open: true, preset: null })}>
-                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Add Advanced EQ</Text>
+                            <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>+ Advanced EQ</Text>
                         </TouchableOpacity>
                         <View style={{ flex: 2, alignItems: 'center', justifyContent: 'center', marginHorizontal: 7 }}>
                             <View style={{ width: 64, height: 31 }}>

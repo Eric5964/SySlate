@@ -306,8 +306,17 @@ export default function QueueModal({ visible, onClose }) {
     // stable so only the explicit calls trigger it.
     const priorityQueueRef = useRef(priorityQueue);
     useEffect(() => { priorityQueueRef.current = priorityQueue; }, [priorityQueue]);
+    // The song the app currently shows as playing (what the Now Playing row is built from). During a crossfade the native
+    // index is already on the incoming song while this still says the outgoing one: the rows follow THIS, so the list
+    // changes once, all at the same moment as the Now Playing row, not in two halves.
+    const currentTrackRef = useRef(currentTrack);
+    currentTrackRef.current = currentTrack;
+    // A refresh that started while the sheet was open can land after it closes (refresh awaits the native queue and
+    // index). Configuring a layout animation then would animate whatever commits next on the screen underneath.
+    const sheetOpenRef = useRef(visible);
+    sheetOpenRef.current = visible;
 
-    const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply) => {
+    const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply, smooth) => {
         try {
             // Tapping a song to play resets TrackPlayer's queue entirely and
             // re-adds the new window right after — there's a brief real gap
@@ -332,11 +341,36 @@ export default function QueueModal({ visible, onClose }) {
                 if (attempt < 4) await new Promise(r => setTimeout(r, 120));
             }
             if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
+            // Which slot is "current" for the list: the one the Now Playing row shows. Native moves its index at the START of a
+            // crossfade (and the Priority bookkeeping follows a moment later), so asking native alone showed the incoming song
+            // already gone from Priority while the Now Playing row still said the outgoing one, and the next song jumped into
+            // Priority for a second before everything settled.
+            let curIdx = currentIndex;
+            const shown = currentTrackRef.current;
+            if (shown?._qid && queue[currentIndex]?._qid !== shown._qid) {
+                for (let back = 1; back <= 2; back++) {
+                    if (queue[currentIndex - back]?._qid === shown._qid) { curIdx = currentIndex - back; break; }
+                }
+            }
             const activePriority = priorityOverride ?? priorityQueueRef.current;
-            const priorityEnd = currentIndex + 1 + activePriority.length;
+            // How many of the slots after the current one are Priority. The block always sits right after NATIVE's
+            // current slot (see PlaybackContext's priorityEnd = currentIndex + 1 + length), not after the slot the list
+            // is showing: mid-crossfade those differ by one, and anchoring this to the shown slot marked the incoming
+            // song as Priority while pushing the last real Priority song into Up Next for a frame. Normally this is all
+            // of the Priority list; right when a Priority song becomes the current one the list can still hold it for a
+            // moment, so that leading entry is dropped and only the entries after it count.
+            const matchesFrom = (k) => activePriority.slice(k).every((id, j) => queue[currentIndex + 1 + j]?.id === id);
+            let priorityCount = activePriority.length;
+            if (!matchesFrom(0)) {
+                for (let k = 1; k <= activePriority.length; k++) {
+                    if (queue[currentIndex]?.id === activePriority[k - 1] && matchesFrom(k)) { priorityCount = activePriority.length - k; break; }
+                }
+            }
+            // Every realIndex below is a true native slot, not a display offset, so this boundary is native too.
+            const priorityEnd = currentIndex + 1 + priorityCount;
             let justAddedKey = null;
-            const upcoming = queue.slice(currentIndex + 1).map((song, i) => {
-                const realIndex = currentIndex + 1 + i;
+            const upcoming = queue.slice(curIdx + 1).map((song, i) => {
+                const realIndex = curIdx + 1 + i;
                 // Every track gets a unique _qid stamped on the moment it's
                 // added to the native queue (see stampQid in
                 // PlaybackContext) — using that directly as the row key
@@ -370,7 +404,9 @@ export default function QueueModal({ visible, onClose }) {
             // so the rows must NOT also be animated to their new places: the two fought and the whole list slid up and back.
             GROW_BY_HEIGHT = !!anchorRef.current;
             // Only the rows' move is animated by the system here (the new row's own grow-in is GrowInRow's); no "create" effect.
-            if (justAddedKey && !anchorRef.current) LayoutAnimation.configureNext({ duration: 240, update: { type: LayoutAnimation.Types.easeOut } });
+            if (sheetOpenRef.current && justAddedKey && !anchorRef.current) LayoutAnimation.configureNext({ duration: 240, update: { type: LayoutAnimation.Types.easeOut } });
+            // The song just became the current one: the rows below it move up smoothly instead of jumping.
+            else if (sheetOpenRef.current && smooth && !anchorRef.current) LayoutAnimation.configureNext({ duration: 260, update: { type: LayoutAnimation.Types.easeOut }, delete: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity } });
             unstable_batchedUpdates(() => {
                 setNewKeys(justAddedKey ? new Set([justAddedKey]) : new Set());
                 setRows(upcoming);
@@ -441,6 +477,17 @@ export default function QueueModal({ visible, onClose }) {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => { refresh(); clearTimeout(t); t = setTimeout(() => refresh(), 450); });
         return () => { sub.remove(); clearTimeout(t); };
     }, [visible, refresh]);
+
+    // The Now Playing row follows the app's current song, which changes a moment AFTER native's event (and during a
+    // crossfade, well after it started). Rebuilding the rows when it does makes the Now Playing row and the list change
+    // together, smoothly, instead of the list changing first and the row catching up.
+    const shownKey = currentTrack ? (currentTrack._qid ?? currentTrack.id) : null;
+    const lastShownKey = useRef(shownKey);
+    useEffect(() => {
+        if (lastShownKey.current === shownKey) return;
+        lastShownKey.current = shownKey;
+        if (visible) refresh(undefined, undefined, undefined, true);
+    }, [shownKey, visible, refresh]);
 
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);
@@ -788,11 +835,11 @@ export default function QueueModal({ visible, onClose }) {
                     draggedListIndex = -1; editRef.current = false; endPriRef.current = false; topUNRef.current = false;
                     Animated.timing(dragY, { toValue: 0, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
                     glided = true;
-                    const next = await moveInQueue(held.realIndex, list[to].realIndex, endPri, topUN);
+                    const next = await moveInQueue(held.realIndex, list[to].realIndex, endPri, topUN, held.song?._qid);
                     await refresh(next);
                 } else {
                     Animated.timing(dragY, { toValue: settleY - fromL.y, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-                    const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN);
+                    const next = await moveInQueue(list[from].realIndex, list[to].realIndex, endPri, topUN, list[from].song?._qid);
                     await refresh(next, undefined, clear);
                 }
             }

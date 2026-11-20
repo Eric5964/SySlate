@@ -348,7 +348,7 @@ export default function PlaylistDetailScreen() {
 
                         <View style={s.actionRow}>
                             {ui.pd_play !== false && (
-                            <SwipeQueueButton onSwipe={() => swipeQueue(false)}>
+                            <SwipeQueueButton raise onSwipe={() => swipeQueue(false)}>
                             {(added) => (
                             <TouchableOpacity style={[s.playBtn, { backgroundColor: theme.accent }]} onPress={handlePlay}>
                                 {/* The label swaps for "Added" inside the same pill: same size, same colours. */}

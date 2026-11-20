@@ -15,7 +15,8 @@ const REVEAL_DEADZONE = 10;
 // briefly covered by an "Added" label that fades in and out like the one on
 // song rows. `children` may also be a function that receives the "added" opacity (0 to 1), so the button can
 // swap its own label for "Added" in place (what the Play and Shuffle buttons do).
-export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor = '#7c3aed', badgeTextColor = '#fff', radius = 24, children }) {
+// `raise`: draw this button above its neighbours while it slides over them (the Play button over Shuffle).
+export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor = '#7c3aed', badgeTextColor = '#fff', radius = 24, raise = false, children }) {
     const x = useRef(new Animated.Value(0)).current;
     const addedOpacity = useRef(new Animated.Value(0)).current;
     const fired = useRef(false);
@@ -58,7 +59,7 @@ export default function SwipeQueueButton({ onSwipe, edgeExclude = 0, badgeColor 
             failOffsetY={[-32, 32]}
             hitSlop={edgeExclude ? { left: -edgeExclude } : undefined}
         >
-            <Animated.View style={{ transform: [{ translateX: shift }] }}>
+            <Animated.View style={{ transform: [{ translateX: shift }], zIndex: raise ? 2 : 0 }}>
                 {typeof children === 'function' ? children(addedOpacity) : (
                     <>
                         {children}
