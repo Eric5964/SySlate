@@ -31,7 +31,14 @@ export default function BackSwipeZone({ onBack, style, children, navigation, dra
     } : undefined).current;
     const reset = () => { if (dragX) Animated.spring(dragX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 90 }).start(); };
     const handlerRef = useRef(({ nativeEvent: e }) => {
-        if (e.state === State.BEGAN) { startX.current = e.absoluteX; stackGestureStarted.current = false; return; }
+        if (e.state === State.BEGAN) {
+            startX.current = e.absoluteX;
+            stackGestureStarted.current = false;
+            // A spring left running from the previous swipe is native-driven; without stopping it, it keeps writing
+            // this value on the native side and fights the finger for the first frames of the new drag.
+            if (dragX) dragX.stopAnimation();
+            return;
+        }
         if (e.state === State.CANCELLED || e.state === State.FAILED) { if (startX.current >= EDGE_SWIPE_WIDTH + 4) reset(); return; }
         if (e.state !== State.END) return;
         if (stackGestureStarted.current) return;

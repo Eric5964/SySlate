@@ -507,8 +507,12 @@ export default function PlayerScreen() {
     // the tap handler's onTapStateChange know a real drag is already
     // underway, so it can bail out below instead of double-committing.
     const realDragMovedRef = useRef(false);
+    // True from the moment the pan ends until the next one begins. A move event that arrives after the release used to
+    // un-commit the gesture and re-arm the 1.2 s safety timer, which then committed the same seek a second time.
+    const gestureEndedRef = useRef(true);
 
     const onProgressGestureEvent = useRef((e) => {
+        if (gestureEndedRef.current) return;
         realDragMovedRef.current = true;
         // The safety timer may already have committed a seek while the finger rested on the bar (a hold). If the
         // finger then moves on, the release must still commit its own, final spot: before, it was ignored as
@@ -520,6 +524,7 @@ export default function PlayerScreen() {
     const onProgressStateChange = useRef((e) => {
         const { state, absoluteX } = e.nativeEvent;
         if (state === GHState.BEGAN) {
+            gestureEndedRef.current = false;
             holdDismissRef.current(true);
             measureProgress();
             committedRef.current = false;
@@ -532,6 +537,8 @@ export default function PlayerScreen() {
             }, 1200);
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
+            gestureEndedRef.current = true;
+            clearTimeout(stuckSafetyTimer.current);
             // Failed/cancelled by a mostly vertical move that never became a horizontal drag: not a seek.
             if (state !== GHState.END && !realDragMovedRef.current && Math.abs(e.nativeEvent.translationY || 0) > 8) {
                 abortScrubRef.current();
