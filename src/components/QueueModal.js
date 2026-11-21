@@ -251,7 +251,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue, libraryFor } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue, libraryFor, queueFrozenRef } = usePlayback();
     const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow, vizMode, performanceMode } = usePreferences();
     const showViz = vizMode !== 'off' && !performanceMode;   // the visualizer on the Now Playing row, as on the song lists
     // allRows is the whole upcoming queue; only the first `visibleCount` are
@@ -311,9 +311,20 @@ export default function QueueModal({ visible, onClose }) {
     // changes once, all at the same moment as the Now Playing row, not in two halves.
     const currentTrackRef = useRef(currentTrack);
     currentTrackRef.current = currentTrack;
+    // The sheet skipped rebuilds while an Up Next jump was in flight (see refresh); rebuild right when the shown song switches.
+    const shownQid = currentTrack?._qid ?? currentTrack?.id ?? null;
+    const shownQidSeen = useRef(shownQid);
+    useEffect(() => {
+        if (shownQidSeen.current === shownQid) return;
+        shownQidSeen.current = shownQid;
+        if (visible && !(queueFrozenRef?.current)) refresh();
+    }, [shownQid]);
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply, smooth) => {
         try {
+            // An Up Next jump is in flight: the native queue is already reordered but the song has not switched, so a rebuild
+            // now would show the Priority songs gone. The sheet rebuilds once the shown song changes (or after 5 s).
+            if (queueFrozenRef?.current && Date.now() - queueFrozenRef.current < 5000) return;
             // Tapping a song to play resets TrackPlayer's queue entirely and
             // re-adds the new window right after — there's a brief real gap
             // between those two steps where the native queue is legitimately

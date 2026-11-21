@@ -596,71 +596,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const lastIndexRef = useRef(null);   // native queue index of the song before the current one (see the back-move below)
     // Slot ids (_qid) of songs that were played FROM Priority. A back skip over them puts them back into Priority.
     const playedPriQidsRef = useRef(new Set());
-    // Jumps that skipped over Priority rows, waiting for their change event ({ idx, t, skipped, skippedIds, applied }).
-    // The trim itself is deferred to the moment the SHOWN song changes, so those rows do not flip into Up Next for the
-    // whole crossfade. The listener must then not trim them a second time: with several copies of the same song in
-    // Priority (same id) the old index-based count did, so tapping the top of three identical Priority rows dropped two
-    // entries and pushed the last copy into Up Next. A list (not one slot): two jumps can land before the first one's
-    // change event arrives, and the older entry still has to suppress that event's index-based fallback.
-    const jumpHandledRef = useRef([]);
-    // Applies one deferred trim exactly once. `skippedIds` is the front of the tracked list at tap time: if something
-    // else changed the list in between (a natural advance, a swipe-remove) the same entries are still the ones that have
-    // to go — a plain count would drop the wrong number of them.
-    const applyJumpPriorityTrim = (jh) => {
-        if (!jh || jh.applied || !(jh.skipped > 0)) return false;
-        jh.applied = true;
-        let next = priorityRef.current;
-        const ids = jh.skippedIds || [];
-        const prefixIntact = ids.length === jh.skipped && next.length >= jh.skipped
-            && ids.every((id, i) => next[i] === id);
-        if (ids.length !== jh.skipped || prefixIntact) {
-            next = next.slice(jh.skipped);
-        } else {
-            const rest = [...next];
-            for (const id of ids) {
-                const at = rest.indexOf(id);
-                if (at >= 0) rest.splice(at, 1);
-            }
-            next = rest;
-        }
-        priorityRef.current = next;
-        setPriorityQueue(next);
-        return true;
-    };
-    // Drops entries that can no longer be matched. An un-applied entry older than the listener's 8 s match window would
-    // otherwise keep being subtracted by pendingJumpSkippedFor forever (no event is coming), moving the Priority
-    // boundary that every positional calculation uses. Applied entries stay longer: they still have to claim their own
-    // change event so the index-based fallback cannot trim the same rows again.
-    const pruneJumpHandled = () => {
-        const now = Date.now();
-        const list = jumpHandledRef.current;
-        const kept = list.filter(jh => now - jh.t < (jh.applied ? 60000 : 8000));
-        if (kept.length !== list.length) jumpHandledRef.current = kept;
-    };
-    // How many tracked Priority entries are already behind the native current index because a jump's trim is still
-    // pending. Anything positional (top-up window, session save, playlist carry-over) has to see the same list the
-    // native queue has, or it works from a boundary that many slots too long.
-    const pendingJumpSkippedFor = (currentIndex) => {
-        pruneJumpHandled();
-        if (currentIndex === null || currentIndex === undefined) return 0;
-        let skipped = 0;
-        for (const jh of jumpHandledRef.current) {
-            if (!jh.applied && jh.skipped > 0 && currentIndex >= jh.idx) skipped += jh.skipped;
-        }
-        return Math.min(skipped, priorityRef.current.length);
-    };
-    // Any other queue edit that lands while a jump's trim is deferred must apply it first: that edit is about to read
-    // or write the very list the trim belongs to, and the sheet is already changing in that case anyway. The entry is
-    // kept (marked applied) so its own change event still matches and cannot fall into the index-based fallback below.
-    const settlePendingJumpTrim = (currentIndex) => {
-        if (!jumpHandledRef.current.length) return;
-        pruneJumpHandled();
-        for (const jh of jumpHandledRef.current) {
-            if (jh.applied || !(jh.skipped > 0)) continue;
-            if (currentIndex === null || currentIndex === undefined || currentIndex < jh.idx) continue;
-            applyJumpPriorityTrim(jh);
-        }
-    };
+    // Set by jumpToQueueIndex when it has ALREADY removed the skipped-over Priority entries itself ({ idx, t }). The change
+    // listener must then not remove them a second time: with several copies of the same song in Priority (same id) it did,
+    // so tapping the top of three identical Priority rows dropped two entries and pushed the last copy into Up Next.
+    const jumpHandledRef = useRef(null);
+    // Timestamp (ms) while an Up Next jump has reordered the native queue but the shown song has not switched yet. The Queue
+    // sheet reads the native queue, so it must not rebuild during this window (Priority vanished for the whole crossfade).
+    const queueFrozenRef = useRef(0);
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, async ({ nextTrack }) => {
             const seq = ++trackChangeSeqRef.current;
@@ -701,6 +643,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     ? track._qid === currentTrackRef.current?._qid
                     : track.id === currentTrackRef.current?.id;
                 if (sameSlot) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
+                queueFrozenRef.current = 0;
                 setCurrentTrack(track);
                 // The first song of a queued playlist just started: that
                 // playlist is now the current one.
@@ -775,20 +718,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // How many Priority songs this change used up: normally one. When several songs were skipped through quickly,
                 // the events in between can be dropped (a newer change took over), and only the index tells how far it went.
                 let usedUp = 0;
-                const jumpEntry = jumpHandledRef.current.find(jh => jh.idx === curIdx && (jh.applied || Date.now() - jh.t < 8000)) || null;
-                const jumpHandled = !!jumpEntry;
-                if (jumpEntry) {
-                    // Already applied by an intervening queue edit (see settlePendingJumpTrim) — a no-op then.
-                    applyJumpPriorityTrim(jumpEntry);
+                const jh = jumpHandledRef.current;
+                const jumpHandled = !!jh && jh.idx === curIdx && Date.now() - jh.t < 8000;
+                if (jumpHandled) {
+                    jumpHandledRef.current = null;
+                    if (jh.skipped > 0) {
+                        const nextPri = priorityRef.current.slice(jh.skipped);
+                        priorityRef.current = nextPri;
+                        setPriorityQueue(nextPri);
+                    }
                 }
-                if (jumpHandledRef.current.length && curIdx != null) {
-                    // Consume the matching entry; keep later jumps that are still on their way. Older entries whose own
-                    // change event never arrived are dropped here — the index-based usedUp path below covers everything
-                    // they skipped, so applying their deferred trim too would remove those rows twice.
-                    jumpHandledRef.current = jumpHandledRef.current
-                        .filter(jh => jh !== jumpEntry && jh.idx > curIdx && Date.now() - jh.t < 8000);
-                }
-                pruneJumpHandled();
                 if (!wentBack && !jumpHandled) {
                     const pri = priorityRef.current;
                     if (prevIdx != null && curIdx != null && curIdx > prevIdx) {
@@ -881,8 +820,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             try {
                 const currentIndex = await AudioEngine.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-                // A jump's deferred Priority trim must be in place before the count below is read (see its declaration).
-                settlePendingJumpTrim(currentIndex);
                 // Reverted the round-17 dedupe: explicit direction from
                 // testing was to keep the original occurrence in Up Next —
                 // "add to Priority" means play a copy sooner, not move the
@@ -932,9 +869,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return { priority: priorityRef.current, insertedAt: null };
             if (realIndex === null || realIndex === undefined || realIndex <= currentIndex) return { priority: priorityRef.current, insertedAt: null };
-            // See addToQueue: the Priority boundary below must match the native queue, not a list a pending jump trim
-            // is still about to shorten.
-            settlePendingJumpTrim(currentIndex);
             // Real bug found via screen recording: this had no check for
             // realIndex already sitting inside the priority zone itself.
             // QueueModal's swipe-right ("+Next") affordance was wired
@@ -975,9 +909,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
-            // The row may be identified by its slot id just below, but the Priority boundary that decides whether a
-            // removal edits the tracked list must see any pending jump trim first.
-            settlePendingJumpTrim(currentIndex);
             // The removal runs a moment after the swipe (after its animation): the queue may
             // have moved on, so find the row again by its slot id instead of trusting the old
             // number. Gone already, or now playing / played: nothing to remove.
@@ -1031,9 +962,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return priorityRef.current;
             if ((fromReal === toReal && !endOfPriority && !topOfUpNext) || fromReal <= currentIndex || toReal <= currentIndex) return priorityRef.current;
-            // This rebuilds the tracked list from the native queue at the end (which silently completes a pending trim)
-            // — do that trim first so its deferred count cannot be applied a second time afterwards.
-            settlePendingJumpTrim(currentIndex);
             const queue = await AudioEngine.getQueue();
             const track = queue[fromReal];
             if (!track) return priorityRef.current;
@@ -1083,9 +1011,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             try {
                 const currentIndex = await AudioEngine.getCurrentTrack();
                 if (currentIndex === null || currentIndex === undefined) return;
-                // If an earlier jump's trim is still pending (a second tap during that crossfade), apply it before
-                // computing this jump's regions: the Priority count below has to match the native queue.
-                settlePendingJumpTrim(currentIndex);
                 // `<=` and not `===`: the queue sheet builds its rows from the
                 // queue as it was when the sheet last refreshed, so a song change
                 // between the render and the tap can deliver an index that is now
@@ -1132,54 +1057,41 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     const skippedCount = realIndex - priorityStart + 1;
                     // The trim itself is done by the change listener at the moment the SHOWN song changes (not here): trimming
                     // now showed the skipped slots as Up Next rows for the whole crossfade before the song switched.
-                    const jumpEntry = {
-                        idx: realIndex, t: Date.now(), skipped: skippedCount,
-                        skippedIds: priorityRef.current.slice(0, skippedCount), applied: false,
-                    };
-                    jumpHandledRef.current.push(jumpEntry);
-                    const skippedQids = [];
+                    jumpHandledRef.current = { idx: realIndex, t: Date.now(), skipped: skippedCount };
                     try {
+                        // These were Priority songs that are now behind the current one: a back skip puts them back into Priority.
                         const qq = await AudioEngine.getQueue();
-                        for (let j = priorityStart; j <= realIndex; j++) if (qq[j]?._qid) skippedQids.push(qq[j]._qid);
+                        for (let j = priorityStart; j <= realIndex; j++) if (qq[j]?._qid) playedPriQidsRef.current.add(qq[j]._qid);
                     } catch { }
-                    try {
-                        if (crossfadeReady) {
-                            await AudioEngine.skip(realIndex);
-                        } else {
-                            await fadeOutCurrentIfPlaying(await getAudioRamp());
-                            forceReleaseFade();
-                            const preClaimedId = preClaimFadeForFreshStart();
-                            // Real bug found here: skip() has its OWN independent
-                            // native crossfade decision (see its Swift comment) —
-                            // this branch already decided NOT to crossfade
-                            // (crossfadeReady false) and is about to run its own
-                            // JS ramp-in via playWithRamp, but calling skip() as
-                            // the startAction let native re-decide for itself and
-                            // sometimes take its own crossfade branch anyway,
-                            // silently replacing the JS ramp-in with native's
-                            // internal crossfade volume curve — audible as "ramps
-                            // out of the previous song, but never ramps into the
-                            // new one" (the JS ramp-out above still ran normally;
-                            // native's own crossfade just took over from there
-                            // instead of the JS ramp-in that was supposed to
-                            // follow it). load() is the purpose-built alternative
-                            // that always does a plain track switch with no
-                            // crossfade decision of its own — exactly what a
-                            // JS-owned ramp needs under it.
-                            await playWithRamp(preClaimedId, () => AudioEngine.load(realIndex, true));
-                        }
-                    } catch (e) {
-                        // The jump never left the old song: its deferred trim must not fire on some later change.
-                        jumpHandledRef.current = jumpHandledRef.current.filter(jh => jh !== jumpEntry);
-                        throw e;
+                    if (crossfadeReady) {
+                        await AudioEngine.skip(realIndex);
+                    } else {
+                        await fadeOutCurrentIfPlaying(await getAudioRamp());
+                        forceReleaseFade();
+                        const preClaimedId = preClaimFadeForFreshStart();
+                        // Real bug found here: skip() has its OWN independent
+                        // native crossfade decision (see its Swift comment) —
+                        // this branch already decided NOT to crossfade
+                        // (crossfadeReady false) and is about to run its own
+                        // JS ramp-in via playWithRamp, but calling skip() as
+                        // the startAction let native re-decide for itself and
+                        // sometimes take its own crossfade branch anyway,
+                        // silently replacing the JS ramp-in with native's
+                        // internal crossfade volume curve — audible as "ramps
+                        // out of the previous song, but never ramps into the
+                        // new one" (the JS ramp-out above still ran normally;
+                        // native's own crossfade just took over from there
+                        // instead of the JS ramp-in that was supposed to
+                        // follow it). load() is the purpose-built alternative
+                        // that always does a plain track switch with no
+                        // crossfade decision of its own — exactly what a
+                        // JS-owned ramp needs under it.
+                        await playWithRamp(preClaimedId, () => AudioEngine.load(realIndex, true));
                     }
-                    // These were Priority songs that are now behind the current one: a back skip puts them back into
-                    // Priority. Only recorded once the skip really landed — a failed jump must not mark songs that are
-                    // still upcoming as "played from Priority" (a later back skip would restore them as duplicates).
-                    for (const qid of skippedQids) playedPriQidsRef.current.add(qid);
                     return;
                 }
 
+                if (priorityCount > 0) queueFrozenRef.current = Date.now();
                 const queue = await AudioEngine.getQueue();
                 const priorityTracks = queue.slice(priorityStart, priorityEnd);
                 for (let i = priorityEnd - 1; i >= priorityStart; i--) {
@@ -1191,24 +1103,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 }
                 // The Priority songs were moved along behind the target and stay Priority: the change listener must not count the
                 // landing as one of them being played (it did when the target had the same id as a Priority entry).
-                jumpHandledRef.current.push({ idx: newTargetIndex, t: Date.now(), skipped: 0 });
-                const upNextEntry = jumpHandledRef.current[jumpHandledRef.current.length - 1];
-                try {
-                    if (crossfadeReady) {
-                        await AudioEngine.skip(newTargetIndex);
-                    } else {
-                        await fadeOutCurrentIfPlaying(await getAudioRamp());
-                        forceReleaseFade();
-                        const preClaimedId = preClaimFadeForFreshStart();
-                        // Same fix as the priority-zone branch above — see its
-                        // comment.
-                        await playWithRamp(preClaimedId, () => AudioEngine.load(newTargetIndex, true));
-                    }
-                } catch (e) {
-                    // Same as the priority branch: a jump that never landed must not leave an entry behind to swallow
-                    // the next change event at that index.
-                    jumpHandledRef.current = jumpHandledRef.current.filter(jh => jh !== upNextEntry);
-                    throw e;
+                jumpHandledRef.current = { idx: newTargetIndex, t: Date.now() };
+                if (crossfadeReady) {
+                    await AudioEngine.skip(newTargetIndex);
+                } else {
+                    await fadeOutCurrentIfPlaying(await getAudioRamp());
+                    forceReleaseFade();
+                    const preClaimedId = preClaimFadeForFreshStart();
+                    // Same fix as the priority-zone branch above — see its
+                    // comment.
+                    await playWithRamp(preClaimedId, () => AudioEngine.load(newTargetIndex, true));
                 }
                 // topUpQueueIfNeeded only adds QUEUE_TOPUP_BATCH (4) songs per
                 // call — enough for the steady-state "a song just finished,
@@ -1223,7 +1127,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 for (let i = 0; i < Math.ceil(QUEUE_WINDOW_SIZE / QUEUE_TOPUP_BATCH); i++) {
                     await topUpQueueIfNeeded();
                 }
-            } catch (e) { console.error('jumpToQueueIndex:', e); }
+            } catch (e) { queueFrozenRef.current = 0; console.error('jumpToQueueIndex:', e); }
         });
     }, []);
 
@@ -1286,7 +1190,6 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
         await AudioEngine.reset();
         playedPriQidsRef.current.clear();
-        jumpHandledRef.current = [];   // a jump from the old queue must never trim the new one's Priority list
         lastIndexRef.current = null;   // a new queue: the old index says nothing about it (would read as a back skip)
         await withTimeout(AudioEngine.add(batch), 6000);
         loadedThroughRef.current = anchorIndex + batch.length;
@@ -1515,7 +1418,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // them out could trigger one that wasn't. Subtracting them out
             // keeps this purely a normal-queue measurement, per "priority
             // is completely separate."
-            const remaining = nativeLen - 1 - currentIndex - Math.max(0, priorityRef.current.length - pendingJumpSkippedFor(currentIndex));
+            const remaining = nativeLen - 1 - currentIndex - priorityRef.current.length;
             if (remaining < QUEUE_TOPUP_THRESHOLD) {
                 const next = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + QUEUE_TOPUP_BATCH));
                 if (next.length) {
@@ -1540,8 +1443,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return [];
             const queue = await AudioEngine.getQueue();
-            const priLen = Math.max(0, priorityRef.current.length - pendingJumpSkippedFor(currentIndex));
-            return queue.slice(currentIndex + 1, currentIndex + 1 + priLen);
+            return queue.slice(currentIndex + 1, currentIndex + 1 + priorityRef.current.length);
         } catch { return []; }
     };
 
@@ -1612,13 +1514,10 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (idx2 === idx && !isTransitionLocked()) { currentIndex = idx; queue = q; break; }
             }
             if (currentIndex === null) return { ok: false, reason: 'busy' };
-            // The queue is about to be rearranged: complete a jump's deferred Priority trim first so the boundary below
-            // is in the same terms as the native queue.
-            settlePendingJumpTrim(currentIndex);
             // "Keep Priority Queue When Switching Playlists" decides whether the priority songs
             // survive; when it is off, only the playing song is kept.
             const keepPriority = await getKeepPriorityOnPlaylistSwitch();
-            const keepEnd = currentIndex + 1 + (keepPriority ? Math.max(0, priorityRef.current.length - pendingJumpSkippedFor(currentIndex)) : 0);
+            const keepEnd = currentIndex + 1 + (keepPriority ? priorityRef.current.length : 0);
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             // Shuffled: arranged so its first song is not the one that plays right before it.
             const rest = shuffled
@@ -2043,9 +1942,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         try {
             const currentIndex = await AudioEngine.getCurrentTrack();
             if (currentIndex === null || currentIndex === undefined) return;
-            settlePendingJumpTrim(currentIndex);
             const queue = await AudioEngine.getQueue();
-            const keepEnd = currentIndex + 1 + Math.max(0, priorityRef.current.length - pendingJumpSkippedFor(currentIndex));
+            const keepEnd = currentIndex + 1 + priorityRef.current.length;
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
             let rest = pl.songs.filter(s => !usedIds.has(s.id));
@@ -2195,10 +2093,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             ]);
             if (index !== null) {
                 const pos = progress?.position ?? 0;
-                // A jump land still has its Priority trim deferred (see jumpHandledRef): save the count the native queue
-                // actually has, or reopening the session would restore the skipped slots as Priority songs.
-                const priLen = Math.max(0, priorityRef.current.length - pendingJumpSkippedFor(index));
-                const sig = `${pl.path}|${index}|${queue.length}|${queue[index]?.id ?? ''}|${queue[queue.length - 1]?.id ?? ''}|${shuffleOnRef.current}|${shuffleModeRef.current}|${priLen}`;
+                const sig = `${pl.path}|${index}|${queue.length}|${queue[index]?.id ?? ''}|${queue[queue.length - 1]?.id ?? ''}|${shuffleOnRef.current}|${shuffleModeRef.current}|${priorityRef.current.length}`;
                 const last = lastSavedRef.current;
                 // Skip the heavy write when nothing changed (full rewrite at most once a minute) and
                 // only rewrite the per-playlist copy when the song/queue changed.
@@ -2243,7 +2138,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // there in the restored queue, just no longer TRACKED as
                 // priority, which is what "priority gets mushed together
                 // with up next after closing and reopening" was describing.
-                await setLastSession({ playlist: { ...pl, queue: savedQueue }, index, position: pos, priorityCount: priLen, queueSources: pickQueueSources(queue[index]?.id), shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
+                await setLastSession({ playlist: { ...pl, queue: savedQueue }, index, position: pos, priorityCount: priorityRef.current.length, queueSources: pickQueueSources(queue[index]?.id), shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
             }
         } catch { }
     }, []);
@@ -2376,13 +2271,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queueFrozenRef, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
         loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
-        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
+        addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queueFrozenRef, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     ]);
 

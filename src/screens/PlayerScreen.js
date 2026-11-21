@@ -236,7 +236,24 @@ export default function PlayerScreen() {
     const seekChainRef = useRef(Promise.resolve());
     const latestSeekRatioRef = useRef(null);
     const clearDragTimer = useRef(null);
-    const committedRef = useRef(false);
+    // Scrub lifecycle. Only a completed pan (END) or a recognized tap may move a
+    // gesture to COMMITTED; every other path is visual-only or ABORTED. This
+    // replaces the old committedRef/gestureEndedRef pair, whose independent
+    // resets were how one gesture could seek twice.
+    const SCRUB_PHASE = {
+        IDLE: 'idle',
+        PENDING: 'pending',
+        DRAGGING: 'dragging',
+        COMMITTED: 'committed',
+        ABORTED: 'aborted',
+    };
+    const scrubPhaseRef = useRef(SCRUB_PHASE.IDLE);
+    // Invalidates timers and late gesture events belonging to a previous touch.
+    const gestureSeqRef = useRef(0);
+    // A tap can commit before the simultaneous pan handler reports its BEGAN.
+    // These refs keep that pan lifetime from reopening an already-committed tap.
+    const tapClaimedRef = useRef(false);
+    const panIgnoredForTapRef = useRef(false);
     const gestureTrackIdRef = useRef(null);
     // Real cause of "the progress bar moves with my taps/drags but never
     // actually seeks, then snaps back" (no [SEEK-DEBUG] line ever appeared
@@ -271,12 +288,10 @@ export default function PlayerScreen() {
     // See the dedup check in onScrub's commit branch — tracks the last
     // ratio/time a native seekTo actually fired for.
     const lastNativeSeekRef = useRef({ ratio: -1, at: 0 });
-    // Backstop: if no terminal gesture state ever arrives after a touch
-    // starts (this has been the recurring symptom — the bar freezes and
-    // STAYS frozen, even across later songs, only unstuck by a real drag),
-    // force a commit anyway after 500ms so a touch can never leave dragRatio
-    // stuck forever. This doesn't depend on correctly diagnosing which
-    // gesture-handler state transition is or isn't firing.
+    // Visual-only backstop: if no terminal gesture state ever arrives after a
+    // touch starts (the old symptom was a bar that froze and STAYED frozen),
+    // clear dragRatio and resume the real reading instead of seeking. The old
+    // timer called the commit path because commit and seek used to be one step.
     const stuckSafetyTimer = useRef(null);
     const lastTouchX = useRef(0);
 
@@ -335,19 +350,59 @@ export default function PlayerScreen() {
         (pageX - progressLayout.current.pageX) / progressLayout.current.width
     ));
 
-    // A gesture that was taken over (a vertical swipe starting on the bar closes the screen instead) must not seek: the bar goes
-    // back to where the sound really is and the release that follows is ignored.
-    const abortScrub = () => {
+    // Visual-only recovery: clears a stuck drag preview and resumes the bar
+    // from the real playback position. Deliberately does NOT seek — the old
+    // safety timer called the commit path only because "commit" and "seek"
+    // used to be the same operation.
+    const recoverVisualOnly = () => {
         clearTimeout(stuckSafetyTimer.current);
-        committedRef.current = true;
+        clearTimeout(clearDragTimer.current);
         pendingSeekRatioRef.current = null;
         setDragRatio(null);
         startRealTimeAnim(pct, true);
     };
-    const onScrub = (absoluteX, commit) => {
-        // Already committed this gesture (the safety timer, or the tap handler): a second commit leaves the bar alone
-        // (it used to stop the bar at the touch spot until the next poll).
-        if (commit && committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
+    // Called from a timer armed earlier in the render, so it must always
+    // invoke the newest closure (fresh pct, progress.duration, isPlaying).
+    const recoverVisualOnlyRef = useRef(recoverVisualOnly);
+    recoverVisualOnlyRef.current = recoverVisualOnly;
+
+    const armVisualRecoveryTimer = () => {
+        clearTimeout(stuckSafetyTimer.current);
+        const seq = gestureSeqRef.current;
+        stuckSafetyTimer.current = setTimeout(() => {
+            if (gestureSeqRef.current !== seq) return;
+            const phase = scrubPhaseRef.current;
+            if (phase !== SCRUB_PHASE.PENDING && phase !== SCRUB_PHASE.DRAGGING) return;
+            console.log('[SEEK-DEBUG] visual recovery: preview cleared without seeking', { src: 'timer' });
+            recoverVisualOnlyRef.current();
+        }, 1200);
+    };
+
+    // A gesture that was taken over (a vertical swipe starting on the bar closes the screen instead) must not seek: the bar goes
+    // back to where the sound really is and the release that follows is ignored.
+    const abortScrub = () => {
+        // A committed tap/pan has already decided this gesture; aborting the
+        // companion pan must not undo its seek or its held overlay.
+        if (scrubPhaseRef.current === SCRUB_PHASE.COMMITTED) return;
+        scrubPhaseRef.current = SCRUB_PHASE.ABORTED;
+        gestureSeqRef.current += 1;   // invalidate the visual timer for this touch
+        clearTimeout(stuckSafetyTimer.current);
+        clearTimeout(clearDragTimer.current);
+        pendingSeekRatioRef.current = null;
+        setDragRatio(null);
+        startRealTimeAnim(pct, true);
+    };
+    const onScrub = (absoluteX, commit, src) => {
+        const phase = scrubPhaseRef.current;
+        // Already committed/aborted this gesture: a second commit leaves the
+        // bar alone instead of stopping it at the touch spot until next poll.
+        // A non-commit update after a terminal phase is a late pan event and
+        // must not resurrect the gesture.
+        if (commit) {
+            if (phase === SCRUB_PHASE.COMMITTED || phase === SCRUB_PHASE.ABORTED) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture', { src, phase }); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
+        } else if (phase !== SCRUB_PHASE.PENDING && phase !== SCRUB_PHASE.DRAGGING) {
+            return;
+        }
         lastTouchX.current = absoluteX;
         const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
@@ -358,25 +413,19 @@ export default function PlayerScreen() {
         if (!commit) {
             // Visual feedback only — nothing is seeked until release, so
             // audio keeps playing from wherever it actually is while
-            // dragging. Re-arms the stuck-safety backstop on every update
-            // (not just once at BEGAN) so it's a true "500ms since
-            // anything last happened" watchdog rather than a fixed timeout
-            // from touch-start, which used to fire mid-drag on any gesture
-            // that simply took longer than 500ms start-to-finish.
-            clearTimeout(stuckSafetyTimer.current);
-            stuckSafetyTimer.current = setTimeout(() => {
-                onScrubRef.current(lastTouchX.current, true);
-            }, 1200);
+            // dragging/holding. The timer is now a "1200ms since anything
+            // last happened" VISUAL watchdog: it re-arms on each update so
+            // a long drag never trips it mid-gesture, and when it does fire
+            // it only clears the preview instead of seeking.
+            armVisualRecoveryTimer();
             return;
         }
 
-        // Commit — release, a tap, or the stuck-safety backstop. Only
-        // fires once per gesture: without this guard, a real release
-        // landing right after the safety backstop already fired would
-        // seek twice to (almost) the same spot.
-        committedRef.current = true;
+        // Commit — only a pan END or a recognized tap gets here now. The
+        // phase transition happens before any async work, so a late terminal
+        // event, a move event, or the visual timer cannot seek again.
+        scrubPhaseRef.current = SCRUB_PHASE.COMMITTED;
         clearTimeout(stuckSafetyTimer.current);
-
         clearTimeout(clearDragTimer.current);
 
         // Abuse case flagged explicitly: held long enough that the track
@@ -385,7 +434,7 @@ export default function PlayerScreen() {
         // longer corresponds to whatever's playing now, so drop the seek
         // instead of applying it to the wrong track.
         const nowTrackId = currentTrack?._qid ?? currentTrack?.id ?? null;
-        if (nowTrackId !== gestureTrackIdRef.current) { console.log('[SEEK-DEBUG] commit dropped: track id mismatch', { nowTrackId, gesture: gestureTrackIdRef.current }); setDragRatio(null); return; }
+        if (nowTrackId !== gestureTrackIdRef.current) { console.log('[SEEK-DEBUG] commit dropped: track id mismatch', { nowTrackId, gesture: gestureTrackIdRef.current }); scrubPhaseRef.current = SCRUB_PHASE.ABORTED; recoverVisualOnlyRef.current(); return; }
         // Only a seek that is really going to be made moves the bar (a dropped one used to leave it at the dragged spot).
         startRealTimeAnim(ratio);
 
@@ -399,8 +448,8 @@ export default function PlayerScreen() {
             // apparently still be followed by a spurious extra BEGAN→END
             // from the simultaneous tap handler at the same position (see
             // realDragMovedRef's comment elsewhere in this file for the
-            // general fragility here), which resets committedRef for what
-            // LOOKS like a fresh gesture and lets a second, redundant
+            // general fragility here), which used to reset committedRef for
+            // what LOOKS like a fresh gesture and lets a second, redundant
             // commit through to the same spot. That second commit's own
             // isTransitionLocked() cleanup (forceReleaseFade +
             // setVolume(1)) firing a beat later — possibly after the user
@@ -408,14 +457,16 @@ export default function PlayerScreen() {
             // would forcibly kill that ramp and slam volume to 1, matching
             // "swipe while paused, hit play, doesn't ramp." Bailing out
             // this early means a redundant commit does nothing at all
-            // instead of just skipping the seek call.
+            // instead of just skipping the seek call. The phase machine is
+            // now the primary guard; this same-spot check stays as the last
+            // line of defence for two handlers racing in one JS tick.
             const now = Date.now();
-            if (Math.abs(targetRatio - lastNativeSeekRef.current.ratio) < 0.005 && now - lastNativeSeekRef.current.at < 800) {
-                console.log('[SEEK-DEBUG] commit skipped: same spot as the seek just made');
+            if (Math.abs(targetRatio - lastNativeSeekRef.current.ratio) < 0.005 && lastNativeSeekRef.current.id === nowTrackId && now - lastNativeSeekRef.current.at < 4000) {
+                console.log('[SEEK-DEBUG] commit skipped: same spot as the seek just made', { src });
                 if (pendingSeekRatioRef.current === null) setDragRatio(null);   // otherwise the time text stayed frozen at this spot
                 return;
             }
-            lastNativeSeekRef.current = { ratio: targetRatio, at: now };
+            lastNativeSeekRef.current = { ratio: targetRatio, at: now, id: nowTrackId };
             latestSeekRatioRef.current = targetRatio;
             // A seek can land the active lyric line anywhere — see
             // lyricsJustJumpedRef's declaration for why that means the
@@ -450,9 +501,13 @@ export default function PlayerScreen() {
             // symptom. Now dragRatio stays held (bar shows the target
             // position) until the polled position actually agrees — see
             // the convergence effect below — with this timer only as a
-            // backstop in case a seek silently fails to land.
+            // backstop in case a seek silently fails to land. Tagged with
+            // the gesture seq so a stale timer from an older seek cannot
+            // clear the preview of a newer gesture.
             pendingSeekRatioRef.current = targetRatio;
+            const seq = gestureSeqRef.current;
             clearDragTimer.current = setTimeout(() => {
+                if (gestureSeqRef.current !== seq) return;
                 pendingSeekRatioRef.current = null;
                 setDragRatio(null);
             }, 2500);
@@ -465,7 +520,7 @@ export default function PlayerScreen() {
             // settle: whether AudioEngine.seekTo actually gets called, what
             // it resolves/throws, and whether the polled position (pct) ever
             // moves afterward. Safe to strip once diagnosed.
-            console.log('[SEEK-DEBUG] committing seek', { targetRatio, targetSeconds: targetRatio * duration, duration });
+            console.log('[SEEK-DEBUG] committing seek', { src, targetRatio, targetSeconds: targetRatio * duration, duration });
             seekChainRef.current = seekChainRef.current.then(async () => {
                 if (latestSeekRatioRef.current !== targetRatio) {
                     console.log('[SEEK-DEBUG] superseded before its turn, skipped', { targetRatio });
@@ -482,7 +537,11 @@ export default function PlayerScreen() {
             console.log('[SEEK-DEBUG] commit skipped: no duration known yet');
             // No known duration to seek within — nothing was actually
             // asked of native, so there's nothing to wait on converging.
-            clearDragTimer.current = setTimeout(() => setDragRatio(null), 300);
+            const seq = gestureSeqRef.current;
+            clearDragTimer.current = setTimeout(() => {
+                if (gestureSeqRef.current !== seq) return;
+                setDragRatio(null);
+            }, 300);
         }
     };
 
@@ -494,7 +553,11 @@ export default function PlayerScreen() {
     // the bar correctly claims priority over the screen's vertical gesture.
     const onScrubRef = useRef(onScrub);
     const abortScrubRef = useRef(abortScrub);
-    useEffect(() => { onScrubRef.current = onScrub; abortScrubRef.current = abortScrub; });
+    // Assign during render, not in an effect: stable gesture handlers can
+    // fire between commit and the effect, and must never read a stale
+    // duration/pct from an older render.
+    onScrubRef.current = onScrub;
+    abortScrubRef.current = abortScrub;
 
     // These MUST stay referentially stable across renders (recreating them
     // mid-gesture is what caused the earlier RNGH crash), so they delegate
@@ -507,37 +570,44 @@ export default function PlayerScreen() {
     // the tap handler's onTapStateChange know a real drag is already
     // underway, so it can bail out below instead of double-committing.
     const realDragMovedRef = useRef(false);
-    // True from the moment the pan ends until the next one begins. A move event that arrives after the release used to
-    // un-commit the gesture and re-arm the 1.2 s safety timer, which then committed the same seek a second time.
-    const gestureEndedRef = useRef(true);
 
     const onProgressGestureEvent = useRef((e) => {
-        if (gestureEndedRef.current) return;
+        const phase = scrubPhaseRef.current;
+        // A terminal phase, or a pan that belongs to an already-committed tap,
+        // must not be reopened by a late move event.
+        if (panIgnoredForTapRef.current ||
+            (phase !== SCRUB_PHASE.PENDING && phase !== SCRUB_PHASE.DRAGGING)) return;
         realDragMovedRef.current = true;
-        // The safety timer may already have committed a seek while the finger rested on the bar (a hold). If the
-        // finger then moves on, the release must still commit its own, final spot: before, it was ignored as
-        // "already committed", the bar showed the drag, and then snapped back to where the sound really was.
-        committedRef.current = false;
-        onScrubRef.current(e.nativeEvent.absoluteX, false);
+        scrubPhaseRef.current = SCRUB_PHASE.DRAGGING;
+        // Visual-only. Holding first is fine: the timer no longer seeks and a
+        // move never re-opens a committed gesture.
+        onScrubRef.current(e.nativeEvent.absoluteX, false, 'move');
     }).current;
 
     const onProgressStateChange = useRef((e) => {
         const { state, absoluteX } = e.nativeEvent;
         if (state === GHState.BEGAN) {
-            gestureEndedRef.current = false;
+            // Tap ACTIVE can be delivered before this pan's BEGAN. Leave that
+            // already-committed touch alone; the tap's END clears the claim.
+            if (scrubPhaseRef.current === SCRUB_PHASE.COMMITTED && tapClaimedRef.current) {
+                panIgnoredForTapRef.current = true;
+                return;
+            }
+            scrubPhaseRef.current = SCRUB_PHASE.PENDING;
+            panIgnoredForTapRef.current = false;
+            gestureSeqRef.current += 1;      // invalidate the previous touch's timers
+            clearTimeout(clearDragTimer.current);
+            pendingSeekRatioRef.current = null;
             holdDismissRef.current(true);
             measureProgress();
-            committedRef.current = false;
             realDragMovedRef.current = false;
             gestureTrackIdRef.current = nowTrackIdRef.current;
-            onScrubRef.current(absoluteX, false);
-            clearTimeout(stuckSafetyTimer.current);
-            stuckSafetyTimer.current = setTimeout(() => {
-                onScrubRef.current(lastTouchX.current, true);
-            }, 1200);
+            // Arms the visual recovery timer; does not seek.
+            onScrubRef.current(absoluteX, false, 'begin');
+            return;
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
-            gestureEndedRef.current = true;
+            // A real terminal event is the only place a pan can commit.
             clearTimeout(stuckSafetyTimer.current);
             // Failed/cancelled by a mostly vertical move that never became a horizontal drag: not a seek.
             if (state !== GHState.END && !realDragMovedRef.current && Math.abs(e.nativeEvent.translationY || 0) > 8) {
@@ -545,7 +615,8 @@ export default function PlayerScreen() {
                 holdDismissRef.current(false);
                 return;
             }
-            onScrubRef.current(absoluteX, true);
+            if (state === GHState.END) onScrubRef.current(absoluteX, true, 'end');
+            else abortScrubRef.current();   // interrupted: recover, but do not seek
             holdDismissRef.current(false);
         }
     }).current;
@@ -567,26 +638,34 @@ export default function PlayerScreen() {
     // enough movement had accrued to fail it out. That meant a drag could
     // trigger an early, premature commit here (seeking to wherever the
     // finger was in that first instant) via this handler, and then the
-    // pan handler's OWN later END commit got silently dropped by
-    // committedRef's already-committed guard — audible as the position
-    // jumping to the wrong place first, then not responding to the actual
-    // release ("double-plays when dragging"). Checking realDragMovedRef
-    // here — set the moment the pan handler reports any real movement —
+    // pan handler's OWN later END commit got silently dropped by the
+    // already-committed guard — audible as the position jumping to the
+    // wrong place first, then not responding to the actual release
+    // ("double-plays when dragging"). Checking realDragMovedRef here —
+    // set the moment the pan handler reports any real movement —
     // closes that window: once a real drag has started, this handler is
     // never allowed to commit, full stop, regardless of its own state.
     const panRef = useRef(null);
     const tapRef = useRef(null);
     const onTapStateChange = useRef((e) => {
         if (e.nativeEvent.state === GHState.BEGAN) holdDismissRef.current(true);
-        if (e.nativeEvent.state === GHState.END || e.nativeEvent.state === GHState.CANCELLED || e.nativeEvent.state === GHState.FAILED) holdDismissRef.current(false);
-        if (e.nativeEvent.state === GHState.ACTIVE && !realDragMovedRef.current) {
+        if (e.nativeEvent.state === GHState.END || e.nativeEvent.state === GHState.CANCELLED || e.nativeEvent.state === GHState.FAILED) {
+            holdDismissRef.current(false);
+            tapClaimedRef.current = false;
+            panIgnoredForTapRef.current = false;
+        }
+        if (e.nativeEvent.state === GHState.ACTIVE && !realDragMovedRef.current &&
+            scrubPhaseRef.current !== SCRUB_PHASE.COMMITTED &&
+            scrubPhaseRef.current !== SCRUB_PHASE.ABORTED) {
             measureProgress();
             // A tap is its own complete gesture: it must start from a
             // clean slate (see nowTrackIdRef's comment) instead of
-            // inheriting whatever the last drag left behind.
-            committedRef.current = false;
+            // inheriting whatever the last drag left behind. The phase is
+            // terminal once it commits, so a pan BEGAN/END arriving for the
+            // same touch after this cannot seek again.
+            tapClaimedRef.current = true;
             gestureTrackIdRef.current = nowTrackIdRef.current;
-            onScrubRef.current(e.nativeEvent.absoluteX, true);
+            onScrubRef.current(e.nativeEvent.absoluteX, true, 'tap');
         }
     }).current;
 
@@ -959,6 +1038,13 @@ export default function PlayerScreen() {
     // reaching the handlers, which left the gesture off (it only came back after a button press).
     const releaseHoldOnLift = useRef((e) => {
         const t = e?.nativeEvent?.touches;
+        if (!t || t.length === 0) {
+            // Last finger lifted. A tap that committed before the pan handler's
+            // BEGAN must not keep blocking the next gesture if its own END was
+            // missed.
+            tapClaimedRef.current = false;
+            panIgnoredForTapRef.current = false;
+        }
         if (holdActiveRef.current && (!t || t.length === 0)) holdDismissRef.current(false);
     }).current;
     // Leaving the disc view always lets go of a finger-on-disc state and turns the gesture back on.
@@ -1535,6 +1621,12 @@ export default function PlayerScreen() {
     useEffect(() => {
         if (overlayTrackRef.current === currentTrack?.id) return;
         overlayTrackRef.current = currentTrack?.id;
+        // Any in-flight scrub belonged to the old slot. Terminate its phase and
+        // invalidate its timers so a late END cannot seek the new song.
+        scrubPhaseRef.current = SCRUB_PHASE.IDLE;
+        tapClaimedRef.current = false;
+        panIgnoredForTapRef.current = false;
+        gestureSeqRef.current += 1;
         pendingSeekRatioRef.current = null;
         clearTimeout(clearDragTimer.current);
         clearTimeout(stuckSafetyTimer.current);
