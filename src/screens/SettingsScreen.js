@@ -349,7 +349,7 @@ export default function SettingsScreen() {
             {
                 text: 'Continue', style: 'destructive', onPress: () => Alert.alert(
                     'Are you sure?',
-                    'A copy of the counts is kept on this phone, and you can bring them back with Restore Play Counts here. A settings file you exported earlier (Backup & Sync) also still has them and restores them through Import Settings.',
+                    'A copy of the counts is kept on this phone, and you can bring them back with Restore Play Counts here. A settings file you exported earlier (Backup & Restore) also still has them and restores them through Import Settings.',
                     [
                         { text: 'Cancel', style: 'cancel' },
                         {
@@ -661,7 +661,7 @@ export default function SettingsScreen() {
                     return got;
                 });
                 if (!r) return;
-                Alert.alert('Import finished', `${r.copied} song(s) added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not a song).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
+                Alert.alert('Import finished', `${r.copied} song${r.copied === 1 ? '' : 's'} added${folder ? ` to "${folder}"` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not a song).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.prompt('Import Songs', 'Playlist folder to put them in. Leave empty to add them to All Songs only.', [
@@ -685,7 +685,7 @@ export default function SettingsScreen() {
                 });
                 if (!r) return;
                 const names = (r.playlists || []);
-                Alert.alert('Import finished', `${r.copied} song(s) added to ${names.length} playlist(s)${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
+                Alert.alert('Import finished', `${r.copied} song${r.copied === 1 ? '' : 's'} added to ${names.length} playlist${names.length === 1 ? '' : 's'}${names.length ? `: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ', ...' : ''}` : ''}.${r.skipped ? ` ${r.skipped} skipped (already there, or not audio).` : ''}${r.failed ? ` ${r.failed} could not be copied.` : ''}${r.replacedNote || ''}`);
             } catch (e) { Alert.alert('Import failed', String(e?.message ?? e)); }
         };
         Alert.alert(
@@ -861,7 +861,7 @@ export default function SettingsScreen() {
     };
     const GROUP_RESET_NOTE = {
         eq: 'Balance, width and the Specialized EQs switch go back to their defaults. EQ presets and the EQs you assigned are not touched.',
-        playback: 'Volume levelling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults.',
+        playback: 'Volume leveling, shuffle, crossfade and fades, queue and the Previous button go back to their defaults.',
         screens: 'Every switch and option for the Playlists, All Songs, Playlist and Player screens goes back to its default.',
         appearance: 'Cover shapes, shadows, colored top and bottom bars and keep-screen-awake go back to their defaults. Accent color, base color and the custom background are not touched.',
         library: 'Artist separators, how artists are shown and Album From Folder Name go back to their defaults. Your music and its location are not touched.',
@@ -1147,7 +1147,7 @@ export default function SettingsScreen() {
                 <GroupHeader title="Playback" onReset={() => askGroupReset('playback', 'Playback')} hidden={isHidden('playback')} onToggleHidden={() => toggleGroupHidden('playback')} />
                 {!isHidden('playback') && (<>
 
-                <Section title="Volume Levelling">
+                <Section title="Volume Leveling">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Volume Normalization</Text>
@@ -1297,7 +1297,7 @@ export default function SettingsScreen() {
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Keep Priority Queue When Switching Playlists</Text>
-                            <Text style={s.toggleSub}>Keeps queued songs when you switch playlists</Text>
+                            <Text style={s.toggleSub}>Queued songs stay in place when you load another playlist</Text>
                         </View>
                         <LiveSwitch value={keepPriority} onValueChange={v => { setKeepPriority(v); setKeepPriorityOnPlaylistSwitch(v); }}
                             trackColor={{ false: '#222', true: theme.accent }} thumbColor="#fff" />
@@ -1326,7 +1326,7 @@ export default function SettingsScreen() {
                 </Section>
 
                 <Section title="Previous Button">
-                    <SubGroup title="Previous button">
+                    <SubGroup title="Previous Button">
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Previous Button Behavior</Text>
                         <Text style={s.toggleSub}>
@@ -1544,7 +1544,7 @@ export default function SettingsScreen() {
                     <SubGroup title="Style" first>
                     {looksUi}
                     </SubGroup>
-                    <SubGroup title="Top bars & screen">
+                    <SubGroup title="Top Bars & Screen">
                     {toggle('Colored Top Bars', 'Top tab bar in most screens, uses base color', topBarColor, setTopBarColor, true)}
                     {toggle('Colored Bottom Bar', 'Bottom tab bar in most screens, uses base color', bottomBarColor, setBottomBarColor)}
                     <View style={[s.toggleRow, { borderTopWidth: 1, borderTopColor: base.border }]}>
@@ -1636,7 +1636,7 @@ export default function SettingsScreen() {
                      separator character in their tag are never affected by
                      this setting either way. */}
                 <Section title="Artists & Albums">
-                    <SubGroup title="Multiple artists" first>
+                    <SubGroup title="Multiple Artists" first>
                     <View style={s.settingHeader}>
                         <Text style={s.toggleLabel}>Artist Separator</Text>
                         <Text style={s.toggleSub}>What splits multiple artists in your files, select all that you use</Text>
@@ -1712,7 +1712,7 @@ export default function SettingsScreen() {
                         ))}
                     </View>
                     </SubGroup>
-                    <SubGroup title="Album from folder name">
+                    <SubGroup title="Album From Folder Name">
                     <View style={s.toggleRow}>
                         <View style={{ flex: 1 }}>
                             <Text style={s.toggleLabel}>Use Folder Name for Album</Text>
@@ -1741,7 +1741,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={importFolderFlow}>
                         <Text style={s.rowLabel}>Import Folder</Text>
-                        <Text style={s.rowSub}>Pick the folder that holds your playlists (Folder / Playlist / Song). Each folder inside it becomes a playlist.</Text>
+                        <Text style={s.rowSub}>Pick the folder that holds your playlists (Folder / Playlist / Song). Each folder inside it becomes a playlist</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={reload}>
                         <Text style={s.rowLabel}>Rescan Music</Text>
@@ -1759,7 +1759,7 @@ export default function SettingsScreen() {
                         <Text style={s.rowSub}>Remove covers, sort A to Z, default layout</Text>
                     </TouchableOpacity>
                     </SubGroup>
-                    <SubGroup title="Music location">
+                    <SubGroup title="Music Location">
                     {(showBoth || isLiveContainer) && (
                         <View style={s.locBlock}>
                             <Text style={s.locHeading}>If using LiveContainer</Text>
@@ -1809,7 +1809,7 @@ export default function SettingsScreen() {
 
                 <Section title="Listening Stats" simple>
                     <TouchableOpacity style={s.row} onPress={() => navigation.navigate('Stats')}>
-                        <Text style={s.rowLabel}>Listening Stats</Text>
+                        <Text style={s.rowLabel}>View Listening Stats</Text>
                         <Text style={s.rowSub}>Plays, hours, most played songs, and top artists</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={askResetPlayCounts}>
@@ -1824,7 +1824,7 @@ export default function SettingsScreen() {
                     ) : null}
                 </Section>
 
-                <Section title="Backup & Sync">
+                <Section title="Backup & Restore">
                     <TouchableOpacity style={s.row} onPress={async () => { try { await autoBackupNow(); Alert.alert('Done', 'Settings backed up. The last 3 copies are kept.'); } catch (e) { Alert.alert('Backup failed', String(e?.message)); } }}>
                         <Text style={s.rowLabel}>Back Up Now</Text>
                         <Text style={s.rowSub}>A copy is also made about once a day</Text>
@@ -1842,7 +1842,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={() => { setImportText(''); setShowImport(true); }}>
                         <Text style={s.rowLabel}>Import Settings</Text>
-                        <Text style={s.rowSub}>Paste the settings to restore the settings</Text>
+                        <Text style={s.rowSub}>Paste exported settings to restore them</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={s.row} onPress={async () => {
                         try {
@@ -1871,7 +1871,7 @@ export default function SettingsScreen() {
                         } catch (e) { Alert.alert('Import failed', 'That is not a SySlate pictures file.'); }
                     }}>
                         <Text style={s.rowLabel}>Import Covers & Background</Text>
-                        <Text style={s.rowSub}>Paste the file to restore the pictures</Text>
+                        <Text style={s.rowSub}>Pick the file to restore the pictures</Text>
                     </TouchableOpacity>
                 </Section>
 
@@ -2019,7 +2019,7 @@ function GroupHeader({ title, onReset, hidden, onToggleHidden }) {
 const SECTION_KW = {
     'EQ Presets': 'equalizer eq bass treble sound tone advanced custom parametric graphic q factor frequency band import export autoeq apo preset share pre-amp preamp gain',
     'Specialized EQs': 'eq equalizer playlist song assign override different layer specialized',
-    'Volume Levelling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
+    'Volume Leveling': 'volume normalize normalization loudness match replaygain tag pre-amp preamp gain',
     'Crossfade & Fades': 'crossfade fade ramp pause play skip transition silence trim end of song',
     'Shuffle': 'shuffle random smart dumb cycle order playback',
     'Queue': 'queue up next priority playback keep switching playlists',
@@ -2038,7 +2038,7 @@ const SECTION_KW = {
     'Artists & Albums': 'artists separator split join format album folder name',
     'Music & Library': 'music location folder path files library rescan refresh scan performance older iphone slow lag fast battery',
     'Listening Stats': 'stats listening plays most played hours top',
-    'Backup & Sync': 'backup restore export import settings covers pictures auto transfer device',
+    'Backup & Restore': 'backup restore export import settings covers pictures auto transfer device',
     'Reset': 'reset defaults all',
     'Debug': 'debug log',
 };

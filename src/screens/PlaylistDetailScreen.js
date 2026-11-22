@@ -272,7 +272,7 @@ export default function PlaylistDetailScreen() {
                         style={[s.searchBar, { backgroundColor: base.surface, marginHorizontal: 0, color: base.text }]}
                         value={search}
                         onChangeText={setSearch}
-                        placeholder="Search this playlist"
+                        placeholder="Search songs or artists"
                         placeholderTextColor="#444"
                         textAlign="center"
                     />

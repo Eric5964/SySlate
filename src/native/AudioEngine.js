@@ -293,6 +293,10 @@ export function useProgress(updateInterval = 1000) {
         };
         tick();
         const id = setInterval(tick, updateInterval);
+        // A screen that mounts right after a song was tapped starts from the OLD song's reading (or none) and used to
+        // wait for the first interval tick (up to updateInterval) before the bar and time left 0:00. A few quick extra
+        // readings right after mount pick up the new song as soon as native has it.
+        const earlyTimers = [100, 250, 400].map(ms => setTimeout(tick, ms));
         // Re-fetch immediately on foreground instead of waiting for the next
         // interval tick (up to `updateInterval` late) — mainly matters
         // alongside usePlaybackState's own foreground re-sync below: after
@@ -312,7 +316,7 @@ export function useProgress(updateInterval = 1000) {
                 wakeTimers = [setTimeout(tick, 350), setTimeout(tick, 1200)];
             }
         });
-        return () => { cancelled = true; clearInterval(id); appSub.remove(); wakeTimers.forEach(clearTimeout); };
+        return () => { cancelled = true; clearInterval(id); appSub.remove(); wakeTimers.forEach(clearTimeout); earlyTimers.forEach(clearTimeout); };
     }, [updateInterval]);
     return progress;
 }

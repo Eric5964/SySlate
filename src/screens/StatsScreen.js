@@ -67,11 +67,11 @@ export default function StatsScreen({ navigation }) {
                         <Text style={s.empty}>Nothing yet. Play some songs and they will show up here.</Text>
                     ) : (
                         <>
-                            <Text style={s.sectionLabel}>Most played songs</Text>
+                            <Text style={s.sectionLabel}>Most Played Songs</Text>
                             <View style={s.body}>
                                 {stats.topSongs.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.title} sub={r.artist} right={`${r.n}x`} cover={showSongCovers ? ((r.songId && artMap[r.songId]) || null) : undefined} coverRadius={squircle(COVER, coverShape)} />)}
                             </View>
-                            <Text style={s.sectionLabel}>Top artists</Text>
+                            <Text style={s.sectionLabel}>Top Artists</Text>
                             <View style={s.body}>
                                 {stats.topArtists.map((r, i) => <Row key={i} s={s} i={i + 1} left={r.name} right={`${r.n}x`} />)}
                             </View>

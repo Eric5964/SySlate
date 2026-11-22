@@ -237,7 +237,7 @@ export default function AllSongsScreen() {
                         <TextInput
                             style={[s.searchBar, { backgroundColor: base.surface, color: base.text }]}
                             value={search} onChangeText={setSearch}
-                            placeholder="Search songs, artists..."
+                            placeholder="Search songs or artists"
                             placeholderTextColor="#444"
                         />
                         {search.length > 0 && (

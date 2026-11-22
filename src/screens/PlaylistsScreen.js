@@ -595,7 +595,7 @@ export default function PlaylistsScreen() {
             `"${item.name}" will go back to a blank cover.`,
             [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Yes, remove', style: 'destructive', onPress: async () => { setCovers(await setPlaylistCover(item.path, null)); } },
+                { text: 'Remove', style: 'destructive', onPress: async () => { setCovers(await setPlaylistCover(item.path, null)); } },
             ]
         );
     }, []);
