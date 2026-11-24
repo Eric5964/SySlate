@@ -949,7 +949,7 @@ export default function SettingsScreen() {
     const shuffleParts = MODE_PARTS[shuffleTypePref] || MODE_PARTS.full_cycle;
     const pickShuffle = (weight, order) => { const id = modeId(weight, order); setShuffleTypePref(id); changeShuffleMode(id); };
     const WEIGHTS = [{ id: 'normal', label: 'Normal', sub: 'Every song equally likely' }, { id: 'smart', label: 'Smart', sub: 'Leans toward less played songs' }, { id: 'dumb', label: 'Dumb', sub: 'Leans toward more played songs' }];
-    const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Avoids repeats by going through the playlist' }, { id: 'random', label: 'Random', sub: 'Chooses songs randomly from the playlist' }];
+    const ORDERS = [{ id: 'cycle', label: 'Shuffle', sub: 'Plays about three quarters of the playlist each round, no repeats' }, { id: 'random', label: 'Random', sub: 'Chooses songs randomly from the playlist' }];
     const shuffleUi = (
         <>
             {chipRow(WEIGHTS, (id) => shuffleParts.weight === id, (id) => pickShuffle(id, shuffleParts.order), { paddingBottom: 0 })}

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Image, Animated, Easing, AppState } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listArtUri } from '../utils/embeddedArt';
+import StableArt from './StableArt';
 import AudioEngine, { usePlaybackState, State, useProgress, matchProgress } from '../native/AudioEngine';
 import { useNavigation } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
@@ -15,7 +16,7 @@ import DimPressable from './DimPressable';
 import { squircle } from '../utils/squircle';
 import { formatArtists } from '../utils/artists';
 import { PILL_H, PILL_COVER, PILL_COVER_PAD } from '../utils/layout';
-import { getProgressSeed, setProgressSeed } from '../utils/progressSeed';
+import { getProgressSeed } from '../utils/progressSeed';
 
 const TAB_BAR_HEIGHT = 49;
 const ART_SIZE = PILL_COVER;   // same cover size as the song pills
@@ -61,11 +62,29 @@ export default function MiniPlayer({ withTabBar = true }) {
     // effect — it always does. A short ticker just extrapolates forward in
     // plain JS between real polls instead of running an Animated.timing
     // that has its own start/stop state to get out of sync.
-    const basisRef = useRef({ position: progress.position, duration: progress.duration, at: Date.now() });
+    const basisRef = useRef((() => {
+        // A restored paused song already knows where it is before the first
+        // reading arrives: draw the bar from that on the very first frame
+        // instead of at 0:00. The seed is cleared by useProgress itself once
+        // the engine reports a real position for it.
+        const seed = getProgressSeed();
+        if (seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid)) {
+            return { position: seed.position, duration: seed.duration, at: Date.now() };
+        }
+        return { position: progress.position, duration: progress.duration, at: Date.now() };
+    })());
     const [, forceTick] = useState(0);
     // The song's slot (per-play _qid), so a change from one copy of a song to another copy of the same song counts as a change.
     const slotKey = currentTrack?._qid ?? currentTrack?.id;
     const lastTrackIdRef = useRef(slotKey);
+    // Seed the bar before the first paint of a restored song, not one frame
+    // later (the effect below runs after paint).
+    if (lastTrackIdRef.current !== slotKey) {
+        const seed = getProgressSeed();
+        if (seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid)) {
+            basisRef.current = { position: seed.position, duration: seed.duration, at: Date.now() };
+        }
+    }
 
     useEffect(() => {
         const trackChanged = lastTrackIdRef.current !== slotKey;
@@ -94,7 +113,6 @@ export default function MiniPlayer({ withTabBar = true }) {
             const seeded = !!(seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid));
             if (seeded) {
                 basisRef.current = { position: seed.position, duration: seed.duration, at: Date.now() };
-                setProgressSeed(null);
             }
             let settled = seeded;
             let zeroed = false;
@@ -177,7 +195,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             {showSongCovers && (
                 <View style={[styles.art, { backgroundColor: base.surface, overflow: 'hidden', borderRadius: squircle(ART_SIZE, coverShape) }]}>
                     {artwork
-                        ? <Image source={{ uri: artwork }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                        ? <StableArt uri={artwork} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
                         : null
                     }
                     {showViz && vizMode === 'cover' ? <SongVisualizer color={theme.accent} mode="cover" radius={squircle(ART_SIZE, coverShape)} /> : null}

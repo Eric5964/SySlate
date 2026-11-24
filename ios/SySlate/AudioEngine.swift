@@ -1324,6 +1324,18 @@ class AudioEngine: RCTEventEmitter {
         if interruptionActive { return }
         if state == .playing, displayedAsPaused != true {
             if Date().timeIntervalSince(lastReclaimAt) < 5 { return }
+            // Only claim again when what we last told iOS is missing or says "not playing" (or a reclaim is already
+            // pending). Clearing and rewriting the entry makes iOS treat it as a new claim, and a car display then
+            // refreshes (flashes the track, resets) every time the app comes to the foreground, even though it was
+            // already showing the right thing.
+            let center = MPNowPlayingInfoCenter.default()
+            let info = center.nowPlayingInfo
+            let rate = (info?[MPNowPlayingInfoPropertyPlaybackRate] as? Double) ?? 0
+            let looksWrong = needsNowPlayingReclaim || info == nil || center.playbackState != .playing || rate <= 0
+            if !looksWrong {
+                debugLog("[NP] app became active while playing: Now Playing already says playing, leaving it alone")
+                return
+            }
             debugLog("[NP] app became active while playing: claiming Now Playing again so iOS shows playing")
             reclaimNowPlaying()
         } else if state != .playing, displayedAsPaused != false {

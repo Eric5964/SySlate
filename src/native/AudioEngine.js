@@ -13,6 +13,7 @@
 
 import { NativeModules, NativeEventEmitter, AppState } from 'react-native';
 import { useEffect, useState } from 'react';
+import { getProgressSeed, setProgressSeed } from '../utils/progressSeed';
 
 const { AudioEngine: NativeAudioEngine } = NativeModules;
 const emitter = new NativeEventEmitter(NativeAudioEngine);
@@ -277,19 +278,54 @@ export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
 // mount/track-change" — that's this polling, not push-based).
 export function useProgress(updateInterval = 1000) {
     const [progress, setProgress] = useState(() => {
-        // Start from the last reading (moved on by the time since, if it was
-        // playing) rather than from 0:00.
+        // Start from the last reading rather than from 0:00. A paused song's
+        // position does not move, so an old reading is still exactly right
+        // (the consumers' own current-song check filters a reading that
+        // belongs to another song). Playing advances by the time since the
+        // reading, for up to a minute; anything older falls through to the
+        // restored session seed.
         const lp = lastProgress;
-        if (lp && Date.now() - lp.at < 3000 && lp.duration > 0) {
-            const adv = lastPlaybackState === State.Playing ? (Date.now() - lp.at) / 1000 : 0;
-            return { position: Math.min(lp.duration, lp.position + adv), duration: lp.duration, buffered: lp.duration, id: lp.id, qid: lp.qid };
+        if (lp && lp.duration > 0) {
+            const ageMs = Math.max(0, Date.now() - lp.at);
+            const playing = lastPlaybackState === State.Playing;
+            if (!playing || ageMs <= 60000) {
+                const adv = playing ? ageMs / 1000 : 0;
+                return { position: Math.min(lp.duration, lp.position + adv), duration: lp.duration, buffered: lp.duration, id: lp.id, qid: lp.qid };
+            }
+        }
+        // A restored paused session already knows where it was, long before
+        // the engine has loaded the song and can report anything.
+        const seed = getProgressSeed();
+        if (seed && seed.duration > 0) {
+            return { position: Math.min(seed.duration, Math.max(0, seed.position || 0)), duration: seed.duration, buffered: seed.duration, id: seed.id, qid: seed.qid };
         }
         return { position: 0, duration: 0, buffered: 0 };
     });
     useEffect(() => {
         let cancelled = false;
         const tick = () => {
-            NativeAudioEngine.getProgress().then(p => { if (!cancelled) setProgress(p); }).catch(() => { });
+            NativeAudioEngine.getProgress().then(p => {
+                if (cancelled || !p) return;
+                // A real poll is as good as a pushed event: remember it so a
+                // screen that mounts later starts from it, not from 0:00.
+                if (p.duration > 0) lastProgress = { ...p, at: Date.now() };
+                // While the restored song is still loading the engine can
+                // answer 0/0. Do not replace a known position and duration
+                // for the same song with that; the quick follow-up ticks pick
+                // up the real reading as soon as it is ready.
+                setProgress(prev => {
+                    if (!(p.duration > 0) && prev.duration > 0 && (!p.id || !prev.id || p.id === prev.id)) return prev;
+                    return p;
+                });
+                // A real reading for the restored song is what the seed was
+                // standing in for: retire it now. A reading for another song
+                // leaves it alone until its own reading arrives.
+                // A real reading for a DIFFERENT song means the app has moved on from the restored
+                // one: the seed must not linger, or playing that song again later would start its bar
+                // at the old saved position instead of 0:00.
+                const seed = getProgressSeed();
+                if (seed && p.duration > 0 && p.id && !p.stale) setProgressSeed(null);
+            }).catch(() => { });
         };
         tick();
         const id = setInterval(tick, updateInterval);

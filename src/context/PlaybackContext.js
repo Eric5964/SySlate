@@ -24,7 +24,7 @@ import {
     getAudioRamp, getKeepPriorityOnPlaylistSwitch, getSkipRamp,
     getCrossfadeEnabled, getCrossfadeDurationSkip, getPlaybackRate, setPlaybackRateStored,
 } from '../utils/storage';
-import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
+import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri, playerArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
 import { getLyrics } from '../utils/lyrics';
 import { setProgressSeed } from '../utils/progressSeed';
 import { setVizPending, clearVizPending } from '../utils/vizPending';
@@ -271,15 +271,87 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 for (const t of queue.slice(idx + 1, idx + 3)) {
                     if (cancelled) return;
                     const known = await getCachedArtFast(t).catch(() => undefined);
+                    let uri = known;
                     if (known === undefined) {
-                        await extractEmbeddedArt(t).catch(() => { });
+                        uri = await extractEmbeddedArt(t).catch(() => null);
                         await new Promise(r => setTimeout(r, 200));
+                    }
+                    if (cancelled) return;
+                    if (uri) {
+                        const target = playerArtUri(uri);
+                        console.log('[COVER] prefetch start ' + target);
+                        Image.prefetch(target)
+                            .then(ok => { if (!cancelled) console.log('[COVER] prefetch end ' + target + ' ' + (ok ? 'ok' : 'miss')); })
+                            .catch(() => { if (!cancelled) console.log('[COVER] prefetch failed ' + target); });
                     }
                 }
             } catch { }
         }, 3000);
         return () => { cancelled = true; clearTimeout(timer); };
     }, [currentTrack?.id]);
+
+    // Warm the decoded Player-size covers for the current song and the next
+    // two, so a skip (including one while paused, after the app sat in the
+    // background and iOS dropped its decoded images) has the next cover ready
+    // instead of showing a black frame while it decodes. Runs at once, again
+    // shortly after (the native queue can still be catching up with a song
+    // that was just tapped), and again whenever the app comes back.
+    useEffect(() => {
+        if (!currentTrack?.id) return;
+        let cancelled = false;
+        const done = new Set();
+        const prefetch = async (uri) => {
+            if (!uri || cancelled) return;
+            const target = playerArtUri(uri);
+            if (!target || done.has(target)) return;
+            done.add(target);
+            console.log('[COVER] prefetch start ' + target);
+            try {
+                const ok = await Image.prefetch(target);
+                if (!cancelled) console.log('[COVER] prefetch end ' + target + ' ' + (ok ? 'ok' : 'miss'));
+            } catch {
+                if (!cancelled) console.log('[COVER] prefetch failed ' + target);
+            }
+        };
+        const run = async () => {
+            const uris = [];
+            if (currentTrack.artwork) uris.push(currentTrack.artwork);
+            else {
+                const known = await getCachedArtFast(currentTrack).catch(() => undefined);
+                if (!cancelled && known) uris.push(known);
+            }
+            try {
+                let queue = await AudioEngine.getQueue();
+                let idx = currentTrack._qid != null ? queue.findIndex(t => t._qid === currentTrack._qid) : -1;
+                if (idx === -1) idx = queue.findIndex(t => t.id === currentTrack.id);
+                // The native queue can still be catching up right after a tap:
+                // fall back to the order the app itself built.
+                if (idx === -1 && Array.isArray(playlistRef.current?.queue)) {
+                    queue = playlistRef.current.queue;
+                    idx = queue.findIndex(t => t.id === currentTrack.id);
+                }
+                if (idx !== -1) {
+                    for (const t of queue.slice(idx + 1, idx + 3)) {
+                        if (cancelled) return;
+                        let uri = t.artwork;
+                        if (!uri) uri = await getCachedArtFast(t).catch(() => undefined);
+                        if (!cancelled && uri) uris.push(uri);
+                    }
+                }
+            } catch { }
+            for (const uri of uris) {
+                if (cancelled) return;
+                await prefetch(uri);
+            }
+        };
+        const timers = [0, 700, 1800, 4000].map(ms => setTimeout(run, ms));
+        const sub = AppState.addEventListener('change', (st) => {
+            if (st !== 'active') return;
+            done.clear();   // iOS may have dropped the decoded images while away
+            run();
+        });
+        return () => { cancelled = true; timers.forEach(clearTimeout); sub.remove(); };
+    }, [currentTrack?.id, currentTrack?._qid, currentTrack?.artwork]);
 
     // Tells the native side (lock screen, Control Center, car display) about
     // the current song's cover whenever it is known. The extraction effect

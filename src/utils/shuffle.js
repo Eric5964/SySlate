@@ -8,11 +8,11 @@ export function shuffleArray(arr) {
 }
 
 // Independent weighted pick per slot, WITH replacement. Unlike
-// shuffleArray's Fisher-Yates shuffle (every song exactly once per round),
-// this can repeat a song sooner or skip one entirely in a round, so Random,
-// Smart and Dumb never "cycle" through the whole playlist. The same song is
-// never picked twice in a row (when there is more than one song). With
-// every weight equal this is True Random.
+// shuffleArray's Fisher-Yates shuffle (a cycle round plays most of the
+// playlist once), this can repeat a song sooner or skip one entirely in a
+// round, so Random, Smart and Dumb never "cycle" through the whole playlist.
+// The same song is never picked twice in a row (when there is more than one
+// song). With every weight equal this is True Random.
 function weightedPicks(arr, weightOf) {
   const n = arr.length;
   if (n === 0) return [];
@@ -56,8 +56,9 @@ export function dumbShuffle(tracks, counts = {}) {
   return weightedPicks(tracks, t => Math.pow(1 + Math.max(0, counts[t.id] || 0), 0.4));
 }
 
-// Weighted order WITHOUT replacement: every song exactly once per round, but
-// heavier songs tend to come earlier (Efraimidis-Spirakis keys).
+// Weighted order WITHOUT replacement: the whole list once, heavier songs
+// tending to come earlier (Efraimidis-Spirakis keys). buildQueue keeps the
+// first part of this order for a cycle round.
 function weightedOrder(arr, weightOf) {
   return arr
     .map(t => ({ t, k: Math.pow(Math.random(), 1 / Math.max(1e-6, weightOf(t))) }))
@@ -65,8 +66,13 @@ function weightedOrder(arr, weightOf) {
     .map(x => x.t);
 }
 
+// "Shuffle" (cycle) plays only this share of the playlist in one round, so a
+// new round leaves a different fourth of the songs out and the round still
+// leans the usual way (Smart toward less played songs, Dumb toward more).
+export const SHUFFLE_FRACTION = 0.75;
+
 // A shuffle mode is a weighting (normal / smart / dumb) and an order:
-//   cycle  = every song once per round ("shuffle")
+//   cycle  = most of the playlist once per round ("shuffle")
 //   random = each pick is independent, repeats possible, no cycle
 // The saved ids are the older ones so nothing stored breaks:
 //   full_cycle  normal + cycle     true_random  normal + random
@@ -140,5 +146,14 @@ export function buildQueue(tracks, mode, counts = {}, opts = {}) {
     : (() => 1);
   const built = m.order === 'random' ? weightedPicks(tracks, weightOf)
     : m.weight === 'normal' ? shuffleArray(tracks) : weightedOrder(tracks, weightOf);
-  return separateRepeats(built, opts.keyOf || (t => t.id), opts.prevKey);
+  // Only the cycle ("Shuffle") order is shortened: keep the first ~three
+  // quarters of it. For normal that is a uniform random subset; for smart and
+  // dumb it is a weighted sample without replacement, so the same gentle
+  // weighting decides both which songs are kept and how early they come. A
+  // tiny playlist (2 or 3 songs) keeps all of them. The slice is inside
+  // buildQueue, so every fresh round draws its own subset.
+  const n = built.length;
+  const keep = n <= 3 ? n : Math.max(1, Math.round(n * SHUFFLE_FRACTION));
+  const kept = m.order === 'cycle' ? built.slice(0, keep) : built;
+  return separateRepeats(kept, opts.keyOf || (t => t.id), opts.prevKey);
 }
