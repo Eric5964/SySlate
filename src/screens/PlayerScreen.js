@@ -154,6 +154,11 @@ export default function PlayerScreen() {
     // display halfway, so it is already a few seconds in), so the time and bar
     // start there instead of at 0:00 and jumping.
     const [switchProg, setSwitchProg] = useState({ position: 0, duration: 0 });
+    // True while switchProg holds an ESTIMATE (no reading for the new song yet).
+    // The time text then keeps using switchProg after justSwitched ends, so it
+    // cannot sit at 0:00 while the bar is already a crossfade in. It is dropped
+    // as soon as the engine has a reading that describes this song.
+    const [switchEstimated, setSwitchEstimated] = useState(false);
     useEffect(() => {
         if (prevTrackIdRef.current === slotKey) return;
         prevTrackIdRef.current = slotKey;
@@ -162,10 +167,17 @@ export default function PlayerScreen() {
         const seed = getProgressSeed();
         const seeded = !!(seed && seed.id === currentTrack?.id && seed.duration > 0 && (!seed.qid || !currentTrack?._qid || seed.qid === currentTrack._qid));
         setSwitchProg(seeded ? { position: seed.position, duration: seed.duration } : { position: 0, duration: 0 });
+        setSwitchEstimated(false);
         setJustSwitched(true);
         const t = setTimeout(() => setJustSwitched(false), 400);
         return () => clearTimeout(t);
     }, [slotKey]);
+    // Hand the time back to the live reading once it can describe this song
+    // (a real reading, or the crossfade clock estimate matchProgress makes).
+    useEffect(() => {
+        if (!switchEstimated) return;
+        if (progress.duration > 0 && (!progress.stale || progress.estimated)) setSwitchEstimated(false);
+    }, [switchEstimated, progress.stale, progress.estimated, progress.duration]);
     const playbackState = usePlaybackState();
     const isPlaying = playbackState.state === State.Playing;
 
@@ -1106,15 +1118,10 @@ export default function PlayerScreen() {
     // For a line that wraps onto several rows of text: the text of each visual row, from
     // onTextLayout. Each visual row then fades on its own at the top and bottom edge, so a long
     // line fades smoothly instead of as one flat block.
-    const lyricsLinesRef = useRef(new Map());
     // Lines known to fit on ONE row of text (from onTextLayout). Only those, and the rows of a
     // wrapped line, can be drawn as thin slices at the box edge (see the lyrics map() below).
-    const lyricsSingleRef = useRef(new Set());
     // The scroll offset in steps of half a row, so the few lines near the top and bottom edge
     // (the only ones drawn as slices) can be picked without re-rendering on every pixel.
-    const [fadeBucket, setFadeBucket] = useState(0);
-    const fadeBucketRef = useRef(0);
-    const [, setLyricsLinesVersion] = useState(0);
     // Every new lyric set (a different song's lines) gets a new key, so its rows
     // remount and report their real positions through onLayout.
     const lyricsSetRef = useRef({ data: undefined, n: 0 });
@@ -1124,8 +1131,6 @@ export default function PlayerScreen() {
         // below makes every row report a fresh one, and until then "not measured" is correct.
         lyricsRowYRef.current.clear();
         lyricsRowHRef.current.clear();
-        lyricsLinesRef.current.clear();
-        lyricsSingleRef.current.clear();
     }
     const lyricsSetKey = lyricsSetRef.current.n;
     // Every line's opacity is worked out from lyricsScrollY, the list's scroll offset, which is
@@ -1138,8 +1143,6 @@ export default function PlayerScreen() {
     // with the list whenever the set of lines changes.
     useEffect(() => {
         lyricsScrollY.setValue(0);
-        fadeBucketRef.current = 0;
-        setFadeBucket(0);
         lyricsScrollRef.current?.scrollTo({ y: 0, animated: false });
     }, [lyricsSetKey]);
     // Bumped every time a row's real Y position lands via onLayout — the
@@ -1164,7 +1167,6 @@ export default function PlayerScreen() {
         layoutBumpPending.current = true;
         requestAnimationFrame(() => { layoutBumpPending.current = false; setLyricsLayoutVersion(v => v + 1); });
     };
-    const linesBumpPending = useRef(false);
     // Manual scroll support: dragging the lyrics view pauses auto-sync;
     // after `lyricsResyncSec` idle seconds (Settings → Lyrics), it resumes
     // and snaps back to the currently-playing line.
@@ -1419,7 +1421,9 @@ export default function PlayerScreen() {
         const trackChanged = lastSyncedTrackIdRef.current !== slotKey;
         // A reading for the other song (around a crossfade's song change) says
         // nothing about this one: leave the bar alone until a real one comes.
-        if (progress.stale && !trackChanged) return;
+        // (an estimated one still counts: a player opened right after a song change never saw the change itself,
+        // so ignoring it left the bar parked at 0 until the first real reading)
+        if (progress.stale && !progress.estimated && !trackChanged) return;
         lastSyncedTrackIdRef.current = slotKey;
         if (trackChanged) barFedRef.current = false;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
@@ -1488,6 +1492,7 @@ export default function PlayerScreen() {
                 settled = true;
                 console.log(`[BAR] seeded from the restored session: ${seed.position.toFixed(2)}s`);
                 setSwitchProg({ position: seed.position, duration: seed.duration });
+                setSwitchEstimated(false);
                 startRealTimeAnim(Math.max(0, Math.min(1, seed.position / seed.duration)), true, seed.duration);
                 return;
             }
@@ -1501,6 +1506,7 @@ export default function PlayerScreen() {
                 settled = true;
                 console.log(`[BAR] seeded from the engine's last reading: ${pos.toFixed(2)}s (reading ${Date.now() - lp.at}ms old)`);
                 setSwitchProg({ position: pos, duration: lp.duration });
+                setSwitchEstimated(false);
                 startRealTimeAnim(Math.max(0, Math.min(1, pos / lp.duration)), true, lp.duration);
                 return;
             }
@@ -1516,6 +1522,12 @@ export default function PlayerScreen() {
             stopAnim();
             animPct.setValue(estPct);
             animPctValueRef.current = estPct;
+            // Show the SAME estimate in the time text, and keep showing it (LiveTime
+            // keeps it moving) until a reading for this song arrives. Before, the
+            // clock said 0:00 while the bar was already at this spot, which is a
+            // different fraction of the bar on a short song and on a long one.
+            setSwitchProg({ position: estSec, duration: estDur });
+            setSwitchEstimated(estDur > 0);
             // The bar waits at 0 only briefly; the real spot is asked for again every 120 ms
             // (up to ~1.5 s) so an answer that was not ready yet, or still described the other song,
             // still lands soon, instead of the bar sitting at 0 and then popping in later.
@@ -1531,6 +1543,7 @@ export default function PlayerScreen() {
                     if (!usable) { retry(); return; }
                     settled = true;
                     setSwitchProg({ position: p.position, duration: p.duration });
+                    setSwitchEstimated(false);
                     startRealTimeAnim(Math.max(0, Math.min(1, p.position / p.duration)), true, p.duration);
                 }).catch(retry);
             };
@@ -1843,13 +1856,7 @@ export default function PlayerScreen() {
                                     scrollEnabled={showingLyrics && !lyricsScrollLocked}
                                     onScroll={Animated.event(
                                         [{ nativeEvent: { contentOffset: { y: lyricsScrollY } } }],
-                                        {
-                                            useNativeDriver: true,
-                                            listener: (e) => {
-                                                const b = Math.floor((e.nativeEvent.contentOffset.y || 0) / 17);
-                                                if (b !== fadeBucketRef.current) { fadeBucketRef.current = b; setFadeBucket(b); }
-                                            },
-                                        }
+                                        { useNativeDriver: true }
                                     )}
                                     scrollEventThrottle={16}
                                     onContentSizeChange={(_w, h) => {
@@ -1881,108 +1888,45 @@ export default function PlayerScreen() {
                                             if (!isGapLine(i)) return null;   // an empty timestamp: nothing is drawn (no "...")
                                             return <View key={i} onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); }} style={{ height: 34, marginVertical: 7 }} />;
                                         }
-                                        // Spotify-style: the lines themselves fade out toward the top
-                                        // and bottom edge of the box (no dark box over them). A row's
-                                        // Y comes from its onLayout; minus the live scroll offset it is
-                                        // the position inside the box, and the opacity is interpolated
-                                        // from the CENTER of each visual row of text, so every row of
-                                        // text gets its own step of the fade and a line that wraps onto
-                                        // two or three rows fades as a gradient, not as one flat block.
-                                        // Before the first layout the Y is unknown: fully visible.
-                                        const lineY = lyricsRowYRef.current.get(i);
-                                        const boxH = width - 56;
-                                        const FADE = 80;
-                                        const ROW_H = 34; // s.lyricLine's lineHeight
-                                        // Eased (smoothstep) ramp instead of a straight one, so the fade has no visible start or end.
-                                        const fadeAt = (centerY) => (lineY === undefined ? 1 : lyricsScrollY.interpolate({
-                                            inputRange: [
-                                                centerY - boxH, centerY - boxH + FADE * 0.25, centerY - boxH + FADE * 0.5, centerY - boxH + FADE * 0.75, centerY - boxH + FADE,
-                                                centerY - FADE, centerY - FADE * 0.75, centerY - FADE * 0.5, centerY - FADE * 0.25, centerY,
-                                            ],
-                                            outputRange: [0, 0.156, 0.5, 0.844, 1, 1, 0.844, 0.5, 0.156, 0],
-                                            extrapolate: 'clamp',
-                                        }));
-                                        // A row of text that is at (or about to reach) the top or bottom edge. Only those are
-                                        // drawn as slices: a handful of rows, not the whole song.
-                                        const inEdge = (top) => {
-                                            const rel = top - fadeBucket * 17;
-                                            return (rel > -ROW_H * 2 && rel < FADE + ROW_H * 2) || (rel > boxH - FADE - ROW_H * 2 && rel < boxH + ROW_H * 2);
-                                        };
-                                        // One row of text drawn as thin horizontal slices, each with its OWN opacity from the
-                                        // slice's own height in the box. The fade then runs smoothly THROUGH a row of text
-                                        // (the top of a letter is fainter than its bottom) instead of the whole row sharing one
-                                        // opacity. Same text, same row height and position as the plain version: nothing moves.
-                                        const SLICE_H = 5;
-                                        const SLICES = Math.ceil(ROW_H / SLICE_H);
-                                        const slicedRow = (rowText, rowTop, key, color, active, extraStyle) => (
-                                            <View key={key} style={[{ height: ROW_H, overflow: 'hidden' }, extraStyle]}>
-                                                {Array.from({ length: SLICES }, (_, j) => (
-                                                    <Animated.View
-                                                        key={j}
-                                                        pointerEvents="none"
-                                                        style={{ position: 'absolute', left: 0, right: 0, top: j * SLICE_H, height: SLICE_H, overflow: 'hidden', opacity: fadeAt(rowTop + j * SLICE_H + SLICE_H / 2) }}
-                                                    >
-                                                        <Text
-                                                            numberOfLines={1}
-                                                            style={[s.lyricLine, shadow, { position: 'absolute', left: 0, right: 0, top: -j * SLICE_H, height: ROW_H, marginVertical: 0, color }, active && s.lyricLineActive]}
-                                                        >
-                                                            {rowText}
-                                                        </Text>
-                                                    </Animated.View>
-                                                ))}
-                                            </View>
-                                        );
+                                        // Plain text, one Text per line, never swapped for another structure, so nothing can
+                                        // shift. The fade at the top and bottom edge is an overlay of the background colour
+                                        // drawn over the box (below), not a change to the text.
                                         const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); };
                                         const textColor = i === activeLine ? lyricActiveColor : lyricIdleColor;
                                         const shadow = { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 };
-                                        const rows = lyricsLinesRef.current.get(i);
-                                        if (rows && rows.length > 1 && lineY !== undefined) {
-                                            return (
-                                                <View key={i} onLayout={onRowLayout} style={{ marginVertical: 7 }}>
-                                                    {rows.map((rowText, k) => {
-                                                        const rowTop = lineY + k * ROW_H;
-                                                        if (inEdge(rowTop)) return slicedRow(rowText, rowTop, k, textColor, i === activeLine);
-                                                        return (
-                                                            <Animated.Text
-                                                                key={k}
-                                                                style={[s.lyricLine, shadow, { marginVertical: 0, color: textColor, opacity: fadeAt(rowTop + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
-                                                            >
-                                                                {rowText}
-                                                            </Animated.Text>
-                                                        );
-                                                    })}
-                                                </View>
-                                            );
-                                        }
-                                        if (lineY !== undefined && lyricsSingleRef.current.has(i) && inEdge(lineY)) {
-                                            return slicedRow(line.text, lineY, i, textColor, i === activeLine, { marginVertical: 7 });
-                                        }
                                         return (
-                                            <Animated.Text
+                                            <Text
                                                 key={i}
                                                 onLayout={onRowLayout}
-                                                onTextLayout={(e) => {
-                                                    // Wrapped line: remember what each visual row says, then draw
-                                                    // the row as separate pieces (above). Same width and line
-                                                    // height as before, so nothing moves.
-                                                    const ls = e.nativeEvent?.lines;
-                                                    if (ls && ls.length === 1) lyricsSingleRef.current.add(i);
-                                                    if (!ls || ls.length < 2 || lyricsLinesRef.current.has(i)) return;
-                                                    const texts = ls.map(l => String(l.text || '').replace(/\s+$/, ''));
-                                                    if (texts.some(t => !t)) return;
-                                                    lyricsLinesRef.current.set(i, texts);
-                                                    if (!linesBumpPending.current) {
-                                                        linesBumpPending.current = true;
-                                                        requestAnimationFrame(() => { linesBumpPending.current = false; setLyricsLinesVersion(v => v + 1); });
-                                                    }
-                                                }}
-                                                style={[s.lyricLine, shadow, { color: textColor, opacity: fadeAt(lineY + ROW_H / 2) }, i === activeLine && s.lyricLineActive]}
+                                                style={[s.lyricLine, shadow, { color: textColor }, i === activeLine && s.lyricLineActive]}
                                             >
                                                 {line.text}
-                                            </Animated.Text>
+                                            </Text>
                                         );
                                     })}</React.Fragment>
                                 </Animated.ScrollView>
+                                {/* Edge fade: bands of the background colour over the top and bottom of the box, solid at the
+                                    edge and eased to clear. Drawn once, never touches the text, no scroll work. */}
+                                {(() => {
+                                    const FADE = 80, N = 20, BH = FADE / N;
+                                    const boxH = width - 56;
+                                    const bands = [];
+                                    for (let j = 0; j < N; j++) {
+                                        const t = (j + 0.5) / N;                 // 0 at the box edge, 1 where the fade ends
+                                        const o = 1 - t * t * (3 - 2 * t);       // smoothstep
+                                        bands.push({ off: j * BH, o });
+                                    }
+                                    return (
+                                        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                                            {bands.map((b, j) => (
+                                                <React.Fragment key={j}>
+                                                    <View style={{ position: 'absolute', left: 0, right: 0, top: b.off, height: BH + 0.5, backgroundColor: base.bg, opacity: b.o }} />
+                                                    <View style={{ position: 'absolute', left: 0, right: 0, top: boxH - b.off - BH - 0.5, height: BH + 0.5, backgroundColor: base.bg, opacity: b.o }} />
+                                                </React.Fragment>
+                                            ))}
+                                        </View>
+                                    );
+                                })()}
                             </Animated.View>
                         )}
                         {lyricsArrows && lyricsData ? (
@@ -2085,10 +2029,13 @@ export default function PlayerScreen() {
                             </PanGestureHandler>
                         </TapGestureHandler>
                         <View style={s.times}>
-                            {dragRatio !== null || justSwitched
-                                ? <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio !== null ? dragRatio * progress.duration : switchProg.position)}</Text>
-                                : <LiveTime position={progress.position} duration={progress.duration} playing={isPlaying} rate={playbackRate} style={[s.time, { color: base.textFaint }]} />}
-                            <Text style={[s.time, { color: base.textFaint }]}>{fmt((justSwitched ? switchProg.duration : progress.duration) || knownDur)}</Text>
+                            {dragRatio !== null
+                                ? <Text style={[s.time, { color: base.textFaint }]}>{fmt(dragRatio * progress.duration)}</Text>
+                                : <LiveTime
+                                    position={(justSwitched || switchEstimated) ? switchProg.position : progress.position}
+                                    duration={(justSwitched || switchEstimated) ? (switchProg.duration || knownDur) : progress.duration}
+                                    playing={isPlaying} rate={playbackRate} style={[s.time, { color: base.textFaint }]} />}
+                            <Text style={[s.time, { color: base.textFaint }]}>{fmt(((justSwitched || switchEstimated) ? switchProg.duration : progress.duration) || knownDur)}</Text>
                         </View>
                     </View>
                 </View>

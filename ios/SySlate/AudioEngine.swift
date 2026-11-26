@@ -926,6 +926,11 @@ class AudioEngine: RCTEventEmitter {
             self.debugLog("[POP] engine configuration change: state=\(self.state) engineRunning=\(self.engine.isRunning)")
             self.markScheduledAudioStale()
             self.repairPlaybackAfterEngineStop("engine config change")
+            // A stop that lands in the middle of a crossfade is skipped by the repair above (it must not
+            // fight the fade). Nothing came back to it afterwards, so connecting to a car or a Bluetooth
+            // device right at a song change left the engine stopped, and the song silent, until the app
+            // was opened again. Look again once the crossfade is over.
+            if self.isCrossfading, !self.engine.isRunning { self.repairAfterCrossfadeIfNeeded() }
             // The stop this notice reports may already have been undone by somebody else's engine
             // restart (a watchdog, a play press) before the notice got here. The restart does not bring
             // back the song that was scheduled, so the engine runs with nothing to play: silence, with
@@ -942,6 +947,19 @@ class AudioEngine: RCTEventEmitter {
                 self.loadAndScheduleCurrentTrack(startAtSeconds: resumeAt, autoPlay: true, announceChange: false)
                 self.scheduleSilenceWatchdog()
             }
+        }
+    }
+
+    // Re-checks a few times, a second apart, until a running crossfade is over, then repairs a stopped engine.
+    // repairPlaybackAfterEngineStop does nothing unless the engine is really stopped while playing.
+    private func repairAfterCrossfadeIfNeeded(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self = self else { return }
+            if self.isCrossfading {
+                if attempt < 8 { self.repairAfterCrossfadeIfNeeded(attempt: attempt + 1) }
+                return
+            }
+            self.repairPlaybackAfterEngineStop("engine stopped during a crossfade")
         }
     }
 
@@ -1228,6 +1246,17 @@ class AudioEngine: RCTEventEmitter {
     // change), not on every elapsed-time tick.
     private var cachedArtworkPath: String?
     private var cachedArtwork: MPMediaItemArtwork?
+    // The cover last actually handed to the lock screen. A new song starts before its cover is
+    // ready (JS pushes the artwork path a moment later, and the cover inside the file is read off
+    // the main thread), and the old code cleared the artwork in that gap, so the lock screen went
+    // blank for a moment and then popped the cover back in. This keeps the previous picture up
+    // until the new one is ready, instead of flickering to nothing.
+    private var lastShownArtwork: MPMediaItemArtwork?
+    // When the song shown on the lock screen last changed. Used to hold the previous cover for a
+    // short moment after a change, covering both a cover file still being read and the JS side
+    // pushing the new cover path a moment later.
+    private var nowPlayingArtworkKey: String?
+    private var nowPlayingArtworkSince = Date.distantPast
 
     // Play/pause from the lock screen/Control Center are ramp-aware and go
     // through JS (see the RemotePlay/RemotePause comment above) — a real
@@ -1437,6 +1466,10 @@ class AudioEngine: RCTEventEmitter {
     // next song's cover is read ahead of time and waits here.
     private var embeddedArtworkCache: [String: MPMediaItemArtwork] = [:]
     private var embeddedArtworkAttempted = Set<String>()
+    // Read and came back empty: this song really has no cover inside its file. Kept apart from
+    // embeddedArtworkAttempted, which is set the moment a read STARTS, so "still reading" can be
+    // told apart from "nothing there" and the previous cover is only held while one may still arrive.
+    private var embeddedArtworkFailed = Set<String>()
     private var artLogged = Set<String>()
 
     private func readEmbeddedArtwork(from url: URL) -> UIImage? {
@@ -1469,13 +1502,19 @@ class AudioEngine: RCTEventEmitter {
                     if self.embeddedArtworkCache.count >= 8 {
                         // Evicted songs must be readable again later (replay, loop), so forget that they were attempted.
                         for k in self.embeddedArtworkCache.keys { self.embeddedArtworkAttempted.remove(k) }
+                        self.embeddedArtworkFailed.removeAll()
                         self.embeddedArtworkCache.removeAll()
                     }
                     self.embeddedArtworkCache[key] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    self.embeddedArtworkFailed.remove(key)
                     self.debugLog("[ART] lock screen cover read straight from the song file for \(track.title ?? "?")")
                     self.updateNowPlayingInfo()
                 } else {
+                    self.embeddedArtworkFailed.insert(key)
                     self.debugLog("[ART] no cover could be read from the song file for \(track.title ?? "?")")
+                    // The previous cover was being held while this read ran; now that it is
+                    // known there is none, take it down instead of leaving the wrong picture up.
+                    self.updateNowPlayingInfo()
                 }
             }
         }
@@ -1503,6 +1542,7 @@ class AudioEngine: RCTEventEmitter {
             MPNowPlayingInfoCenter.default().playbackState = .stopped
             cachedArtworkPath = nil
             cachedArtwork = nil
+            lastShownArtwork = nil
             return
         }
         var track = queue[idx]
@@ -1538,6 +1578,18 @@ class AudioEngine: RCTEventEmitter {
             MPNowPlayingInfoPropertyPlaybackRate: isPlayingForDisplay ? Double(playbackRate) : 0.0,
         ]
         let durKey = "\(track.id)|\(track.qid ?? "")"
+        if nowPlayingArtworkKey != durKey {
+            nowPlayingArtworkKey = durKey
+            nowPlayingArtworkSince = Date()
+            // With no cover ready, the previous picture is held for a short grace window. The
+            // "file had no cover" callback usually lands inside that window, so nothing would
+            // re-evaluate after it ends unless something else happened to push an update.
+            // One delayed re-check makes the placeholder come down at the end of the window.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.1) { [weak self] in
+                guard let self = self, self.nowPlayingArtworkKey == durKey else { return }
+                self.updateNowPlayingInfo()
+            }
+        }
         if let duration = track.duration, duration > 0 {
             lastKnownDurationByKey[durKey] = duration
         }
@@ -1581,15 +1633,25 @@ class AudioEngine: RCTEventEmitter {
                 debugLog("[ART] native has no cover path yet for \(track.title ?? "?")")
             }
         }
-        if let artwork = cachedArtwork {
-            info[MPMediaItemPropertyArtwork] = artwork
-        } else {
+        var artworkForDisplay: MPMediaItemArtwork? = cachedArtwork
+        if artworkForDisplay == nil, let embedded = embeddedArtworkCache[durKey] {
             // No usable file from JS: fall back to the cover inside the song.
-            if let embedded = embeddedArtworkCache[durKey] {
-                info[MPMediaItemPropertyArtwork] = embedded
-            } else {
-                loadEmbeddedArtworkIfNeeded(for: track, key: durKey)
-            }
+            artworkForDisplay = embedded
+        }
+        if artworkForDisplay == nil {
+            // Try the cover inside the file too (once; the helper ignores repeat calls).
+            loadEmbeddedArtworkIfNeeded(for: track, key: durKey)
+            // Keep the picture already on the lock screen while a new one may still arrive:
+            // just after a song change (JS pushes the path a moment later), or while the
+            // cover inside the file is still being read. Once that window is over and no
+            // cover turned up, let it clear instead of holding a stale cover forever.
+            let justChanged = Date().timeIntervalSince(nowPlayingArtworkSince) < 3
+            let readStillRunning = embeddedArtworkAttempted.contains(durKey) && !embeddedArtworkFailed.contains(durKey)
+            if justChanged || readStillRunning { artworkForDisplay = lastShownArtwork }
+        }
+        if let artwork = artworkForDisplay {
+            lastShownArtwork = artwork
+            info[MPMediaItemPropertyArtwork] = artwork
         }
         // Logged only when the song, its cover or the play state changes, so
         // a log taken during a car/Bluetooth blank shows exactly what was
@@ -3792,6 +3854,7 @@ class AudioEngine: RCTEventEmitter {
             for k in staleArt {
                 embeddedArtworkCache.removeValue(forKey: k)
                 embeddedArtworkAttempted.remove(k)
+                embeddedArtworkFailed.remove(k)
             }
             artworkOverrideById.removeValue(forKey: oldId)
             artistOverrideById.removeValue(forKey: oldId)

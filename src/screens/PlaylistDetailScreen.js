@@ -346,7 +346,7 @@ export default function PlaylistDetailScreen() {
                         </BackSwipeZone>
                         )}
 
-                        <View style={s.actionRow}>
+                        <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={s.actionRow}>
                             {ui.pd_play !== false && (
                             <SwipeQueueButton raise onSwipe={() => swipeQueue(false)}>
                             {(added) => (
@@ -378,20 +378,20 @@ export default function PlaylistDetailScreen() {
                             )}
                             </SwipeQueueButton>
                             )}
-                        </View>
+                        </BackSwipeZone>
 
-                        <View style={s.titleRow}>
-                            <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ flex: 1 }}>
+                        <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={s.titleRow}>
+                            <View style={{ flex: 1 }}>
                                 <Text style={[s.title, { color: showPlaylistTitles !== false ? base.text : 'transparent' }]} numberOfLines={1}>{showPlaylistTitles !== false ? playlist.name : ' '}</Text>
                                 {(showPlaylistTrackCount !== false || (ui.pd_hours !== false && totalLenText)) && <Text style={[s.subtitle, { color: base.textFaint }]}>{[showPlaylistTrackCount !== false ? `${playlist.songs.length} ${playlist.songs.length === 1 ? 'track' : 'tracks'}` : null, ui.pd_hours !== false ? totalLenText : null].filter(Boolean).join(' · ')}</Text>}
-                            </BackSwipeZone>
+                            </View>
                             <TouchableOpacity style={s.sortBtn} onPress={() => setShowSort(v => !v)}>
                                 <Text style={[s.sortBtnText, { color: theme.accent }]}>{sortLabel}</Text>
                             </TouchableOpacity>
-                        </View>
+                        </BackSwipeZone>
 
                         {showSort && (
-                            <View style={s.sortRow}>
+                            <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={s.sortRow}>
                                 {SORTS.map(opt => (
                                     <TouchableOpacity
                                         key={opt.id}
@@ -403,7 +403,7 @@ export default function PlaylistDetailScreen() {
                                         </Text>
                                     </TouchableOpacity>
                                 ))}
-                            </View>
+                            </BackSwipeZone>
                         )}
                     </View>
                 }
@@ -509,10 +509,10 @@ const s = StyleSheet.create({
     searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, paddingRight: 28, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 6, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
-    coverWrap: { alignItems: 'center', marginTop: 8, marginBottom: 18 },
+    coverWrap: { alignItems: 'center', paddingTop: 8, paddingBottom: 18 },
     cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
-    actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 22 },
+    actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, paddingBottom: 22 },
     playBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 24 },
     assignBar: { position: 'absolute', left: 12, right: 12 },
     eqName: { position: 'absolute', top: 11, right: 11, maxWidth: 110, fontSize: 10, opacity: 0.85 },
@@ -525,7 +525,7 @@ const s = StyleSheet.create({
     playBtnText: { fontSize: 15, fontWeight: '700' },
     shuffleBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 24, borderWidth: 1.5 },
     shuffleBtnText: { fontSize: 15, fontWeight: '700' },
-    titleRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 20, marginBottom: 10 },
+    titleRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 20, paddingBottom: 10 },
     title: { color: '#f0f0f0', fontSize: 22, fontWeight: '700', letterSpacing: -0.3 },
     subtitle: { color: '#555', fontSize: 13, marginTop: 4 },
     sortBtn: { paddingHorizontal: 12, paddingVertical: 8 },

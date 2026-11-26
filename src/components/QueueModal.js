@@ -251,7 +251,7 @@ const QueueRow = React.memo(function QueueRow({ row, isNew, removing, art, playC
 
 export default function QueueModal({ visible, onClose }) {
     const { theme, base } = useTheme();
-    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue, libraryFor, queueFrozenRef } = usePlayback();
+    const { priorityQueue, jumpToQueueIndex, removeFromQueue, promoteToQueue, moveInQueue, currentTrack, addToQueue, libraryFor, queueFrozenRef, queueEpoch } = usePlayback();
     const { showSongCovers, showPlayCount, artistSeparator, coverShape, artistDisplayJoin, songPillShadow, vizMode, performanceMode } = usePreferences();
     const showViz = vizMode !== 'off' && !performanceMode;   // the visualizer on the Now Playing row, as on the song lists
     // allRows is the whole upcoming queue; only the first `visibleCount` are
@@ -324,7 +324,7 @@ export default function QueueModal({ visible, onClose }) {
         try {
             // An Up Next jump is in flight: the native queue is already reordered but the song has not switched, so a rebuild
             // now would show the Priority songs gone. The sheet rebuilds once the shown song changes (or after 5 s).
-            if (queueFrozenRef?.current && Date.now() - queueFrozenRef.current < 5000) return;
+            if (queueFrozenRef?.current && Date.now() - queueFrozenRef.current < 5000) { console.log('[QUEUE] sheet refresh skipped: jump in flight'); return; }
             // Tapping a song to play resets TrackPlayer's queue entirely and
             // re-adds the new window right after — there's a brief real gap
             // between those two steps where the native queue is legitimately
@@ -347,7 +347,8 @@ export default function QueueModal({ visible, onClose }) {
                 if (currentIndex !== null && currentIndex !== undefined && queue.length > 0) break;
                 if (attempt < 4) await new Promise(r => setTimeout(r, 120));
             }
-            if (currentIndex === null || currentIndex === undefined) { setRows([]); return; }
+            if (currentIndex === null || currentIndex === undefined) { console.log('[QUEUE] sheet refresh: no current track, showing empty'); setRows([]); return; }
+            console.log(`[QUEUE] sheet refresh: native=${queue.length} songs, current=${currentIndex}, shown="${currentTrackRef.current?.title ?? '?'}"`);
             // Which slot is "current" for the list: the one the Now Playing row shows. Native moves its index at the START of a
             // crossfade (and the Priority bookkeeping follows a moment later), so asking native alone showed the incoming song
             // already gone from Priority while the Now Playing row still said the outgoing one, and the next song jumped into
@@ -469,6 +470,16 @@ export default function QueueModal({ visible, onClose }) {
         }, 1000);
         return () => { cancelled = true; clearInterval(id); };
     }, [visible, rows.length, refresh]);
+
+    // A tap on a song builds the native queue in two steps: the first window right away, then the
+    // rest of it a moment later. Opening the sheet in that gap showed only the first batch, and
+    // nothing refreshed it once the rest landed. Every rebuild (and that second step) bumps
+    // queueEpoch, so the sheet takes one more look then.
+    useEffect(() => {
+        if (!visible) return;
+        refresh();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queueEpoch]);
 
     // The sheet previously only ever refreshed when it opened, or right
     // after a remove/promote/jump it triggered itself — nothing refreshed

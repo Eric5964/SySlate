@@ -198,11 +198,11 @@ const AudioEngine = {
     // Output devices seen so far, each { name, blocked }; blocked = its automatic Play on connect is ignored.
     getAutoplayDevices: async () => { try { return (await NativeAudioEngine.getAutoplayDevices()) || []; } catch (e) { return []; } },
     setAutoplayBlocked: async (name, blocked) => { try { await NativeAudioEngine.setAutoplayBlocked(name, blocked); } catch (e) {} },
-    setCrossfadeEnabled: (enabled) => NativeAudioEngine.setCrossfadeEnabled(enabled),
+    setCrossfadeEnabled: (enabled) => { xfEstimate.on = !!enabled; return NativeAudioEngine.setCrossfadeEnabled(enabled); },
     // Kept name — this is now specifically the "on skip" duration (see
     // AudioEngine.swift), the JS-facing name stays the same for backward
     // compatibility with the AsyncStorage key it's paired with.
-    setCrossfadeDuration: (seconds) => NativeAudioEngine.setCrossfadeDuration(seconds),
+    setCrossfadeDuration: (seconds) => { xfEstimate.sec = Number(seconds) || 0; return NativeAudioEngine.setCrossfadeDuration(seconds); },
     setCrossfadeDurationEndOfTrack: (seconds) => NativeAudioEngine.setCrossfadeDurationEndOfTrack(seconds),
 
     addEventListener,
@@ -214,6 +214,9 @@ export default AudioEngine;
 // later (the Player opening) starts from the real state at once instead of
 // from "nothing yet" for the first few frames. That empty start was why the
 // DJ disc and the progress bar were late to start when the Player opened.
+// Crossfade setting as last sent to the engine: the new song is announced halfway through a crossfade, so the
+// clock estimate below starts half a crossfade in, not at 0.
+const xfEstimate = { on: false, sec: 0 };
 let lastPlaybackState = State.None;
 let lastProgress = null;   // { position, duration, buffered, id, qid, at }
 try {
@@ -264,7 +267,8 @@ export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
     if (stale) {
         const el = nowMs - expectedSince.at;
         if (expectId && fallbackDuration > 0 && lastPlaybackState === State.Playing && el >= 0 && el < CROSSFADE_ESTIMATE_MAX_MS) {
-            return { position: Math.min(fallbackDuration, el / 1000), duration: fallbackDuration, buffered: 0, stale: true, estimated: true };
+            const startAt = xfEstimate.on ? xfEstimate.sec / 2 : 0;
+            return { position: Math.min(fallbackDuration, el / 1000 + startAt), duration: fallbackDuration, buffered: 0, stale: true, estimated: true };
         }
         return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
     }

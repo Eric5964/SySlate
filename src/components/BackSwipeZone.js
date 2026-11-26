@@ -26,7 +26,7 @@ export default function BackSwipeZone({ onBack, style, children, navigation, dra
     // hookup crashed the app with an "onAnimatedValueUpdate listener" error when the swipe was let go.)
     const follow = useRef(dragX ? ({ nativeEvent: e }) => {
         // The edge strip belongs to the stack's own gesture, which already moves the screen.
-        if (startX.current < EDGE_SWIPE_WIDTH + 4 || stackGestureStarted.current) return;
+        if (startX.current < EDGE_SWIPE_WIDTH || stackGestureStarted.current) return;
         dragX.setValue(Math.max(0, e.translationX));
     } : undefined).current;
     const reset = () => { if (dragX) Animated.spring(dragX, { toValue: 0, useNativeDriver: true, friction: 9, tension: 90 }).start(); };
@@ -39,10 +39,19 @@ export default function BackSwipeZone({ onBack, style, children, navigation, dra
             if (dragX) dragX.stopAnimation();
             return;
         }
-        if (e.state === State.CANCELLED || e.state === State.FAILED) { if (startX.current >= EDGE_SWIPE_WIDTH + 4) reset(); return; }
+        if (e.state === State.CANCELLED || e.state === State.FAILED) {
+            // The stack's gesture can begin and then be cancelled (a short edge swipe, a call, the system taking
+            // the touch). Leaving the flag set made the NEXT swipe on this zone look like it belonged to the
+            // stack, so it was ignored and the person had to swipe again. Clear it with the gesture it described.
+            stackGestureStarted.current = false;
+            if (startX.current >= EDGE_SWIPE_WIDTH) reset();
+            return;
+        }
         if (e.state !== State.END) return;
-        if (stackGestureStarted.current) return;
-        if (startX.current < EDGE_SWIPE_WIDTH + 4) return;
+        const stackOwned = stackGestureStarted.current;
+        stackGestureStarted.current = false;
+        if (stackOwned) return;
+        if (startX.current < EDGE_SWIPE_WIDTH) return;
         const goes = e.translationX > 70 || (e.translationX > 30 && e.velocityX > 600);
         if (goes && Math.abs(e.translationY) < e.translationX && backRef.current) {
             if (dragX) {

@@ -46,6 +46,20 @@ const buildQueueAsync = async (tracks, mode, prevTrack) => {
     return buildQueue(tracks, mode, {}, opts);
 };
 
+// The upcoming list is always filled up to the loaded window (25 songs). A shuffled round only keeps 75% of a
+// playlist, so a small playlist can end up under that: another pass is built and appended until it is long enough.
+// `songs` is the playlist the passes are drawn from; `mode` the order they are built in.
+const UPCOMING_BUFFER = 25;
+const padToBuffer = async (list, songs, mode, minLen = UPCOMING_BUFFER) => {
+    let out = list;
+    for (let guard = 0; out.length < minLen && songs?.length && guard < 6; guard++) {
+        const more = await buildQueueAsync(songs, mode, out[out.length - 1]);
+        if (!more.length) break;
+        out = [...out, ...more];
+    }
+    return out;
+};
+
 
 const setQueueLoop = async () => {
     // Used to require() react-native-track-player for the constant. That package was removed in 108, so the
@@ -1244,6 +1258,25 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // A request that arrives while one is running used to be dropped. It is
     // remembered instead, and one more pass runs when the current one ends.
     const topUpPendingRef = useRef(false);
+    // Every window fill (the first 15 after a tap, and every later top-up) goes
+    // through this one chain, so two can never read the same loadedThroughRef
+    // and append the same songs twice. A queue rebuild also waits for it before
+    // reset()/add(), so a top-up that was already in flight cannot land in the
+    // freshly built queue and put old songs into it. While a rebuild is in the
+    // middle of changing the native queue, a new fill waits and runs afterwards.
+    const windowLockRef = useRef(Promise.resolve());
+    const queueRebuildRef = useRef(0);
+    const runWindowLocked = (fn) => {
+        const next = windowLockRef.current.then(fn, fn);
+        windowLockRef.current = next;
+        return next;
+    };
+    const releaseQueueRebuild = () => {
+        // A count, not a flag: two rebuilds can overlap, and the earlier one finishing must
+        // not say "safe" while the later one is still changing the native queue.
+        queueRebuildRef.current = Math.max(0, queueRebuildRef.current - 1);
+        if (queueRebuildRef.current === 0 && topUpPendingRef.current) { topUpPendingRef.current = false; topUpQueueIfNeeded(); }
+    };
 
     // Resets TrackPlayer to a fresh window of `fullQueue` starting at logical
     // index `anchorIndex` — native index 0 IS anchorIndex, so there's no
@@ -1260,11 +1293,20 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
         const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
-        await AudioEngine.reset();
-        playedPriQidsRef.current.clear();
-        lastIndexRef.current = null;   // a new queue: the old index says nothing about it (would read as a back skip)
-        await withTimeout(AudioEngine.add(batch), 6000);
-        loadedThroughRef.current = anchorIndex + batch.length;
+        queueRebuildRef.current += 1;
+        try {
+            // Let any fill that is already running finish its native add first; a fill
+            // that arrives after this point is deferred until the new queue is in place.
+            await windowLockRef.current.catch(() => { });
+            await AudioEngine.reset();
+            playedPriQidsRef.current.clear();
+            lastIndexRef.current = null;   // a new queue: the old index says nothing about it (would read as a back skip)
+            await withTimeout(AudioEngine.add(batch), 6000);
+            loadedThroughRef.current = anchorIndex + batch.length;
+            console.log(`[QUEUE] prime: ${fullQueue.length} logical, ${batch.length} added at native 0, loadedThrough=${loadedThroughRef.current}`);
+        } finally {
+            releaseQueueRebuild();
+        }
         // Deliberately NOT calling fillRestOfWindow() here — callers that
         // also need to re-insert priority tracks (restorePriorityTracks) do
         // that FIRST and call fillRestOfWindow() themselves right after.
@@ -1353,6 +1395,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // every other transition.
         preClaimFadeForFreshStart();
         try {
+            queueRebuildRef.current += 1;
+            // No window fill may be mid-add while the queue is read, reordered and trimmed below.
+            await windowLockRef.current.catch(() => { });
             const oldQueue = await AudioEngine.getQueue();
             const curIdx = await AudioEngine.getCurrentTrack();
             logicalQueueRef.current = fullQueue;
@@ -1360,6 +1405,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const insertAt = curIdx + 1;
             await withTimeout(AudioEngine.add(batch, insertAt), 6000);
             loadedThroughRef.current = anchorIndex + batch.length;
+            console.log(`[QUEUE] crossfade prime: ${fullQueue.length} logical, ${batch.length} inserted at native ${insertAt}, loadedThrough=${loadedThroughRef.current}`);
             // crossfadeToIndex instead of skip() — skip() re-derives its
             // own crossfade decision from native's state at the moment it
             // runs, which is exactly the race described above (a real gap
@@ -1385,19 +1431,25 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // that sequence is done rather than waiting on the crossfade's
             // own duration.
             forceReleaseFade();
+            releaseQueueRebuild();
         }
         return { preClaimedId: null, crossfaded: true };
     };
 
-    const fillRestOfWindow = async () => {
+    const fillRestOfWindow = () => runWindowLocked(async () => {
+        // A queue rebuild is running: it fills the window itself once the new
+        // queue is in place, so an add landing now would go into the wrong queue.
+        if (queueRebuildRef.current > 0) { console.log('[QUEUE] fill skipped: queue rebuild in progress'); return; }
         try {
             const rest = stampQids(logicalQueueRef.current.slice(loadedThroughRef.current, loadedThroughRef.current + (QUEUE_WINDOW_SIZE - QUEUE_INITIAL_BATCH)));
             if (rest.length) {
                 await withTimeout(AudioEngine.add(rest), 6000);
                 loadedThroughRef.current += rest.length;
+                console.log(`[QUEUE] fill: ${rest.length} added, loadedThrough=${loadedThroughRef.current}/${logicalQueueRef.current.length}`);
+                setQueueEpoch(e => e + 1);   // the queue just grew: an open Up Next sheet looks again
             }
         } catch (e) { console.error('fillRestOfWindow:', e); }
-    };
+    });
 
     // Wrap around the ENTIRE body of loadPlaylist/playPlaylistOrdered/
     // playPlaylistShuffled/playSongFromPlaylist. The currently-RUNNING
@@ -1448,8 +1500,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
     const topUpQueueIfNeeded = async () => {
         if (topUpRunningRef.current) { topUpPendingRef.current = true; return; }   // see its declaration: overlapping runs add the same slice twice
+        // A rebuild owns the native queue right now; a top-up read/index/add in the
+        // middle of it would measure the old queue and append into the new one.
+        if (queueRebuildRef.current > 0) { topUpPendingRef.current = true; return; }
         topUpRunningRef.current = true;
+        return runWindowLocked(async () => {
         try {
+            if (queueRebuildRef.current > 0) { topUpPendingRef.current = true; return; }
             if (loadedThroughRef.current >= logicalQueueRef.current.length) {
                 // Reached the true end of the logical playlist, not just the
                 // native window — previously this just returned here, so
@@ -1496,12 +1553,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (next.length) {
                     await AudioEngine.add(next);
                     loadedThroughRef.current += next.length;
+                    console.log(`[QUEUE] top-up: ${next.length} added, ${remaining} were left, loadedThrough=${loadedThroughRef.current}/${logicalQueueRef.current.length}`);
                 }
             }
         } catch (e) { console.error('topUpQueue:', e); } finally {
             topUpRunningRef.current = false;
-            if (topUpPendingRef.current) { topUpPendingRef.current = false; topUpQueueIfNeeded(); }
+            // The deferred pass is started here, outside the window lock this run holds:
+            // starting it inside would queue it behind this very lock and never run.
+            if (topUpPendingRef.current && queueRebuildRef.current === 0) { topUpPendingRef.current = false; topUpQueueIfNeeded(); }
         }
+        });
     };
 
     // Captures whatever's currently in the priority zone before a playlist
@@ -1593,8 +1654,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
             // Shuffled: arranged so its first song is not the one that plays right before it.
             const rest = shuffled
-                ? await buildQueueAsync(playlist.songs, mode, queue[keepEnd - 1])
-                : [...(orderedSongs?.length ? orderedSongs : playlist.songs)];
+                ? await padToBuffer(await buildQueueAsync(playlist.songs, mode, queue[keepEnd - 1]), playlist.songs, mode)
+                : await padToBuffer([...(orderedSongs?.length ? orderedSongs : playlist.songs)], orderedSongs?.length ? orderedSongs : playlist.songs, 'off');
             if (!keepPriority && priorityRef.current.length) { priorityRef.current = []; setPriorityQueue([]); }
             // Same bulk replace as a shuffle change (reshuffleUpcoming).
             await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
@@ -1641,7 +1702,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // it's an index into THAT array, so carrying it over to a freshly
         // built queue would start the playlist at an unrelated song.
         const remembered = (Array.isArray(session?.queue) && session.queue.length) ? session.queue : null;
-        let queue = remembered ?? (isOn ? await buildQueueAsync(playlist.songs, mode) : [...playlist.songs]);
+        let queue = remembered ?? (isOn ? await padToBuffer(await buildQueueAsync(playlist.songs, mode), playlist.songs, mode, UPCOMING_BUFFER + 1) : await padToBuffer([...playlist.songs], playlist.songs, 'off', UPCOMING_BUFFER + 1));
         let startIndex = forceIndex ?? (remembered ? (session.index ?? 0) : 0);
         // Both ends, not just the top: a negative index (a corrupt session, or
         // an import) used to pass straight through into queue.slice() (which
@@ -1713,7 +1774,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
-        const queue = await buildQueueAsync(playlist.songs, useMode);
+        const queue = await padToBuffer(await buildQueueAsync(playlist.songs, useMode), playlist.songs, useMode, UPCOMING_BUFFER + 1);
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp());
@@ -1779,6 +1840,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         const keepSet = new Set(carriedPriority.map(t => t.id));
 
+        console.log(`[QUEUE] tap song: "${song.title}" in ${playlist.songs.length} songs, shuffle=${isOn ? mode : 'off'}, carried priority=${carriedPriority.length}`);
+
         let rest;
         if (isOn) {
             // buildQueueAsync, not a plain shuffle: Smart/Dumb/random are real
@@ -1788,6 +1851,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // with shuffle on handed you a plain Fisher-Yates order instead.
             // `mode` was already being read here; it just wasn't used.
             rest = await buildQueueAsync(playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)), mode, playlist.songs.find(s => s.id === songId));
+            rest = await padToBuffer(rest, playlist.songs.filter(s => s.id !== songId && !keepSet.has(s.id)), mode);
         } else {
             // Continue through the list in order starting right AFTER the
             // tapped song, wrapping back around — not just "everything else
@@ -1798,6 +1862,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             rest = wrapped.filter(s => !keepSet.has(s.id));
         }
 
+        if (!isOn) rest = await padToBuffer(rest, playlist.songs, 'off');
         const queue = [song, ...rest];
 
         // Uses the Skip ramp duration here, not the general Audio
@@ -1813,6 +1878,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const pl = { ...playlist, queue };
         setCurrentPlaylist(pl);
         setQueueEpoch(e => e + 1);
+        console.log(`[QUEUE] tap song ready: logical=${queue.length}, crossfaded=${crossfaded}, epoch bumped`);
         // If this is the same song that was already playing (just reached
         // through a different playlist that also contains it, or the same
         // playlist replayed), keep whatever art was already resolved for it
@@ -2036,7 +2102,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 }
             } else {
                 rest = await buildQueueAsync(rest, mode, queue[keepEnd - 1]);   // the song right before the new order: the last priority song, else the current one
+                rest = await padToBuffer(rest, pl.songs.filter(s => !usedIds.has(s.id)), mode);
             }
+            if (mode === 'off') rest = await padToBuffer(rest, pl.songs, 'off');
 
             // One bulk removal instead of removing up to ~50 loaded tracks
             // one at a time (each its own native bridge round trip) — that

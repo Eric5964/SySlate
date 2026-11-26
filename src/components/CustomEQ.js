@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, TextInput, Alert, Share, KeyboardAvoidingView, Platform, StyleSheet } from 'react-native';
 import BottomSheet from './BottomSheet';
+import EQGraph from './EQGraph';
 import PureSlider from './PureSlider';
 import AudioEngine from '../native/AudioEngine';
 import { useTheme } from '../context/ThemeContext';
@@ -126,6 +127,17 @@ export function AdvancedEQSheet({ visible, preset, s, onClose, onSaved }) {
                 <TextInput style={[s.nameInput, { borderColor: theme.accent }]} value={name} onChangeText={setName}
                     placeholder="Preset name..." placeholderTextColor="#444" />
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                    {/* The graph is a second way into the same 10-band model: a dot drag writes
+                        that band's gain (same snap and range as the Gain slider below), previews
+                        the sound while held, and commits on release. Nothing new is stored. */}
+                    <View style={[st.card, { borderColor: base.border }]}>
+                        <View style={st.cardHead}>
+                            <Text style={{ color: base.text, fontWeight: '700', fontSize: 13 }}>Graphical EQ</Text>
+                            <Text style={{ color: base.textFaint, fontSize: 11 }}>Drag a dot up or down</Text>
+                        </View>
+                        <EQGraph bands={bands} base={base} accent={theme.accent}
+                            onPreview={next => preview(next)} onCommit={(i, g) => commitBand(i, { g })} />
+                    </View>
                     <View style={[st.card, { borderColor: base.border }]}>
                         <View style={st.cardHead}>
                             <Text style={{ color: base.text, fontWeight: '700', fontSize: 13 }}>Pre-amp</Text>

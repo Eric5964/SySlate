@@ -13,14 +13,18 @@ const BARS_PILL = 18;
 const BARS_COVER = 8;
 
 // The audio tap is shared by whichever row shows the visualizer. When the playing song
-// changes (a skip, or the halfway point of a crossfade) one row unmounts and the next
-// mounts at once; the tap is only switched off if nobody has asked for it 3 s later,
-// so it is not torn down and rebuilt on every song change, or when the Player is closed
-// and opened again a moment later.
+// changes one row unmounts and the next mounts at once; switching the tap off is delayed
+// 3 s so a short gap (a song change, or closing and reopening the Player) does not leave
+// it off. Installing it again when the count comes back up from zero is deliberate: it also
+// covers the case where the engine was rebuilt while nothing was showing the visualizer.
 let users = 0;
 let offTimer = null;
 const acquireTap = () => {
-    const alreadyOn = users > 0 || offTimer !== null;
+    // A pending offTimer means the tap is still on, but a visualizer appearing while none was
+    // showing is exactly the moment the engine may have been rebuilt (opening the Player, a route
+    // change): put the tap in fresh instead of trusting the old one. Only a tap that is already
+    // being used by another visualizer is left alone, so moving between rows/songs costs nothing.
+    const alreadyOn = users > 0;
     users += 1;
     if (offTimer) { clearTimeout(offTimer); offTimer = null; }
     if (!alreadyOn) AudioEngine.setVisualizerEnabled(true);
@@ -66,6 +70,12 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     const playingRef = useRef(playing);
     playingRef.current = playing;
     const mountedAt = useRef(Date.now());
+    // How many times in a row the tap has been put back in without a single reading arriving.
+    // A dead engine (car/Bluetooth interruption) never answers, and retrying every 1.5 s forever
+    // just spun in the background. After a few tries it stops until playback really changes or a
+    // reading arrives again.
+    const healTries = useRef(0);
+    const MAX_HEAL_TRIES = 3;
 
     // Tap + event stream: on while this is mounted. Switched on again whenever playback
     // (re)starts, since the engine may have been rebuilt while paused.
@@ -77,6 +87,7 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
             bandCount.current = nb;
             for (let i = 0; i < nb; i++) target.current[i] = l[i];
             lastEvent.current = Date.now();
+            healTries.current = 0;   // readings are flowing again: allow healing again later
         });
         acquireTap();
         return () => { try { sub.remove(); } catch (e) { } releaseTap(); };
@@ -84,7 +95,10 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
     const firstRun = useRef(true);
     useEffect(() => {
         if (firstRun.current) { firstRun.current = false; return; }
-        if (playing) AudioEngine.setVisualizerEnabled(true);   // playback restarted: put the tap in fresh (the engine may have been rebuilt)
+        if (playing) {
+            healTries.current = 0;   // a real playback-state change is the one thing worth retrying for
+            AudioEngine.setVisualizerEnabled(true);   // playback restarted: put the tap in fresh (the engine may have been rebuilt)
+        }
     }, [playing]);
 
     // Once per screen frame (it was a 50 ms timer, which alone added up to 50 ms of delay): ease each bar
@@ -105,10 +119,12 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
             const live = nowMs - lastEvent.current < 250;
             // Playing, yet no readings for a moment: the tap was lost (an interruption, a route
             // change or a rebuilt engine drops it without telling JS). Put it in again, at most
-            // once every 1.5 s, instead of waiting for the next pause/play to do it.
-            if (playingRef.current && nowMs - Math.max(lastEvent.current, mountedAt.current) > 800 && nowMs - lastHeal > 1500) {
+            // once every 1.5 s, instead of waiting for the next pause/play to do it. Give up after
+            // a few tries when nothing comes back, so a dead engine cannot keep this running.
+            if (playingRef.current && healTries.current < MAX_HEAL_TRIES && nowMs - Math.max(lastEvent.current, mountedAt.current) > 800 && nowMs - lastHeal > 1500) {
                 lastHeal = nowMs;
-                console.log('[VIZ] no readings while playing, putting the tap in again');
+                healTries.current += 1;
+                console.log(`[VIZ] no readings while playing, putting the tap in again (try ${healTries.current}/${MAX_HEAL_TRIES})`);
                 AudioEngine.setVisualizerEnabled(true);
             }
             for (let i = 0; i < bars; i++) {
