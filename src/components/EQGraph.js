@@ -31,20 +31,34 @@ const FREQ_LABELS = [32, 125, 500, 2000, 8000];
 const GRID_FREQS = [100, 1000, 10000];
 const GRID_GAINS = [6, 3, 0, -3, -6];
 
-export default function EQGraph({ bands, base, accent, onPreview, onCommit }) {
+export default function EQGraph({ bands, base, accent, onPreview, onCommit, disabled = false }) {
     const [layout, setLayout] = useState({ w: 0, h: HEIGHT });
     const [drag, setDrag] = useState(null);   // { i, g } while a dot is held
     const stateRef = useRef({});
-    stateRef.current = { bands, layout, onPreview, onCommit };
+    stateRef.current = { bands, layout, onPreview, onCommit, disabled };
 
+    const graphRef = useRef(null);
     const activeRef = useRef(-1);
-    const offsetRef = useRef(0);
+    // The graph's page origin, measured once at the start of every gesture. Using pageY against
+    // this (instead of deriving an offset from locationY) stays correct even when the sheet is
+    // still moving, and measuring per gesture means it also survives the sheet being scrolled.
+    const winYRef = useRef(0);
+    // Where the finger sits relative to the grabbed dot, so touching a dot never jumps its gain.
+    const grabRef = useRef(0);
     const gainRef = useRef(0);
     const lastPreviewRef = useRef(0);
+    // Identifies the current gesture: a measureInWindow callback that arrives after the finger
+    // was lifted must not start a drag that never ends.
+    const gestureIdRef = useRef(0);
+    const measuringRef = useRef(false);
+    const movedYRef = useRef(null);
 
-    const applyAtY = (pageY) => {
+    // One place turns a page Y into a snapped gain: the dot, the readout, the preview and the
+    // committed value all use this exact number.
+    const applyAtPageY = (pageY) => {
         const { layout: l, bands: b, onPreview: prev } = stateRef.current;
-        const y = pageY - offsetRef.current;
+        if (activeRef.current < 0 || !Number.isFinite(pageY)) return;
+        const y = pageY - winYRef.current - grabRef.current;
         const g = snapGain(gainForY(y, l.h));
         gainRef.current = g;
         setDrag({ i: activeRef.current, g });
@@ -56,42 +70,83 @@ export default function EQGraph({ bands, base, accent, onPreview, onCommit }) {
         }
     };
 
+    const beginAt = (pageX, pageY, winX, winY) => {
+        const { bands: b, layout: l } = stateRef.current;
+        if (!l.w || !b?.length) return;
+        if (!Number.isFinite(pageX) || !Number.isFinite(pageY) || !Number.isFinite(winY)) return;
+        winYRef.current = winY;
+        const x = pageX - winX;
+        const y = pageY - winY;
+        let best = 0, bestD = Infinity;
+        b.forEach((band, i) => {
+            const dx = xFor(band.f, l.w) - x;
+            // Normally the horizontal distance decides. If two bands share a frequency,
+            // the vertical distance to their dots breaks the tie instead of the first
+            // one in the list always winning.
+            const dy = yFor(band.g, l.h) - y;
+            const d = dx * dx + dy * dy * 0.25;
+            if (d < bestD) { bestD = d; best = i; }
+        });
+        activeRef.current = best;
+        // Grab offset, not a snap-to-finger: if the touch landed a few points above/below the
+        // dot's centre, that distance is kept for the whole drag. Without this the dot jumped
+        // to the finger on touch-down, changing the gain before the person had moved at all.
+        grabRef.current = y - yFor(b[best].g, l.h);
+        gainRef.current = snapGain(b[best].g);
+    };
+
     const responder = useRef(PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponder: () => !stateRef.current.disabled,
+        onMoveShouldSetPanResponder: () => !stateRef.current.disabled,
         // A vertical drag here must not scroll the sheet under it.
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
             const { bands: b, layout: l } = stateRef.current;
             if (!l.w || !b?.length) return;
-            // locationY is relative to this view, pageY is not: their difference is the view's
-            // page offset, which stays valid for the whole gesture.
-            offsetRef.current = e.nativeEvent.pageY - e.nativeEvent.locationY;
-            const x = e.nativeEvent.locationX;
-            const y = e.nativeEvent.locationY;
-            let best = 0, bestD = Infinity;
-            b.forEach((band, i) => {
-                const dx = xFor(band.f, l.w) - x;
-                // Normally the horizontal distance decides. If two bands share a frequency,
-                // the vertical distance to their dots breaks the tie instead of the first
-                // one in the list always winning.
-                const dy = yFor(band.g, l.h) - y;
-                const d = dx * dx + dy * dy * 0.25;
-                if (d < bestD) { bestD = d; best = i; }
-            });
-            activeRef.current = best;
-            applyAtY(e.nativeEvent.pageY);
+            const { pageX, pageY, locationY } = e.nativeEvent;
+            const id = ++gestureIdRef.current;
+            movedYRef.current = null;
+            // only if measureInWindow is unavailable or gives nothing usable
+            const fallbackY = Number.isFinite(locationY) ? pageY - locationY : 0;
+            const node = graphRef.current;
+            if (node && typeof node.measureInWindow === 'function') {
+                measuringRef.current = true;
+                node.measureInWindow((x, y, w, h) => {
+                    if (gestureIdRef.current !== id) return;   // finger already lifted
+                    measuringRef.current = false;
+                    const wx = Number.isFinite(x) ? x : 0;
+                    const wy = Number.isFinite(y) ? y : fallbackY;
+                    beginAt(pageX, pageY, w > 0 ? wx : 0, (w > 0 && h > 0) ? wy : fallbackY);
+                    // A move may have arrived while the measurement was in flight: apply the
+                    // latest one now so the dot does not lag behind the finger.
+                    const movedY = movedYRef.current;
+                    movedYRef.current = null;
+                    // Also on a touch with no move: this is what highlights the
+                    // grabbed dot and shows its readout straight away.
+                    applyAtPageY(movedY != null ? movedY : pageY);
+                });
+            } else {
+                beginAt(pageX, pageY, 0, fallbackY);
+                applyAtPageY(pageY);
+            }
         },
-        onPanResponderMove: (e) => { if (activeRef.current >= 0) applyAtY(e.nativeEvent.pageY); },
+        onPanResponderMove: (e) => {
+            if (activeRef.current >= 0) applyAtPageY(e.nativeEvent.pageY);
+            else if (measuringRef.current) movedYRef.current = e.nativeEvent.pageY;
+        },
         onPanResponderRelease: () => finish(),
         onPanResponderTerminate: () => finish(),
     })).current;
 
     function finish() {
+        gestureIdRef.current++;   // cancels a measureInWindow callback still in flight
+        measuringRef.current = false;
+        movedYRef.current = null;
         const i = activeRef.current;
         const g = gainRef.current;
         activeRef.current = -1;
         setDrag(null);
+        // g was snapped once in applyAtPageY; the parent stores that same value.
         if (i >= 0 && Number.isFinite(g)) stateRef.current.onCommit?.(i, g);
     }
 
@@ -122,10 +177,11 @@ export default function EQGraph({ bands, base, accent, onPreview, onCommit }) {
                 <Text style={{ color: base.textFaint, fontSize: 11 }} numberOfLines={1}>
                     {activeBand
                         ? `Band ${drag.i + 1}  ${formatFreq(activeBand.f)}  ${activeBand.g > 0 ? '+' : ''}${activeBand.g.toFixed(1)} dB`
-                        : 'Drag a dot up or down'}
+                        : disabled ? 'Premade preset: bands are fixed' : 'Drag a dot up or down'}
                 </Text>
             </View>
             <View
+                ref={graphRef}
                 style={[st.graph, { borderColor: base.border }]}
                 onLayout={e => setLayout({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
                 {...responder.panHandlers}

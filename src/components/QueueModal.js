@@ -314,13 +314,18 @@ export default function QueueModal({ visible, onClose }) {
     // The sheet skipped rebuilds while an Up Next jump was in flight (see refresh); rebuild right when the shown song switches.
     const shownQid = currentTrack?._qid ?? currentTrack?.id ?? null;
     const shownQidSeen = useRef(shownQid);
-    useEffect(() => {
-        if (shownQidSeen.current === shownQid) return;
-        shownQidSeen.current = shownQid;
-        if (visible && !(queueFrozenRef?.current)) refresh();
-    }, [shownQid]);
+    // Passive triggers (the native track event, a queueEpoch bump, the shown
+    // song changing) can all fire for the same song change within a few
+    // hundred ms. They share one debounced request instead of each rebuilding
+    // the whole sheet and logging its own "[QUEUE] sheet refresh" line.
+    const isVisibleRef = useRef(visible);
+    isVisibleRef.current = visible;
+    const refreshTimer = useRef(null);
 
     const refresh = useCallback(async (priorityOverride, justAddedRealIndex, afterApply, smooth) => {
+        // An explicit refresh (a remove/promote/jump) supersedes a queued
+        // passive one, so the sheet does not rebuild twice for the same change.
+        if (refreshTimer.current) { clearTimeout(refreshTimer.current); refreshTimer.current = null; }
         try {
             // An Up Next jump is in flight: the native queue is already reordered but the song has not switched, so a rebuild
             // now would show the Priority songs gone. The sheet rebuilds once the shown song changes (or after 5 s).
@@ -427,6 +432,22 @@ export default function QueueModal({ visible, onClose }) {
         } catch { setRows([]); } finally { setHasLoadedOnce(true); }
     }, []);
 
+    const scheduleRefresh = useCallback((...args) => {
+        if (refreshTimer.current) clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(() => {
+            refreshTimer.current = null;
+            if (!isVisibleRef.current) return;
+            refresh(...args);
+        }, 220);
+    }, [refresh]);
+    useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
+
+    useEffect(() => {
+        if (shownQidSeen.current === shownQid) return;
+        shownQidSeen.current = shownQid;
+        if (visible && !(queueFrozenRef?.current)) scheduleRefresh();
+    }, [shownQid, visible, scheduleRefresh]);
+
     useEffect(() => {
         // Was deferred until the sheet's open animation settled, to stop
         // content-loading from competing with that animation. That traded
@@ -477,7 +498,7 @@ export default function QueueModal({ visible, onClose }) {
     // queueEpoch, so the sheet takes one more look then.
     useEffect(() => {
         if (!visible) return;
-        refresh();
+        scheduleRefresh();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [queueEpoch]);
 
@@ -494,11 +515,12 @@ export default function QueueModal({ visible, onClose }) {
         // not the newer PlaybackActiveTrackChanged one, so staying
         // consistent with what's already proven to fire elsewhere in this
         // codebase rather than assuming the newer event is also available.
-        let t = null;
-        // A second look a moment later: after a back skip the Priority songs are moved up natively just after the change.
-        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => { refresh(); clearTimeout(t); t = setTimeout(() => refresh(), 450); });
-        return () => { sub.remove(); clearTimeout(t); };
-    }, [visible, refresh]);
+        // The debounce itself is the "second look" after a back skip: the
+        // Priority songs are moved up natively just after the change, and the
+        // queueEpoch bump that follows joins the same pending rebuild.
+        const sub = AudioEngine.addEventListener(Event.PlaybackTrackChanged, () => scheduleRefresh());
+        return () => { sub.remove(); };
+    }, [visible, scheduleRefresh]);
 
     // The Now Playing row follows the app's current song, which changes a moment AFTER native's event (and during a
     // crossfade, well after it started). Rebuilding the rows when it does makes the Now Playing row and the list change
@@ -508,8 +530,8 @@ export default function QueueModal({ visible, onClose }) {
     useEffect(() => {
         if (lastShownKey.current === shownKey) return;
         lastShownKey.current = shownKey;
-        if (visible) refresh(undefined, undefined, undefined, true);
-    }, [shownKey, visible, refresh]);
+        if (visible) scheduleRefresh(undefined, undefined, undefined, true);
+    }, [shownKey, visible, scheduleRefresh]);
 
     const priorityRows = rows.filter(r => r.isPriority);
     const upNextRows = rows.filter(r => !r.isPriority);

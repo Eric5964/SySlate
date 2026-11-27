@@ -147,9 +147,14 @@ export function parseQInput(text) {
     return Number.isFinite(v) ? round(clamp(v, Q_MIN, Q_MAX), 2) : null;
 }
 
-// ---- Frequency response (RBJ biquads, 48 kHz), used to turn bands into a GraphicEQ curve ----
+// ---- Frequency response (RBJ biquads, 44.1 kHz reference), used to draw the curve ----
+// Mirrors the native AVAudioUnitEQ: peak bands are RBJ peaking biquads whose Q is the Q
+// equivalent of the octave bandwidth the engine is handed (see qToBandwidth above), and the
+// low/high shelves use the S=1 slope AVAudioUnitEQ's shelf filters have. The engine really
+// runs at the output hardware rate (44.1 or 48 kHz depending on the route); 44.1 kHz is the
+// reference here and the curve is a visual aid, not a measurement.
 function biquadMagDb(b, f) {
-    const fs = 48000;
+    const fs = 44100;
     const A = Math.pow(10, b.g / 40);
     const w0 = 2 * Math.PI * clamp(b.f, FREQ_MIN, FREQ_MAX) / fs;
     const cw = Math.cos(w0), sw = Math.sin(w0);

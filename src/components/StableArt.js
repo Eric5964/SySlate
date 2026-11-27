@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
+import { prefetchCover } from '../utils/coverPrefetch';
 
 // Draws a cover without ever showing an empty frame while the next one loads.
 // The layer already on screen stays underneath, and the new one is mounted on
@@ -33,23 +34,19 @@ export default function StableArt({ uri, style, resizeMode = 'cover' }) {
             const shown = prev.find(l => l.id === loadedIdRef.current) || prev[0];
             return shown ? [shown, layer] : [layer];
         });
-        console.log('[COVER] prefetch start ' + uri);
-        let cancelled = false;
-        Image.prefetch(uri)
-            .then(ok => { if (!cancelled) console.log('[COVER] prefetch end ' + uri + ' ' + (ok ? 'ok' : 'miss')); })
-            .catch(() => { if (!cancelled) console.log('[COVER] prefetch failed ' + uri); });
-        return () => { cancelled = true; };
+        // The visible Image below is the real load; this only warms the cache
+        // for the next screen. prefetchCover dedupes it against the playback
+        // prefetches and logs failures only, instead of a start/end pair for
+        // every mounted cover.
+        prefetchCover(uri);
+        return undefined;
     }, [uri]);
 
     const loaded = (layer) => {
         const cur = layersRef.current;
         if (cur[cur.length - 1]?.id !== layer.id) return;
-        console.log('[COVER] new cover loaded ' + layer.uri);
         loadedIdRef.current = layer.id;
-        if (cur.length > 1) {
-            console.log('[COVER] uri swap to ' + layer.uri);
-            setLayers([layer]);
-        }
+        if (cur.length > 1) setLayers([layer]);
     };
 
     return (

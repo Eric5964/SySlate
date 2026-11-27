@@ -17,11 +17,12 @@ import { usePreferences } from '../context/PreferencesContext';
 import { squircle } from '../utils/squircle';
 import { MODE_PARTS, modeId } from '../utils/shuffle';
 import PureSlider from '../components/PureSlider';
+import EQGraph from '../components/EQGraph';
 import ScreenBackground from '../components/ScreenBackground';
 import TopBarBack from '../components/TopBarFade';
 import { noteScroll } from '../utils/scrollGuard';
 import { TOP_PAD, TOP_FADE, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
-import { BUILT_IN_PRESETS, BAND_HZ, BAND_COUNT, mergePresetsForDisplay, EQ_MIN, EQ_MAX } from '../utils/eq';
+import { BUILT_IN_PRESETS, BAND_COUNT, mergePresetsForDisplay, clampEQBand } from '../utils/eq';
 import { applyEQPreset } from '../context/PlaybackContext';
 import EQAdvancedRows, { AdvancedEQSheet } from '../components/CustomEQ';
 import { PRE_MIN, PRE_MAX, clampPre } from '../utils/customEQ';
@@ -82,6 +83,11 @@ import {
 } from '../utils/storage';
 import { importSongs } from '../utils/importMusic';
 import * as ImagePicker from 'expo-image-picker';
+
+// Numeric frequencies for the basic editor's graph, index-matched to BAND_HZ.
+// The stored preset format stays a plain 10-value gain array; this is only the
+// shape EQGraph draws.
+const BAND_FREQS = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
 const SCREEN_W = Dimensions.get('window').width;
 const SWATCH_GAP = 12;
@@ -314,6 +320,14 @@ export default function SettingsScreen() {
     const [editingIsBuiltIn, setEditingIsBuiltIn] = useState(false);
     const [newName, setNewName] = useState('');
     const [newBands, setNewBands] = useState(new Array(BAND_COUNT).fill(0));
+    const newBandsRef = useRef(newBands);
+    newBandsRef.current = newBands;
+    // The graph is another way into the same 10-value gain array: fixed BAND_FREQS,
+    // peak/one-octave bands, dots move vertically only. Saving still writes the array.
+    const basicGraphBands = useMemo(
+        () => BAND_FREQS.map((f, i) => ({ f, g: newBands[i] ?? 0, q: 1.41, t: 'peak' })),
+        [newBands]
+    );
     // This EQ's own pre-amp in the editor below, and the premade presets' saved pre-amps.
     const [newPre, setNewPre] = useState(0);
     const [builtinPre, setBuiltinPre] = useState({});
@@ -581,6 +595,21 @@ export default function SettingsScreen() {
         const own = preset.isBuiltIn ? builtinPre[preset.id] : preset.pre;
         setNewPre(clampPre(Number.isFinite(Number(own)) ? own : preAmp));
         setShowNewEQ(true);
+    };
+
+    // Live preview while dragging a dot, but only when the preset being edited is
+    // the one actually playing (same rule the pre-amp slider uses). A preset that is
+    // not selected is not sent to the engine until it is saved and picked.
+    const previewBasicBands = (next) => {
+        if (!(editingId && eqPresetId === editingId)) return;
+        AudioEngine.setEQBands(next.map(b => clampEQBand(b.g))).catch(() => { });
+    };
+    const commitBasicGain = (i, g) => {
+        const next = [...newBandsRef.current];
+        next[i] = g;
+        newBandsRef.current = next;
+        setNewBands(next);
+        if (editingId && eqPresetId === editingId) AudioEngine.setEQBands(next.map(clampEQBand)).catch(() => { });
     };
 
     // Editing a built-in overwrites it in place via eqOverrides (see
@@ -1049,7 +1078,8 @@ export default function SettingsScreen() {
                     Settings. Checking a preset here hides it from the
                     picker in EQModal; it doesn't change what's currently
                     playing. "+ Add Custom Preset" opens the band-by-band
-                    builder below (sliders per BAND_HZ), already wired to
+                    builder below (a dot per BAND_HZ on the same EQGraph the
+                    Advanced EQ uses), already wired to
                     getCustomPresets/setCustomPresets. */}
 
                 <GroupHeader title="EQ" onReset={() => askGroupReset('eq', 'EQ')} hidden={isHidden('eq')} onToggleHidden={() => toggleGroupHidden('eq')} />
@@ -1939,30 +1969,32 @@ export default function SettingsScreen() {
                             drag via eqOverrides; that mechanism still exists
                             for now — see resetEditingPresetToDefault below —
                             but nothing can create a NEW override anymore.) */}
+                        {/* Same graphical editor as Advanced EQ, on the fixed
+                            10 basic bands: drag a dot vertically to set that
+                            band's gain (±6 dB, 0.1 dB snap). The stored preset
+                            is still the same 10-value `bands` array. Premade
+                            presets show their dots but stay fixed. */}
+                        <View style={{ marginBottom: 8 }}>
+                            <EQGraph
+                                bands={basicGraphBands}
+                                base={base}
+                                accent={theme.accent}
+                                disabled={editingIsBuiltIn}
+                                onPreview={previewBasicBands}
+                                onCommit={commitBasicGain}
+                            />
+                        </View>
                         <View style={s.bandRow}>
                             <Text style={[s.bandHz, { color: theme.accent, fontWeight: '700' }]}>Pre</Text>
                             <PureSlider
                                 style={{ flex: 1, marginHorizontal: 8 }}
-                                minimumValue={PRE_MIN} maximumValue={PRE_MAX} step={0.5} value={newPre}
+                                minimumValue={PRE_MIN} maximumValue={PRE_MAX} step={0.1} value={newPre}
                                 onValueChange={v => setNewPre(clampPre(v))}
                                 onSlidingComplete={v => { const c = clampPre(v); setNewPre(c); if (editingId && eqPresetId === editingId) AudioEngine.setPreAmp(c).catch(() => { }); }}
                                 minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
                             />
                             <Text style={s.bandVal}>{newPre > 0 ? '+' : ''}{newPre.toFixed(1)}</Text>
                         </View>
-                        {newBands.map((val, i) => (
-                            <View key={i} style={s.bandRow}>
-                                <Text style={s.bandHz}>{BAND_HZ[i]}</Text>
-                                <PureSlider
-                                    style={{ flex: 1, marginHorizontal: 8 }}
-                                    minimumValue={EQ_MIN} maximumValue={EQ_MAX} step={0.5} value={val}
-                                    disabled={editingIsBuiltIn}
-                                    onValueChange={v => { const b = [...newBands]; b[i] = v; setNewBands(b); }}
-                                    minimumTrackTintColor={theme.accent} thumbTintColor={theme.accent}
-                                />
-                                <Text style={s.bandVal}>{val > 0 ? '+' : ''}{val.toFixed(1)}</Text>
-                            </View>
-                        ))}
                     </ScrollView>
                 </KeyboardAvoidingView>
             </BottomSheet>

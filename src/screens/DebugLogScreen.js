@@ -1,9 +1,14 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Share, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import ScreenBackground from '../components/ScreenBackground';
 import { getDebugLogLines, clearDebugLog, subscribeDebugLog, getPreviousSession } from '../utils/debugLog';
+
+// Rendering all 1500 buffered lines as separate <Text> nodes is a lot of work
+// for a screen that is only useful for the tail of the log anyway. The full
+// buffer is still shared/copied; only the newest lines are mounted.
+const MAX_RENDER = 500;
 
 const fmtTime = (t) => {
     const d = new Date(t);
@@ -25,6 +30,10 @@ export default function DebugLogScreen({ navigation }) {
     const [showPrev, setShowPrev] = useState(false);
     const prev = getPreviousSession();
     const lines = showPrev && prev ? prev.lines : curLines;
+    const shownLines = useMemo(
+        () => (lines.length > MAX_RENDER ? lines.slice(-MAX_RENDER) : lines),
+        [lines]
+    );
     const scrollRef = useRef(null);
     const atBottomRef = useRef(true);
 
@@ -43,7 +52,7 @@ export default function DebugLogScreen({ navigation }) {
             // get yanked back down by the next line arriving.
             requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }));
         }
-    }, [lines]);
+    }, [shownLines]);
 
     const allText = () => lines.map(l => `${fmtTime(l.t)}  ${l.line}`).join('\n');
 
@@ -68,7 +77,7 @@ export default function DebugLogScreen({ navigation }) {
                 </TouchableOpacity>
             ) : null}
             <Text style={s.subtitle}>
-                {lines.length} lines — captures [RAMP-DEBUG], [SEEK-DEBUG], and any other console.log/native log while this screen (or the app) has been open. Reproduce the issue, then Share to send it over.
+                {lines.length} lines{lines.length > MAX_RENDER ? ` (showing the newest ${MAX_RENDER})` : ''} — captures [RAMP-DEBUG], [SEEK-DEBUG], and any other console.log/native log while this screen (or the app) has been open. Reproduce the issue, then Share to send it over.
             </Text>
             <ScrollView
                 ref={scrollRef}
@@ -82,7 +91,7 @@ export default function DebugLogScreen({ navigation }) {
             >
                 {lines.length === 0 ? (
                     <Text style={s.empty}>Nothing logged yet this session.</Text>
-                ) : lines.map((l, i) => (
+                ) : shownLines.map((l, i) => (
                     <Text key={i} style={s.line} selectable>
                         <Text style={s.lineTime}>{fmtTime(l.t)}  </Text>
                         {l.line}

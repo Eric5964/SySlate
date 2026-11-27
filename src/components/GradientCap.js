@@ -17,7 +17,8 @@ import { usePreferences } from '../context/PreferencesContext';
 // original few-band version used) on an eased curve — should read as a
 // genuinely smooth linear fade now, not steppy, while being something that
 // can only fail to render the exact same way any other View on this screen
-// would (i.e., not silently).
+// would (i.e., not silently). Later reduced to 16 bands (8 in performance
+// mode): 48 was more resolution than these 64-90 px strips can show.
 function buildBands(n) {
     const bands = [];
     for (let i = 0; i < n; i++) {
@@ -31,12 +32,16 @@ function buildBands(n) {
     return bands;
 }
 
-const BANDS_48 = buildBands(48);
-const BANDS_10 = buildBands(10);   // Performance mode: 10 Views instead of 48
+// 48 bands was more than the eye can resolve at the sizes this is used at
+// (64-90 px tall) and cost 48 extra Views in every mini player and on the
+// player screen. 16 on the same eased curve still reads as smooth; performance
+// mode halves that again to 8.
+const BANDS_16 = buildBands(16);
+const BANDS_8 = buildBands(8);   // Performance mode: 8 Views instead of 16
 
 export default function GradientCap({ color = '#7c3aed', height = 90, style, flip = false }) {
     const { performanceMode } = usePreferences();
-    const BANDS = performanceMode ? BANDS_10 : BANDS_48;
+    const BANDS = performanceMode ? BANDS_8 : BANDS_16;
     const bandHeight = height / BANDS.length;
     return (
         <View pointerEvents="none" style={[styles.wrap, { height }, flip && styles.flip, style]}>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, AppState } from 'react-native';
+import { View, Text, TouchableOpacity, Pressable, StyleSheet, Animated, Easing, AppState } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listArtUri } from '../utils/embeddedArt';
 import StableArt from './StableArt';
@@ -171,10 +171,24 @@ export default function MiniPlayer({ withTabBar = true }) {
     const artist = formatArtists(currentTrack.ourArtist ?? currentTrack.artist ?? '', artistSeparator, artistDisplayJoin);
     const artwork = listArtUri(currentTrack.artwork);
 
+    const openPlayer = () => navigation.navigate('Player', {});
     return (
+        <>
+        {/* The 6 px gap between the pill and the tab bar used to belong to
+            whatever list row was underneath, so tapping it opened a song
+            instead of the Player. This invisible full-width strip fills
+            exactly that gap (not one pixel of the pill) and does the same
+            thing as the pill. MiniPlayer renders after the navigator, so it
+            is above every list row and receives the touch first. */}
+        <Pressable
+            style={{ position: 'absolute', left: 0, right: 0, height: 6, bottom: bottom - 6 }}
+            onPress={openPlayer}
+            accessibilityRole="button"
+            accessibilityLabel="Open player"
+        />
         <DimPressable
             style={[styles.shell, miniPlayerShadow && styles.shellShadow, { bottom, backgroundColor: base.surface }]}
-            onPress={() => navigation.navigate('Player', {})}
+            onPress={openPlayer}
         >
           {/* Outer shell carries the shadow (a shadow can't coexist with
               overflow: hidden on the same view on iOS). This inner view owns
@@ -219,6 +233,7 @@ export default function MiniPlayer({ withTabBar = true }) {
             </TouchableOpacity>
           </View>
         </DimPressable>
+        </>
     );
 }
 

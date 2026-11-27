@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { playerArtUri } from '../utils/embeddedArt';
 import { getProgressSeed } from '../utils/progressSeed';
 import StableArt from '../components/StableArt';
+import MaskedView from '@react-native-masked-view/masked-view';
 import AudioEngine, { useProgress, usePlaybackState, matchProgress, peekLastProgress, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
@@ -86,6 +87,34 @@ function isNeutralColor(hex) {
     return Math.max(r, g, b) - Math.min(r, g, b) < 28;
 }
 
+// The lyrics box fades its top and bottom edges by MASKING the text, not by painting
+// background-coloured bands over it: with a background picture on, those bands hid the
+// picture and read as solid strips. The mask is transparent at both edges and opaque in the
+// middle, built from stacked Views of varying alpha (the same technique as GradientCap, no
+// gradient library). It is static, so scrolling only moves the text underneath it.
+const LYRICS_FADE_PX = 80;
+const LYRICS_FADE_BANDS = 16;
+function LyricsFadeMask({ height }) {
+    const fade = Math.min(LYRICS_FADE_PX, Math.max(12, height * 0.3));
+    const bandH = fade / LYRICS_FADE_BANDS;
+    const alphas = [];
+    for (let j = 0; j < LYRICS_FADE_BANDS; j++) {
+        const t = (j + 0.5) / LYRICS_FADE_BANDS;
+        alphas.push(t * t * (3 - 2 * t));   // smoothstep: 0 at the edge, 1 where the fade ends
+    }
+    return (
+        <View style={{ flex: 1, backgroundColor: 'transparent' }}>
+            {alphas.map((o, j) => (
+                <View key={`t${j}`} style={{ height: bandH, backgroundColor: '#000', opacity: o }} />
+            ))}
+            <View style={{ flex: 1, backgroundColor: '#000' }} />
+            {alphas.map((o, j) => (
+                <View key={`b${j}`} style={{ height: bandH, backgroundColor: '#000', opacity: alphas[LYRICS_FADE_BANDS - 1 - j] }} />
+            ))}
+        </View>
+    );
+}
+
 const LYRIC_CARRY_MAX_SEC = 1.0;   // readings come every 0.5 s; never run further than this past one
 
 export default function PlayerScreen() {
@@ -104,7 +133,7 @@ export default function PlayerScreen() {
 
     const {
         currentPlaylist, queueSource, playbackRate, currentTrack, shuffleOn, singleLoop, libraryFor,
-        loadPlaylist, toggleShuffle, toggleSingleLoop,
+        loadPlaylist, toggleShuffle, toggleSingleLoop, isPlaylistActionInFlight,
         sleepTimerEndAt, sleepAtTrackEnd,
     } = usePlayback();
     // Last resort for the top label: a song that is not in the loaded playlist and has no
@@ -615,9 +644,17 @@ export default function PlayerScreen() {
     }).current;
 
     useEffect(() => {
-        if (playlist && (!currentPlaylist || currentPlaylist.path !== playlist.path)) {
-            loadPlaylist(playlist);
+        if (!playlist) return;
+        if (currentPlaylist && currentPlaylist.path === playlist.path) return;
+        // A tap/Play/Shuffle is already building a queue (the route param can still
+        // point at the playlist the tap came from). Loading it here as well used to
+        // rebuild the queue that action had just built, so opening the Player right
+        // after tapping a song could throw away the tapped song's order.
+        if (isPlaylistActionInFlight()) {
+            console.log(`[QUEUE] player mount load skipped: an action is already building ${playlist.path}`);
+            return;
         }
+        loadPlaylist(playlist);
     }, []);
 
     const displayTitle = currentTrack?.ourTitle ?? currentTrack?.title ?? '—';
@@ -1845,6 +1882,10 @@ export default function PlayerScreen() {
                                 style={[{ position: 'absolute', top: 0, height: width - 56, left: 0, right: 0 }, { opacity: lyricsOpacity, overflow: 'hidden' }]}
                                 pointerEvents={showingLyrics ? 'auto' : 'none'}
                             >
+                                <MaskedView
+                                    style={{ flex: 1 }}
+                                    maskElement={<LyricsFadeMask height={width - 56} />}
+                                >
                                 <Animated.ScrollView
                                     ref={lyricsScrollRef}
                                     style={{ flex: 1 }}
@@ -1889,8 +1930,7 @@ export default function PlayerScreen() {
                                             return <View key={i} onLayout={(e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); }} style={{ height: 34, marginVertical: 7 }} />;
                                         }
                                         // Plain text, one Text per line, never swapped for another structure, so nothing can
-                                        // shift. The fade at the top and bottom edge is an overlay of the background colour
-                                        // drawn over the box (below), not a change to the text.
+                                        // shift. The top/bottom fade is the MaskedView around this list, not a change to the text.
                                         const onRowLayout = (e) => { lyricsRowYRef.current.set(i, e.nativeEvent.layout.y); lyricsRowHRef.current.set(i, e.nativeEvent.layout.height); bumpLyricsLayout(); };
                                         const textColor = i === activeLine ? lyricActiveColor : lyricIdleColor;
                                         const shadow = { textShadowColor: base.bg, textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 4 };
@@ -1905,28 +1945,7 @@ export default function PlayerScreen() {
                                         );
                                     })}</React.Fragment>
                                 </Animated.ScrollView>
-                                {/* Edge fade: bands of the background colour over the top and bottom of the box, solid at the
-                                    edge and eased to clear. Drawn once, never touches the text, no scroll work. */}
-                                {(() => {
-                                    const FADE = 80, N = 20, BH = FADE / N;
-                                    const boxH = width - 56;
-                                    const bands = [];
-                                    for (let j = 0; j < N; j++) {
-                                        const t = (j + 0.5) / N;                 // 0 at the box edge, 1 where the fade ends
-                                        const o = 1 - t * t * (3 - 2 * t);       // smoothstep
-                                        bands.push({ off: j * BH, o });
-                                    }
-                                    return (
-                                        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-                                            {bands.map((b, j) => (
-                                                <React.Fragment key={j}>
-                                                    <View style={{ position: 'absolute', left: 0, right: 0, top: b.off, height: BH + 0.5, backgroundColor: base.bg, opacity: b.o }} />
-                                                    <View style={{ position: 'absolute', left: 0, right: 0, top: boxH - b.off - BH - 0.5, height: BH + 0.5, backgroundColor: base.bg, opacity: b.o }} />
-                                                </React.Fragment>
-                                            ))}
-                                        </View>
-                                    );
-                                })()}
+                                </MaskedView>
                             </Animated.View>
                         )}
                         {lyricsArrows && lyricsData ? (

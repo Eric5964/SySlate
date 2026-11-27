@@ -25,6 +25,7 @@ import {
     getCrossfadeEnabled, getCrossfadeDurationSkip, getPlaybackRate, setPlaybackRateStored,
 } from '../utils/storage';
 import { extractEmbeddedArt, getCachedArt, getCachedArtFast, listArtUri, playerArtUri, subscribeArtUpdates } from '../utils/embeddedArt';
+import { prefetchCover } from '../utils/coverPrefetch';
 import { getLyrics } from '../utils/lyrics';
 import { setProgressSeed } from '../utils/progressSeed';
 import { setVizPending, clearVizPending } from '../utils/vizPending';
@@ -244,7 +245,15 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const src = queueSourceRef.current[id];
         const pl = playlistRef.current;
         const inLoaded = !!pl?.songs?.some(x => x.id === id);
-        setQueueSource(src && !inLoaded ? { id, name: src } : null);
+        // Keep the previous object when the values are the same: a fresh
+        // { id, name } on every run changed the context value (and re-rendered
+        // every usePlayback consumer) even though nothing had actually changed.
+        setQueueSource(prev => {
+            const next = src && !inLoaded ? { id, name: src } : null;
+            if (prev === next) return prev;
+            if (!prev || !next) return next;
+            return prev.id === next.id && prev.name === next.name ? prev : next;
+        });
     }, [currentTrack?.id, currentPlaylist]);
     // Mirrors shuffleOn/shuffleMode for topUpQueueIfNeeded — that function
     // gets called from callbacks frozen with an empty dependency array
@@ -291,13 +300,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                         await new Promise(r => setTimeout(r, 200));
                     }
                     if (cancelled) return;
-                    if (uri) {
-                        const target = playerArtUri(uri);
-                        console.log('[COVER] prefetch start ' + target);
-                        Image.prefetch(target)
-                            .then(ok => { if (!cancelled) console.log('[COVER] prefetch end ' + target + ' ' + (ok ? 'ok' : 'miss')); })
-                            .catch(() => { if (!cancelled) console.log('[COVER] prefetch failed ' + target); });
-                    }
+                    // prefetchCover dedupes URIs the other prefetch effect (and
+                    // StableArt) are already warming, and logs failures only.
+                    if (uri) prefetchCover(playerArtUri(uri));
                 }
             } catch { }
         }, 3000);
@@ -313,19 +318,12 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     useEffect(() => {
         if (!currentTrack?.id) return;
         let cancelled = false;
-        const done = new Set();
         const prefetch = async (uri) => {
             if (!uri || cancelled) return;
             const target = playerArtUri(uri);
-            if (!target || done.has(target)) return;
-            done.add(target);
-            console.log('[COVER] prefetch start ' + target);
-            try {
-                const ok = await Image.prefetch(target);
-                if (!cancelled) console.log('[COVER] prefetch end ' + target + ' ' + (ok ? 'ok' : 'miss'));
-            } catch {
-                if (!cancelled) console.log('[COVER] prefetch failed ' + target);
-            }
+            if (!target) return;
+            // Deduped by prefetchCover, which also logs failures only.
+            await prefetchCover(target);
         };
         const run = async () => {
             const uris = [];
@@ -359,9 +357,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             }
         };
         const timers = [0, 700, 1800, 4000].map(ms => setTimeout(run, ms));
+        // A quick app switch with the same song changes nothing: the covers are
+        // still decoded and already warmed, so this used to re-prefetch (and
+        // re-log) them for no reason. Only re-warm after a long time away, when
+        // iOS has had a chance to drop the decoded images.
+        let lastActiveAt = Date.now();
         const sub = AppState.addEventListener('change', (st) => {
             if (st !== 'active') return;
-            done.clear();   // iOS may have dropped the decoded images while away
+            const now = Date.now();
+            if (now - lastActiveAt < 120000) return;
+            lastActiveAt = now;
             run();
         });
         return () => { cancelled = true; timers.forEach(clearTimeout); sub.remove(); };
@@ -1266,6 +1271,37 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // middle of changing the native queue, a new fill waits and runs afterwards.
     const windowLockRef = useRef(Promise.resolve());
     const queueRebuildRef = useRef(0);
+    // Which playlist a tap/Play/Shuffle/load action is building a queue for. Set
+    // synchronously, before the action's first await, and cleared when the action
+    // (or the queued retry it handed off to) finishes. Opening the Player in the
+    // middle of a tap used to fire PlayerScreen's mount effect, which saw the OLD
+    // currentPlaylist and called loadPlaylist for the same playlist — a second
+    // rebuild that replaced the queue the tap had just built. Both loadPlaylist
+    // and that mount effect now check this and skip.
+    const activePlaylistPathRef = useRef(null);
+    const activePlaylistTokenRef = useRef(null);
+    const activePlaylistAtRef = useRef(0);
+    // A real build finishes well under this; the timeout only stops a lost action
+    // (e.g. its queued retry got replaced) from blocking this playlist forever.
+    const ACTIVE_PLAYLIST_MAX_MS = 20000;
+    const isPlaylistActionInFlight = useCallback((path = null) => {
+        if (!activePlaylistTokenRef.current) return false;
+        if ((Date.now() - activePlaylistAtRef.current) >= ACTIVE_PLAYLIST_MAX_MS) return false;
+        return path ? activePlaylistPathRef.current === path : true;
+    }, []);
+    const beginPlaylistAction = useCallback((path) => {
+        const token = {};
+        activePlaylistPathRef.current = path;
+        activePlaylistTokenRef.current = token;
+        activePlaylistAtRef.current = Date.now();
+        return token;
+    }, []);
+    const endPlaylistAction = useCallback((token) => {
+        if (activePlaylistTokenRef.current !== token) return;
+        activePlaylistPathRef.current = null;
+        activePlaylistTokenRef.current = null;
+        activePlaylistAtRef.current = 0;
+    }, []);
     const runWindowLocked = (fn) => {
         const next = windowLockRef.current.then(fn, fn);
         windowLockRef.current = next;
@@ -1671,7 +1707,20 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         } catch (e) { console.error('queuePlaylistNext:', e); return { ok: false, reason: 'error' }; }
     }), []);
 
-    const loadPlaylist = useCallback((playlist, forceIndex = null) => runExclusivePlayAction(async () => {
+    const loadPlaylist = useCallback((playlist, forceIndex = null, retryToken = null) => {
+        if (!playlist?.path) return Promise.resolve();
+        // A tap/Play/Shuffle for this same playlist is already building its queue:
+        // this call is stale (PlayerScreen mounting right after the tap is the
+        // common one) and rebuilding now would replace the queue that action built.
+        if (!retryToken && isPlaylistActionInFlight(playlist.path)) {
+            console.log(`[QUEUE] loadPlaylist skipped: ${playlist.path} is already being loaded`);
+            return Promise.resolve();
+        }
+        const token = retryToken ?? beginPlaylistAction(playlist.path);
+        // A transition-locked action hands its ownership to a queued retry instead of
+        // ending it here, so the gap between "queued" and "retry runs" stays covered.
+        let handedOff = false;
+        return runExclusivePlayAction(async () => {
         // Previously just silently dropped the whole action if a transition
         // (most commonly someone else's natural end-of-track fade, which
         // isn't tied to runExclusivePlayAction's own lock at all) happened
@@ -1681,7 +1730,19 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // was still showing the OLD playlist since nothing about the state
         // ever actually changed). Retrying once the lock clears, the same
         // way skipWithRamp already does, instead of dropping it.
-        if (isTransitionLocked()) { queueAction(() => loadPlaylist(playlist, forceIndex)); return; }
+        if (isTransitionLocked()) {
+            handedOff = true;
+            queueAction(() => {
+                // The retry runs later: a newer action may own this path by then, and
+                // must not be overwritten by this stale one.
+                if (activePlaylistTokenRef.current !== token) {
+                    console.log(`[QUEUE] queued loadPlaylist skipped: ${playlist.path} was replaced`);
+                    return;
+                }
+                loadPlaylist(playlist, forceIndex, token);
+            });
+            return;
+        }
         const session = await getSession(playlist.path);
         // This playlist's own remembered shuffle choice wins over the
         // global default, same as its remembered queue/index already do —
@@ -1732,12 +1793,27 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         setEqPresetId(eq);
         setSingleLoop(false);
         await setSession(playlist.path, { queue, index: startIndex, shuffleOn: isOn, shuffleMode: mode });
-    }), []);
+        }).finally(() => { if (!handedOff) endPlaylistAction(token); });
+    }, []);
 
-    const playPlaylistOrdered = useCallback((playlist, orderedSongs) => runExclusivePlayAction(async () => {
+    const playPlaylistOrdered = useCallback((playlist, orderedSongs, retryToken = null) => {
+        if (!playlist?.path) return Promise.resolve();
+        const token = retryToken ?? beginPlaylistAction(playlist.path);
+        let handedOff = false;
+        return runExclusivePlayAction(async () => {
         // See loadPlaylist above for why this retries instead of dropping.
         if (orderedSongs[0]) setVizPending(orderedSongs[0]);
-        if (isTransitionLocked()) { queueAction(() => playPlaylistOrdered(playlist, orderedSongs)); return; }
+        if (isTransitionLocked()) {
+            handedOff = true;
+            queueAction(() => {
+                if (activePlaylistTokenRef.current !== token) {
+                    console.log(`[QUEUE] queued ordered play skipped: ${playlist.path} was replaced`);
+                    return;
+                }
+                playPlaylistOrdered(playlist, orderedSongs, token);
+            });
+            return;
+        }
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
         const queue = [...orderedSongs];
@@ -1766,11 +1842,26 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const existing = await getSession(playlist.path);
         await setSession(playlist.path, { ...existing, queue, index: 0, shuffleOn: false });
         await setShuffleOnStorage(false);
-    }), []);
+        }).finally(() => { if (!handedOff) endPlaylistAction(token); });
+    }, []);
 
-    const playPlaylistShuffled = useCallback((playlist) => runExclusivePlayAction(async () => {
+    const playPlaylistShuffled = useCallback((playlist, retryToken = null) => {
+        if (!playlist?.path) return Promise.resolve();
+        const token = retryToken ?? beginPlaylistAction(playlist.path);
+        let handedOff = false;
+        return runExclusivePlayAction(async () => {
         // See loadPlaylist above for why this retries instead of dropping.
-        if (isTransitionLocked()) { queueAction(() => playPlaylistShuffled(playlist)); return; }
+        if (isTransitionLocked()) {
+            handedOff = true;
+            queueAction(() => {
+                if (activePlaylistTokenRef.current !== token) {
+                    console.log(`[QUEUE] queued shuffle play skipped: ${playlist.path} was replaced`);
+                    return;
+                }
+                playPlaylistShuffled(playlist, token);
+            });
+            return;
+        }
         const useMode = await getShuffleMode();
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
@@ -1797,9 +1888,17 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         await setSession(playlist.path, { queue, index: 0, shuffleOn: true, shuffleMode: useMode });
         await setShuffleMode(useMode);
         await setShuffleOnStorage(true);
-    }), []);
+        }).finally(() => { if (!handedOff) endPlaylistAction(token); });
+    }, []);
 
-    const playSongFromPlaylist = useCallback((playlist, songId) => runExclusivePlayAction(async () => {
+    const playSongFromPlaylist = useCallback((playlist, songId, retryToken = null) => {
+        if (!playlist?.path) return Promise.resolve();
+        // Set before the first await (and before runExclusivePlayAction can make this
+        // action wait): PlayerScreen's mount effect may run while the tap is still
+        // ramping out/loading, and must see that this playlist is already being built.
+        const token = retryToken ?? beginPlaylistAction(playlist.path);
+        let handedOff = false;
+        return runExclusivePlayAction(async () => {
         // See loadPlaylist above for why this retries instead of dropping —
         // this is the specific case from the report: tapping a song in a
         // different playlist while the current one's song is mid-fade
@@ -1807,7 +1906,17 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // silently do nothing.
         // The tapped song's row takes the visualizer right now, not when the fade-out is over.
         { const tapped = playlist.songs.find(s => s.id === songId); if (tapped) setVizPending(tapped); }
-        if (isTransitionLocked()) { queueAction(() => playSongFromPlaylist(playlist, songId)); return; }
+        if (isTransitionLocked()) {
+            handedOff = true;
+            queueAction(() => {
+                if (activePlaylistTokenRef.current !== token) {
+                    console.log(`[QUEUE] queued tap song skipped: ${playlist.path} was replaced`);
+                    return;
+                }
+                playSongFromPlaylist(playlist, songId, token);
+            });
+            return;
+        }
         const songSession = await getSession(playlist.path);
         const mode = await getShuffleMode();
         const isOn = await getShuffleOnStorage();
@@ -1897,7 +2006,8 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // above (it clears it when there's nothing carried over, same as
         // when the setting is off) — no separate reset needed here.
         await setSession(playlist.path, { queue, index: 0, shuffleOn: isOn, shuffleMode: mode });
-    }), [currentPlaylist]);
+        }).finally(() => { if (!handedOff) endPlaylistAction(token); });
+    }, [currentPlaylist]);
 
     // Restores playback after a cold app launch. Uses the actual last-playing
     // queue (last.playlist.queue) rather than the playlist's original scan
@@ -2409,13 +2519,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
 
     const value = useMemo(() => ({
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
-        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
+        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession, isPlaylistActionInFlight,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queueFrozenRef, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,
     }), [
         currentPlaylist, currentTrack, shuffleOn, shuffleMode, eqPresetId, singleLoop, priorityQueue, queueSource, queueEpoch,
-        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession,
+        loadPlaylist, playSongFromPlaylist, playPlaylistOrdered, playPlaylistShuffled, restoreSession, isPlaylistActionInFlight,
         toggleShuffle, changeShuffleMode, toggleSingleLoop, changeEQPreset, saveSession, songEQMap, assignSongEQ, playlistEQMap, assignPlaylistEQ, eqLayer, eqOverride,
         addToQueue, removeFromQueue, promoteToQueue, moveInQueue, libraryFor, jumpToQueueIndex, queueFrozenRef, queuePlaylistNext, holdPlaybackForReplace, releasePlaybackHold, replaceSongsInPlayback,
         sleepTimerEndAt, sleepAtTrackEnd, setSleepTimer, setSleepTimerAtTrackEnd, cancelSleepTimer, playbackRate, setPlaybackRate,

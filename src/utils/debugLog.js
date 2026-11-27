@@ -30,6 +30,15 @@ let listeners = new Set();
 let started = false;
 
 const notify = () => { for (const l of listeners) l(); };
+// Lines arrive in bursts (a song change can log several at once). Notifying on
+// every single one made the viewer re-read and re-render the whole buffer for
+// each line; the UI now hears about them at most four times a second.
+const NOTIFY_MS = 250;
+let notifyTimer = null;
+const notifySoon = () => {
+    if (!listeners.size || notifyTimer) return;
+    notifyTimer = setTimeout(() => { notifyTimer = null; notify(); }, NOTIFY_MS);
+};
 
 // The log of the session that came BEFORE this one is kept on disk too: when the app is closed by iOS (or crashes)
 // the in-memory log is gone, and the next launch only showed the new session. A copy of the last lines is written
@@ -42,14 +51,25 @@ const PREV_PATH = DIR + '.syslate_prevlog.json';
 const SAVE_LINES = 700;
 let previousSession = null;   // { savedAt, appState, lines }
 let saveTimer = null;
+let saveDirty = false;
+// Writing the file is the only disk work and it happens here, off the
+// per-line path: push() just marks the buffer dirty. 8 s instead of 4 s keeps
+// the same safety (a background transition still saves at once) with half the
+// JSON.stringify + write churn on the JS thread.
+const SAVE_MS = 8000;
 const saveNow = () => {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-    if (!DIR || !lines.length) return;
+    if (!DIR || !saveDirty || !lines.length) return;
+    saveDirty = false;
     try {
-        FileSystem.writeAsStringAsync(LAST_PATH, JSON.stringify({ savedAt: Date.now(), appState: AppState.currentState, lines: lines.slice(-SAVE_LINES) })).catch(() => { });
-    } catch { /* logging must never throw */ }
+        FileSystem.writeAsStringAsync(LAST_PATH, JSON.stringify({ savedAt: Date.now(), appState: AppState.currentState, lines: lines.slice(-SAVE_LINES) }))
+            .catch(() => { saveDirty = true; });   // try again on the next push/timer
+    } catch { saveDirty = true; /* logging must never throw */ }
 };
-const scheduleSave = () => { if (!saveTimer) saveTimer = setTimeout(saveNow, 4000); };
+const scheduleSave = () => {
+    saveDirty = true;
+    if (!saveTimer) saveTimer = setTimeout(saveNow, SAVE_MS);
+};
 const loadPrevious = async () => {
     if (!DIR) return;
     try {
@@ -73,7 +93,7 @@ const push = (line) => {
     // Trim in steps of 250 lines, not a fresh copy of the whole array on every line past the cap
     // (a busy log, e.g. during a scratch, made that thousands of 1500-entry copies a second).
     if (lines.length > MAX_LINES + 250) lines = lines.slice(lines.length - MAX_LINES);
-    notify();
+    notifySoon();
 };
 
 // Only wraps the three console methods, and only ever ADDS the ring-buffer
@@ -129,6 +149,7 @@ export function getDebugLogLines() {
 
 export function clearDebugLog() {
     lines = [];
+    if (notifyTimer) { clearTimeout(notifyTimer); notifyTimer = null; }
     notify();
 }
 

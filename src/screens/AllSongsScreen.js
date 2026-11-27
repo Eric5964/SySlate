@@ -23,7 +23,7 @@ import useLivePlayCounts from '../hooks/useLivePlayCounts';
 import { useListArt, setVisibleArtIds } from '../hooks/useListArt';
 import { squircle } from '../utils/squircle';
 import { COVER_SHADOW } from '../utils/shadow';
-import { pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
+import { pillPad, PILL_H, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import TopBarBack from '../components/TopBarFade';
 import ScreenBackground from '../components/ScreenBackground';
 import { titleKey, compareKeys } from '../utils/sortKey';
@@ -37,6 +37,12 @@ const SORTS = [
     { id: 'plays', label: 'Most Played' },
     { id: 'plays_r', label: 'Least Played' },
 ];
+
+// Every song row is a fixed-height pill (minHeight PILL_H) with 2 px of
+// margin above and below, so FlatList can jump straight to any index instead
+// of measuring rows as it scrolls.
+const SONG_ROW_H = PILL_H + 4;
+const songKey = (item) => item.id;
 
 // Storage key for the persisted sort choice — reuses getPlaylistSort/
 // setPlaylistSort (keyed by playlist path) rather than adding a parallel
@@ -197,6 +203,31 @@ export default function AllSongsScreen() {
     const stablePlay = useCallback((song) => playRef.current(song), []);
     const stableAddToQueue = useCallback((song) => addToQueueRef.current(song, 'All Songs'), []);
 
+    // Stable list callbacks: FlatList no longer gets a brand new renderItem and
+    // keyExtractor on every render (search typing, a sheet opening, a cover
+    // landing), so its cells only re-render when their own row data changes.
+    const renderSong = useCallback(({ item }) => (
+        <SongRow
+            item={item}
+            art={artMap[item.id]}
+            count={countFor(item)}
+            showSongCovers={showSongCovers}
+            showPlayCount={showPlayCount}
+            coverShape={coverShape}
+            artistSeparator={artistSeparator}
+            artistDisplayJoin={artistDisplayJoin}
+            theme={theme}
+            base={base}
+            onPlay={stablePlay}
+            assigning={!!assign}
+            checked={!!assign?.selected[item.id]}
+            onToggle={toggleAssign}
+            eqName={songEQNames[item.id]}
+            onQueue={stableAddToQueue}
+            viz={vizId && item.id === vizId ? vizMode : 'off'}
+        />
+    ), [artMap, countFor, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, stablePlay, assign, toggleAssign, songEQNames, stableAddToQueue, vizId, vizMode]);
+
     const sortLabel = SORTS.find(o => o.id === sortId)?.label ?? 'Sort';
 
     return (
@@ -282,37 +313,22 @@ export default function AllSongsScreen() {
                     onViewableItemsChanged={onViewable}
                     viewabilityConfig={viewCfg}
                     extraData={vizExtra}
-                    keyExtractor={item => item.id}
+                    keyExtractor={songKey}
                     contentContainerStyle={{ paddingTop: topBarColor ? 0 : hdrH, paddingBottom: 150 }}
                     scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
-                    // Keep more rows mounted so covers already on screen stay decoded
-                    // while scrolling back, instead of reloading each time.
-                    initialNumToRender={performanceMode ? 8 : 14}
-                    windowSize={performanceMode ? 5 : 15}
-                    maxToRenderPerBatch={performanceMode ? 4 : 10}
+                    // A smaller first window and a narrower render window keep
+                    // the initial mount and each scroll batch cheaper. Rows
+                    // are a uniform height, so this does not
+                    // make scrolling feel less continuous.
+                    initialNumToRender={performanceMode ? 6 : 10}
+                    windowSize={performanceMode ? 4 : 11}
+                    maxToRenderPerBatch={performanceMode ? 3 : 8}
                     updateCellsBatchingPeriod={performanceMode ? 90 : 50}
+                    // iOS keeps off-screen rows mounted by default; only
+                    // performance mode trades that for less memory.
+                    removeClippedSubviews={performanceMode}
                     onScrollBeginDrag={Keyboard.dismiss}
-                    renderItem={({ item }) => (
-                    <SongRow
-                        item={item}
-                        art={artMap[item.id]}
-                        count={countFor(item)}
-                        showSongCovers={showSongCovers}
-                        showPlayCount={showPlayCount}
-                        coverShape={coverShape}
-                        artistSeparator={artistSeparator}
-                        artistDisplayJoin={artistDisplayJoin}
-                        theme={theme}
-                        base={base}
-                        onPlay={stablePlay}
-                        assigning={!!assign}
-                        checked={!!assign?.selected[item.id]}
-                        onToggle={toggleAssign}
-                        eqName={songEQNames[item.id]}
-                        onQueue={stableAddToQueue}
-                        viz={vizId && item.id === vizId ? vizMode : 'off'}
-                    />
-                )}
+                    renderItem={renderSong}
                 />
             )}
 

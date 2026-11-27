@@ -24,7 +24,7 @@ import EQModal from '../components/EQModal';
 import { getPresetById } from '../utils/eq';
 import QueueModal from '../components/QueueModal';
 import ScreenBackground from '../components/ScreenBackground';
-import { EDGE_SWIPE_WIDTH, pillPad, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
+import { EDGE_SWIPE_WIDTH, pillPad, PILL_H, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY_HEADER, useMeasuredHeight } from '../utils/layout';
 import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
 import { useListArt, setVisibleArtIds } from '../hooks/useListArt';
@@ -38,6 +38,11 @@ const SORTS = [
     { id: 'plays', label: 'Most Played' },
     { id: 'plays_r', label: 'Least Played' },
 ];
+
+// Fixed row height (minHeight PILL_H + 2 px margin above and below), so
+// FlatList can compute item offsets without measuring every row.
+const SONG_ROW_H = PILL_H + 4;
+const songKey = (item) => item.id;
 
 // What this screen falls back to when it's opened without a playlist param
 // (a restored navigation state, a deep link, a fast refresh in development):
@@ -124,7 +129,6 @@ export default function PlaylistDetailScreen() {
     );
     const vizExtra = useMemo(() => ({ liveCounts, vizId, assign }), [liveCounts, vizId, assign]);
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE);
-
     useEffect(() => {
         // Real bug found here (this is the "background image flashes...
         // always when opening a playlist" report): setCover(uri) handed
@@ -194,6 +198,32 @@ export default function PlaylistDetailScreen() {
     addToQueueRef.current = addToQueue;
     const stablePlay = useCallback((song) => playRef.current(song), []);
     const stableAddToQueue = useCallback((song) => addToQueueRef.current(song, playlist?.name), [playlist?.name]);
+
+    // Stable renderItem/keyExtractor: FlatList no longer rebuilds
+    // its cell callbacks on every screen render, and fixed-height rows let it
+    // skip measurement. The header height is included in the offsets because
+    // it is a ListHeaderComponent above the first song.
+    const renderSong = useCallback(({ item }) => (
+        <SongRow
+            assigning={!!assign}
+            checked={!!assign?.selected[item.id]}
+            onToggle={toggleAssign}
+            eqName={songEQNames[item.id]}
+            item={item}
+            art={artMap[item.id]}
+            count={countFor(item)}
+            showSongCovers={showSongCovers}
+            showPlayCount={showPlayCount}
+            coverShape={coverShape}
+            artistSeparator={artistSeparator}
+            artistDisplayJoin={artistDisplayJoin}
+            theme={theme}
+            base={base}
+            onPlay={stablePlay}
+            onQueue={stableAddToQueue}
+            viz={vizId && item.id === vizId ? vizMode : 'off'}
+        />
+    ), [assign, toggleAssign, songEQNames, artMap, countFor, showSongCovers, showPlayCount, coverShape, artistSeparator, artistDisplayJoin, theme, base, stablePlay, stableAddToQueue, vizId, vizMode]);
 
     const handlePlay = async () => {
         // Always starts in order — shuffle is something you turn ON, not a
@@ -306,7 +336,7 @@ export default function PlaylistDetailScreen() {
                 onViewableItemsChanged={onViewable}
                 viewabilityConfig={viewCfg}
                 extraData={vizExtra}
-                keyExtractor={item => item.id}
+                keyExtractor={songKey}
                 // Colored bar: the list runs up under the bar's soft fade (as on
                 // Playlists and Settings) instead of starting below it, which
                 // used to cut the rows off with a band of plain background.
@@ -314,12 +344,15 @@ export default function PlaylistDetailScreen() {
                 // can be tapped); rows start under the bar's fade.
                 contentContainerStyle={{ flexGrow: 1 }}
                 scrollIndicatorInsets={topBarColor ? undefined : { top: hdrH }}
-                // Keep more rows mounted so covers already on screen stay decoded
-                // while scrolling back, instead of reloading each time.
-                initialNumToRender={performanceMode ? 8 : 14}
-                windowSize={performanceMode ? 5 : 15}
-                maxToRenderPerBatch={performanceMode ? 4 : 10}
+                // A smaller first window and a narrower render window keep
+                // the initial mount and each scroll batch cheaper. Rows are
+                // a uniform height, so this does not make
+                // scrolling feel less continuous.
+                initialNumToRender={performanceMode ? 6 : 10}
+                windowSize={performanceMode ? 4 : 11}
+                maxToRenderPerBatch={performanceMode ? 3 : 8}
                 updateCellsBatchingPeriod={performanceMode ? 90 : 50}
+                removeClippedSubviews={performanceMode}
                 ListFooterComponent={<BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
                 ListHeaderComponent={
                     <View>
@@ -407,27 +440,7 @@ export default function PlaylistDetailScreen() {
                         )}
                     </View>
                 }
-                renderItem={({ item }) => (
-                    <SongRow
-                        assigning={!!assign}
-                        checked={!!assign?.selected[item.id]}
-                        onToggle={toggleAssign}
-                        eqName={songEQNames[item.id]}
-                        item={item}
-                        art={artMap[item.id]}
-                        count={countFor(item)}
-                        showSongCovers={showSongCovers}
-                        showPlayCount={showPlayCount}
-                        coverShape={coverShape}
-                        artistSeparator={artistSeparator}
-                        artistDisplayJoin={artistDisplayJoin}
-                        theme={theme}
-                        base={base}
-                        onPlay={stablePlay}
-                        onQueue={stableAddToQueue}
-                        viz={vizId && item.id === vizId ? vizMode : 'off'}
-                    />
-                )}
+                renderItem={renderSong}
             />
 
             <EQModal visible={showEQ} onClose={() => setShowEQ(false)} playlistPath={playlist.path} onAssign={async (id) => {
