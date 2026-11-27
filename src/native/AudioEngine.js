@@ -252,6 +252,11 @@ let expectedSince = { id: '', at: 0, startAt: null };
 // its position is simply the time since then. A song a crossfade announces by itself is shown HALFWAY through it, so its
 // position starts half a crossfade in (the default below). Without telling them apart, a tapped song's estimate ran
 // half a crossfade ahead of the sound, and the bar jumped back when the real reading arrived.
+// When the song with this id was last shown at the START of a transition (see above): { at } or null.
+export function peekDisplayFlip(id) {
+    if (id && expectedSince.id === id && expectedSince.startAt === 0 && Date.now() - expectedSince.at < 3000) return { at: expectedSince.at };
+    return null;
+}
 export function noteDisplayFlipNow(id) {
     if (!id) return;
     const nowMs = Date.now();

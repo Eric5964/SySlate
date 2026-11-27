@@ -6,7 +6,7 @@ import { getProgressSeed } from '../utils/progressSeed';
 import StableArt from '../components/StableArt';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import AudioEngine, { useProgress, usePlaybackState, matchProgress, peekLastProgress, State } from '../native/AudioEngine';
+import AudioEngine, { useProgress, usePlaybackState, matchProgress, peekLastProgress, peekDisplayFlip, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
 import { useLibrary } from '../context/LibraryContext';
@@ -387,6 +387,21 @@ export default function PlayerScreen() {
         // Already committed this gesture (the safety timer, or the tap handler): a second commit leaves the bar alone
         // (it used to stop the bar at the touch spot until the next poll).
         if (commit && committedRef.current) { console.log('[SEEK-DEBUG] commit ignored: already committed this gesture'); if (pendingSeekRatioRef.current === null) setDragRatio(null); return; }
+        // A release or a safety timer that lands on the spot the last seek went to is a repeat. It used to run the lines
+        // below first (hold the time text, STOP the bar, move it to the touch spot) and only then notice it was a
+        // repeat, so every release left the bar stopped at the spot, 0:00 when released at the start, until the next
+        // poll started it again from the real position: the bar sat still and then jumped.
+        if (commit && (src === 'timer' || src === 'end')) {
+            const lastSeek = lastNativeSeekRef.current;
+            const repeatId = currentTrack?._qid ?? currentTrack?.id ?? null;
+            if (Math.abs(touchToRatio(absoluteX) - lastSeek.ratio) < 0.005 && lastSeek.id === repeatId && Date.now() - lastSeek.at < 4000) {
+                console.log('[SEEK-DEBUG] commit skipped: same spot as the seek just made', { src });
+                committedRef.current = true;
+                clearTimeout(stuckSafetyTimer.current);
+                if (pendingSeekRatioRef.current === null) setDragRatio(null);
+                return;
+            }
+        }
         lastTouchX.current = absoluteX;
         const ratio = touchToRatio(absoluteX);
         setDragRatio(ratio);
@@ -404,6 +419,7 @@ export default function PlayerScreen() {
             // that simply took longer than 500ms start-to-finish.
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
+                if (gestureEndedRef.current) return;   // the finger is already up: nothing is waiting to be committed
                 onScrubRef.current(lastTouchX.current, true, 'timer');
             }, 1200);
             return;
@@ -580,6 +596,10 @@ export default function PlayerScreen() {
     // True from the moment the pan ends until the next one begins. A move event that arrives after the release used to
     // un-commit the gesture and re-arm the 1.2 s safety timer, which then committed the same seek a second time.
     const gestureEndedRef = useRef(true);
+    // When the last pan ended, and whether the pan now running was refused. Right after a release a new "began" can
+    // arrive for the same finger; taking it for a new gesture froze the bar again and re-armed the safety timer.
+    const lastReleaseAtRef = useRef(0);
+    const refusedGestureRef = useRef(false);
 
     const onProgressGestureEvent = useRef((e) => {
         if (gestureEndedRef.current) return;
@@ -593,7 +613,13 @@ export default function PlayerScreen() {
 
     const onProgressStateChange = useRef((e) => {
         const { state, absoluteX } = e.nativeEvent;
+        if (state === GHState.BEGAN && Date.now() - lastReleaseAtRef.current < 500) {
+            console.log('[SEEK-DEBUG] a new touch right after a release is ignored');
+            refusedGestureRef.current = true;
+            return;
+        }
         if (state === GHState.BEGAN) {
+            refusedGestureRef.current = false;
             gestureEndedRef.current = false;
             holdDismissRef.current(true);
             measureProgress();
@@ -603,11 +629,14 @@ export default function PlayerScreen() {
             onScrubRef.current(absoluteX, false);
             clearTimeout(stuckSafetyTimer.current);
             stuckSafetyTimer.current = setTimeout(() => {
+                if (gestureEndedRef.current) return;
                 onScrubRef.current(lastTouchX.current, true, 'timer');
             }, 1200);
         }
         if (state === GHState.END || state === GHState.CANCELLED || state === GHState.FAILED) {
+            if (refusedGestureRef.current) { refusedGestureRef.current = false; return; }   // the refused touch above: nothing to commit
             gestureEndedRef.current = true;
+            lastReleaseAtRef.current = Date.now();
             clearTimeout(stuckSafetyTimer.current);
             // Failed/cancelled by a mostly vertical move that never became a horizontal drag: not a seek.
             if (state !== GHState.END && !realDragMovedRef.current && Math.abs(e.nativeEvent.translationY || 0) > 8) {
@@ -1569,7 +1598,12 @@ export default function PlayerScreen() {
             // than at 0; the real position replaces it as soon as it arrives (a few tens of ms), and for a plain song start
             // that is a move back of a fraction of a percent at most.
             const wasNearEnd = animPctValueRef.current > 0.9;
-            const estSec = (crossfadeEnabled && isPlaying) ? ((wasNearEnd ? crossfadeDurationEndOfTrack : crossfadeDuration) || 0) / 2 : 0;
+            // A song shown at the START of its transition (a tap, Play, Shuffle, the back-skip) is only as far in as the time
+            // since then, however long the crossfade is; the half-a-crossfade guess is for a song a crossfade announces
+            // halfway through. It put the bar 1.5 s ahead of every first play with crossfade on.
+            const flip = peekDisplayFlip(idAtChange);
+            const estSec = flip ? (isPlaying ? Math.min(3, Math.max(0, (Date.now() - flip.at) / 1000)) : 0)
+                : (crossfadeEnabled && isPlaying) ? ((wasNearEnd ? crossfadeDurationEndOfTrack : crossfadeDuration) || 0) / 2 : 0;
             const estDur = currentTrack?.duration || progress.duration || 0;
             const estPct = estDur > 0 ? Math.max(0, Math.min(1, estSec / estDur)) : 0;
             console.log(`[BAR] no matching reading yet (last: ${lp ? `${lp.id === idAtChange ? 'same song' : 'other song'}, ${Date.now() - lp.at}ms old` : 'none'}); starting at the estimated ${estSec.toFixed(2)}s`);

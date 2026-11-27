@@ -2247,6 +2247,11 @@ class AudioEngine: RCTEventEmitter {
     private var endFadeSeconds: Double = 0
     private var endFadeTimer: Timer?
     private let endFadeMargin: TimeInterval = 0.3
+    // True while the end-of-song fade-out ramp is running, with the level it started from. A seek back out of the
+    // fade must cancel it and restore that level: the ramp used to carry on to silence under the new position (the song
+    // faded out in the middle), and the seek's cut landed on a half-faded node (a click).
+    private var endFadeRampActive = false
+    private var endFadeRestoreVolume: Float = 1
 
     @objc(setEndFade:resolver:rejecter:)
     func setEndFade(_ seconds: NSNumber, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
@@ -2292,7 +2297,9 @@ class AudioEngine: RCTEventEmitter {
         guard remaining > 0.35 else { return }
         debugLog(String(format: "[FADE] end fade starting now: %.2fs left, fading over %.2fs from %.3f", remaining, d, volume))
         sendEvent(withName: "EndFadeStarted", body: nil)
-        rampVolume(NSNumber(value: volume), to: NSNumber(value: 0), duration: NSNumber(value: d), resolver: { _ in }, rejecter: { _, _, _ in })
+        endFadeRestoreVolume = volume
+        endFadeRampActive = true
+        rampVolume(NSNumber(value: volume), to: NSNumber(value: 0), duration: NSNumber(value: d), resolver: { [weak self] _ in self?.endFadeRampActive = false }, rejecter: { _, _, _ in })
     }
 
     private func scheduleCrossfadeLeadIn() {
@@ -4620,6 +4627,13 @@ class AudioEngine: RCTEventEmitter {
         // position is committed.
         crossfadeLeadTimer?.invalidate()
         crossfadeLeadTimer = nil
+        if endFadeRampActive {
+            endFadeRampActive = false
+            cancelActiveRampLocked()
+            volume = endFadeRestoreVolume
+            activeNode.volume = volume * currentGainCorrection
+            debugLog(String(format: "[FADE] seek during the end fade: fade cancelled, volume back to %.3f", volume))
+        }
         segmentStartOffsetSeconds = startAtSeconds
         frozenPositionSeconds = nil // a seek moves the origin; never keep the pre-seek snapshot
         // Click-free seek: the cut and the restart used to land on the node at full level, which is the

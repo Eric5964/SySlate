@@ -13,7 +13,7 @@ import {
     defaultCustomEQ, sanitizeCustomEQ, bandsFromPreset, makeParamPreset, presetParamBands, toNativeArrays,
     FILTER_TYPES, FILTER_LABELS, GAIN_MIN, GAIN_MAX, freqToPos, posToFreq, qToPos, posToQ, formatFreq,
     snapFreq, snapQ, snapGain, parseFreqInput, parseGainInput, parseQInput,
-    exportGraphicEQ, exportParametricEQ, exportSySlateEQ, parseEQText, PRE_MIN, PRE_MAX, clampPre,
+    exportGraphicEQ, exportParametricEQ, exportResponseCSV, exportTenBandGains, exportSySlateEQ, parseEQText, PRE_MIN, PRE_MAX, clampPre,
 } from '../utils/customEQ';
 
 // Advanced EQ: a preset with 10 bands that each have their own frequency, gain, Q and filter type.
@@ -235,10 +235,25 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
     const share = async (message, title) => {
         try { await Share.share({ message, title }); } catch (e) { Alert.alert('Export failed', String(e?.message)); }
     };
+    // Only the preset that is playing, in SySlate's own format. A premade preset (or one with edits) is written as a
+    // normal preset with its current bands, so importing it adds it as a new preset and never changes a premade one.
+    const currentSySlate = async () => {
+        const [cp, ov] = await Promise.all([getCustomPresets(), getEQOverrides()]);
+        const cur = getPresetById(eqPresetIdRef.current, cp, ov);
+        const mine = cp.find(p => p.id === cur.id);
+        const pre = await currentPre();
+        const entry = mine ? { ...mine, pre } : { id: cur.id, name: cur.name, bands: Array.from(cur.bands).slice(0, 10), pre };
+        return exportSySlateEQ({ customPresets: [entry] });
+    };
+    // The two Equalizer APO formats also open in AutoEq, Peace and Wavelet. The last two are for tools that take a plain
+    // table or ten gains.
     const exportOptions = [
-        { label: 'SySlate (all presets)', run: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), builtinPreAmps: await getBuiltinPreAmps() }), 'SySlate EQ') },
+        { label: 'SySlate (all presets)', run: async () => share(exportSySlateEQ({ customPresets: await getCustomPresets(), overrides: await getEQOverrides(), builtinPreAmps: await getBuiltinPreAmps() }), 'SySlate EQ (all presets)') },
+        { label: 'SySlate (current preset)', run: async () => share(await currentSySlate(), 'SySlate EQ') },
         { label: 'GraphicEQ (current preset)', run: async () => share(exportGraphicEQ(await currentBands(), await currentPre()), 'SySlate GraphicEQ') },
         { label: 'Parametric (current preset)', run: async () => share(exportParametricEQ(await currentBands(), await currentPre()), 'SySlate Parametric EQ') },
+        { label: 'Frequency response CSV (current preset)', run: async () => share(exportResponseCSV(await currentBands(), await currentPre()), 'SySlate EQ response') },
+        { label: '10-band gains (current preset)', run: async () => share(exportTenBandGains(await currentBands(), await currentPre()), 'SySlate 10-band gains') },
     ];
 
     const applyImport = async () => {
@@ -283,14 +298,14 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
                     <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Import EQ</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[pillStyle, { borderColor: theme.accent }]} onPress={() => setShowExport(true)}>
-                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Export current EQ</Text>
+                    <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]} numberOfLines={1} adjustsFontSizeToFit>Export EQ</Text>
                 </TouchableOpacity>
             </View>
 
             {/* A tap outside closes it (a plain Alert cannot). The share sheet opens once this has slid away. */}
-            <BottomSheet visible={showExport} onClose={() => setShowExport(false)} height={340}>
+            <BottomSheet visible={showExport} onClose={() => setShowExport(false)} height={460}>
                 <View style={{ paddingHorizontal: 20 }}>
-                    <Text style={s.sheetTitle}>Export current EQ</Text>
+                    <Text style={s.sheetTitle}>Export EQ</Text>
                     <Text style={{ color: base.textFaint, fontSize: 13, marginBottom: 16 }}>Choose a format</Text>
                     {exportOptions.map(o => (
                         <TouchableOpacity key={o.label} style={[pillStyle, { flex: 0, marginHorizontal: 0, borderColor: theme.accent }]}

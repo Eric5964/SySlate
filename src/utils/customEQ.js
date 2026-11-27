@@ -202,6 +202,18 @@ export function exportParametricEQ(bands, preAmpDb = 0) {
     return `# SySlate EQ (Equalizer APO parametric)\nPreamp: ${num(preAmpDb, 1)} dB\n${lines.join('\n')}\n`;
 }
 
+// The response as a plain "frequency,gain" table (dB), for spreadsheets, REW and other tools. The pre-amp is NOT in the gains.
+export function exportResponseCSV(bands, preAmpDb = 0) {
+    const rows = GRAPHIC_POINTS.map(f => `${f},${num(responseDb(bands, f), 2)}`).join('\n');
+    return `# SySlate EQ (frequency response, dB)\n# Preamp: ${num(preAmpDb, 1)} dB (not included in the gains)\nFrequency (Hz),Gain (dB)\n${rows}\n`;
+}
+
+// Ten gains, one for each of the ten fixed bands (32 Hz to 16 kHz), for any 10-band graphic EQ. Sampled from the real response.
+export function exportTenBandGains(bands, preAmpDb = 0) {
+    const gains = DEFAULT_FREQS.map(f => num(responseDb(bands, f), 1));
+    return `# SySlate EQ (10-band gains at ${DEFAULT_FREQS.join(', ')} Hz)\n# Preamp: ${num(preAmpDb, 1)} dB\n[${gains.join(', ')}]\n`;
+}
+
 export function exportSySlateEQ({ customPresets = [], overrides = {}, builtinPreAmps = {} }) {
     return JSON.stringify({ syslateEQ: 1, customPresets, overrides, builtinPreAmps }, null, 2);
 }
@@ -301,8 +313,10 @@ export function parseEQText(text) {
         return { kind: 'graphic', bands, preAmp, points: points.length };
     }
     // Just ten gains (one per band), as a list: "[1, 2, 0, ...]" or ten numbers separated by anything.
-    const nums = (t.match(/-?\d+(?:[.,]\d+)?/g) || []).map(nf);
-    if (nums.length === 10 && !/[A-DF-Za-df-z]/.test(t.replace(/[eE]\d/g, ''))) {
+    // (comment lines and a Preamp line are not gains)
+    const body = t.split(/\r?\n/).filter(l => !/^\s*#/.test(l)).join('\n').replace(/Preamp:\s*-?[\d.]+\s*dB/gi, '');
+    const nums = (body.match(/-?\d+(?:[.,]\d+)?/g) || []).map(nf);
+    if (nums.length === 10 && !/[A-DF-Za-df-z]/.test(body.replace(/[eE]\d/g, ''))) {
         return { kind: 'graphic', bands: bandsFromPreset(nums), preAmp, points: 10 };
     }
     return { kind: 'error', message: 'Not recognised. Paste a SySlate EQ export, a GraphicEQ line, APO / AutoEq "Filter 1: ON PK Fc ..." lines, a "frequency gain" table, or ten band gains.' };

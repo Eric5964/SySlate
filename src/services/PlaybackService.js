@@ -377,7 +377,13 @@ async function checkRampWindow(position, duration) {
                 // making the audible ramp feel rushed. Also no longer capped
                 // at 2.5s — respects the real configured duration, matching
                 // what a genuine track-to-track transition gets.
-                if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
+                // A seek back out of the end fade makes the engine cancel the fade and put the volume back at once; going
+                // silent and fading in again after that was an audible dip (and a click) in the middle of the song.
+                let volNow = 0;
+                try { volNow = Number(await AudioEngine.getVolume()) || 0; } catch { }
+                if (volNow >= 0.95) {
+                    // already back at full volume: nothing to ramp
+                } else if (ramp > 0.05 && !(await isTooShortToRamp(ramp))) {
                     try { await AudioEngine.setVolume(0); } catch { }
                     await fadeVol(0, 1, ramp, newId);
                 } else {
