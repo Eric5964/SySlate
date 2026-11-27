@@ -39,10 +39,12 @@ const SORTS = [
     { id: 'plays_r', label: 'Least Played' },
 ];
 
-// Fixed row height (minHeight PILL_H + 2 px margin above and below), so
-// FlatList can compute item offsets without measuring every row.
-const SONG_ROW_H = PILL_H + 4;
 const songKey = (item) => item.id;
+// The sort chosen for each playlist, kept for the session: the list opens already in its own order instead of
+// showing A-Z for a moment and then re-sorting once the saved choice has been read.
+const sortMemo = new Map();
+// coverWrap's paddingTop: the outline sits 3 px outside the cover, which starts below this padding.
+const COVER_TOP_PAD = 8;
 
 // What this screen falls back to when it's opened without a playlist param
 // (a restored navigation state, a deep link, a fast refresh in development):
@@ -62,7 +64,7 @@ export default function PlaylistDetailScreen() {
     const { theme, base } = useTheme();
 
     const [search, setSearch] = useState('');
-    const [sortId, setSortId] = useState('alpha');
+    const [sortId, setSortId] = useState(() => sortMemo.get(playlist.path) ?? null);
     const { sortCounts: playCounts, live: liveCounts, refreshSort, countFor } = useLivePlayCounts(playlist.songs);
     // Total length of the playlist ("3:12", hours:minutes; "~" while some songs have not been
     // played yet, since their length is not known until then).
@@ -145,7 +147,7 @@ export default function PlaylistDetailScreen() {
             if (!uri) { setCover(null); return; }
             Image.prefetch(uri).catch(() => { }).finally(() => setCover(uri));
         });
-        getPlaylistSort(playlist.path).then(setSortId);
+        getPlaylistSort(playlist.path).then(id => { sortMemo.set(playlist.path, id); setSortId(id); }).catch(() => setSortId(prev => prev ?? 'alpha'));
     }, []);
 
     // Same precompute-once-avoid-localeCompare reasoning as All Songs'
@@ -160,6 +162,8 @@ export default function PlaylistDetailScreen() {
     }, [playlist.songs]);
 
     const sorted = useMemo(() => {
+        // The saved sort is still being read (first open this session): nothing is drawn yet, so the rows never appear in one order and jump to another.
+        if (sortId === null) return [];
         let songs = [...playlist.songs];
         switch (sortId) {
             case 'alpha': songs.sort((a, b) => compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
@@ -348,9 +352,9 @@ export default function PlaylistDetailScreen() {
                 // the initial mount and each scroll batch cheaper. Rows are
                 // a uniform height, so this does not make
                 // scrolling feel less continuous.
-                initialNumToRender={performanceMode ? 6 : 10}
-                windowSize={performanceMode ? 4 : 11}
-                maxToRenderPerBatch={performanceMode ? 3 : 8}
+                initialNumToRender={performanceMode ? 6 : 14}
+                windowSize={performanceMode ? 4 : 21}
+                maxToRenderPerBatch={performanceMode ? 3 : 10}
                 updateCellsBatchingPeriod={performanceMode ? 90 : 50}
                 removeClippedSubviews={performanceMode}
                 ListFooterComponent={<BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={{ flexGrow: 1, minHeight: 160, marginTop: 8 }} />}
@@ -363,7 +367,7 @@ export default function PlaylistDetailScreen() {
                         <BackSwipeZone navigation={navigation} dragX={backX} onBack={() => navigation.goBack()} style={s.coverWrap}>
                             {/* Card-style outline, same look as the cards on the Playlists screen. */}
                             {detailOutline && (
-                                <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: -3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
+                                <View pointerEvents="none" style={[{ position: 'absolute', width: 186, height: 186, top: COVER_TOP_PAD - 3, borderRadius: cardRadius(180, 3, coverShape), backgroundColor: base.surface }, playlistCoverShadow && COVER_SHADOW]} />
                             )}
                             <TouchableOpacity
                                 style={[s.cover, { backgroundColor: bg, overflow: 'hidden', borderRadius: squircle(180, coverShape) }]}
@@ -429,7 +433,7 @@ export default function PlaylistDetailScreen() {
                                     <TouchableOpacity
                                         key={opt.id}
                                         style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                        onPress={() => { setSortId(opt.id); if (playlist.path) setPlaylistSort(playlist.path, opt.id); refreshSort({ cacheKey: playlist.path, source: playingSrcRef.current, force: true }); setShowSort(false); }}
+                                        onPress={() => { setSortId(opt.id); sortMemo.set(playlist.path, opt.id); if (playlist.path) setPlaylistSort(playlist.path, opt.id); refreshSort({ cacheKey: playlist.path, source: playingSrcRef.current, force: true }); setShowSort(false); }}
                                     >
                                         <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                             {opt.label}
@@ -522,7 +526,7 @@ const s = StyleSheet.create({
     searchBar: { flex: 1, marginHorizontal: 4, backgroundColor: '#141414', borderRadius: 10, paddingVertical: 9, paddingRight: 28, color: '#e5e5e5', fontSize: 14 },
     clearBtn: { position: 'absolute', right: 6, top: 0, bottom: 0, width: 24, justifyContent: 'center', alignItems: 'center' },
     clearBtnText: { color: '#555', fontSize: 14, fontWeight: '700' },
-    coverWrap: { alignItems: 'center', paddingTop: 8, paddingBottom: 18 },
+    coverWrap: { alignItems: 'center', paddingTop: COVER_TOP_PAD, paddingBottom: 18 },
     cover: { width: 180, height: 180, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
     coverNote: { fontSize: 60, color: 'rgba(255,255,255,0.4)' },
     actionRow: { flexDirection: 'row', justifyContent: 'center', gap: 12, paddingBottom: 22 },

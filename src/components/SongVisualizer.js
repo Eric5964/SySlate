@@ -121,7 +121,7 @@ export default function SongVisualizer({ color, mode, radius = 0, size = 0 }) {
             // change or a rebuilt engine drops it without telling JS). Put it in again, at most
             // once every 1.5 s, instead of waiting for the next pause/play to do it. Give up after
             // a few tries when nothing comes back, so a dead engine cannot keep this running.
-            if (playingRef.current && healTries.current < MAX_HEAL_TRIES && nowMs - Math.max(lastEvent.current, mountedAt.current) > 800 && nowMs - lastHeal > 1500) {
+            if (playingRef.current && healTries.current < MAX_HEAL_TRIES && nowMs - Math.max(lastEvent.current, mountedAt.current) > 300 && nowMs - lastHeal > 1500) {
                 lastHeal = nowMs;
                 healTries.current += 1;
                 console.log(`[VIZ] no readings while playing, putting the tap in again (try ${healTries.current}/${MAX_HEAL_TRIES})`);

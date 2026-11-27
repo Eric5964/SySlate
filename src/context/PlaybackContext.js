@@ -2,7 +2,7 @@ import * as FileSystem from 'expo-file-system';
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { perf } from '../utils/perf';
 import { AppState, Image } from 'react-native';
-import AudioEngine, { Event, State, RepeatMode } from '../native/AudioEngine';
+import AudioEngine, { Event, State, RepeatMode, noteDisplayFlipNow } from '../native/AudioEngine';
 import { getPresetById, clampEQBand, BUILT_IN_PRESETS } from '../utils/eq';
 import { getCustomPresets, getEQOverrides, getPreAmp, getBuiltinPreAmps, getSongEQ, setSongEQ, toStablePath, addListenedSeconds, getEQLayering, subscribeEQLayering, getPlaylistEQ, setPlaylistEQ } from '../utils/storage';
 import { toNativeArrays, presetParamBands, clampPre } from '../utils/customEQ';
@@ -11,7 +11,7 @@ import { formatArtists } from '../utils/artists';
 import { usePreferences } from './PreferencesContext';
 import { useLibrary } from './LibraryContext';
 import { getPlayCounts, playCountKeyN, baseCountKeyN, setListenHooks } from '../utils/storage';
-import { playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction, preemptForNewAction, waitForPreempt, setActionEpoch, getPreemptEpoch, isActionPreempted, releaseFadeById, restoreAfterPreemptIfSilenced } from '../services/PlaybackService';
+import { setBackWrapHandler, playWithRamp, pauseWithRamp, setPlayBlocked, isTransitionLocked, forceReleaseFade, preClaimFadeForFreshStart, fadeOutCurrentIfPlaying, queueAction, preemptForNewAction, waitForPreempt, setActionEpoch, getPreemptEpoch, isActionPreempted, releaseFadeById, restoreAfterPreemptIfSilenced } from '../services/PlaybackService';
 
 // Thrown inside a Play/Shuffle/tap action that a newer one has replaced. Not an error.
 const ACTION_SUPERSEDED = { superseded: true };
@@ -685,6 +685,14 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // the newest one is allowed to apply.
     const trackChangeSeqRef = useRef(0);
     const lastIndexRef = useRef(null);   // native queue index of the song before the current one (see the back-move below)
+    // The slot id (_qid) that the first song of the newest queue build got. A tap / Play / Shuffle sets the shown song
+    // right away, before native announces it; handing it the same slot id means the later announcement is recognised as
+    // the same song and does not count as a second song change (the Player's progress bar restarted on it).
+    const primedQidRef = useRef(null);
+    const primedTrack = (t) => {
+        if (t?.id) noteDisplayFlipNow(t.id);   // shown now, at the start of any crossfade: the bar's estimate counts from here
+        return t && primedQidRef.current ? { ...t, _qid: primedQidRef.current } : t;
+    };
     // Slot ids (_qid) of songs that were played FROM Priority. A back skip over them puts them back into Priority.
     const playedPriQidsRef = useRef(new Set());
     // Set by jumpToQueueIndex when it has ALREADY removed the skipped-over Priority entries itself ({ idx, t }). The change
@@ -733,7 +741,12 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 const sameSlot = track._qid != null
                     ? track._qid === currentTrackRef.current?._qid
                     : track.id === currentTrackRef.current?.id;
-                if (sameSlot) return; // same track re-fired — a fresh object here would wipe out artwork that already resolved
+                if (sameSlot) {
+                    // Same track re-fired — a fresh object here would wipe out artwork that already resolved. The index
+                    // bookkeeping still has to follow, or the next change compares against an older index.
+                    try { const ci = await AudioEngine.getCurrentTrack(); if (seq === trackChangeSeqRef.current) lastIndexRef.current = ci; } catch { }
+                    return;
+                }
                 queueFrozenRef.current = 0;
                 setCurrentTrack(track);
                 // The first song of a queued playlist just started: that
@@ -1329,6 +1342,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     const primeNativeQueue = async (fullQueue, anchorIndex = 0) => {
         logicalQueueRef.current = fullQueue;
         const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
+        primedQidRef.current = batch[0]?._qid ?? null;
         queueRebuildRef.current += 1;
         try {
             // Let any fill that is already running finish its native add first; a fill
@@ -1438,6 +1452,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const curIdx = await AudioEngine.getCurrentTrack();
             logicalQueueRef.current = fullQueue;
             const batch = stampQids(fullQueue.slice(anchorIndex, anchorIndex + QUEUE_INITIAL_BATCH));
+            primedQidRef.current = batch[0]?._qid ?? null;
+            playedPriQidsRef.current.clear();
+            lastIndexRef.current = null;   // a new queue: the old index says nothing about it (would read as a back skip)
             const insertAt = curIdx + 1;
             await withTimeout(AudioEngine.add(batch, insertAt), 6000);
             loadedThroughRef.current = anchorIndex + batch.length;
@@ -1785,7 +1802,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // Same reasoning as playSongFromPlaylist — don't wipe already-known
         // art for a song that turns out to be the one still playing.
         setCurrentTrack(prev => {
-            const next = queue[startIndex] ?? null;
+            const next = primedTrack(queue[startIndex] ?? null);
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
         });
         setShuffleModeState(mode);
@@ -1795,6 +1812,42 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         await setSession(playlist.path, { queue, index: startIndex, shuffleOn: isOn, shuffleMode: mode });
         }).finally(() => { if (!handedOff) endPlaylistAction(token); });
     }, []);
+
+
+    // Previous from the FIRST song of the queue used to wrap natively to the end of the loaded window (about 25 songs
+    // in), so the queue then showed only the few songs topped up after that one. The song before the first is the last
+    // song of the round, which the logical order already holds: it is moved to the front and the rest of the order stays
+    // exactly as it was. skipWithRamp asks this (lock screen and headphone Previous included) after it has decided the
+    // press is a real Previous and not a restart; anywhere else, going back is the normal skip.
+    const backWrap = useCallback(async () => {
+        try {
+            const idx = await AudioEngine.getCurrentTrack();
+            const logical = logicalQueueRef.current;
+            const pl = playlistRef.current;
+            if (idx === 0 && logical.length > 1 && pl?.path && queueRebuildRef.current === 0) {
+                const tail = logical[logical.length - 1];
+                const newLogical = [tail, ...logical.slice(0, -1)];
+                await runExclusivePlayAction(async () => {
+                    const carried = await capturePriorityTracks();
+                    console.log(`[QUEUE] back from the first song: "${tail.title}" (end of the round) goes in front, ${newLogical.length - 1} behind it unchanged, carried priority=${carried.length}`);
+                    const { preClaimedId, crossfaded } = await primeQueueForTransition(newLogical, await getSkipRamp());
+                    await restorePriorityTracks(carried);
+                    fillRestOfWindow();
+                    await setQueueLoop();
+                    if (!crossfaded) await playWithRamp(preClaimedId);
+                    const next = { ...pl, queue: newLogical };
+                    playlistRef.current = next;
+                    setCurrentPlaylist(next);
+                    setQueueEpoch(e => e + 1);
+                    setCurrentTrack(prev => (prev?.id === tail.id && prev.artwork ? { ...primedTrack(tail), artwork: prev.artwork } : primedTrack(tail)));
+                    await setSession(pl.path, { queue: newLogical, index: 0, shuffleOn: shuffleOnRef.current, shuffleMode: shuffleModeRef.current });
+                });
+                return true;
+            }
+        } catch (e) { console.error('backWrap:', e); }
+        return false;
+    }, []);
+    useEffect(() => { setBackWrapHandler(backWrap); return () => setBackWrapHandler(null); }, [backWrap]);
 
     const playPlaylistOrdered = useCallback((playlist, orderedSongs, retryToken = null) => {
         if (!playlist?.path) return Promise.resolve();
@@ -1829,7 +1882,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         setCurrentPlaylist(pl);
         setQueueEpoch(e => e + 1);
         setCurrentTrack(prev => {
-            const next = queue[0] ?? null;
+            const next = primedTrack(queue[0] ?? null);
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
         });
         clearVizPending();
@@ -1878,7 +1931,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         setCurrentPlaylist(pl);
         setQueueEpoch(e => e + 1);
         setCurrentTrack(prev => {
-            const next = queue[0] ?? null;
+            const next = primedTrack(queue[0] ?? null);
             return (prev?.id === next?.id && prev?.artwork) ? { ...next, artwork: prev.artwork } : next;
         });
         setShuffleModeState(useMode);
@@ -1996,7 +2049,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // primeNativeQueue), so the art shouldn't visually reset either —
         // previously it did, and nothing re-fetched it afterward since nothing
         // about the track's id had changed to re-trigger that.
-        setCurrentTrack(prev => (prev?.id === song.id && prev.artwork ? { ...song, artwork: prev.artwork } : song));
+        setCurrentTrack(prev => (prev?.id === song.id && prev.artwork ? { ...primedTrack(song), artwork: prev.artwork } : primedTrack(song)));
         clearVizPending();
         setShuffleModeState(mode);
         setShuffleOn(isOn);

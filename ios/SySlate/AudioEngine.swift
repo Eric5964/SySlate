@@ -671,6 +671,9 @@ class AudioEngine: RCTEventEmitter {
         resetEffectStates()
         try engine.start()
         if !wasRunning {
+            // A stopped engine drops the visualizer's tap; put it back at once instead of waiting for JS to notice that
+            // no readings are coming (the visualizer started late after every new playlist).
+            if vizOn { DispatchQueue.main.async { [weak self] in if let self = self, self.vizOn { self.installVizTap() } } }
             debugLog(String(format: "[POP] engine started after a stop, effect units cleared (mixerVol=%.2f nodeVol=%.3f muteHeld=%@)", engine.mainMixerNode.outputVolume, activeNode.volume, coldMuteHeld ? "true" : "false"))
         }
     }
@@ -5326,12 +5329,16 @@ class AudioEngine: RCTEventEmitter {
             guard let self = self else { return }
             let want = on.boolValue
             self.vizOn = want
-            let mixer = self.engine.mainMixerNode
-            mixer.removeTap(onBus: 0)   // also makes a repeated "on" safe: the tap is put in fresh
-            if !want { return }
-            mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-                self?.vizProcess(buffer)
-            }
+            if !want { self.engine.mainMixerNode.removeTap(onBus: 0); return }
+            self.installVizTap()   // removes the old tap first, so a repeated "on" is safe: the tap is put in fresh
+        }
+    }
+
+    private func installVizTap() {
+        let mixer = engine.mainMixerNode
+        mixer.removeTap(onBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            self?.vizProcess(buffer)
         }
     }
 

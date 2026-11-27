@@ -5,6 +5,7 @@ import { playerArtUri } from '../utils/embeddedArt';
 import { getProgressSeed } from '../utils/progressSeed';
 import StableArt from '../components/StableArt';
 import MaskedView from '@react-native-masked-view/masked-view';
+import { LinearGradient } from 'expo-linear-gradient';
 import AudioEngine, { useProgress, usePlaybackState, matchProgress, peekLastProgress, State } from '../native/AudioEngine';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { usePlayback } from '../context/PlaybackContext';
@@ -89,30 +90,16 @@ function isNeutralColor(hex) {
 
 // The lyrics box fades its top and bottom edges by MASKING the text, not by painting
 // background-coloured bands over it: with a background picture on, those bands hid the
-// picture and read as solid strips. The mask is transparent at both edges and opaque in the
-// middle, built from stacked Views of varying alpha (the same technique as GradientCap, no
-// gradient library). It is static, so scrolling only moves the text underneath it.
+// picture and read as solid strips. The mask is one gradient layer: transparent at both edges, opaque in the
+// middle (only its alpha counts, so the picture and the text behind show through as they are). It is static, so
+// scrolling only moves the text underneath it.
 const LYRICS_FADE_PX = 80;
-const LYRICS_FADE_BANDS = 16;
+const SMOOTH = [0, 0.156, 0.5, 0.844, 1];   // smoothstep at 0, 1/4, 1/2, 3/4, 1
 function LyricsFadeMask({ height }) {
-    const fade = Math.min(LYRICS_FADE_PX, Math.max(12, height * 0.3));
-    const bandH = fade / LYRICS_FADE_BANDS;
-    const alphas = [];
-    for (let j = 0; j < LYRICS_FADE_BANDS; j++) {
-        const t = (j + 0.5) / LYRICS_FADE_BANDS;
-        alphas.push(t * t * (3 - 2 * t));   // smoothstep: 0 at the edge, 1 where the fade ends
-    }
-    return (
-        <View style={{ flex: 1, backgroundColor: 'transparent' }}>
-            {alphas.map((o, j) => (
-                <View key={`t${j}`} style={{ height: bandH, backgroundColor: '#000', opacity: o }} />
-            ))}
-            <View style={{ flex: 1, backgroundColor: '#000' }} />
-            {alphas.map((o, j) => (
-                <View key={`b${j}`} style={{ height: bandH, backgroundColor: '#000', opacity: alphas[LYRICS_FADE_BANDS - 1 - j] }} />
-            ))}
-        </View>
-    );
+    const f = Math.min(LYRICS_FADE_PX, Math.max(12, height * 0.3)) / height;   // the fade's share of the box
+    const colors = [...SMOOTH, ...[...SMOOTH].reverse()].map(a => `rgba(0, 0, 0, ${a})`);
+    const locations = [...SMOOTH.map((_, i) => f * (i / 4)), ...SMOOTH.map((_, i) => 1 - f + f * (i / 4))];
+    return <LinearGradient colors={colors} locations={locations} style={{ flex: 1 }} />;
 }
 
 const LYRIC_CARRY_MAX_SEC = 1.0;   // readings come every 0.5 s; never run further than this past one
@@ -523,6 +510,36 @@ export default function PlayerScreen() {
                 if (latestSeekRatioRef.current !== targetRatio) {
                     console.log('[SEEK-DEBUG] superseded before its turn, skipped', { targetRatio });
                     return;
+                }
+                // The engine ignores a seek made during the first half of a crossfade (the bar being dragged is the
+                // NEW song's, but the engine is still on the old one). The bar used to jump to the dragged spot, nothing
+                // happened, and it snapped back 2.5 s later. Now the bar waits at the spot and the seek is made the
+                // moment the engine has handed over, so it lands on the right song.
+                let waited = false;
+                for (let i = 0; i < 40; i++) {
+                    let first = false;
+                    try { first = !!(await AudioEngine.getCrossfadeFirstHalf()); } catch { }
+                    if (!first) break;
+                    if (!waited) {
+                        waited = true;
+                        console.log('[SEEK-DEBUG] seek waits: first half of a crossfade', { targetRatio });
+                        stopAnim();
+                        animPct.setValue(targetRatio);
+                        animPctValueRef.current = targetRatio;
+                    }
+                    await new Promise(r => setTimeout(r, 100));
+                    if (latestSeekRatioRef.current !== targetRatio || nowTrackIdRef.current !== nowTrackId) {
+                        console.log('[SEEK-DEBUG] waiting seek dropped: another seek or a song change came first', { targetRatio });
+                        return;
+                    }
+                }
+                if (waited) {
+                    // Everything that was timed from the release starts again from the real seek.
+                    clearTimeout(clearDragTimer.current);
+                    clearDragTimer.current = setTimeout(() => { pendingSeekRatioRef.current = null; setDragRatio(null); }, 2500);
+                    const ls2 = { id: nowTrackId, pos: targetRatio * duration, at: Date.now() };
+                    setLyricSeek(ls2); setTimeout(() => { if (lyricSeekRef.current === ls2) setLyricSeek(null); }, 1000);
+                    startRealTimeAnim(targetRatio, true, duration);
                 }
                 try {
                     await AudioEngine.seekTo(targetRatio * duration);

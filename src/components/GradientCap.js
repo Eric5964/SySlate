@@ -1,56 +1,36 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
-import { usePreferences } from '../context/PreferencesContext';
+import { LinearGradient } from 'expo-linear-gradient';
 
-// Second rewrite. First version (stacked flat-opacity View bands) was
-// "visibly steppy". Second version (Image + tintColor stretching a real
-// alpha-ramp PNG, src/assets/edge-fade.png) looked right in every way when
-// read back from source — asset verified as a real 8x256 white-to-transparent
-// PNG, unconditionally rendered in both MiniPlayer and PlayerScreen, no
-// hidden toggle gating it — but per his screenshots, isn't rendering AT ALL
-// on-device (not faint, not steppy — completely absent, on both mini and
-// full player). Couldn't find the actual mechanism by reading code alone —
-// something about Image+tintColor is silently failing to paint in this
-// specific sideloaded/non-standard-build environment. Rather than keep
-// guessing at an invisible failure, going back to the Views approach from
-// v1, but with far more, far thinner bands (48 instead of whatever the
-// original few-band version used) on an eased curve — should read as a
-// genuinely smooth linear fade now, not steppy, while being something that
-// can only fail to render the exact same way any other View on this screen
-// would (i.e., not silently). Later reduced to 16 bands (8 in performance
-// mode): 48 was more resolution than these 64-90 px strips can show.
-function buildBands(n) {
-    const bands = [];
-    for (let i = 0; i < n; i++) {
-        const t = i / (n - 1); // 0 at top, 1 at bottom
-        // Slight ease-out so the fade reads as linear-to-the-eye (perceived
-        // brightness isn't linear with alpha) rather than literally linear
-        // alpha, which tends to look like it "hangs around" near the top.
-        const alpha = Math.pow(1 - t, 1.4);
-        bands.push(alpha);
-    }
-    return bands;
+// A colour fading to nothing from the top edge down (flip: from the bottom edge up), drawn as ONE native gradient
+// layer. It used to be 8 to 48 stacked Views (an Image + tintColor version before that never painted on the device),
+// each of them a layer the compositor had to blend on every frame; this is a single layer in any mode.
+//
+// The fade is eased, (1 - t)^1.4, which reads as linear to the eye; five stops follow that curve closely enough.
+const STOPS = [0, 0.25, 0.5, 0.75, 1];
+const ALPHAS = STOPS.map(t => Math.pow(1 - t, 1.4));
+
+// The same colour at a given alpha. A gradient has to fade to the SAME colour at alpha 0: fading to 'transparent'
+// (black at alpha 0) passes through a dark grey in between.
+function withAlpha(color, a) {
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color || '');
+    if (!m) return null;
+    let h = m[1];
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a.toFixed(3)})`;
 }
 
-// 48 bands was more than the eye can resolve at the sizes this is used at
-// (64-90 px tall) and cost 48 extra Views in every mini player and on the
-// player screen. 16 on the same eased curve still reads as smooth; performance
-// mode halves that again to 8.
-const BANDS_16 = buildBands(16);
-const BANDS_8 = buildBands(8);   // Performance mode: 8 Views instead of 16
-
 export default function GradientCap({ color = '#7c3aed', height = 90, style, flip = false }) {
-    const { performanceMode } = usePreferences();
-    const BANDS = performanceMode ? BANDS_8 : BANDS_16;
-    const bandHeight = height / BANDS.length;
+    const colors = React.useMemo(() => {
+        const list = ALPHAS.map(a => withAlpha(color, a));
+        // A colour that is not a hex string cannot be given an alpha: fade it with the plain opacity instead.
+        return list.every(Boolean) ? list : [color, color];
+    }, [color]);
+    const stops = colors.length === STOPS.length ? STOPS : undefined;
     return (
         <View pointerEvents="none" style={[styles.wrap, { height }, flip && styles.flip, style]}>
-            {BANDS.map((alpha, i) => (
-                <View
-                    key={i}
-                    style={{ height: bandHeight, backgroundColor: color, opacity: alpha }}
-                />
-            ))}
+            <LinearGradient colors={colors} locations={stops} style={StyleSheet.absoluteFill} />
         </View>
     );
 }

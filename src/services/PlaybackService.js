@@ -145,6 +145,11 @@ export function forceReleaseFade() {
 // further — still bounded, just not down to 1.
 let pendingQueue = []; // [{ run: () => void }], length 0-2
 
+// Set by PlaybackContext: asked when Previous would go back from the FIRST song of the queue (which natively wraps to the
+// end of the loaded window, not to the song that really comes before it). It returns true when it handled the press.
+let backWrapHandler = null;
+export const setBackWrapHandler = (fn) => { backWrapHandler = fn; };
+
 export function queueAction(run) {
     if (pendingQueue.length < 2) {
         pendingQueue.push({ run });
@@ -896,6 +901,13 @@ export async function skipWithRamp(direction = 'next') {
                     restartCurrent = position > (unit === 'pct' ? (duration || 0) * pct / 100 : threshold);
                 } catch { }
             }
+        }
+        // Previous from the first song of the queue: the song before it is the last one of the round, which only the
+        // logical queue knows. The handler builds the queue around it; any other Previous goes on as normal below.
+        if (direction === 'prev' && !restartCurrent && backWrapHandler) {
+            let handled = false;
+            try { handled = await backWrapHandler(); } catch (e) { console.error('backWrapHandler:', e); }
+            if (handled) return;
         }
         // Real bug found here — Previous never crossfaded at all with
         // Crossfade on, even though AudioEngine.swift's advance() (as of

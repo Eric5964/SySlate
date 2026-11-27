@@ -247,11 +247,21 @@ let otherSong = { key: '', since: 0 };
 // describes the OUTGOING song (the incoming one is only announced at the halfway point), so a song that was just
 // tapped showed a frozen 0:00 for about half the crossfade. For that window the position is worked out from the
 // clock instead; the real reading takes over at the halfway point.
-let expectedSince = { id: '', at: 0 };
+let expectedSince = { id: '', at: 0, startAt: null };
+// A song shown the moment it is tapped (Play, Shuffle, a tap in a list) is on screen from the START of the crossfade, so
+// its position is simply the time since then. A song a crossfade announces by itself is shown HALFWAY through it, so its
+// position starts half a crossfade in (the default below). Without telling them apart, a tapped song's estimate ran
+// half a crossfade ahead of the sound, and the bar jumped back when the real reading arrived.
+export function noteDisplayFlipNow(id) {
+    if (!id) return;
+    const nowMs = Date.now();
+    if (expectedSince.id === id && expectedSince.startAt === 0 && nowMs - expectedSince.at < 1000) return;   // already noted (the state update can run twice)
+    expectedSince = { id, at: nowMs, startAt: 0 };
+}
 const CROSSFADE_ESTIMATE_MAX_MS = 6000;
 export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
     const nowMs = Date.now();
-    if (expectId && expectedSince.id !== expectId) expectedSince = { id: expectId, at: nowMs };
+    if (expectId && expectedSince.id !== expectId) expectedSince = { id: expectId, at: nowMs, startAt: null };
     if (!p) return { position: 0, duration: fallbackDuration || 0, buffered: 0 };
     let stale = false;
     if (p.id && expectId) stale = p.id !== expectId;
@@ -267,7 +277,7 @@ export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
     if (stale) {
         const el = nowMs - expectedSince.at;
         if (expectId && fallbackDuration > 0 && lastPlaybackState === State.Playing && el >= 0 && el < CROSSFADE_ESTIMATE_MAX_MS) {
-            const startAt = xfEstimate.on ? xfEstimate.sec / 2 : 0;
+            const startAt = expectedSince.startAt != null ? expectedSince.startAt : (xfEstimate.on ? xfEstimate.sec / 2 : 0);
             return { position: Math.min(fallbackDuration, el / 1000 + startAt), duration: fallbackDuration, buffered: 0, stale: true, estimated: true };
         }
         return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };

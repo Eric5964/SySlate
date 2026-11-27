@@ -38,11 +38,9 @@ const SORTS = [
     { id: 'plays_r', label: 'Least Played' },
 ];
 
-// Every song row is a fixed-height pill (minHeight PILL_H) with 2 px of
-// margin above and below, so FlatList can jump straight to any index instead
-// of measuring rows as it scrolls.
-const SONG_ROW_H = PILL_H + 4;
 const songKey = (item) => item.id;
+// The saved sort, kept for the session so the list opens already in its order (no A-Z flash, then a re-sort).
+const allSongsSortMemo = { v: null };
 
 // Storage key for the persisted sort choice — reuses getPlaylistSort/
 // setPlaylistSort (keyed by playlist path) rather than adding a parallel
@@ -62,7 +60,7 @@ export default function AllSongsScreen() {
     const [assign, setAssign] = useState(null);   // null, or { presetId, name, selected: { [songId]: true } }
     const [eqNameList, setEqNameList] = useState({ cp: [], ov: {} });
     useEffect(() => { Promise.all([getCustomPresets(), getEQOverrides()]).then(([cp, ov]) => setEqNameList({ cp, ov })); }, [assign, showEQ]);
-    const [sortId, setSortId] = useState('alpha');
+    const [sortId, setSortId] = useState(() => allSongsSortMemo.v ?? null);
     const [showSort, setShowSort] = useState(false);
     const { showPlayCount, showSongCovers, artistSeparator, coverShape, artistDisplayJoin, topBarColor, performanceMode, ui, vizMode } = usePreferences();
     const [hdrH, onHdrLayout] = useMeasuredHeight(TOP_PAD + 48 + TOP_FADE + 52);
@@ -149,7 +147,7 @@ export default function AllSongsScreen() {
     isFocusedRef.current = isFocused;
     useEffect(() => { refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current, hold: isFocusedRef.current }); }, [dedupedSongs, refreshSort]);
 
-    useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(setSortId); }, []);
+    useEffect(() => { getPlaylistSort(ALL_SONGS_KEY).then(id => { allSongsSortMemo.v = id; setSortId(id); }).catch(() => setSortId(prev => prev ?? 'alpha')); }, []);
     // Precomputed once per song instead of inside the sort comparator —
     // .sort() calls its comparator O(n log n) times, and recomputing
     // .toLowerCase() on the same strings that many times over adds up on a
@@ -166,6 +164,7 @@ export default function AllSongsScreen() {
     }, [dedupedSongs]);
 
     const sorted = useMemo(() => {
+        if (sortId === null) return [];   // the saved sort is still being read (first open this session)
         let songs = [...dedupedSongs];
         switch (sortId) {
             case 'alpha': songs.sort((a, b) => compareKeys(titleKeyMap.get(a.id), titleKeyMap.get(b.id))); break;
@@ -288,7 +287,7 @@ export default function AllSongsScreen() {
                             <TouchableOpacity
                                 key={opt.id}
                                 style={[s.sortChip, { backgroundColor: base.border }, sortId === opt.id && { backgroundColor: theme.accent }]}
-                                onPress={() => { setSortId(opt.id); setPlaylistSort(ALL_SONGS_KEY, opt.id); refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current, force: true }); setShowSort(false); }}
+                                onPress={() => { setSortId(opt.id); allSongsSortMemo.v = opt.id; setPlaylistSort(ALL_SONGS_KEY, opt.id); refreshSort({ cacheKey: ALL_SONGS_KEY, source: playingSrcARef.current, force: true }); setShowSort(false); }}
                             >
                                 <Text style={[s.sortChipText, { color: base.textDim }, sortId === opt.id && { color: theme.onAccent }]}>
                                     {opt.label}
@@ -320,9 +319,9 @@ export default function AllSongsScreen() {
                     // the initial mount and each scroll batch cheaper. Rows
                     // are a uniform height, so this does not
                     // make scrolling feel less continuous.
-                    initialNumToRender={performanceMode ? 6 : 10}
-                    windowSize={performanceMode ? 4 : 11}
-                    maxToRenderPerBatch={performanceMode ? 3 : 8}
+                    initialNumToRender={performanceMode ? 6 : 14}
+                    windowSize={performanceMode ? 4 : 21}
+                    maxToRenderPerBatch={performanceMode ? 3 : 10}
                     updateCellsBatchingPeriod={performanceMode ? 90 : 50}
                     // iOS keeps off-screen rows mounted by default; only
                     // performance mode trades that for less memory.
