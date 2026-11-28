@@ -303,8 +303,8 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
             </View>
 
             {/* A tap outside closes it (a plain Alert cannot). The share sheet opens once this has slid away. */}
-            <BottomSheet visible={showExport} onClose={() => setShowExport(false)} height={460}>
-                <View style={{ paddingHorizontal: 20 }}>
+            <BottomSheet visible={showExport} onClose={() => setShowExport(false)} expandable>
+                <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
                     <Text style={s.sheetTitle}>Export EQ</Text>
                     <Text style={{ color: base.textFaint, fontSize: 13, marginBottom: 16 }}>Choose a format</Text>
                     {exportOptions.map(o => (
@@ -313,7 +313,7 @@ export default function EQAdvancedRows({ s, onPresetsChanged, pillStyle }) {
                             <Text style={[s.addBtnText, { color: theme.accent, fontSize: 14 }]}>{o.label}</Text>
                         </TouchableOpacity>
                     ))}
-                </View>
+                </ScrollView>
             </BottomSheet>
 
             <BottomSheet visible={showImport} onClose={() => setShowImport(false)} expandable

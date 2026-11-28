@@ -2192,6 +2192,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // "has" artwork is skipped by the resolver effect, so the cover
             // never showed. Start without it and look the real one up now.
             let restoredTrack = queue[last.index] ? { ...queue[last.index], artwork: undefined } : null;
+            // The song is native's first one now (primeNativeQueue above gave it its slot id). Without that id it had none,
+            // or an old one saved with the session, which never matched native's.
+            if (restoredTrack && primedQidRef.current) restoredTrack._qid = primedQidRef.current;
             if (restoredTrack) {
                 const cachedUri = await getCachedArtFast(restoredTrack).catch(() => undefined);
                 if (cachedUri) restoredTrack.artwork = cachedUri;
@@ -2481,7 +2484,11 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 const t = q[idx];
                 const cur = currentTrackRef.current;
                 if (!t || !cur) return;
-                const same = t._qid != null ? t._qid === cur._qid : t.id === cur.id;
+                // Two copies of the same song in the queue are told apart by their slot id, but a song that has no slot id
+                // on one side is judged by its id alone. The slot id is what the progress bars key on: swapping the shown
+                // song for "the same song with another slot id" reset both bars (the Player's showed 0:01 for a second,
+                // the mini player's fill vanished for a moment) the first time the app was opened after a restore.
+                const same = (t._qid != null && cur._qid != null) ? t._qid === cur._qid : t.id === cur.id;
                 if (!same) setCurrentTrack(t);
             } catch { }
         });
