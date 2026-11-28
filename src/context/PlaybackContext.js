@@ -8,6 +8,7 @@ import { getCustomPresets, getEQOverrides, getPreAmp, getBuiltinPreAmps, getSong
 import { toNativeArrays, presetParamBands, clampPre } from '../utils/customEQ';
 import { buildQueue, modeNeedsCounts } from '../utils/shuffle';
 import { formatArtists } from '../utils/artists';
+import { getSortedOrder } from '../utils/sortedOrder';
 import { usePreferences } from './PreferencesContext';
 import { useLibrary } from './LibraryContext';
 import { getPlayCounts, playCountKeyN, baseCountKeyN, setListenHooks } from '../utils/storage';
@@ -570,9 +571,46 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     }, []);
     const playbackRateRef = useRef(1);
     useEffect(() => { playbackRateRef.current = playbackRate; }, [playbackRate]);
+
+    // A progress reading names the song native is really rendering. If it keeps naming a different song than the one
+    // on screen AND native's own current slot agrees, the TrackChanged event was missed (a song ended while the app
+    // was suspended, a remote skip while backgrounded, an event dropped during a crossfade). Follow native then: the
+    // alternative is a Player showing the old title with a progress bar that ignores every reading as "stale" — the
+    // bar sits at 0:00 until the 6.5 s stale window expires. `readingId` is optional (AppState wake has no reading).
+    const aheadReadingRef = useRef({ id: '', since: 0 });
+    const followNative = useCallback(async (readingId = null) => {
+        const cur = currentTrackRef.current;
+        if (readingId && (!cur?.id || readingId === cur.id)) { aheadReadingRef.current = { id: '', since: 0 }; return; }
+        // During a fade the displayed song is deliberately ahead of the audio; do not follow the outgoing song back.
+        if (isTransitionLocked()) return;
+        const now = Date.now();
+        let ahead = aheadReadingRef.current;
+        if (readingId && (ahead.id !== readingId || now - ahead.since > 2000)) {
+            ahead = aheadReadingRef.current = { id: readingId, since: now };
+        }
+        if (readingId && now - ahead.since < 700) return;   // one late reading is not enough; let it persist
+        try {
+            // Never while native is in the first half of a crossfade: index, display and readings legitimately disagree.
+            if (readingId && await AudioEngine.getCrossfadeFirstHalf().catch(() => false)) return;
+            const idx = await AudioEngine.getCurrentTrack();
+            if (idx === null || idx === undefined) return;
+            const t = await AudioEngine.getTrack(idx);
+            if (!t) return;
+            // In the first half of a crossfade native's index is already the INCOMING song while readings still
+            // describe the OUTGOING one. Index and reading must agree before we treat the app as out of date.
+            if (readingId && t.id !== readingId) return;
+            if (aheadReadingRef.current.id && readingId && aheadReadingRef.current.id !== readingId) return;
+            const sameSlot = t._qid != null && cur?._qid != null ? t._qid === cur._qid : t.id === cur?.id;
+            if (sameSlot) return;
+            setCurrentTrack(prev => (prev && prev.id === t.id && prev._qid === t._qid ? prev : t));
+            aheadReadingRef.current = { id: '', since: 0 };
+        } catch { }
+    }, []);
+
     useEffect(() => {
         const sub = AudioEngine.addEventListener(Event.PlaybackProgressUpdated, ({ position, duration, id }) => {
             const track = currentTrackRef.current;
+            if (id && track?.id && id !== track.id) followNative(id);
             if (!track?.id || !duration) return;
             // A reading that describes another song (e.g. the outgoing one right after a
             // skip, or during a crossfade) must not be credited to the current song.
@@ -616,7 +654,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             }
         });
         return () => sub.remove();
-    }, []);
+    }, [followNative]);
 
     useEffect(() => {
         (async () => {
@@ -1587,7 +1625,9 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 if (!pl?.songs?.length) return;
                 const passMode = pend ? (pend.shuffled ? pend.mode : 'off') : (shuffleOnRef.current ? shuffleModeRef.current : 'off');
                 console.log(`[LOOP] playlist finished a round: next round is ${passMode !== 'off' ? 'shuffled (' + passMode + ')' : 'in order'}`);
-                const nextPass = await buildQueueAsync(pl.songs, passMode, logicalQueueRef.current[logicalQueueRef.current.length - 1]);
+                // An unshuffled round continues in the sort the list is showing, not the playlist's raw order.
+                const passSongs = passMode === 'off' ? await getSortedOrder(pl.path, pl.songs) : pl.songs;
+                const nextPass = await buildQueueAsync(passSongs, passMode, logicalQueueRef.current[logicalQueueRef.current.length - 1]);
                 logicalQueueRef.current = [...logicalQueueRef.current, ...nextPass];
             }
             const currentIndex = await AudioEngine.getCurrentTrack();
@@ -1705,10 +1745,14 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const keepPriority = await getKeepPriorityOnPlaylistSwitch();
             const keepEnd = currentIndex + 1 + (keepPriority ? priorityRef.current.length : 0);
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
+            // Unshuffled queues follow the list's sort even when called from somewhere other than the list screen.
+            const ordered = !shuffled
+                ? (orderedSongs?.length ? orderedSongs : await getSortedOrder(playlist.path, playlist.songs))
+                : null;
             // Shuffled: arranged so its first song is not the one that plays right before it.
             const rest = shuffled
                 ? await padToBuffer(await buildQueueAsync(playlist.songs, mode, queue[keepEnd - 1]), playlist.songs, mode)
-                : await padToBuffer([...(orderedSongs?.length ? orderedSongs : playlist.songs)], orderedSongs?.length ? orderedSongs : playlist.songs, 'off');
+                : await padToBuffer([...ordered], ordered, 'off');
             if (!keepPriority && priorityRef.current.length) { priorityRef.current = []; setPriorityQueue([]); }
             // Same bulk replace as a shuffle change (reshuffleUpcoming).
             await withTimeout(AudioEngine.removeUpcomingTracks(), 4000);
@@ -1780,7 +1824,14 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         // it's an index into THAT array, so carrying it over to a freshly
         // built queue would start the playlist at an unrelated song.
         const remembered = (Array.isArray(session?.queue) && session.queue.length) ? session.queue : null;
-        let queue = remembered ?? (isOn ? await padToBuffer(await buildQueueAsync(playlist.songs, mode), playlist.songs, mode, UPCOMING_BUFFER + 1) : await padToBuffer([...playlist.songs], playlist.songs, 'off', UPCOMING_BUFFER + 1));
+        let queue;
+        if (remembered) queue = remembered;
+        else if (isOn) queue = await padToBuffer(await buildQueueAsync(playlist.songs, mode), playlist.songs, mode, UPCOMING_BUFFER + 1);
+        else {
+            // No saved queue: start in the order the playlist's list shows, not its raw scan order.
+            const ordered = await getSortedOrder(playlist.path, playlist.songs);
+            queue = await padToBuffer([...ordered], ordered, 'off', UPCOMING_BUFFER + 1);
+        }
         let startIndex = forceIndex ?? (remembered ? (session.index ?? 0) : 0);
         // Both ends, not just the top: a negative index (a corrupt session, or
         // an import) used to pass straight through into queue.slice() (which
@@ -1854,8 +1905,11 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         const token = retryToken ?? beginPlaylistAction(playlist.path);
         let handedOff = false;
         return runExclusivePlayAction(async () => {
+        // Callers on a list screen pass its sorted order; other callers get the same order derived from the
+        // persisted sort so "Play" never quietly means the playlist's raw scan order.
+        const ordered = orderedSongs?.length ? orderedSongs : await getSortedOrder(playlist.path, playlist.songs);
         // See loadPlaylist above for why this retries instead of dropping.
-        if (orderedSongs[0]) setVizPending(orderedSongs[0]);
+        if (ordered[0]) setVizPending(ordered[0]);
         if (isTransitionLocked()) {
             handedOff = true;
             queueAction(() => {
@@ -1863,13 +1917,13 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                     console.log(`[QUEUE] queued ordered play skipped: ${playlist.path} was replaced`);
                     return;
                 }
-                playPlaylistOrdered(playlist, orderedSongs, token);
+                playPlaylistOrdered(playlist, ordered, token);
             });
             return;
         }
         const eq = await getEQPreset(playlist.path);
         applyEQPreset(eq); // fire-and-forget — doesn't need to block the play action
-        const queue = [...orderedSongs];
+        const queue = [...ordered];
         const keepPriority = await getKeepPriorityOnPlaylistSwitch();
         const carriedPriority = keepPriority ? await capturePriorityTracks() : [];
         const { preClaimedId, crossfaded } = await primeQueueForTransition(queue, await getAudioRamp());
@@ -2005,6 +2059,7 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
         console.log(`[QUEUE] tap song: "${song.title}" in ${playlist.songs.length} songs, shuffle=${isOn ? mode : 'off'}, carried priority=${carriedPriority.length}`);
 
         let rest;
+        let orderedOff = null;
         if (isOn) {
             // buildQueueAsync, not a plain shuffle: Smart/Dumb/random are real
             // shuffles with their own rules, and every other shuffle entry
@@ -2018,13 +2073,15 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             // Continue through the list in order starting right AFTER the
             // tapped song, wrapping back around — not just "everything else
             // in whatever order it happened to be in," which read as
-            // "always restarts from the top of the playlist."
-            const idx = playlist.songs.findIndex(s => s.id === songId);
-            const wrapped = idx === -1 ? playlist.songs : [...playlist.songs.slice(idx + 1), ...playlist.songs.slice(0, idx)];
+            // "always restarts from the top of the playlist." The order is the sort the
+            // list shows, whether it was passed in on `playlist.songs` or has to be derived here.
+            orderedOff = await getSortedOrder(playlist.path, playlist.songs);
+            const idx = orderedOff.findIndex(s => s.id === songId);
+            const wrapped = idx === -1 ? orderedOff : [...orderedOff.slice(idx + 1), ...orderedOff.slice(0, idx)];
             rest = wrapped.filter(s => !keepSet.has(s.id));
         }
 
-        if (!isOn) rest = await padToBuffer(rest, playlist.songs, 'off');
+        if (!isOn) rest = await padToBuffer(rest, orderedOff, 'off');
         const queue = [song, ...rest];
 
         // Uses the Skip ramp duration here, not the general Audio
@@ -2249,8 +2306,24 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
             const queue = await AudioEngine.getQueue();
             const keepEnd = currentIndex + 1 + priorityRef.current.length;
             const priorityTracks = queue.slice(currentIndex + 1, keepEnd);
-            const usedIds = new Set(queue.slice(0, keepEnd).map(t => t.id));
-            let rest = pl.songs.filter(s => !usedIds.has(s.id));
+            // Count occurrences, not just ids: a playlist can hold the same song twice, and filtering by a Set of
+            // used ids removed BOTH copies, silently shortening the playlist. Only the copies already consumed by the
+            // current/priority block are skipped.
+            const usedCounts = new Map();
+            for (const t of queue.slice(0, keepEnd)) usedCounts.set(t.id, (usedCounts.get(t.id) || 0) + 1);
+            // The wrapped off-mode list already leaves out the current song's own slot, so only the priority songs
+            // still need to be skipped there (counting the current one again dropped a second copy of it).
+            const priorityCounts = new Map();
+            for (const t of queue.slice(currentIndex + 1, keepEnd)) priorityCounts.set(t.id, (priorityCounts.get(t.id) || 0) + 1);
+            const withoutUsed = (list, counts = usedCounts) => {
+                const left = new Map(counts);
+                return list.filter(s => {
+                    const n = left.get(s.id) || 0;
+                    if (n > 0) { left.set(s.id, n - 1); return false; }
+                    return true;
+                });
+            };
+            let rest = withoutUsed(pl.songs);
             if (mode === 'off') {
                 // Turning shuffle off used to just filter pl.songs down to
                 // whatever's left, which — since filter() preserves original
@@ -2260,17 +2333,22 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
                 // playSongFromPlaylist's off-mode branch: find where the
                 // CURRENT track sits in the playlist's natural order and
                 // wrap the upcoming list to start right after it.
+                // The order is the sort the list screen shows right now — or, when no list is open, the same order
+                // derived from its saved sort — not the playlist's raw order.
+                const ordered = await getSortedOrder(pl.path, pl.songs);
                 const curTrack = queue[currentIndex];
-                const curIdx = curTrack ? pl.songs.findIndex(s => s.id === curTrack.id) : -1;
+                const curIdx = curTrack ? ordered.findIndex(s => s.id === curTrack.id) : -1;
                 if (curIdx !== -1) {
-                    const wrapped = [...pl.songs.slice(curIdx + 1), ...pl.songs.slice(0, curIdx)];
-                    rest = wrapped.filter(s => !usedIds.has(s.id));
+                    const wrapped = [...ordered.slice(curIdx + 1), ...ordered.slice(0, curIdx)];
+                    rest = withoutUsed(wrapped, priorityCounts);
+                } else {
+                    rest = withoutUsed(ordered);
                 }
+                rest = await padToBuffer(rest, ordered, 'off');
             } else {
                 rest = await buildQueueAsync(rest, mode, queue[keepEnd - 1]);   // the song right before the new order: the last priority song, else the current one
-                rest = await padToBuffer(rest, pl.songs.filter(s => !usedIds.has(s.id)), mode);
+                rest = await padToBuffer(rest, withoutUsed(pl.songs), mode);
             }
-            if (mode === 'off') rest = await padToBuffer(rest, pl.songs, 'off');
 
             // One bulk removal instead of removing up to ~50 loaded tracks
             // one at a time (each its own native bridge round trip) — that
@@ -2475,25 +2553,16 @@ export function PlaybackProvider({ children, engineReady = true, onRestored }) {
     // it across), the app was left showing the old song. Ask native which song
     // is current and follow it.
     useEffect(() => {
-        const sub = AppState.addEventListener('change', async (state) => {
+        let wake = [];
+        const sub = AppState.addEventListener('change', (state) => {
             if (state !== 'active') return;
-            try {
-                const idx = await AudioEngine.getCurrentTrack();
-                if (idx === null || idx === undefined) return;
-                const q = await AudioEngine.getQueue();
-                const t = q[idx];
-                const cur = currentTrackRef.current;
-                if (!t || !cur) return;
-                // Two copies of the same song in the queue are told apart by their slot id, but a song that has no slot id
-                // on one side is judged by its id alone. The slot id is what the progress bars key on: swapping the shown
-                // song for "the same song with another slot id" reset both bars (the Player's showed 0:01 for a second,
-                // the mini player's fill vanished for a moment) the first time the app was opened after a restore.
-                const same = (t._qid != null && cur._qid != null) ? t._qid === cur._qid : t.id === cur.id;
-                if (!same) setCurrentTrack(t);
-            } catch { }
+            followNative();
+            // Native can still be settling right after the app wakes (a song that ended while it was away): ask again.
+            wake.forEach(clearTimeout);
+            wake = [setTimeout(() => followNative(), 400), setTimeout(() => followNative(), 1300)];
         });
-        return () => sub.remove();
-    }, []);
+        return () => { sub.remove(); wake.forEach(clearTimeout); };
+    }, [followNative]);
     useEffect(() => {
         // Was 15000ms — tightened per Eric's report that position still
         // isn't being remembered through a genuine force-quit. The

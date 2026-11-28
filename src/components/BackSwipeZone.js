@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Dimensions, Animated } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
-import { EDGE_SWIPE_WIDTH } from '../utils/layout';
+import { BACK_COMMIT_FRACTION, BACK_VELOCITY_FRACTION, BACK_VELOCITY_MIN, EDGE_SWIPE_WIDTH } from '../utils/layout';
 
 // An empty stretch of a screen where a swipe to the right goes back, in
 // addition to the normal swipe from the screen's left edge. Only a mostly
@@ -52,7 +52,10 @@ export default function BackSwipeZone({ onBack, style, children, navigation, dra
         stackGestureStarted.current = false;
         if (stackOwned) return;
         if (startX.current < EDGE_SWIPE_WIDTH) return;
-        const goes = e.translationX > 70 || (e.translationX > 30 && e.velocityX > 600);
+        // A stop around a fifth of the way across is still an indefinite gesture: favour keeping the playlist open
+        // rather than closing it on a hair. The quick-flick escape hatch still needs a genuine drag behind it.
+        const goes = e.translationX > width * BACK_COMMIT_FRACTION ||
+            (e.translationX > width * BACK_VELOCITY_FRACTION && e.velocityX > BACK_VELOCITY_MIN);
         if (goes && Math.abs(e.translationY) < e.translationX && backRef.current) {
             if (dragX) {
                 Animated.timing(dragX, { toValue: width, duration: 170, useNativeDriver: true }).start(() => {

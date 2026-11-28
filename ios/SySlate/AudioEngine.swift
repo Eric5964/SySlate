@@ -275,8 +275,16 @@ class AudioEngine: RCTEventEmitter {
     // time you seek, while the audio itself correctly plays from the seeked
     // position — a real, easy-to-miss AVAudioEngine gotcha.
     // The origin of the scheduled segment. Whenever it changes (new load, seek,
-    // crossfade handoff) the remembered live position below is dropped too.
-    private var segmentStartOffsetSeconds: Double = 0 { didSet { lastLivePositionSeconds = nil } }
+    // crossfade handoff) the fallback position becomes that segment's own origin — NOT nil. Dropping it used to make
+    // currentPositionSeconds answer 0:00 for a frame whenever the node had no render time yet (see below), which the
+    // progress bars followed as a visible snap at song ends. A crossfade handoff overwrites it with the incoming
+    // node's real position (see runCrossfade/settleCrossfadeToIncoming).
+    private var segmentStartOffsetSeconds: Double = 0 {
+        didSet {
+            lastLivePositionSeconds = segmentStartOffsetSeconds
+            lastLivePositionAt = Date()
+        }
+    }
     // Last position read from the node while it was really rendering, and when.
     // The node briefly reports no render time after an interruption, a pause or
     // a restart of the engine. Reading the segment ORIGIN then (e.g. 67s after a
@@ -2951,6 +2959,15 @@ class AudioEngine: RCTEventEmitter {
                 self.currentTrailingCutSeconds = trailingCutSeconds
                 self.segmentStartOffsetSeconds = leadInSeconds
                 self.frozenPositionSeconds = nil
+                // The incoming node has already been playing for the whole crossfade. Use its own clock as the
+                // fallback if it stops reporting a render time for a frame right at the handoff — otherwise
+                // getProgress answers 0:00 for that frame and the bar visibly snaps back at the end of a song.
+                var incomingNow = leadInSeconds + duration * Double(max(0.25, self.playbackRate))
+                if let nt = incomingNode.lastRenderTime, let pt = incomingNode.playerTime(forNodeTime: nt), pt.sampleRate > 0 {
+                    incomingNow = leadInSeconds + Double(pt.sampleTime) / pt.sampleRate
+                }
+                self.lastLivePositionSeconds = incomingNow
+                self.lastLivePositionAt = Date()
                 self.crossfadeIncomingFile = nil
                 self.crossfadeIncomingTrack = nil
                 self.crossfadeIncomingIndex = nil
@@ -3478,6 +3495,14 @@ class AudioEngine: RCTEventEmitter {
         // handoff through this function instead.
         segmentStartOffsetSeconds = crossfadeIncomingLeadInSeconds
         currentTrailingCutSeconds = crossfadeIncomingTrailingCutSeconds
+        // Same handoff fallback as runCrossfade: keep the incoming node's already-elapsed position as the reading
+        // instead of letting the new segment origin (often 0:00) show for a frame when the node has no render time.
+        var incomingNow = crossfadeIncomingLeadInSeconds
+        if let nt = incomingNode.lastRenderTime, let pt = incomingNode.playerTime(forNodeTime: nt), pt.sampleRate > 0 {
+            incomingNow = crossfadeIncomingLeadInSeconds + Double(pt.sampleTime) / pt.sampleRate
+        }
+        lastLivePositionSeconds = incomingNow
+        lastLivePositionAt = Date()
 
         if let incomingTrack = crossfadeIncomingTrack {
             activeNodeTrack = incomingTrack

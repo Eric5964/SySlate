@@ -29,6 +29,7 @@ import { COVER_SHADOW } from '../utils/shadow';
 import TopBarBack from '../components/TopBarFade';
 import { useListArt, setVisibleArtIds } from '../hooks/useListArt';
 import { titleKey, compareKeys } from '../utils/sortKey';
+import { registerSortedOrder } from '../utils/sortedOrder';
 import { vizRowId } from '../utils/vizMatch';
 import { useVizPending } from '../utils/vizPending';
 
@@ -173,6 +174,8 @@ export default function PlaylistDetailScreen() {
         }
         return songs;
     }, [playlist.songs, sortId, playCounts, titleKeyMap]);
+
+    useEffect(() => { registerSortedOrder(playlist.path, sorted); }, [sorted]);
 
     const filtered = useMemo(() => {
         if (!search.trim()) return sorted;

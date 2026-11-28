@@ -7,6 +7,16 @@ import { Dimensions } from 'react-native';
 // magic numbers drifting apart. ~18% of screen width, per request. Also used by the Stats and Debug Log back-swipes.
 export const EDGE_SWIPE_WIDTH = Math.round(Dimensions.get('window').width * 0.18);
 
+// Back swipes favour staying on the screen. A drag stopped around a fifth of the way across used to sit right on the
+// old 70 pt commit line, so the same gesture sometimes closed the playlist and sometimes sprang back. The plain commit
+// is now well past a third of the width, and even the velocity shortcut needs a real drag behind it.
+export const BACK_COMMIT_FRACTION = 0.4;
+export const BACK_VELOCITY_FRACTION = 0.22;
+export const BACK_VELOCITY_MIN = 700;
+// React Navigation's own edge/back and modal-dismiss gestures close when (distance + velocity * impact) passes half
+// the screen. Below its 0.3 default so a short flick at 1/5 cannot dismiss a screen that the finger barely moved.
+export const BACK_GESTURE_VELOCITY_IMPACT = 0.18;
+
 // Pill-style rows everywhere (Playlists list layouts, All Songs, Playlist
 // songs, Queue) share one height and one cover size, taken from the mini
 // player (68 tall, 44 cover) and made a little shorter. The cover keeps the

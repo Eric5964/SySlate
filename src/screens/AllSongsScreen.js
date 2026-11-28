@@ -27,6 +27,7 @@ import { pillPad, PILL_H, PILL_COVER, TOP_PAD, TOP_FADE, addedClearance, OVERLAY
 import TopBarBack from '../components/TopBarFade';
 import ScreenBackground from '../components/ScreenBackground';
 import { titleKey, compareKeys } from '../utils/sortKey';
+import { ALL_SONGS_KEY, registerSortedOrder } from '../utils/sortedOrder';
 
 // Reuses the exact same 4 sorts as the playlist screen, for the same reason
 // they're offered there — this list is functionally "the All Songs
@@ -44,10 +45,8 @@ const allSongsSortMemo = { v: null };
 
 // Storage key for the persisted sort choice — reuses getPlaylistSort/
 // setPlaylistSort (keyed by playlist path) rather than adding a parallel
-// storage function, with '__all__' as the key since that's already the
-// path this screen's pseudo-playlist object uses everywhere else (see
-// `play` below).
-const ALL_SONGS_KEY = '__all__';
+// storage function. ALL_SONGS_KEY lives with the order helper so playback can
+// derive this list's order even when this screen is not mounted.
 
 export default function AllSongsScreen() {
     const { allSongs } = useContext(LibraryContext);
@@ -174,6 +173,8 @@ export default function AllSongsScreen() {
         }
         return songs;
     }, [dedupedSongs, sortId, playCounts, titleKeyMap]);
+
+    useEffect(() => { registerSortedOrder(ALL_SONGS_KEY, sorted); }, [sorted]);
 
     const filtered = useMemo(() => {
         if (!search.trim()) return sorted;

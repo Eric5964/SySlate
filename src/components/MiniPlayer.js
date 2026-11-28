@@ -88,7 +88,8 @@ export default function MiniPlayer({ withTabBar = true }) {
 
     useEffect(() => {
         const trackChanged = lastTrackIdRef.current !== slotKey;
-        if (progress.stale && !progress.estimated && !trackChanged) return;   // a reading for the other song: ignore it (an estimate still counts)
+        // Held = the last real position carried across a native 0:00 hiccup; treat it like an estimate, not a foreign reading.
+        if (progress.stale && !progress.estimated && !progress.held && !trackChanged) return;   // a reading for the other song: ignore it (an estimate still counts)
         lastTrackIdRef.current = slotKey;
         if (trackChanged) {
             // Same fix as PlayerScreen's own progress bar for this — see

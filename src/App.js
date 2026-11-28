@@ -56,7 +56,7 @@ import { scanLibrary } from './utils/files';
 import { warmTags, listUnreadSongs } from './utils/warmLibrary';
 import { getPlaylistCovers } from './utils/storage';
 import { fillSongDurations } from './utils/durations';
-import { EDGE_SWIPE_WIDTH } from './utils/layout';
+import { BACK_GESTURE_VELOCITY_IMPACT, EDGE_SWIPE_WIDTH } from './utils/layout';
 
 // Real cause of "background is a mixture of all screens" (torn/overlapping
 // content from two different tabs painting at once, e.g. Playlists' grid
@@ -152,10 +152,10 @@ function PlaylistsStackScreen() {
                     // Keep the Playlists screen mounted and visible underneath, so the custom swipe-out (which moves the screen itself,
                     // not the stack) shows it instead of an empty background.
                     detachPreviousScreen: false,
-                    // A bit higher than the 0.3 default so a quick flick
-                    // carries the swipe-to-dismiss through more readily,
-                    // instead of needing to cross most of the screen width.
-                    gestureVelocityImpact: 0.5,
+                    // Lower than React Navigation's 0.3 default: an ambiguous swipe (stopped around a fifth of the
+                    // way out) must spring back and keep the playlist open. A deliberate long drag or fast flick
+                    // still closes it (see BackSwipeZone for the same bias on swipes started off the edge).
+                    gestureVelocityImpact: BACK_GESTURE_VELOCITY_IMPACT,
                     // Narrow on purpose — SwipeableRow's swipe-to-queue gesture
                     // on song rows uses the rest of the row's width, so this
                     // back-gesture only claims a thin strip at the very edge
@@ -628,8 +628,8 @@ function AppInner() {
                                 utility screen, not part of the app's designed
                                 navigation feel, so it deliberately doesn't get
                                 any of the custom transition tuning below. */}
-                            <Root.Screen name="DebugLog" component={DebugLogScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH }} />
-                            <Root.Screen name="Stats" component={StatsScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH }} />
+                            <Root.Screen name="DebugLog" component={DebugLogScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH, gestureVelocityImpact: BACK_GESTURE_VELOCITY_IMPACT }} />
+                            <Root.Screen name="Stats" component={StatsScreen} options={{ gestureEnabled: true, gestureResponseDistance: EDGE_SWIPE_WIDTH, gestureVelocityImpact: BACK_GESTURE_VELOCITY_IMPACT }} />
                             <Root.Screen
                                 name="Player"
                                 component={PlayerScreen}
@@ -637,11 +637,9 @@ function AppInner() {
                                     ...TransitionPresets.ModalSlideFromBottomIOS,
                                     gestureEnabled: true,
                                     gestureResponseDistance: Dimensions.get('window').height,
-                                    // Same tuning as the playlist swipe-out — a
-                                    // quick flick carries the dismiss through
-                                    // more readily instead of needing to cross
-                                    // most of the screen height.
-                                    gestureVelocityImpact: 0.5,
+                                    // Vertical dismiss keeps React Navigation's default flick weight: a quick downward flick should
+                                    // still close the Player. (The playlist/Stats/Debug back swipes use the lower, open-biased value.)
+                                    gestureVelocityImpact: 0.3,
                                     // Round 47 added a custom `timing`-based
                                     // transitionSpec here to try to make the
                                     // down-arrow's close match the open

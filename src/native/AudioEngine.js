@@ -219,9 +219,66 @@ export default AudioEngine;
 const xfEstimate = { on: false, sec: 0 };
 let lastPlaybackState = State.None;
 let lastProgress = null;   // { position, duration, buffered, id, qid, at }
+let lastGoodReading = null;   // newest reading with a real duration, any song
+const zeroHolds = new Map();  // song key -> first unconfirmed 0:00 reading
+// A 0:00 that already sat through its hold (in smoothReading) is real: matchProgress must not hold it a second time.
+const zeroAccepted = new Map();  // song key -> time the hold ended
+const markZeroAccepted = (p, now) => { if (p.qid) zeroAccepted.set(`q:${p.qid}`, now); if (p.id) zeroAccepted.set(`i:${p.id}`, now); };
+const zeroRecentlyAccepted = (p, now) => ((p.qid && now - (zeroAccepted.get(`q:${p.qid}`) || 0) < 4000) || (p.id && now - (zeroAccepted.get(`i:${p.id}`) || 0) < 4000));
+const ZERO_HOLD_MS = 1500;
+
+const sameSong = (a, b) => {
+    if (!a || !b) return false;
+    if (a.id && b.id) return a.id === b.id && (!a.qid || !b.qid || a.qid === b.qid);   // a new slot of the same song is a restart, not a hiccup
+    if (a.qid && b.qid) return a.qid === b.qid;
+    return false;
+};
+
+// Native can answer 0/0 while a file is still loading, and can briefly answer 0/real-duration at a crossfade's handoff
+// (the newly active node has no render time for a frame). Neither means the song jumped back to its start. Carry the
+// last real position across short gaps like that; a genuine restart at 0 is still accepted immediately when it follows
+// the end of a song (repeat) or a seek (in-app or lock screen), and a 0 that persists is accepted after the hold.
+const smoothReading = (p, nowMs = Date.now()) => {
+    if (!p || !(p.duration > 0)) return p;
+    const prev = lastGoodReading;
+    const seed = getProgressSeed();
+    const fromSeed = !!(seed && seed.duration > 0 && seed.id && sameSong(seed, p) && seed.position > 1.5 && p.position <= 0.05);
+    const suspicious = nowMs - lastSeekAt > 1500 && (
+        (fromSeed && (!prev || !sameSong(prev, p))) ||
+        (prev && sameSong(prev, p) && prev.position > 1.5 && prev.duration > 0 && p.position <= 0.05 &&
+            prev.position < prev.duration - 1.5 && Math.abs(p.duration - prev.duration) < 2)
+    );
+    const key = p.qid ? `q:${p.qid}` : (p.id ? `i:${p.id}` : '');
+    if (!suspicious) {
+        if (p.position > 0.05) zeroHolds.delete(key);
+        lastGoodReading = { ...p, at: nowMs };
+        return p;
+    }
+    let hold = zeroHolds.get(key);
+    if (!hold || nowMs - hold.at > 4000) { hold = { at: nowMs }; zeroHolds.set(key, hold); }
+    if (nowMs - hold.at >= ZERO_HOLD_MS) {
+        zeroHolds.delete(key);
+        markZeroAccepted(p, nowMs);
+        lastGoodReading = { ...p, at: nowMs };
+        return p;
+    }
+    const base = fromSeed && (!prev || !sameSong(prev, p)) ? seed : prev;
+    const duration = p.duration || base.duration || 0;
+    let position = base.position || 0;
+    if (lastPlaybackState === State.Playing) {
+        position += Math.min(3, Math.max(0, (nowMs - (base.at || nowMs)) / 1000)) * (lastPlaybackRate || 1);
+    }
+    if (duration > 0) position = Math.min(duration, position);
+    return { ...p, position: Math.max(0, position), duration, buffered: duration, held: true, stale: true };
+};
+
 try {
     emitter.addListener(Event.PlaybackState, ({ state }) => { lastPlaybackState = state; });
-    emitter.addListener(Event.PlaybackProgressUpdated, (p) => { if (p) lastProgress = { ...p, at: Date.now() }; });
+    emitter.addListener(Event.PlaybackProgressUpdated, (p) => {
+        if (!p) return;
+        const s = smoothReading(p);
+        if (s && s.duration > 0) lastProgress = { ...s, at: Date.now() };
+    });
     NativeAudioEngine.getState().then(state => { if (lastPlaybackState === State.None) lastPlaybackState = state; }).catch(() => { });
 } catch { }
 
@@ -229,65 +286,121 @@ try {
 // uses it to start a new song's bar at its real spot at once (a crossfade flips the song halfway through).
 export function peekLastProgress() { return lastProgress; }
 
-// A reading only counts for the song it describes. A reading that was taken
-// just before a skip can arrive just after it (or just before the app has
-// heard about a crossfade's halfway song change); native tags every reading
-// with the song it belongs to. A reading for another song comes back flagged
-// `stale: true` (position 0), and the progress bars IGNORE it instead of
-// following it: following it made the bar drop to zero and back around every
-// crossfade.
-// Songs are compared by `id` (the file); the per-play `_qid` is only used when
-// an id is missing. And "another song" has to be a passing thing: if native
-// keeps naming the same other song for 2.5 s running, it is the app's idea of
-// the current song that is out of date (e.g. after the app was restored), so
-// the readings are accepted. (Before, a restored app could ignore every reading
-// for good: the time stayed at 0:00 and the bar did not move.)
-let otherSong = { key: '', since: 0 };
-// When each song was first expected on screen. During the first half of a crossfade the native reading still
-// describes the OUTGOING song (the incoming one is only announced at the halfway point), so a song that was just
-// tapped showed a frozen 0:00 for about half the crossfade. For that window the position is worked out from the
-// clock instead; the real reading takes over at the halfway point.
-let expectedSince = { id: '', at: 0, startAt: null };
+const CROSSFADE_ESTIMATE_MAX_MS = 6000;
+// Per-showing state, keyed by song id: two consumers (Player, mini player, lyrics) call matchProgress for the same
+// song, and an old consumer can briefly still name the previous song. One shared object used to be reset backwards by
+// whichever call came last, which restarted the crossfade estimate and the stale-confirmation window.
+const displaySince = new Map();   // id -> { at, startAt }
+const lastGoodByKey = new Map();  // slot/id key -> last real reading for that song
+const foreignByKey = new Map();   // slot/id key -> { key, since } for readings naming another song
+const songKey = (id, qid) => qid ? `q:${qid}` : (id ? `i:${id}` : '');
+const displayFor = (id, now) => {
+    let d = displaySince.get(id);
+    if (!d) {
+        d = { at: now, startAt: null };
+        displaySince.set(id, d);
+        if (displaySince.size > 16) displaySince.delete(displaySince.keys().next().value);
+    }
+    return d;
+};
+
 // A song shown the moment it is tapped (Play, Shuffle, a tap in a list) is on screen from the START of the crossfade, so
-// its position is simply the time since then. A song a crossfade announces by itself is shown HALFWAY through it, so its
-// position starts half a crossfade in (the default below). Without telling them apart, a tapped song's estimate ran
-// half a crossfade ahead of the sound, and the bar jumped back when the real reading arrived.
-// When the song with this id was last shown at the START of a transition (see above): { at } or null.
+// its position is simply the time since then. A song a crossfade announces by itself is shown HALFWAY through it.
+// Without telling them apart, a tapped song's estimate ran half a crossfade ahead of the sound and jumped backwards.
 export function peekDisplayFlip(id) {
-    if (id && expectedSince.id === id && expectedSince.startAt === 0 && Date.now() - expectedSince.at < 3000) return { at: expectedSince.at };
+    if (!id) return null;
+    const d = displaySince.get(id);
+    if (d && d.startAt === 0 && Date.now() - d.at < 3000) return { at: d.at };
     return null;
 }
 export function noteDisplayFlipNow(id) {
     if (!id) return;
     const nowMs = Date.now();
-    if (expectedSince.id === id && expectedSince.startAt === 0 && nowMs - expectedSince.at < 1000) return;   // already noted (the state update can run twice)
-    expectedSince = { id, at: nowMs, startAt: 0 };
+    const d = displaySince.get(id);
+    if (d && d.startAt === 0 && nowMs - d.at < 1000) return;   // already noted (the state update can run twice)
+    displaySince.set(id, { at: nowMs, startAt: 0 });
 }
-const CROSSFADE_ESTIMATE_MAX_MS = 6000;
+
+// Never return a bare 0:00 for a song whose real position we already know. Extrapolate from the last real reading for
+// at most 3 s (enough to cover a handoff/wake hiccup, never enough to run away if the app was suspended for minutes).
+const heldReading = (prev, p, fallbackDuration, nowMs) => {
+    const duration = (p && p.duration > 0) ? p.duration : (fallbackDuration > 0 ? fallbackDuration : (prev.duration || 0));
+    let position = prev.position || 0;
+    if (lastPlaybackState === State.Playing) {
+        position += Math.min(3, Math.max(0, (nowMs - (prev.at || nowMs)) / 1000)) * (lastPlaybackRate || 1);
+    }
+    if (duration > 0) position = Math.min(duration, position);
+    return {
+        position: Math.max(0, position), duration, buffered: duration,
+        id: p?.id ?? prev.id, qid: p?.qid ?? prev.qid,
+        stale: true, estimated: lastPlaybackState === State.Playing, held: true,
+    };
+};
+
+// Only readings for the song being shown count. A late reading from before a skip, or the outgoing song's position
+// during a crossfade's first half, must not drag the bar somewhere else — but it must not turn the bar into 0:00
+// either: hold the last real position for this song until a matching reading arrives (or the app follows native to
+// the song that really is playing, see PlaybackContext's AppState/progress-time follow).
 export function matchProgress(p, expectQid, fallbackDuration = 0, expectId) {
     const nowMs = Date.now();
-    if (expectId && expectedSince.id !== expectId) expectedSince = { id: expectId, at: nowMs, startAt: null };
-    if (!p) return { position: 0, duration: fallbackDuration || 0, buffered: 0 };
+    const key = songKey(expectId, expectQid);
+    const disp = expectId ? displayFor(expectId, nowMs) : null;
+    const good = key ? lastGoodByKey.get(key) : null;
+    if (!p) {
+        if (good) return heldReading(good, null, fallbackDuration, nowMs);
+        return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
+    }
     let stale = false;
     if (p.id && expectId) stale = p.id !== expectId;
     else if (expectQid && p.qid) stale = p.qid !== expectQid;
+
+    let foreignAccepted = false;
     if (stale) {
-        const key = `${p.id || ''}|${p.qid || ''}`;
-        const now = nowMs;
-        if (otherSong.key !== key) otherSong = { key, since: now };
-        else if (now - otherSong.since > CROSSFADE_ESTIMATE_MAX_MS + 500) stale = false;   // longer than the longest crossfade (6 s), or the old song's position showed up before the halfway point
+        const readingKey = `${p.id || ''}|${p.qid || ''}`;
+        let f = foreignByKey.get(key) || { key: '', since: nowMs };
+        if (f.key !== readingKey) { f = { key: readingKey, since: nowMs }; foreignByKey.set(key, f); }
+        // A crossfade explains another song's readings for at most ~6 s. If the shown song has been up longer, native
+        // is simply ahead; with no known position for this song, accept the reading as a last resort instead of
+        // parking the bar at 0:00 forever. When there IS a known position, holding it is both safer and smoother.
+        const onScreenMs = disp ? nowMs - disp.at : 0;
+        const limit = onScreenMs >= CROSSFADE_ESTIMATE_MAX_MS ? 400 : CROSSFADE_ESTIMATE_MAX_MS + 500;
+        // Once the shown song is past any crossfade (6 s) a foreign reading that persists 2 s means native is genuinely
+        // somewhere else; during a crossfade window keep holding up to 8 s. Holding forever would be as wrong as 0:00.
+        const foreignLimit = onScreenMs >= CROSSFADE_ESTIMATE_MAX_MS ? 2000 : 8000;
+        if (nowMs - f.since > foreignLimit || (!good && nowMs - f.since > limit)) { stale = false; foreignAccepted = true; }
     } else {
-        otherSong.key = '';
+        foreignByKey.delete(key);
     }
     if (stale) {
-        const el = nowMs - expectedSince.at;
+        if (good) return heldReading(good, p, fallbackDuration, nowMs);
+        const el = disp ? nowMs - disp.at : 0;
         if (expectId && fallbackDuration > 0 && lastPlaybackState === State.Playing && el >= 0 && el < CROSSFADE_ESTIMATE_MAX_MS) {
-            const startAt = expectedSince.startAt != null ? expectedSince.startAt : (xfEstimate.on ? xfEstimate.sec / 2 : 0);
-            return { position: Math.min(fallbackDuration, el / 1000 + startAt), duration: fallbackDuration, buffered: 0, stale: true, estimated: true };
+            const startAt = disp.startAt != null ? disp.startAt : (xfEstimate.on ? xfEstimate.sec / 2 : 0);
+            return { position: Math.min(fallbackDuration, el / 1000 + startAt), duration: fallbackDuration, buffered: fallbackDuration, stale: true, estimated: true };
         }
         return { position: 0, duration: fallbackDuration || 0, buffered: 0, stale: true };
     }
-    return p;
+    const duration = p.duration > 0 ? p.duration : (fallbackDuration || 0);
+    if (foreignAccepted) return { ...p, duration, buffered: duration, stale: false, foreign: true };
+
+    // A single implausible 0:00 from native (crossfade handoff, engine still settling after unlock) is not a seek.
+    const holdKey = key || `${p.id || ''}|${p.qid || ''}`;
+    const suspiciousZero = !p.held && !zeroRecentlyAccepted(p, nowMs) && p.duration > 0 && p.position <= 0.05 && good && good.position > 1.5 &&
+        good.duration > 0 && good.position < good.duration - 1.5 && Math.abs(p.duration - good.duration) < 2 &&
+        nowMs - lastSeekAt > 1500;
+    if (suspiciousZero) {
+        let z = zeroHolds.get(holdKey);
+        if (!z || nowMs - z.at > 4000) { z = { at: nowMs }; zeroHolds.set(holdKey, z); }
+        if (nowMs - z.at < ZERO_HOLD_MS) return heldReading(good, p, fallbackDuration, nowMs);
+        zeroHolds.delete(holdKey);
+        markZeroAccepted(p, nowMs);
+    } else if (p.position > 0.05) zeroHolds.delete(holdKey);
+
+    const result = duration !== p.duration ? { ...p, duration, buffered: duration } : p;
+    if (key && duration > 0) {
+        lastGoodByKey.set(key, { position: result.position, duration, at: nowMs, id: result.id || expectId, qid: result.qid || expectQid });
+    }
+    return result;
 }
 
 // Matches RNTP's real useProgress(updateInterval): plain JS polling of
@@ -325,25 +438,24 @@ export function useProgress(updateInterval = 1000) {
         const tick = () => {
             NativeAudioEngine.getProgress().then(p => {
                 if (cancelled || !p) return;
+                const now = Date.now();
                 // A real poll is as good as a pushed event: remember it so a
-                // screen that mounts later starts from it, not from 0:00.
-                if (p.duration > 0) lastProgress = { ...p, at: Date.now() };
+                // screen that mounts later starts from it, not from 0:00. Never cache an unconfirmed 0:00.
+                const s = smoothReading(p, now);
+                if (s && s.duration > 0) lastProgress = { ...s, at: now };
                 // While the restored song is still loading the engine can
                 // answer 0/0. Do not replace a known position and duration
                 // for the same song with that; the quick follow-up ticks pick
                 // up the real reading as soon as it is ready.
                 setProgress(prev => {
-                    if (!(p.duration > 0) && prev.duration > 0 && (!p.id || !prev.id || p.id === prev.id)) return prev;
-                    return p;
+                    if (!s) return prev;
+                    if (!(s.duration > 0) && prev.duration > 0 && (!s.id || !prev.id || s.id === prev.id)) return prev;
+                    return s;
                 });
-                // A real reading for the restored song is what the seed was
-                // standing in for: retire it now. A reading for another song
-                // leaves it alone until its own reading arrives.
-                // A real reading for a DIFFERENT song means the app has moved on from the restored
-                // one: the seed must not linger, or playing that song again later would start its bar
-                // at the old saved position instead of 0:00.
+                // A real reading for the restored song is what the seed was standing in for: retire it now.
+                // Do not retire it on a held 0:00 — that is the restored position being carried across a loading gap.
                 const seed = getProgressSeed();
-                if (seed && p.duration > 0 && p.id && !p.stale) setProgressSeed(null);
+                if (seed && s && s.duration > 0 && s.id && !s.stale && !s.held) setProgressSeed(null);
             }).catch(() => { });
         };
         tick();

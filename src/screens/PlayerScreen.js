@@ -1506,7 +1506,10 @@ export default function PlayerScreen() {
         // nothing about this one: leave the bar alone until a real one comes.
         // (an estimated one still counts: a player opened right after a song change never saw the change itself,
         // so ignoring it left the bar parked at 0 until the first real reading)
-        if (progress.stale && !progress.estimated && !trackChanged) return;
+        // A held reading carries the last real position across a native hiccup (crossfade handoff, wake): it is
+        // flagged stale so ordinary late readings stay ignored, but it must still feed the bar instead of leaving
+        // it parked at 0:00.
+        if (progress.stale && !progress.estimated && !progress.held && !trackChanged) return;
         lastSyncedTrackIdRef.current = slotKey;
         if (trackChanged) barFedRef.current = false;
         // Same fix as MiniPlayer: always stop on pause regardless of drift,
